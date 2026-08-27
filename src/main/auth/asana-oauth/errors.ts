@@ -72,6 +72,25 @@ export class AsanaOAuthAuthorizationError extends AsanaOAuthError {
   }
 }
 
+/** OAuth認可URLの起動失敗を表すエラーです。 */
+export class AsanaOAuthAuthorizationUrlOpenError extends AsanaOAuthError {
+  public readonly kind: "error" | "unknown";
+
+  public constructor(error: unknown) {
+    super("OAuth認可URLの起動に失敗しました。");
+    this.name = "AsanaOAuthAuthorizationUrlOpenError";
+    this.kind = error instanceof Error ? "error" : "unknown";
+  }
+}
+
+/** OAuth認証処理が既に実行中であることを表すエラーです。 */
+export class AsanaOAuthAuthenticationInProgressError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth認証処理が既に実行中です。");
+    this.name = "AsanaOAuthAuthenticationInProgressError";
+  }
+}
+
 /** OAuthコールバックの待機が中断されたことを表すエラーです。 */
 export class AsanaOAuthCallbackAbortedError extends AsanaOAuthError {
   public constructor() {

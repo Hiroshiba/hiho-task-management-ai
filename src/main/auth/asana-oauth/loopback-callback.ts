@@ -48,7 +48,8 @@ function isLoopbackHost(hostname: string): boolean {
   return isIP(unbracketedHostname) === 6 && unbracketedHostname === "::1";
 }
 
-const loopbackRedirectUriSchema = redirectUriSchema.superRefine((value, context) => {
+/** OAuth loopback redirect URIを検証するスキーマです。 */
+export const asanaOAuthLoopbackRedirectUriSchema = redirectUriSchema.superRefine((value, context) => {
   let url: URL;
   try {
     url = new URL(value);
@@ -79,7 +80,7 @@ const loopbackRedirectUriSchema = redirectUriSchema.superRefine((value, context)
 
 const loopbackCallbackInputSchema = z
   .object({
-    redirect_uri: loopbackRedirectUriSchema,
+    redirect_uri: asanaOAuthLoopbackRedirectUriSchema,
     expected_state: oauthStateSchema,
     timeout_milliseconds: z
       .number()
@@ -384,6 +385,7 @@ function sendRawInvalidResponse(
 export async function waitForAsanaOAuthLoopbackCallback(
   input: AsanaOAuthLoopbackCallbackInput,
   signal: AbortSignal,
+  onListening: () => Promise<void> | void,
 ): Promise<AsanaOAuthLoopbackCallbackResult> {
   const validatedInput = loopbackCallbackInputSchema.parse(input);
   if (signal.aborted) {
@@ -395,6 +397,8 @@ export async function waitForAsanaOAuthLoopbackCallback(
 
   return new Promise<AsanaOAuthLoopbackCallbackResult>((resolve, reject) => {
     let settled = false;
+    let completionStarted = false;
+    let listeningPromise: Promise<void> | undefined;
     let invalidRequestCount = 0;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const sockets = new Set<Socket>();
@@ -573,22 +577,40 @@ export async function waitForAsanaOAuthLoopbackCallback(
       });
     };
     const succeed = (result: AsanaOAuthLoopbackCallbackResult): void => {
-      if (settled) {
+      if (settled || completionStarted) {
         return;
       }
-      settled = true;
-      finalizeSuccess(result).catch((finalizationError: unknown) => {
-        reject(
-          new AsanaOAuthCallbackServerError(
-            new AggregateError(
-              [
-                new Error("OAuthコールバックの成功後に終了処理へ失敗しました。"),
-                finalizationError,
-              ],
-              "OAuthコールバックの終了処理に失敗しました。",
+      completionStarted = true;
+      if (listeningPromise == null) {
+        fail(new AsanaOAuthCallbackServerError(
+          new Error("OAuthコールバックサーバーの待機準備が完了していません。"),
+        ));
+        return;
+      }
+      listeningPromise.then(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        finalizeSuccess(result).catch((finalizationError: unknown) => {
+          reject(
+            new AsanaOAuthCallbackServerError(
+              new AggregateError(
+                [
+                  new Error("OAuthコールバックの成功後に終了処理へ失敗しました。"),
+                  finalizationError,
+                ],
+                "OAuthコールバックの終了処理に失敗しました。",
+              ),
             ),
-          ),
-        );
+          );
+        });
+      }).catch((error: unknown) => {
+        if (signal.aborted) {
+          fail(new AsanaOAuthCallbackAbortedError());
+          return;
+        }
+        fail(new AsanaOAuthCallbackServerError(error));
       });
     };
     const recordInvalidRequest = (): Error | undefined => {
@@ -619,7 +641,7 @@ export async function waitForAsanaOAuthLoopbackCallback(
       fail(new AsanaOAuthCallbackServerError(error));
     };
     const onClientError = (_error: Error, socket: Duplex): void => {
-      if (settled) {
+      if (settled || completionStarted) {
         socket.destroy();
         return;
       }
@@ -632,7 +654,7 @@ export async function waitForAsanaOAuthLoopbackCallback(
       sendRawInvalidResponse(socket, finishInvalidResponse, finishInvalidResponse);
     };
     const onConnection = (socket: Socket): void => {
-      if (settled) {
+      if (settled || completionStarted) {
         socket.destroy();
         return;
       }
@@ -641,7 +663,8 @@ export async function waitForAsanaOAuthLoopbackCallback(
         sockets.delete(socket);
       });
       socket.once("error", () => {
-        if (settled) {
+        if (settled || completionStarted) {
+          socket.destroy();
           return;
         }
         const terminalError = recordInvalidConnection(socket);
@@ -659,6 +682,10 @@ export async function waitForAsanaOAuthLoopbackCallback(
       response: ServerResponse,
     ): void => {
       if (settled) {
+        response.destroy();
+        return;
+      }
+      if (completionStarted) {
         response.destroy();
         return;
       }
@@ -774,7 +801,24 @@ export async function waitForAsanaOAuthLoopbackCallback(
     signal.addEventListener("abort", onAbort, { once: true });
     timeout = setTimeout(onTimeout, validatedInput.timeout_milliseconds);
     try {
-      server.listen({ host, port });
+      server.listen({ host, port }, () => {
+        if (settled) {
+          return;
+        }
+        try {
+          listeningPromise = Promise.resolve(onListening());
+        } catch (error) {
+          fail(new AsanaOAuthCallbackServerError(error));
+          return;
+        }
+        listeningPromise.catch((error: unknown) => {
+          if (signal.aborted) {
+            fail(new AsanaOAuthCallbackAbortedError());
+            return;
+          }
+          fail(new AsanaOAuthCallbackServerError(error));
+        });
+      });
     } catch (error) {
       fail(new AsanaOAuthCallbackServerError(error));
     }
