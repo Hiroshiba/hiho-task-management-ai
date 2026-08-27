@@ -68,3 +68,16 @@ export {
   type CustomExternalDataInitializationResult,
   type ExternalDataIngestionResult,
 } from "./external-data-ingestion";
+export {
+  asanaSnapshotNormalizationInputSchema,
+  asanaSnapshotNormalizationResultSchema,
+  normalizeAsanaSnapshot,
+  type SnapshotCriticalError,
+  type SnapshotExternalDataInitializationRequest,
+  type SnapshotExternalDataWritePlan,
+  type SnapshotGraphResult,
+  type SnapshotNormalizationInput,
+  type SnapshotNormalizationResult,
+  type SnapshotStatusPlan,
+  type SnapshotTagPlan,
+} from "./snapshot-normalization";
