@@ -7,6 +7,80 @@ function isJsonArray(value: JsonValue): value is JsonArray {
   return Array.isArray(value);
 }
 
+function isDataDescriptor(
+  descriptor: PropertyDescriptor | undefined,
+): descriptor is PropertyDescriptor & { readonly value: unknown } {
+  return descriptor != null && "value" in descriptor;
+}
+
+function isPlainObject(value: object): value is Record<string, unknown> {
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isArrayIndex(key: string, length: number): boolean {
+  const index = Number(key);
+  return (
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index < length &&
+    String(index) === key
+  );
+}
+
+function isJsonArrayInternal(
+  value: readonly unknown[],
+  ancestors: WeakSet<object>,
+): boolean {
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (!isDataDescriptor(lengthDescriptor) || lengthDescriptor.value !== value.length) {
+    return false;
+  }
+
+  const ownKeys = Reflect.ownKeys(value);
+  let elementCount = 0;
+  for (const key of ownKeys) {
+    if (key === "length") {
+      continue;
+    }
+    if (typeof key !== "string" || !isArrayIndex(key, value.length)) {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!isDataDescriptor(descriptor)) {
+      return false;
+    }
+    elementCount += 1;
+    if (!isJsonValueInternal(descriptor.value, ancestors)) {
+      return false;
+    }
+  }
+  return elementCount === value.length;
+}
+
+function isJsonObjectInternal(
+  value: Record<string, unknown>,
+  ancestors: WeakSet<object>,
+): boolean {
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor == null ||
+      descriptor.enumerable !== true ||
+      !isDataDescriptor(descriptor)
+    ) {
+      return false;
+    }
+    if (!isJsonValueInternal(descriptor.value, ancestors)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isJsonValueInternal(value: unknown, ancestors: WeakSet<object>): value is JsonValue {
   if (value === null) {
     return true;
@@ -27,31 +101,18 @@ function isJsonValueInternal(value: unknown, ancestors: WeakSet<object>): value 
   if (ancestors.has(value)) {
     return false;
   }
-  if (Object.prototype.toString.call(value) !== "[object Object]") {
-    return false;
-  }
   ancestors.add(value);
-
-  if (Array.isArray(value)) {
-    const valid = value.every((item: unknown) => isJsonValueInternal(item, ancestors));
+  try {
+    if (Array.isArray(value)) {
+      return isJsonArrayInternal(value, ancestors);
+    }
+    if (!isPlainObject(value)) {
+      return false;
+    }
+    return isJsonObjectInternal(value, ancestors);
+  } finally {
     ancestors.delete(value);
-    return valid;
   }
-
-  for (const key of Object.keys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor == null || !("value" in descriptor)) {
-      ancestors.delete(value);
-      return false;
-    }
-    if (!isJsonValueInternal(descriptor.value, ancestors)) {
-      ancestors.delete(value);
-      return false;
-    }
-  }
-
-  ancestors.delete(value);
-  return true;
 }
 
 /** 値が再帰的なJSON値として表現できるか判定します。 */
