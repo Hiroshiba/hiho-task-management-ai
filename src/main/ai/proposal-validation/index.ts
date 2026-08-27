@@ -1,4 +1,14 @@
 export {
+  graphValidationInputSchema,
+  graphValidationResultSchema,
+  validateProposalGraph,
+  type GraphValidationError,
+  type GraphValidationGroupResult,
+  type GraphValidationInput,
+  type GraphValidationOperationResult,
+  type GraphValidationResult,
+} from "./graph";
+export {
   proposalValidationInputSchema,
   proposalValidationResultSchema,
   validateProposal,
