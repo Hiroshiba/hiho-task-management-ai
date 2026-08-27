@@ -47,6 +47,7 @@ export const codexWorkspaceInitializationResultSchema = z
     agentsFilePath: absolutePathSchema,
     skillsDirectoryPath: absolutePathSchema,
     binDirectoryPath: absolutePathSchema,
+    taskctlPath: absolutePathSchema,
     tmpDirectoryPath: absolutePathSchema,
     skillNames: skillNamesSchema,
   })
@@ -60,12 +61,14 @@ export const codexWorkspaceInitializationResultSchema = z
       "skills",
     );
     const expectedBinDirectoryPath = join(expectedWorkspacePath, "bin");
+    const expectedTaskctlPath = join(expectedBinDirectoryPath, "taskctl");
     const expectedTmpDirectoryPath = join(expectedWorkspacePath, "tmp");
     const expectedPaths: readonly [string, string, string][] = [
       ["workspacePath", expectedWorkspacePath, result.workspacePath],
       ["agentsFilePath", expectedAgentsFilePath, result.agentsFilePath],
       ["skillsDirectoryPath", expectedSkillsDirectoryPath, result.skillsDirectoryPath],
       ["binDirectoryPath", expectedBinDirectoryPath, result.binDirectoryPath],
+      ["taskctlPath", expectedTaskctlPath, result.taskctlPath],
       ["tmpDirectoryPath", expectedTmpDirectoryPath, result.tmpDirectoryPath],
     ];
 
