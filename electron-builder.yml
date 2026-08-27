@@ -1,0 +1,16 @@
+appId: com.taskhub.app
+productName: TaskHub
+asar: true
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+mac:
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+    - zip
