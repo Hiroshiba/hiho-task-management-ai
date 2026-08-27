@@ -20,3 +20,12 @@ export {
   type AsanaNormalizationPlanApplierResult,
   type UuidGenerator,
 } from "./normalization-plan-applier";
+export {
+  AsanaSyncCoordinator,
+  AsanaSyncInProgressError,
+  asanaSyncCoordinatorInputSchema,
+  asanaSyncCoordinatorResultSchema,
+  type AsanaSyncCoordinatorInput,
+  type AsanaSyncCoordinatorResult,
+  type SyncTimestampProvider,
+} from "./coordinator";

@@ -239,6 +239,25 @@ export class StorageDatabase {
     return this.taskCacheStore.getAll();
   }
 
+  /** 同期済みタスク・メタデータ・順位・同期状態を一つのトランザクションで保存します。 */
+  public saveSyncSnapshot(
+    entries: readonly TaskCacheEntry[],
+    metadata: ProjectMetadataCache,
+    ranking: RankingCache,
+    syncState: SyncState,
+  ): void {
+    if (metadata.project.gid !== syncState.project_gid) {
+      throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
+    }
+    const save = this.database.transaction(() => {
+      this.taskCacheStore.replace(entries);
+      this.projectMetadataCacheStore.save(metadata);
+      this.rankingCacheStore.save(ranking);
+      this.syncStateStore.save(syncState);
+    });
+    save();
+  }
+
   /** GIDでタスクキャッシュを一件読み出します。 */
   public getTaskCacheEntry(gid: string): TaskCacheEntry | undefined {
     return this.taskCacheStore.get(gid);
