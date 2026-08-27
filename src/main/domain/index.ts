@@ -50,3 +50,11 @@ export {
   type RankingTask,
   type RankingTieBreak,
 } from "./ranking";
+export {
+  customExternalDataMergeInputSchema,
+  customExternalDataMergeResultSchema,
+  mergeCustomExternalData,
+  type CustomExternalDataMergeInput,
+  type CustomExternalDataMergeOperation,
+  type CustomExternalDataMergeResult,
+} from "./external-data-merge";
