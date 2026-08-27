@@ -1,6 +1,8 @@
 appId: com.taskhub.app
 productName: TaskHub
 asar: true
+npmRebuild: true
+buildDependenciesFromSource: true
 directories:
   output: release
 files:
