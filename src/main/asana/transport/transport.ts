@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  identifierSchema,
   isJsonValue,
   type JsonValue,
 } from "../../../shared/domain";
@@ -10,6 +11,7 @@ import {
 } from "../scheduler";
 import {
   AsanaAuthenticationError,
+  AsanaEventsResetError,
   AsanaHttpError,
   AsanaPaymentRequiredError,
   AsanaRateLimitError,
@@ -31,6 +33,19 @@ const retryBackoffMilliseconds: readonly [number, number, number] = [
 ];
 const httpDatePattern = /^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]{3} [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
 const jsonContentTypePattern = /^application\/json(?:\s*;\s*charset\s*=\s*(?:"[^"]+"|[^;\s]+))?\s*$/i;
+const eventsResetResponseSchema = z
+  .object({
+    errors: z
+      .array(
+        z
+          .object({
+            sync: identifierSchema,
+          })
+          .strip(),
+      )
+      .min(1, "Asana Events APIのerrorsを空にできません。"),
+  })
+  .strict();
 
 type RequestPathAndQuery = {
   readonly path: readonly string[];
@@ -195,6 +210,20 @@ function requestBody<T>(request: AsanaRequest<T>): string | undefined {
   return serializeBody(request.body);
 }
 
+function isEventsRequest<T>(request: AsanaRequest<T>): boolean {
+  if (
+    request.method !== "GET"
+    || request.path.length !== 1
+    || request.path[0] !== "events"
+  ) {
+    return false;
+  }
+  if (request.query == null) {
+    return false;
+  }
+  return typeof request.query.resource === "string";
+}
+
 function validateRequest<T>(request: AsanaRequest<T>): void {
   if (
     request.response_schema == null
@@ -283,6 +312,10 @@ export class AsanaTransport {
         continue;
       }
 
+      if (response.status === 412 && isEventsRequest(request)) {
+        const syncToken = await this.parseEventsResetResponse(response);
+        throw new AsanaEventsResetError(syncToken);
+      }
       if (response.status === 401) {
         if (authenticationRetried) {
           throw new AsanaAuthenticationError();
@@ -472,6 +505,35 @@ export class AsanaTransport {
     return response.headers.get("x-request-id")
       ?? response.headers.get("x-asana-request-id")
       ?? undefined;
+  }
+
+  private async parseEventsResetResponse(response: Response): Promise<string> {
+    if (!isJsonContentType(response.headers.get("content-type"))) {
+      throw new AsanaResponseError(
+        new Error("Asana Events APIのContent-Typeがapplication/jsonではありません。"),
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw new AsanaResponseError(error);
+    }
+    try {
+      const parsed = eventsResetResponseSchema.parse(payload);
+      const syncTokens = new Set(parsed.errors.map((error) => error.sync));
+      if (syncTokens.size !== 1) {
+        throw new Error("Asana Events APIのsyncが一致しません。");
+      }
+      const [syncToken] = syncTokens;
+      if (syncToken == null) {
+        throw new Error("Asana Events APIのsyncを取得できません。");
+      }
+      return syncToken;
+    } catch (error) {
+      throw new AsanaResponseError(error);
+    }
   }
 
   private async parseSuccessfulResponse<T>(

@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   createUtf8ByteLimitedStringSchema,
   dateSchema,
+  externalTaskGidSchema,
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
@@ -430,6 +431,22 @@ export const asanaTagResponseSchema = z
   })
   .strip();
 
+/** AsanaのCustom external dataレスポンスを検証するスキーマです。 */
+export const asanaExternalDataResponseSchema = z
+  .object({
+    gid: externalTaskGidSchema,
+    data: z.string(),
+  })
+  .strict();
+
+/** Asanaワークスペース参照を未知フィールドを無視して検証するスキーマです。 */
+export const asanaWorkspaceReferenceResponseSchema = z
+  .object({
+    gid: gidSchema,
+    name: z.string(),
+  })
+  .strip();
+
 /** Asanaセクションレスポンスを未知フィールドを無視して検証するスキーマです。 */
 export const asanaSectionResponseSchema = z
   .object({
@@ -442,7 +459,16 @@ export const asanaSectionResponseSchema = z
 export const asanaProjectReferenceResponseSchema = z
   .object({
     gid: gidSchema,
-    name: z.string().optional(),
+    name: z.string(),
+  })
+  .strip();
+
+/** Asanaプロジェクトレスポンスを未知フィールドを無視して検証するスキーマです。 */
+export const asanaProjectResponseSchema = z
+  .object({
+    gid: gidSchema,
+    name: z.string(),
+    workspace: asanaWorkspaceReferenceResponseSchema,
   })
   .strip();
 
@@ -450,15 +476,15 @@ export const asanaProjectReferenceResponseSchema = z
 export const asanaTaskReferenceResponseSchema = z
   .object({
     gid: gidSchema,
-    name: z.string().optional(),
+    name: z.string(),
   })
   .strip();
 
 /** Asanaプロジェクト内所属を未知フィールドを無視して検証するスキーマです。 */
 export const asanaMembershipResponseSchema = z
   .object({
-    project: asanaProjectReferenceResponseSchema.optional(),
-    section: asanaSectionResponseSchema.optional(),
+    project: asanaProjectReferenceResponseSchema,
+    section: asanaSectionResponseSchema.nullable(),
   })
   .strip();
 
@@ -467,18 +493,20 @@ export const asanaTaskResponseSchema = z
   .object({
     gid: gidSchema,
     name: z.string(),
-    notes: externalTextSchema.optional(),
-    completed: z.boolean().optional(),
-    due_on: dateSchema.optional(),
-    due_at: isoDateTimeSchema.optional(),
-    created_at: isoDateTimeSchema.optional(),
-    modified_at: isoDateTimeSchema.optional(),
-    completed_at: isoDateTimeSchema.optional(),
-    memberships: z.array(asanaMembershipResponseSchema).optional(),
-    tags: z.array(asanaTagResponseSchema).optional(),
-    parent: asanaTaskReferenceResponseSchema.optional(),
-    subtasks: z.array(asanaTaskReferenceResponseSchema).optional(),
-    projects: z.array(asanaProjectReferenceResponseSchema).optional(),
+    notes: externalTextSchema,
+    completed: z.boolean(),
+    due_on: dateSchema.nullable(),
+    due_at: isoDateTimeSchema.nullable(),
+    created_at: isoDateTimeSchema,
+    modified_at: isoDateTimeSchema,
+    completed_at: isoDateTimeSchema.nullable(),
+    permalink_url: z.url(),
+    external: asanaExternalDataResponseSchema.nullable(),
+    memberships: z.array(asanaMembershipResponseSchema),
+    tags: z.array(asanaTagResponseSchema),
+    parent: asanaTaskReferenceResponseSchema.nullable(),
+    subtasks: z.array(asanaTaskReferenceResponseSchema),
+    projects: z.array(asanaProjectReferenceResponseSchema),
   })
   .strip();
 
@@ -493,7 +521,7 @@ export const asanaTaskPageResponseSchema = z
         uri: z.string(),
       })
       .strip()
-      .optional(),
+      .nullable(),
   })
   .strip();
 
@@ -524,5 +552,12 @@ export type SyncSnapshot = z.infer<typeof syncSnapshotSchema>;
 export type SnapshotHash = z.infer<typeof snapshotHashSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
+export type AsanaExternalDataResponse = z.infer<
+  typeof asanaExternalDataResponseSchema
+>;
+export type AsanaWorkspaceReferenceResponse = z.infer<
+  typeof asanaWorkspaceReferenceResponseSchema
+>;
+export type AsanaProjectResponse = z.infer<typeof asanaProjectResponseSchema>;
 export type AsanaTaskResponse = z.infer<typeof asanaTaskResponseSchema>;
 export type AsanaTaskPageResponse = z.infer<typeof asanaTaskPageResponseSchema>;

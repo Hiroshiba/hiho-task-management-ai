@@ -22,6 +22,17 @@ export class AsanaAuthenticationError extends Error {
   }
 }
 
+/** Asana Events APIが新しい同期トークンを要求したことを表すエラーです。 */
+export class AsanaEventsResetError extends Error {
+  public readonly syncToken: string;
+
+  public constructor(syncToken: string) {
+    super("Asana Events APIの同期トークンを更新してください。");
+    this.name = "AsanaEventsResetError";
+    this.syncToken = syncToken;
+  }
+}
+
 /** Asana APIが支払いを要求したことを表します。 */
 export class AsanaPaymentRequiredError extends Error {
   public constructor() {

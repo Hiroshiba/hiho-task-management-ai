@@ -1,5 +1,6 @@
 export {
   AsanaAuthenticationError,
+  AsanaEventsResetError,
   AsanaHttpError,
   AsanaPaymentRequiredError,
   AsanaRateLimitError,
