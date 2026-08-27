@@ -90,6 +90,43 @@ export const taskCacheEntriesSchema = z
     });
   });
 
+const uniqueMissingTaskGidsSchema = z
+  .array(gidSchema)
+  .superRefine((gids, context) => {
+    const seen = new Set<string>();
+    gids.forEach((gid, index) => {
+      if (seen.has(gid)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "同じGIDを差分削除対象へ重複して指定できません。",
+        });
+        return;
+      }
+      seen.add(gid);
+    });
+  });
+
+/** タスクキャッシュ差分を検証するスキーマです。 */
+export const taskCacheDiffSchema = z
+  .object({
+    upsert: taskCacheEntriesSchema,
+    missing_gids: uniqueMissingTaskGidsSchema,
+  })
+  .strict()
+  .superRefine((diff, context) => {
+    const upsertGids = new Set(diff.upsert.map((entry) => entry.gid));
+    diff.missing_gids.forEach((gid, index) => {
+      if (upsertGids.has(gid)) {
+        context.addIssue({
+          code: "custom",
+          path: ["missing_gids", index],
+          message: "同じGIDをupsertと削除の両方へ指定できません。",
+        });
+      }
+    });
+  });
+
 const projectMetadataProjectSchema = z
   .object({
     gid: gidSchema,
@@ -394,6 +431,7 @@ export const diagnosticLogEntrySchema = z
 
 export type CustomExternalDataCache = z.infer<typeof customExternalDataCacheSchema>;
 export type TaskCacheEntry = z.infer<typeof taskCacheEntrySchema>;
+export type TaskCacheDiff = z.infer<typeof taskCacheDiffSchema>;
 export type ProjectMetadataCache = z.infer<typeof projectMetadataCacheSchema>;
 export type ProjectMetadataSection = z.infer<typeof projectMetadataSectionSchema>;
 export type RankingScoreBreakdown = z.infer<typeof rankingScoreBreakdownSchema>;

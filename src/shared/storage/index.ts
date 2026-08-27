@@ -14,6 +14,7 @@ export {
   rankingExclusionReasonCodeSchema,
   rankingScoreBreakdownSchema,
   syncStateSchema,
+  taskCacheDiffSchema,
   taskCacheEntriesSchema,
   taskCacheEntrySchema,
   vaultMappingSchema,
@@ -32,6 +33,7 @@ export {
   type RankingExclusionReasonCode,
   type RankingScoreBreakdown,
   type SyncState,
+  type TaskCacheDiff,
   type TaskCacheEntry,
   type VaultMapping,
 } from "./schemas";

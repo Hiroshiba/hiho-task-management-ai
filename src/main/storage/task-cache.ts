@@ -6,9 +6,11 @@ import {
 } from "../../shared/domain";
 import {
   customExternalDataCacheSchema,
+  taskCacheDiffSchema,
   taskCacheEntriesSchema,
   taskCacheEntrySchema,
   type CustomExternalDataCache,
+  type TaskCacheDiff,
   type TaskCacheEntry,
 } from "../../shared/storage";
 import { parseStorageJson, serializeStorageJson } from "./json";
@@ -64,17 +66,34 @@ function rowToTaskCacheEntry(row: TaskCacheRow): TaskCacheEntry {
 /** タスクキャッシュのSQLite操作を提供します。 */
 export class TaskCacheStore {
   private readonly deleteAllStatement;
+  private readonly deleteByGidStatement;
   private readonly insertStatement;
+  private readonly upsertStatement;
   private readonly selectAllStatement;
   private readonly selectOneStatement;
 
   public constructor(private readonly database: SqliteDatabase) {
     this.deleteAllStatement = database.prepare<[], unknown>("DELETE FROM task_cache");
+    this.deleteByGidStatement = database.prepare<[string], unknown>(
+      "DELETE FROM task_cache WHERE gid = ?",
+    );
     this.insertStatement = database.prepare<
       [string, string, string, string | null, string],
       unknown
     >(
       "INSERT INTO task_cache (gid, asana_response_json, task_json, custom_external_data_json, cached_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.upsertStatement = database.prepare<
+      [string, string, string, string | null, string],
+      unknown
+    >(
+      `INSERT INTO task_cache (gid, asana_response_json, task_json, custom_external_data_json, cached_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(gid) DO UPDATE SET
+         asana_response_json = excluded.asana_response_json,
+         task_json = excluded.task_json,
+         custom_external_data_json = excluded.custom_external_data_json,
+         cached_at = excluded.cached_at`,
     );
     this.selectAllStatement = database.prepare<[], TaskCacheRow>(
       "SELECT gid, asana_response_json, task_json, custom_external_data_json, cached_at FROM task_cache ORDER BY gid",
@@ -103,6 +122,34 @@ export class TaskCacheStore {
       });
     });
     replace(validatedEntries);
+  }
+
+  /** タスクキャッシュの差分を一つのトランザクションで適用します。 */
+  public applyDiff(diff: TaskCacheDiff): void {
+    const validatedDiff = taskCacheDiffSchema.parse(diff);
+    const validatedEntries = validatedDiff.upsert.map(validateTaskCacheEntry);
+    const diffToApply: TaskCacheDiff = {
+      upsert: validatedEntries,
+      missing_gids: validatedDiff.missing_gids,
+    };
+    const apply = this.database.transaction((records: TaskCacheDiff) => {
+      records.upsert.forEach((entry) => {
+        const externalData = entry.custom_external_data == null
+          ? null
+          : serializeStorageJson(entry.custom_external_data);
+        this.upsertStatement.run(
+          entry.gid,
+          serializeStorageJson(entry.asana_response),
+          serializeStorageJson(entry.task),
+          externalData,
+          entry.cached_at,
+        );
+      });
+      records.missing_gids.forEach((gid) => {
+        this.deleteByGidStatement.run(gid);
+      });
+    });
+    apply(diffToApply);
   }
 
   /** タスクキャッシュを全件読み出します。 */

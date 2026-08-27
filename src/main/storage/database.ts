@@ -17,6 +17,7 @@ import type {
   ProjectMetadataCache,
   RankingCache,
   SyncState,
+  TaskCacheDiff,
   TaskCacheEntry,
   VaultMapping,
 } from "../../shared/storage";
@@ -226,6 +227,11 @@ export class StorageDatabase {
   /** タスクキャッシュを一つのトランザクションで全件置換します。 */
   public replaceTaskCache(entries: readonly TaskCacheEntry[]): void {
     this.taskCacheStore.replace(entries);
+  }
+
+  /** タスクキャッシュの差分を一つのトランザクションで適用します。 */
+  public applyTaskCacheDiff(diff: TaskCacheDiff): void {
+    this.taskCacheStore.applyDiff(diff);
   }
 
   /** タスクキャッシュを全件読み出します。 */
