@@ -58,3 +58,13 @@ export {
   type CustomExternalDataMergeOperation,
   type CustomExternalDataMergeResult,
 } from "./external-data-merge";
+export {
+  createInitialCustomExternalData,
+  customExternalDataInitializationInputSchema,
+  customExternalDataInitializationResultSchema,
+  externalDataIngestionResultSchema,
+  ingestAsanaExternalData,
+  type CustomExternalDataInitializationInput,
+  type CustomExternalDataInitializationResult,
+  type ExternalDataIngestionResult,
+} from "./external-data-ingestion";
