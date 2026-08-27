@@ -12,3 +12,11 @@ export {
   type AsanaDeltaSyncInput,
   type AsanaDeltaSyncResult,
 } from "./delta-sync-source";
+export {
+  AsanaNormalizationPlanApplier,
+  asanaNormalizationPlanApplierInputSchema,
+  asanaNormalizationPlanApplierResultSchema,
+  type AsanaNormalizationPlanApplierInput,
+  type AsanaNormalizationPlanApplierResult,
+  type UuidGenerator,
+} from "./normalization-plan-applier";
