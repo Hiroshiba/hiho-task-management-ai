@@ -1,7 +1,4 @@
 export {
-  hashBaselineSnapshot,
-} from "./snapshot-hash";
-export {
   assertNoDependencyCycle,
   assertNoParentCycle,
   DuplicateTaskGidError,
@@ -16,12 +13,12 @@ export {
   type GraphNormalizationResult,
   type NormalizationTask,
   type ParentBlockReason,
-} from "./normalization";
+} from "./graph";
 export {
   normalizeTaskTags,
   type TagNormalizationInput,
   type TagNormalizationResult,
-} from "./normalization";
+} from "./tags";
 export {
   assertKnownStatusSectionForWrite,
   reconcileTaskStatus,
@@ -36,4 +33,4 @@ export {
   type StatusReconciliationResult,
   type StatusSectionConfiguration,
   type StatusWrite,
-} from "./normalization";
+} from "./status";

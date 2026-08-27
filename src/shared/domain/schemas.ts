@@ -169,6 +169,7 @@ export const cleanupItemKindSchema = z.enum([
   "dependency_cycle",
   "missing_dependency",
   "parent_cycle",
+  "parent_relation_conflict",
   "children_only_completion_confirmation",
   "missing_task",
   "custom_external_data_broken",
