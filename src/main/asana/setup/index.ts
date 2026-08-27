@@ -10,3 +10,10 @@ export {
   type SetupSectionCheck,
   type SetupTagCheck,
 } from "./manifest";
+export {
+  AsanaSetupResourceCoordinator,
+  asanaSetupResourceCoordinatorInputSchema,
+  asanaSetupResourceCoordinatorResultSchema,
+  type AsanaSetupResourceCoordinatorInput,
+  type AsanaSetupResourceCoordinatorResult,
+} from "./resource-coordinator";
