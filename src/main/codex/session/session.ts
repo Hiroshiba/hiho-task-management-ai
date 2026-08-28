@@ -1,3 +1,4 @@
+import { lstatSync, realpathSync, type Stats } from "node:fs";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -248,6 +249,10 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
+function canonicalStringArray(values: readonly string[]): string {
+  return JSON.stringify([...values].sort(compareStrings));
+}
+
 function isSafetyCriticalState(state: CodexSessionState): boolean {
   return (
     state === "starting"
@@ -271,6 +276,148 @@ function isPathWithin(parentPath: string, candidatePath: string): boolean {
     relativePath.length === 0
     || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !relativePath.startsWith(sep))
   );
+}
+
+function resolveVerifiedReadOnlyDirectory(directoryPath: string): string {
+  const normalizedPath = resolve(directoryPath);
+  const rootPath = parse(normalizedPath).root;
+  let currentPath = rootPath;
+  try {
+    const parts = relative(rootPath, normalizedPath)
+      .split(sep)
+      .filter((part) => part.length > 0);
+    for (const part of parts) {
+      currentPath = join(currentPath, part);
+      const stats = lstatSync(currentPath);
+      if (stats.isSymbolicLink()) {
+        throw new CodexSessionCapabilityError(
+          "Vaultのパスにシンボリックリンクを指定できません。",
+        );
+      }
+    }
+    const stats = lstatSync(normalizedPath);
+    if (!stats.isDirectory()) {
+      throw new CodexSessionCapabilityError(
+        "Vaultのパスはディレクトリでなければなりません。",
+      );
+    }
+    return realpathSync.native(normalizedPath);
+  } catch (error: unknown) {
+    if (error instanceof CodexSessionCapabilityError) {
+      throw error;
+    }
+    throw new CodexSessionCapabilityError(
+      "Vaultの実体パスを安全に検証できません。",
+      error,
+    );
+  }
+}
+
+function resolveExistingDirectory(directoryPath: string, label: string): string {
+  try {
+    const realPath = realpathSync.native(directoryPath);
+    if (!lstatSync(realPath).isDirectory()) {
+      throw new CodexSessionCapabilityError(`${label}はディレクトリでなければなりません。`);
+    }
+    return realPath;
+  } catch (error: unknown) {
+    if (error instanceof CodexSessionCapabilityError) {
+      throw error;
+    }
+    throw new CodexSessionCapabilityError(`${label}の実体パスを確認できません。`, error);
+  }
+}
+
+function resolveVerifiedConfigurationDirectory(
+  directoryPath: string,
+  label: string,
+): string {
+  const normalizedPath = resolve(directoryPath);
+  if (normalizedPath !== directoryPath) {
+    throw new CodexSessionCapabilityError(`${label}のパスが正規化されていません。`);
+  }
+  const rootPath = parse(normalizedPath).root;
+  let currentPath = rootPath;
+  try {
+    const parts = relative(rootPath, normalizedPath)
+      .split(sep)
+      .filter((part) => part.length > 0);
+    for (const part of parts) {
+      currentPath = join(currentPath, part);
+      const stats = lstatSync(currentPath);
+      if (stats.isSymbolicLink()) {
+        throw new CodexSessionCapabilityError(`${label}にシンボリックリンクを指定できません。`);
+      }
+    }
+    const stats = lstatSync(normalizedPath);
+    if (!stats.isDirectory()) {
+      throw new CodexSessionCapabilityError(`${label}はディレクトリでなければなりません。`);
+    }
+    const realPath = realpathSync.native(normalizedPath);
+    if (realPath !== normalizedPath) {
+      throw new CodexSessionCapabilityError(`${label}の設定パスと実体パスが一致しません。`);
+    }
+    return realPath;
+  } catch (error: unknown) {
+    if (error instanceof CodexSessionCapabilityError) {
+      throw error;
+    }
+    throw new CodexSessionCapabilityError(`${label}を安全に検証できません。`, error);
+  }
+}
+
+function validateOwnedUnixSocket(socketPath: string, label: string): void {
+  let stats: Stats;
+  try {
+    stats = lstatSync(socketPath);
+  } catch (error: unknown) {
+    throw new CodexSessionCapabilityError(`${label}を確認できません。`, error);
+  }
+  if (typeof process.getuid !== "function") {
+    throw new CodexSessionCapabilityError(`${label}の所有者を確認できません。`);
+  }
+  if (
+    stats.isSymbolicLink()
+    || !stats.isSocket()
+    || stats.uid !== process.getuid()
+    || (stats.mode & 0o777) !== 0o600
+  ) {
+    throw new CodexSessionCapabilityError(`${label}の実体または権限が不正です。`);
+  }
+}
+
+function validateAdditionalLocalSocketPaths(
+  paths: readonly string[],
+  tmpDirectoryPath: string,
+): readonly string[] {
+  const values = z.array(z.string().min(1).max(4_096)).max(32).parse(paths);
+  const seen = new Set<string>();
+  const validated: string[] = [];
+  for (const value of values) {
+    if (value.includes("\0") || value.includes("\n") || value.includes("\r")) {
+      throw new CodexSessionCapabilityError("追加ローカルIPCの接続先が不正です。");
+    }
+    if (process.platform === "win32") {
+      if (!/^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(value)) {
+        throw new CodexSessionCapabilityError("contextctl名前付きパイプの接続先を限定できません。");
+      }
+    } else {
+      if (!isAbsolute(value) || parse(resolve(value)).dir !== resolve(tmpDirectoryPath)) {
+        throw new CodexSessionCapabilityError("contextctlソケットを専用ワークスペースのtmp直下に限定できません。");
+      }
+      if (!/^contextctl-[0-9a-f]{24}\.sock$/u.test(parse(value).base)) {
+        throw new CodexSessionCapabilityError("contextctlソケットの接続先が不正です。");
+      }
+      validateOwnedUnixSocket(value, "contextctlソケット");
+    }
+    const key = process.platform === "win32" ? value : resolve(value);
+    if (seen.has(key)) {
+      throw new CodexSessionCapabilityError("同じ追加ローカルIPCを重複して指定できません。");
+    }
+    seen.add(key);
+    validated.push(value);
+  }
+  return validated;
 }
 
 function validateTurnSkills(
@@ -353,6 +500,8 @@ export class CodexSessionService {
   private readonly options: CodexSessionOptions;
   private readonly broker: TaskctlBroker;
   private readonly outputSchema: Record<string, unknown>;
+  private readOnlyVaultPaths: readonly string[];
+  private additionalLocalSocketPaths: readonly string[];
   private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
   private readonly diagnostics: InternalDiagnostic[] = [];
   private state: CodexSessionState = "created";
@@ -367,7 +516,7 @@ export class CodexSessionService {
   private permissionProfileWaiter: PermissionProfileWaiter | undefined;
   private mcpServerNames: string[] | undefined;
   private skillConfiguration: Array<{ path: string; enabled: boolean }> = [];
-  private skillsChanged = false;
+  private threadConfigurationChanged = false;
   private lifecycleSignal: AbortSignal | undefined;
   private lifecycleAbortListener: (() => void) | undefined;
   private recoveryAbortController: AbortController | undefined;
@@ -382,6 +531,8 @@ export class CodexSessionService {
 
   public constructor(options: CodexSessionOptions) {
     this.options = codexSessionOptionsSchema.parse(options);
+    this.readOnlyVaultPaths = [...this.options.readOnlyVaultPaths];
+    this.additionalLocalSocketPaths = [...(this.options.additionalUnixSocketPaths ?? [])];
     this.broker = new TaskctlBroker({
       tmpDirectoryPath: this.options.tmpDirectoryPath,
       snapshotProvider: () => {
@@ -392,6 +543,58 @@ export class CodexSessionService {
       },
     });
     this.outputSchema = createOutputSchema();
+  }
+
+  /** Codexが読み取り専用で参照できるVaultを更新します。 */
+  public setReadOnlyVaultPaths(paths: readonly string[]): void {
+    if (
+      this.state !== "created"
+      && this.state !== "authentication_required"
+      && this.state !== "ready"
+    ) {
+      throw new CodexSessionStateError();
+    }
+    const validatedPaths = codexSessionOptionsSchema.shape.readOnlyVaultPaths.parse(paths);
+    if (canonicalStringArray(validatedPaths) === canonicalStringArray(this.readOnlyVaultPaths)) {
+      return;
+    }
+    this.readOnlyVaultPaths = validatedPaths;
+    this.threadConfigurationChanged = true;
+  }
+
+  /** Codexが接続できる追加ローカルIPCを更新します。 */
+  public setAdditionalLocalSocketPaths(paths: readonly string[]): void {
+    if (
+      this.state !== "created"
+      && this.state !== "authentication_required"
+      && this.state !== "ready"
+    ) {
+      throw new CodexSessionStateError();
+    }
+    const validatedPaths = validateAdditionalLocalSocketPaths(
+      paths,
+      this.options.tmpDirectoryPath,
+    );
+    if (
+      canonicalStringArray(validatedPaths)
+      === canonicalStringArray(this.additionalLocalSocketPaths)
+    ) {
+      return;
+    }
+    this.additionalLocalSocketPaths = validatedPaths;
+    this.threadConfigurationChanged = true;
+  }
+
+  /** 専用ワークスペースのスキル更新後に新規スレッドを必須化します。 */
+  public requireThreadConfigurationRefresh(): void {
+    if (
+      this.state !== "created"
+      && this.state !== "authentication_required"
+      && this.state !== "ready"
+    ) {
+      throw new CodexSessionStateError();
+    }
+    this.threadConfigurationChanged = true;
   }
 
   /** Codex認証、能力、スキルを検査して新規スレッドを開始します。 */
@@ -501,6 +704,7 @@ export class CodexSessionService {
     }
     this.state = "starting";
     try {
+      await this.inspectSkills(connection, signal);
       await this.inspectPermissionProfile(connection, signal);
       await this.inspectModel(connection, signal);
       await this.inspectMcpServers(connection, signal);
@@ -551,6 +755,11 @@ export class CodexSessionService {
   ): Promise<CodexSessionTurnResult> {
     validateAbortSignal(signal);
     const validatedPrepareInput = codexSessionTurnInputFactorySchema.parse(prepareInput);
+    if (this.threadConfigurationChanged) {
+      throw new CodexSessionCapabilityError(
+        "Codexスレッド構成が変更されました。新しいセッションを開始してください。",
+      );
+    }
     if (this.state !== "ready" || this.activeTurn != null) {
       if (this.state === "disabled") {
         throw new CodexSessionDisabledError();
@@ -1068,6 +1277,7 @@ export class CodexSessionService {
       }
     }
     this.skillConfiguration = configuration.sort((left, right) => compareStrings(left.path, right.path));
+    this.threadConfigurationChanged = false;
   }
 
   private async inspectPermissionProfile(
@@ -1180,23 +1390,50 @@ export class CodexSessionService {
   }
 
   private createThreadConfiguration(codexHome: string, socketPath: string): Record<string, unknown> {
-    if (process.platform === "win32") {
-      throw new CodexSessionCapabilityError(
-        "Windowsではtaskctl名前付きパイプの権限制約を確認できないためAIを利用できません。",
-      );
-    }
+    const realCodexHome = resolveExistingDirectory(codexHome, "Codex認証領域");
+    const realWorkspacePath = resolveVerifiedConfigurationDirectory(
+      this.options.workspacePath,
+      "Codex専用ワークスペース",
+    );
+    const realTmpDirectoryPath = resolveVerifiedConfigurationDirectory(
+      this.options.tmpDirectoryPath,
+      "Codex専用ワークスペースのtmp",
+    );
     if (
-      isPathWithin(this.options.workspacePath, codexHome)
-      || isPathWithin(codexHome, this.options.workspacePath)
+      isPathWithin(realWorkspacePath, realCodexHome)
+      || isPathWithin(realCodexHome, realWorkspacePath)
     ) {
       throw new CodexSessionCapabilityError("Codex認証領域と専用ワークスペースの範囲が重なっています。");
     }
-    if (parse(resolve(socketPath)).dir !== resolve(this.options.tmpDirectoryPath)) {
-      throw new CodexSessionCapabilityError("taskctlソケットを専用ワークスペースのtmp直下に限定できません。");
+    if (process.platform === "win32") {
+      throw new CodexSessionCapabilityError(
+        "Windowsではtaskctl名前付きパイプを現在の利用者だけに限定したと確認できないためAIを開始できません。",
+      );
+    } else {
+      if (
+        parse(resolve(socketPath)).dir !== realTmpDirectoryPath
+        || !/^taskctl-[0-9a-f]{24}\.sock$/u.test(parse(socketPath).base)
+      ) {
+        throw new CodexSessionCapabilityError("taskctlソケットを専用ワークスペースのtmp直下に限定できません。");
+      }
+      validateOwnedUnixSocket(socketPath, "taskctlソケット");
     }
-    for (const vaultPath of this.options.readOnlyVaultPaths) {
-      if (isPathWithin(vaultPath, codexHome) || isPathWithin(codexHome, vaultPath)) {
+    const verifiedVaultPaths = this.readOnlyVaultPaths.map(resolveVerifiedReadOnlyDirectory);
+    if (new Set(verifiedVaultPaths).size !== verifiedVaultPaths.length) {
+      throw new CodexSessionCapabilityError("同じVaultの実体パスを重複して指定できません。");
+    }
+    for (const vaultPath of verifiedVaultPaths) {
+      if (
+        isPathWithin(vaultPath, realCodexHome)
+        || isPathWithin(realCodexHome, vaultPath)
+      ) {
         throw new CodexSessionCapabilityError("Codex認証領域とVaultの範囲が重なっています。");
+      }
+      if (
+        isPathWithin(vaultPath, realWorkspacePath)
+        || isPathWithin(realWorkspacePath, vaultPath)
+      ) {
+        throw new CodexSessionCapabilityError("Codex専用ワークスペースとVaultの範囲が重なっています。");
       }
     }
     const filesystem: Record<string, unknown> = {
@@ -1204,13 +1441,13 @@ export class CodexSessionService {
       ":minimal": "read",
       ":tmpdir": "deny",
       ":slash_tmp": "deny",
-      [this.options.workspacePath]: {
+      [realWorkspacePath]: {
         ".": "read",
         tmp: "write",
       },
-      [codexHome]: "deny",
+      [realCodexHome]: "deny",
     };
-    for (const vaultPath of this.options.readOnlyVaultPaths) {
+    for (const vaultPath of verifiedVaultPaths) {
       filesystem[vaultPath] = "read";
     }
     const disabledFeatures: Record<string, unknown> = {};
@@ -1226,7 +1463,10 @@ export class CodexSessionService {
     );
     const unixSocketPaths = [
       socketPath,
-      ...(this.options.additionalUnixSocketPaths ?? []),
+      ...validateAdditionalLocalSocketPaths(
+        this.additionalLocalSocketPaths,
+        realTmpDirectoryPath,
+      ),
     ];
     const unixSockets = Object.fromEntries(
       [...new Set(unixSocketPaths)].map((path) => [path, "allow"]),
@@ -1256,8 +1496,8 @@ export class CodexSessionService {
     if (connection == null || taskctlStartResult == null) {
       throw new CodexSessionStateError();
     }
-    if (this.skillsChanged) {
-      throw new CodexSessionCapabilityError("Codexスキル構成が変更されたためAIを開始できません。");
+    if (this.threadConfigurationChanged) {
+      throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
     const codexHome = codexHomePathSchema.parse(connection.getCodexHome());
     const config = this.createThreadConfiguration(codexHome, taskctlStartResult.socketPath);
@@ -1298,8 +1538,8 @@ export class CodexSessionService {
     }
     await this.inspectMcpServersAfterThread(connection, result.thread.id, signal);
     await this.inspectExperimentalFeatures(connection, result.thread.id, signal);
-    if (this.skillsChanged) {
-      throw new CodexSessionCapabilityError("Codexスキル構成が変更されたためAIを開始できません。");
+    if (this.threadConfigurationChanged) {
+      throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
   }
 
@@ -1624,12 +1864,7 @@ export class CodexSessionService {
       return;
     }
     if (notification.method === "skills/changed") {
-      this.skillsChanged = true;
-      if (this.state === "ready" || this.state === "turning") {
-        void this.disableAi(
-          new CodexSessionCapabilityError("Codexスキル構成が変更されたためAIを停止しました。"),
-        );
-      }
+      this.threadConfigurationChanged = true;
       return;
     }
     const active = this.activeTurn;
@@ -1825,7 +2060,7 @@ export class CodexSessionService {
     this.permissionProfileNotification = undefined;
     this.mcpServerNames = undefined;
     this.skillConfiguration = [];
-    this.skillsChanged = false;
+    this.threadConfigurationChanged = false;
     this.frozenTaskctlSnapshot = undefined;
     if (connection != null) {
       try {
