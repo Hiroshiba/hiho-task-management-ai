@@ -31,9 +31,15 @@ import {
   type ViewModelTaskRow,
   type ViewModelUnavailableReasonCode,
 } from "../../shared/view-model";
+import {
+  normalizeTaskGraph,
+  type BlockStateResult,
+} from "../domain";
 import type { StorageDatabase } from "../storage";
 
 const projectAreaPrefix = "TaskHub/領域/";
+const dayMilliseconds = 24 * 60 * 60 * 1_000;
+const jstOffsetMilliseconds = 9 * 60 * 60 * 1_000;
 const statusOrder: Readonly<Record<TaskStatus, number>> = {
   not_started: 0,
   in_progress: 1,
@@ -62,11 +68,30 @@ type SelectedSnapshot = {
   readonly cleanupItems: CleanupItemsCache;
 };
 
-type RankingProjection = {
-  readonly available: boolean;
-  readonly rankedByGid: ReadonlyMap<string, RankingCache["ranked_tasks"][number]>;
-  readonly excludedByGid: ReadonlyMap<string, RankingCache["excluded_tasks"][number]>;
-};
+type RankingProjection =
+  | {
+      readonly kind: "unavailable";
+      readonly rankedByGid: ReadonlyMap<
+        string,
+        RankingCache["ranked_tasks"][number]
+      >;
+      readonly excludedByGid: ReadonlyMap<
+        string,
+        RankingCache["excluded_tasks"][number]
+      >;
+    }
+  | {
+      readonly kind: "available";
+      readonly calculatedAt: string;
+      readonly rankedByGid: ReadonlyMap<
+        string,
+        RankingCache["ranked_tasks"][number]
+      >;
+      readonly excludedByGid: ReadonlyMap<
+        string,
+        RankingCache["excluded_tasks"][number]
+      >;
+    };
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -314,7 +339,7 @@ function createRankingProjection(
 ): RankingProjection {
   if (ranking == null) {
     return {
-      available: false,
+      kind: "unavailable",
       rankedByGid: new Map(),
       excludedByGid: new Map(),
     };
@@ -346,7 +371,12 @@ function createRankingProjection(
       throw new Error("順位キャッシュにタスクがありません。");
     }
   });
-  return { available: true, rankedByGid, excludedByGid };
+  return {
+    kind: "available",
+    calculatedAt: ranking.calculated_at,
+    rankedByGid,
+    excludedByGid,
+  };
 }
 
 function createDue(task: Task): ViewModelTaskRow["due"] {
@@ -452,38 +482,101 @@ function hasUnavailableCleanup(
   });
 }
 
+function createBlockStateProjection(
+  tasks: readonly Task[],
+): ReadonlyMap<string, BlockStateResult> {
+  const normalized = normalizeTaskGraph({
+    tasks: tasks.map((task) => ({
+      gid: task.gid,
+      status: task.status,
+      dependencies: task.dependencies,
+      child_gids: task.child_gids,
+      parent_work_mode: task.parent_work_mode,
+      ...(task.parent_gid == null ? {} : { parent_gid: task.parent_gid }),
+    })),
+  });
+  const taskByGid = createTaskMap(tasks);
+  const blockStateByGid = new Map<string, BlockStateResult>();
+  normalized.tasks.forEach((result) => {
+    const task = taskByGid.get(result.gid);
+    if (task == null) {
+      throw new Error("ブロック状態の対象タスクが見つかりません。");
+    }
+    if (task.block_state !== result.block_state) {
+      throw new Error("タスクと構造化ブロック状態が一致しません。");
+    }
+    if (blockStateByGid.has(result.gid)) {
+      throw new Error("構造化ブロック状態に同じGIDが重複しています。");
+    }
+    blockStateByGid.set(result.gid, result);
+  });
+  if (blockStateByGid.size !== tasks.length) {
+    throw new Error("構造化ブロック状態が全タスクを網羅していません。");
+  }
+  return blockStateByGid;
+}
+
 function createBlockReason(
   task: Task,
-  cleanupItems: readonly ViewModelCleanupItem[],
-  exclusionReasons: readonly { readonly code: string }[],
+  blockState: BlockStateResult,
 ): ViewModelBlockReason | undefined {
-  const reasonCodes = new Set<string>();
-  cleanupItems.forEach((item) => {
-    if (item.kind === "dependency_cycle") {
-      reasonCodes.add("dependency_cycle");
-    } else if (item.kind === "parent_cycle") {
-      reasonCodes.add("parent_cycle");
-    } else if (item.kind === "children_only_completion_confirmation") {
-      reasonCodes.add("completion_confirmation");
-    }
-  });
-  exclusionReasons.forEach((reason) => reasonCodes.add(reason.code));
-  if (reasonCodes.has("dependency_cycle")) {
+  if (task.gid !== blockState.gid || task.block_state !== blockState.block_state) {
+    throw new Error("タスクと構造化ブロック理由が一致しません。");
+  }
+  if (blockState.dependency_cycle) {
     return { code: "dependency_cycle", summary: "依存関係が循環しています。" };
   }
-  if (reasonCodes.has("parent_cycle")) {
+  if (blockState.parent_cycle) {
     return { code: "parent_cycle", summary: "親子関係が循環しています。" };
   }
-  if (reasonCodes.has("completion_confirmation")) {
-    return { code: "completion_confirmation", summary: "子タスクの完了確認が必要です。" };
+  const hasDependencyReason = blockState.dependency_reasons.length > 0;
+  const hasParentReason = blockState.parent_reasons.length > 0;
+  if (!hasDependencyReason && !hasParentReason) {
+    if (task.block_state !== "none") {
+      throw new Error("ブロック中のタスクに構造化ブロック理由がありません。");
+    }
+    if (blockState.completion_confirmation) {
+      return {
+        code: "completion_confirmation",
+        summary: "子タスクの完了確認が必要です。",
+      };
+    }
+    return undefined;
+  }
+  if (task.block_state === "none") {
+    throw new Error("ブロックなしのタスクに未解決のブロック理由があります。");
+  }
+  if (hasDependencyReason && hasParentReason) {
+    if (task.block_state === "full") {
+      return {
+        code: "full_dependency_and_parent",
+        summary: "未完了の依存先と子タスクがあり、完全ブロックされています。",
+      };
+    }
+    return {
+      code: "partial_dependency_and_parent",
+      summary: "未完了の一部依存と子タスクがあります。親自身の作業は続行できます。",
+    };
+  }
+  if (hasParentReason) {
+    if (task.block_state === "full") {
+      if (task.parent_work_mode !== "children_only") {
+        throw new Error("子タスクによる完全ブロックの親作業モードが不正です。");
+      }
+      return {
+        code: "full_children_only",
+        summary: "未完了の子タスクがあるため、子タスクのみの親タスクは完全ブロックされています。",
+      };
+    }
+    return {
+      code: "partial_parent",
+      summary: "未完了の子タスクがあります。親自身の作業は続行できます。",
+    };
   }
   if (task.block_state === "full") {
     return { code: "full_dependency", summary: "未完了の完全依存があります。" };
   }
-  if (task.block_state === "partial") {
-    return { code: "partial_dependency", summary: "未完了の一部依存があります。" };
-  }
-  return undefined;
+  return { code: "partial_dependency", summary: "未完了の一部依存があります。" };
 }
 
 function createChildProgress(
@@ -530,11 +623,16 @@ function createCommonTaskRow(
 function createTaskRow(
   task: Task,
   projection: RankingProjection,
+  blockStateByGid: ReadonlyMap<string, BlockStateResult>,
   cleanupItems: readonly ViewModelCleanupItem[],
   taskByGid: ReadonlyMap<string, Task>,
 ): ViewModelTaskRow {
   const taskWarnings = createTaskCleanupViews(task.gid, cleanupItems);
   const childProgress = createChildProgress(task, taskByGid);
+  const blockState = blockStateByGid.get(task.gid);
+  if (blockState == null) {
+    throw new Error("タスクの構造化ブロック状態がありません。");
+  }
   const ranked = projection.rankedByGid.get(task.gid);
   if (ranked != null) {
     return viewModelOverviewSchema.shape.tasks.element.parse({
@@ -545,7 +643,7 @@ function createTaskRow(
         childProgress,
         taskWarnings.length,
         ranked.reason_chips,
-        createBlockReason(task, taskWarnings, ranked.detail.exclusion_reasons),
+        createBlockReason(task, blockState),
       ),
     });
   }
@@ -559,7 +657,7 @@ function createTaskRow(
         childProgress,
         taskWarnings.length,
         [],
-        createBlockReason(task, taskWarnings, []),
+        createBlockReason(task, blockState),
       ),
     });
   }
@@ -580,7 +678,7 @@ function createTaskRow(
         childProgress,
         taskWarnings.length,
         excluded.reason_chips,
-        createBlockReason(task, taskWarnings, excluded.exclusion_reasons),
+        createBlockReason(task, blockState),
       ),
     });
   }
@@ -592,7 +690,7 @@ function createTaskRow(
       childProgress,
       taskWarnings.length,
       excluded.reason_chips,
-      createBlockReason(task, taskWarnings, excluded.exclusion_reasons),
+      createBlockReason(task, blockState),
     ),
   });
 }
@@ -623,16 +721,55 @@ function compareTaskRows(left: ViewModelTaskRow, right: ViewModelTaskRow): numbe
   return compareStrings(left.gid, right.gid);
 }
 
+function calculateActivityElapsedDays(
+  activityAnchorOn: string,
+  calculatedAt: string,
+): number {
+  const activityEpoch = Date.parse(`${activityAnchorOn}T00:00:00.000Z`);
+  const calculatedEpoch = Date.parse(calculatedAt);
+  if (Number.isNaN(activityEpoch) || Number.isNaN(calculatedEpoch)) {
+    throw new Error("順位計算時点または活動基準日を日数へ変換できません。");
+  }
+  const calculatedJst = new Date(calculatedEpoch + jstOffsetMilliseconds);
+  const calculatedDayEpoch = Date.UTC(
+    calculatedJst.getUTCFullYear(),
+    calculatedJst.getUTCMonth(),
+    calculatedJst.getUTCDate(),
+  );
+  const elapsedDays = Math.round(
+    (calculatedDayEpoch - activityEpoch) / dayMilliseconds,
+  );
+  if (elapsedDays < 0) {
+    throw new Error("活動基準日は順位計算日より後にできません。");
+  }
+  return elapsedDays;
+}
+
 function createDetailRanking(
-  taskGid: string,
+  task: Task,
   projection: RankingProjection,
   cleanupItems: readonly ViewModelCleanupItem[],
 ): ViewModelTaskRanking {
-  const ranked = projection.rankedByGid.get(taskGid);
+  if (projection.kind === "unavailable") {
+    return viewModelTaskDetailSchema.shape.ranking.parse({
+      kind: "unavailable",
+      reason_codes: ["ranking_unavailable"],
+    });
+  }
+  const rankingTiming = {
+    calculated_at: projection.calculatedAt,
+    activity_elapsed_days: calculateActivityElapsedDays(
+      task.activity_anchor_on,
+      projection.calculatedAt,
+    ),
+  };
+  const ranked = projection.rankedByGid.get(task.gid);
   if (ranked != null) {
     return viewModelTaskDetailSchema.shape.ranking.parse({
       kind: "ranked",
       rank: ranked.rank,
+      ...rankingTiming,
+      detail_text: ranked.detail.text,
       score_breakdown: ranked.score_breakdown,
       release_target_gids: [...ranked.release_target_gids].sort(compareStrings),
       reason_chips: ranked.reason_chips,
@@ -640,25 +777,24 @@ function createDetailRanking(
       exclusion_reasons: ranked.detail.exclusion_reasons,
     });
   }
-  const excluded = projection.excludedByGid.get(taskGid);
+  const excluded = projection.excludedByGid.get(task.gid);
   if (excluded == null) {
-    return viewModelTaskDetailSchema.shape.ranking.parse({
-      kind: "unavailable",
-      reason_codes: ["ranking_unavailable"],
-    });
+    throw new Error("順位キャッシュに対象タスクがありません。");
   }
   const unavailableReasons = createUnavailableReasons(
-    taskGid,
+    task.gid,
     excluded.exclusion_reasons,
     cleanupItems,
   );
   if (
     excluded.exclusion_reasons.some((reason) => reason.code === "critical_error") ||
-    hasUnavailableCleanup(taskGid, cleanupItems)
+    hasUnavailableCleanup(task.gid, cleanupItems)
   ) {
     return viewModelTaskDetailSchema.shape.ranking.parse({
       kind: "unavailable",
       reason_codes: unavailableReasons,
+      ...rankingTiming,
+      detail_text: excluded.detail.text,
       ...(excluded.score_breakdown == null
         ? {}
         : { score_breakdown: excluded.score_breakdown }),
@@ -670,6 +806,8 @@ function createDetailRanking(
   }
   return viewModelTaskDetailSchema.shape.ranking.parse({
     kind: "excluded",
+    ...rankingTiming,
+    detail_text: excluded.detail.text,
     ...(excluded.score_breakdown == null
       ? {}
       : { score_breakdown: excluded.score_breakdown }),
@@ -678,21 +816,6 @@ function createDetailRanking(
     tie_break: excluded.tie_break,
     exclusion_reasons: excluded.exclusion_reasons,
   });
-}
-
-function createTaskExclusionReasons(
-  taskGid: string,
-  projection: RankingProjection,
-): readonly { readonly code: string }[] {
-  const ranked = projection.rankedByGid.get(taskGid);
-  if (ranked != null) {
-    return ranked.detail.exclusion_reasons;
-  }
-  const excluded = projection.excludedByGid.get(taskGid);
-  if (excluded != null) {
-    return excluded.exclusion_reasons;
-  }
-  return [];
 }
 
 function createTaskReference(
@@ -780,6 +903,7 @@ function createTaskDetail(
   snapshot: SelectedSnapshot,
   task: Task,
   projection: RankingProjection,
+  blockStateByGid: ReadonlyMap<string, BlockStateResult>,
   cleanupItems: readonly ViewModelCleanupItem[],
 ): ViewModelTaskDetail {
   const taskWarnings = createTaskCleanupViews(task.gid, cleanupItems);
@@ -796,11 +920,11 @@ function createTaskDetail(
   const parent = task.parent_gid == null
     ? {}
     : { parent: createTaskReference(task.parent_gid, snapshot.taskByGid) };
-  const blockReason = createBlockReason(
-    task,
-    taskWarnings,
-    createTaskExclusionReasons(task.gid, projection),
-  );
+  const blockState = blockStateByGid.get(task.gid);
+  if (blockState == null) {
+    throw new Error("タスクの構造化ブロック状態がありません。");
+  }
+  const blockReason = createBlockReason(task, blockState);
   return viewModelTaskDetailSchema.parse({
     project_gid: snapshot.projectGid,
     gid: task.gid,
@@ -817,7 +941,7 @@ function createTaskDetail(
     section_gid: task.section_gid,
     parent_work_mode: task.parent_work_mode,
     activity_anchor_on: task.activity_anchor_on,
-    ranking: createDetailRanking(task.gid, projection, cleanupItems),
+    ranking: createDetailRanking(task, projection, cleanupItems),
     dependencies,
     dependents: createDependents(task.gid, snapshot.tasks, snapshot.taskByGid),
     ...parent,
@@ -840,8 +964,17 @@ export class ReadModelService {
     const snapshot = loadSelectedSnapshot(this.storage, projectGid);
     const cleanupItems = createCleanupViews(snapshot.cleanupItems);
     const projection = createRankingProjection(snapshot.tasks, snapshot.ranking);
+    const blockStateByGid = createBlockStateProjection(snapshot.tasks);
     const tasks = snapshot.tasks
-      .map((task) => createTaskRow(task, projection, cleanupItems, snapshot.taskByGid))
+      .map((task) =>
+        createTaskRow(
+          task,
+          projection,
+          blockStateByGid,
+          cleanupItems,
+          snapshot.taskByGid,
+        ),
+      )
       .sort(compareTaskRows);
     return viewModelOverviewSchema.parse({
       project_gid: snapshot.projectGid,
@@ -874,7 +1007,14 @@ export class ReadModelService {
     }
     const cleanupItems = createCleanupViews(snapshot.cleanupItems);
     const projection = createRankingProjection(snapshot.tasks, snapshot.ranking);
-    return createTaskDetail(snapshot, task, projection, cleanupItems);
+    const blockStateByGid = createBlockStateProjection(snapshot.tasks);
+    return createTaskDetail(
+      snapshot,
+      task,
+      projection,
+      blockStateByGid,
+      cleanupItems,
+    );
   }
 }
 

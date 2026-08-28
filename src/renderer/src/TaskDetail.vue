@@ -16,6 +16,7 @@ import type {
   ViewModelDependencyReference,
   ViewModelTaskDetail,
   ViewModelTaskReference,
+  ViewModelUnavailableReasonCode,
 } from "../../shared/view-model";
 import {
   parentWorkModeLabel,
@@ -341,17 +342,76 @@ function relationLabel(reference: ViewModelTaskReference | ViewModelDependencyRe
 
 function scoreEntries(task: ViewModelTaskDetail): readonly { label: string; value: string }[] {
   const breakdown = task.ranking.score_breakdown;
+  const entries = [
+    { label: "活動基準日", value: task.activity_anchor_on },
+  ];
+  if (task.ranking.activity_elapsed_days != null) {
+    entries.push({
+      label: "活動基準日からの日数",
+      value: `${task.ranking.activity_elapsed_days}日`,
+    });
+  }
   if (breakdown == null) {
+    return entries;
+  }
+  return [
+    ...entries,
+    { label: "重要度点", value: `+${breakdown.importance_points}` },
+    { label: "期限点", value: `+${breakdown.deadline_points}` },
+    { label: "解放点", value: `+${breakdown.release_points}` },
+    { label: "一部ブロック減点", value: `-${breakdown.partial_block_penalty}` },
+    { label: "停滞減点", value: `-${breakdown.stagnation_penalty}` },
+    { label: "実行点", value: String(breakdown.execution_points) },
+  ];
+}
+
+function rankingReasons(task: ViewModelTaskDetail): readonly string[] {
+  return task.ranking.reason_chips ?? [];
+}
+
+function releaseTargetGids(task: ViewModelTaskDetail): readonly string[] {
+  return task.ranking.release_target_gids ?? [];
+}
+
+function tieBreakEntries(task: ViewModelTaskDetail): readonly { label: string; value: string }[] {
+  const tieBreak = task.ranking.tie_break;
+  if (tieBreak == null) {
     return [];
   }
   return [
-    { label: "重要度", value: String(breakdown.importance_points) },
-    { label: "期限", value: String(breakdown.deadline_points) },
-    { label: "解放", value: String(breakdown.release_points) },
-    { label: "一部ブロック", value: String(breakdown.partial_block_penalty) },
-    { label: "停滞", value: String(breakdown.stagnation_penalty) },
-    { label: "実行点", value: String(breakdown.execution_points) },
+    { label: "実効期限", value: tieBreak.effective_due_at ?? "期限なし" },
+    { label: "重要度", value: String(tieBreak.importance) },
+    { label: "解放点", value: String(tieBreak.release_points) },
+    { label: "活動基準日", value: tieBreak.activity_anchor_on },
+    { label: "タスクGID", value: tieBreak.gid },
   ];
+}
+
+function unavailableReasonLabel(reason: ViewModelUnavailableReasonCode): string {
+  const labels: Readonly<Record<ViewModelUnavailableReasonCode, string>> = {
+    ranking_unavailable: "順位キャッシュがありません。",
+    critical_error: "正規化不能な重大エラーがあります。",
+    custom_external_data_broken: "Custom external dataが壊れています。",
+    custom_external_data_unknown_schema: "Custom external dataの形式を解釈できません。",
+    custom_external_data_identity_mismatch: "Custom external dataの所有者が一致しません。",
+    unknown_status_section: "状態セクションを解釈できません。",
+    dependency_cycle: "依存関係が循環しています。",
+    parent_cycle: "親子関係が循環しています。",
+    completion_confirmation: "子タスク完了後の完了確認待ちです。",
+    missing_dependency: "依存先タスクを確認できません。",
+  };
+  return labels[reason];
+}
+
+function exclusionReasons(task: ViewModelTaskDetail): readonly string[] {
+  const reasons = task.ranking.exclusion_reasons ?? [];
+  if (reasons.length > 0) {
+    return reasons.map((reason) => reason.message);
+  }
+  if (task.ranking.kind === "unavailable") {
+    return task.ranking.reason_codes.map(unavailableReasonLabel);
+  }
+  return [];
 }
 
 function rankingLabel(task: ViewModelTaskDetail): string {
@@ -693,6 +753,11 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               class="mt-1 text-sm text-amber-800"
             >
               {{ props.task.block_reason.summary }}
+            </p><p
+              v-if="props.task.ranking.calculated_at != null"
+              class="mt-1 text-xs text-slate-500"
+            >
+              順位計算時点 {{ props.task.ranking.calculated_at }}
             </p><dl class="mt-3 grid grid-cols-2 gap-2 text-sm">
               <template
                 v-for="entry in scoreEntries(props.task)"
@@ -704,7 +769,84 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   {{ entry.value }}
                 </dd>
               </template>
-            </dl>
+            </dl><div class="mt-4">
+              <p class="text-sm font-medium text-slate-800">
+                順位理由
+              </p><div
+                v-if="rankingReasons(props.task).length > 0"
+                class="mt-2 flex flex-wrap gap-1"
+              >
+                <span
+                  v-for="reason in rankingReasons(props.task)"
+                  :key="reason"
+                  class="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                >{{ reason }}</span>
+              </div><p
+                v-else
+                class="mt-1 text-sm text-slate-600"
+              >
+                なし
+              </p>
+            </div><div class="mt-4">
+              <p class="text-sm font-medium text-slate-800">
+                解放対象
+              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                <li
+                  v-for="gid in releaseTargetGids(props.task)"
+                  :key="gid"
+                  class="break-all"
+                >
+                  {{ gid }}
+                </li><li v-if="releaseTargetGids(props.task).length === 0">
+                  なし
+                </li>
+              </ul>
+            </div><div class="mt-4">
+              <p class="text-sm font-medium text-slate-800">
+                除外理由
+              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                <li
+                  v-for="reason in exclusionReasons(props.task)"
+                  :key="reason"
+                >
+                  {{ reason }}
+                </li><li v-if="exclusionReasons(props.task).length === 0">
+                  なし
+                </li>
+              </ul>
+            </div><div class="mt-4">
+              <p class="text-sm font-medium text-slate-800">
+                タイブレーク値
+              </p><p class="mt-1 text-xs text-slate-500">
+                実効期限、重要度、解放点、活動基準日、タスクGIDの順で比較します。
+              </p><dl
+                v-if="tieBreakEntries(props.task).length > 0"
+                class="mt-2 grid grid-cols-2 gap-2 text-sm"
+              >
+                <template
+                  v-for="entry in tieBreakEntries(props.task)"
+                  :key="entry.label"
+                >
+                  <dt class="text-slate-600">
+                    {{ entry.label }}
+                  </dt><dd class="break-all text-right font-medium text-slate-900">
+                    {{ entry.value }}
+                  </dd>
+                </template>
+              </dl><p
+                v-else
+                class="mt-1 text-sm text-slate-600"
+              >
+                順位キャッシュがないため確認できません。
+              </p>
+            </div><div
+              v-if="props.task.ranking.detail_text != null"
+              class="mt-4"
+            >
+              <p class="text-sm font-medium text-slate-800">
+                順位計算の詳細
+              </p><pre class="mt-2 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-700">{{ props.task.ranking.detail_text }}</pre>
+            </div>
           </div>
           <div>
             <h3 class="section-heading">

@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   blockStateSchema,
   cleanupItemKindSchema,
+  createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependencyScopeSchema,
   gidSchema,
@@ -24,6 +25,7 @@ const maximumReasonChipCount = 64;
 const maximumTitleCharacters = 4_096;
 const maximumNotesCharacters = 1_000_000;
 const maximumMessageCharacters = 4_096;
+const maximumRankingDetailBytes = 8 * 1_024 * 1_024;
 
 const boundedTitleSchema = z.string().min(1).max(maximumTitleCharacters);
 const boundedNotesSchema = z.string().max(maximumNotesCharacters);
@@ -35,6 +37,11 @@ const boundedMessageSchema = z
     message: "表示文字列を空白だけにできません。",
   });
 const boundedChipSchema = boundedMessageSchema;
+const boundedRankingDetailSchema = createUtf8ByteLimitedStringSchema(
+  maximumRankingDetailBytes,
+).refine((value) => value.trim().length > 0, {
+  message: "順位計算の詳細を空白だけにできません。",
+});
 
 const uniqueGidsSchema = z
   .array(gidSchema)
@@ -92,6 +99,38 @@ const blockReasonFullSchema = z
     summary: z.literal("未完了の完全依存があります。"),
   })
   .strict();
+const blockReasonPartialParentSchema = z
+  .object({
+    code: z.literal("partial_parent"),
+    summary: z.literal(
+      "未完了の子タスクがあります。親自身の作業は続行できます。",
+    ),
+  })
+  .strict();
+const blockReasonFullChildrenOnlySchema = z
+  .object({
+    code: z.literal("full_children_only"),
+    summary: z.literal(
+      "未完了の子タスクがあるため、子タスクのみの親タスクは完全ブロックされています。",
+    ),
+  })
+  .strict();
+const blockReasonPartialMixedSchema = z
+  .object({
+    code: z.literal("partial_dependency_and_parent"),
+    summary: z.literal(
+      "未完了の一部依存と子タスクがあります。親自身の作業は続行できます。",
+    ),
+  })
+  .strict();
+const blockReasonFullMixedSchema = z
+  .object({
+    code: z.literal("full_dependency_and_parent"),
+    summary: z.literal(
+      "未完了の依存先と子タスクがあり、完全ブロックされています。",
+    ),
+  })
+  .strict();
 const blockReasonDependencyCycleSchema = z
   .object({
     code: z.literal("dependency_cycle"),
@@ -115,6 +154,10 @@ const blockReasonCompletionSchema = z
 export const viewModelBlockReasonSchema = z.discriminatedUnion("code", [
   blockReasonPartialSchema,
   blockReasonFullSchema,
+  blockReasonPartialParentSchema,
+  blockReasonFullChildrenOnlySchema,
+  blockReasonPartialMixedSchema,
+  blockReasonFullMixedSchema,
   blockReasonDependencyCycleSchema,
   blockReasonParentCycleSchema,
   blockReasonCompletionSchema,
@@ -362,6 +405,9 @@ export const viewModelDependencyReferenceSchema = z.discriminatedUnion("kind", [
 ]);
 
 const detailRankingSharedShape = {
+  calculated_at: isoDateTimeSchema.optional(),
+  activity_elapsed_days: z.number().int().nonnegative().optional(),
+  detail_text: boundedRankingDetailSchema.optional(),
   score_breakdown: rankingScoreBreakdownSchema.optional(),
   release_target_gids: uniqueGidsSchema.optional(),
   reason_chips: z.array(boundedChipSchema).max(maximumReasonChipCount).optional(),
@@ -384,6 +430,9 @@ const rankedDetailRankingSchema = z
     kind: z.literal("ranked"),
     rank: z.number().int().positive(),
     ...detailRankingSharedShape,
+    calculated_at: isoDateTimeSchema,
+    activity_elapsed_days: z.number().int().nonnegative(),
+    detail_text: boundedRankingDetailSchema,
     score_breakdown: rankingScoreBreakdownSchema,
     release_target_gids: uniqueGidsSchema,
     reason_chips: z.array(boundedChipSchema).max(maximumReasonChipCount),
@@ -396,6 +445,9 @@ const excludedDetailRankingSchema = z
   .object({
     kind: z.literal("excluded"),
     ...detailRankingSharedShape,
+    calculated_at: isoDateTimeSchema,
+    activity_elapsed_days: z.number().int().nonnegative(),
+    detail_text: boundedRankingDetailSchema,
     exclusion_reasons: z
       .array(
         z
