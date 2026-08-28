@@ -57,6 +57,7 @@ const fallbackReasonSchema = z.enum([
   "sync_token_missing",
   "metadata_missing",
   "events_reset",
+  "unsafe_structure",
 ]);
 
 const criticalErrorCodeSchema = z.enum([
@@ -162,7 +163,13 @@ type CriticalError = z.infer<typeof criticalErrorCodeSchema>;
 type ProjectMetadataSource = Omit<ProjectMetadataCache, "cached_at">;
 type EstablishedEventsToken = {
   readonly sync_token: string;
+};
+type MaterializedDelta = {
+  readonly sync_token: string;
+  readonly upsert: readonly AsanaTaskResponse[];
   readonly missing_gids: readonly string[];
+  readonly workspace_tags: readonly AsanaTagResponse[];
+  readonly metadata: ProjectMetadataSource;
 };
 type RequiredSectionInspection = {
   readonly cleanupItems: readonly CleanupItem[];
@@ -488,7 +495,7 @@ function createProjectMetadataCache(
 
 function mergeDeltaTasks(
   baseTasks: readonly AsanaTaskResponse[],
-  result: Extract<AsanaDeltaSyncResult, { kind: "delta" }>,
+  result: MaterializedDelta,
 ): AsanaTaskResponse[] {
   const tasks = new Map<string, AsanaTaskResponse>();
   for (const task of baseTasks) {
@@ -510,11 +517,13 @@ function mergeDeltaTasks(
 
 function mergeDeltaSnapshot(
   snapshot: CollectionSnapshot,
-  result: Extract<AsanaDeltaSyncResult, { kind: "delta" }>,
+  result: MaterializedDelta,
 ): CollectionSnapshot {
   return {
     ...snapshot,
     raw_tasks: mergeDeltaTasks(snapshot.raw_tasks, result),
+    workspace_tags: [...result.workspace_tags],
+    metadata: result.metadata,
     events_token: result.sync_token,
     inaccessible_gids: sortedUnique([
       ...snapshot.inaccessible_gids,
@@ -1006,14 +1015,13 @@ export class AsanaSyncCoordinator {
         ? await this.establishEventsToken(input, signal)
         : {
             sync_token: existingState.events_token,
-            missing_gids: [],
           };
       return this.collectFullWithCatchUp(
         input,
         establishedToken.sync_token,
         undefined,
         signal,
-        establishedToken.missing_gids,
+        [],
       );
     }
     if (existingState?.events_token == null) {
@@ -1023,7 +1031,7 @@ export class AsanaSyncCoordinator {
         establishedToken.sync_token,
         "sync_token_missing",
         signal,
-        establishedToken.missing_gids,
+        [],
       );
     }
     if (
@@ -1050,29 +1058,26 @@ export class AsanaSyncCoordinator {
       return this.collectFullWithCatchUp(
         input,
         deltaResult.sync_token,
-        "events_reset",
+        deltaResult.reason,
         signal,
         [],
       );
     }
-    const currentSections = await this.readClient.listProjectSections(
-      input.project_gid,
+    const materializedDelta = await this.materializeDelta(
+      input,
+      deltaResult,
       signal,
     );
     return {
       performed_mode: "delta",
       raw_tasks: mergeDeltaTasks(
         cachedEntries.map((entry) => entry.asana_response),
-        deltaResult,
+        materializedDelta,
       ),
-      workspace_tags: [...existingMetadata.tags],
-      metadata: createProjectMetadataSource(
-        existingMetadata.project,
-        currentSections,
-        existingMetadata.tags,
-      ),
-      events_token: deltaResult.sync_token,
-      inaccessible_gids: sortedUnique(deltaResult.missing_gids),
+      workspace_tags: [...materializedDelta.workspace_tags],
+      metadata: materializedDelta.metadata,
+      events_token: materializedDelta.sync_token,
+      inaccessible_gids: sortedUnique(materializedDelta.missing_gids),
     };
   }
 
@@ -1087,8 +1092,6 @@ export class AsanaSyncCoordinator {
     );
     return {
       sync_token: initialEvents.sync_token,
-      missing_gids:
-        initialEvents.kind === "delta" ? initialEvents.missing_gids : [],
     };
   }
 
@@ -1106,6 +1109,50 @@ export class AsanaSyncCoordinator {
         signal,
       ),
     );
+  }
+
+  private async materializeDelta(
+    input: AsanaSyncCoordinatorInput,
+    result: Extract<AsanaDeltaSyncResult, { kind: "delta" }>,
+    signal: AbortSignal,
+  ): Promise<MaterializedDelta> {
+    const project = await this.readClient.getProject(
+      input.project_gid,
+      signal,
+    );
+    if (project.gid !== input.project_gid) {
+      throw new Error("差分同期のAsanaプロジェクトGIDが入力と一致しません。");
+    }
+    const sections = await this.readClient.listProjectSections(
+      input.project_gid,
+      signal,
+    );
+    const workspaceTags = await this.readClient.listWorkspaceTags(
+      project.workspace.gid,
+      signal,
+    );
+    const affectedSubtrees = await this.fullSyncSource.collectAffectedSubtrees(
+      {
+        project_gid: input.project_gid,
+        section_gids: input.section_gids,
+        available_section_gids: sections
+          .map((section) => section.gid)
+          .sort(compareStrings),
+        affected_task_gids: result.affected_task_gids,
+      },
+      signal,
+    );
+    return {
+      sync_token: result.sync_token,
+      upsert: affectedSubtrees.tasks,
+      missing_gids: affectedSubtrees.missing_gids,
+      workspace_tags: [...workspaceTags],
+      metadata: createProjectMetadataSource(
+        { gid: project.gid, name: project.name },
+        sections,
+        workspaceTags,
+      ),
+    };
   }
 
   private async collectFullWithCatchUp(
@@ -1127,12 +1174,15 @@ export class AsanaSyncCoordinator {
       signal,
     );
     if (catchUp.kind === "delta") {
-      return mergeDeltaSnapshot(full, catchUp);
+      return mergeDeltaSnapshot(
+        full,
+        await this.materializeDelta(input, catchUp, signal),
+      );
     }
 
     const retryFull = await this.collectFull(
       input,
-      fallbackReason ?? "events_reset",
+      catchUp.reason,
       signal,
       full.inaccessible_gids,
     );
@@ -1142,9 +1192,12 @@ export class AsanaSyncCoordinator {
       signal,
     );
     if (retryCatchUp.kind === "full_sync_required") {
-      throw new Error("フル同期後の差分同期が再びリセットされました。");
+      throw new Error("フル同期後の差分同期を安全に継続できません。");
     }
-    return mergeDeltaSnapshot(retryFull, retryCatchUp);
+    return mergeDeltaSnapshot(
+      retryFull,
+      await this.materializeDelta(input, retryCatchUp, signal),
+    );
   }
 
   private async collectFull(

@@ -191,6 +191,7 @@ const syncFallbackReasonSchema = z.enum([
   "sync_token_missing",
   "metadata_missing",
   "events_reset",
+  "unsafe_structure",
 ]);
 const syncCriticalErrorCodeSchema = z.enum([
   "project_membership_missing",
