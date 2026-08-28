@@ -1,7 +1,20 @@
 import { z } from "zod";
 
-import { gidSchema, identifierSchema } from "../domain";
+import {
+  createUtf8ByteLimitedStringSchema,
+  gidSchema,
+  identifierSchema,
+} from "../domain";
 import { deviceSectionGidsSchema, vaultMappingSchema } from "../storage";
+
+const maximumAsanaClientSecretBytes = 1024;
+
+const asanaClientSecretSchema = createUtf8ByteLimitedStringSchema(
+  maximumAsanaClientSecretBytes,
+)
+  .min(1)
+  .refine((value) => value.trim().length > 0, "Asana Client Secretは空白だけにできません。")
+  .refine((value) => !hasControlCharacter(value), "Asana Client Secretに制御文字を含めることはできません。");
 
 const setupRedirectUriSchema = z
   .string()
@@ -276,12 +289,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
 const setupCredentialsInputSchema = z
   .object({
     client_id: identifierSchema,
-    client_secret: z
-      .string()
-      .min(1)
-      .max(4096)
-      .refine((value) => value.trim().length > 0, "Client Secretは空白だけにできません。")
-      .refine((value) => !hasControlCharacter(value), "Client Secretに制御文字を含めることはできません。"),
+    client_secret: asanaClientSecretSchema,
     timeout_milliseconds: z.number().int().min(1).max(2_147_483_647),
   })
   .strict();
@@ -341,6 +349,7 @@ function hasControlCharacter(value: string): boolean {
 }
 
 export {
+  asanaClientSecretSchema,
   configuredTagGidsSchema,
   setupCredentialsInputSchema,
   setupCodexAvailabilitySchema,

@@ -454,6 +454,7 @@ async function createMainWindow(
   const window = new BrowserWindow({
     show: false,
     webPreferences: {
+      devTools: !app.isPackaged,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,

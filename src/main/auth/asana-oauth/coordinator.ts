@@ -1,12 +1,7 @@
 import { z } from "zod";
-import {
-  createUtf8ByteLimitedStringSchema,
-  identifierSchema,
-} from "../../../shared/domain";
-import {
-  type SecretStorage,
-  type SecretStorageData,
-} from "../secret-storage";
+import { identifierSchema } from "../../../shared/domain";
+import { asanaClientSecretSchema } from "../../../shared/setup/schemas";
+import { type SecretStorage } from "../secret-storage";
 import { AsanaOAuthClient } from "./asana-oauth";
 import {
   asanaOAuthLoopbackRedirectUriSchema,
@@ -20,33 +15,11 @@ import {
 } from "./errors";
 
 const maximumTimeoutMilliseconds = 86_400_000;
-const maximumClientSecretBytes = 1024;
-
-function hasControlCharacter(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0);
-    return (
-      codePoint != null
-      && (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f))
-    );
-  });
-}
-
-const clientSecretSchema = createUtf8ByteLimitedStringSchema(
-  maximumClientSecretBytes,
-)
-  .min(1)
-  .refine((value) => value.trim().length > 0, {
-    message: "Asana Client Secretを空白だけにできません。",
-  })
-  .refine((value) => !hasControlCharacter(value), {
-    message: "Asana Client Secretに制御文字を指定できません。",
-  });
 
 const coordinatorInputSchema = z
   .object({
     client_id: identifierSchema,
-    client_secret: clientSecretSchema,
+    client_secret: asanaClientSecretSchema,
     redirect_uri: asanaOAuthLoopbackRedirectUriSchema,
     timeout_milliseconds: z
       .number()
@@ -74,6 +47,15 @@ export type AsanaOAuthCoordinatorResult = z.infer<
 export type AsanaOAuthReauthenticationInput = z.infer<
   typeof reauthenticationInputSchema
 >;
+
+type AuthenticationMode =
+  | {
+      readonly kind: "initial";
+      readonly clientSecret: string;
+    }
+  | {
+      readonly kind: "reauthentication";
+    };
 
 /** Asana OAuth認証調整の入力を検証するスキーマです。 */
 export const asanaOAuthCoordinatorInputSchema = coordinatorInputSchema;
@@ -138,20 +120,6 @@ function runAbortableOperation(
   });
 }
 
-function createCredentialData(
-  clientSecret: string,
-  latest: SecretStorageData | undefined,
-): SecretStorageData {
-  const externalCredentialReferences = latest?.external_credential_references;
-  if (externalCredentialReferences == null) {
-    return { asana_client_secret: clientSecret };
-  }
-  return {
-    asana_client_secret: clientSecret,
-    external_credential_references: externalCredentialReferences,
-  };
-}
-
 function assertNotAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     throw new AsanaOAuthCallbackAbortedError();
@@ -179,11 +147,9 @@ export class AsanaOAuthCoordinator {
     return this.authenticateExclusively(
       validatedInput,
       signal,
-      () => {
-        const latest = this.secretStorage.load();
-        this.secretStorage.save(
-          createCredentialData(validatedInput.client_secret, latest),
-        );
+      {
+        kind: "initial",
+        clientSecret: validatedInput.client_secret,
       },
     );
   }
@@ -197,19 +163,14 @@ export class AsanaOAuthCoordinator {
     return this.authenticateExclusively(
       validatedInput,
       signal,
-      () => {
-        const latest = this.secretStorage.load();
-        if (latest == null || latest.asana_client_secret == null) {
-          throw new AsanaOAuthCredentialError();
-        }
-      },
+      { kind: "reauthentication" },
     );
   }
 
   private async authenticateExclusively(
     input: AsanaOAuthReauthenticationInput,
     signal: AbortSignal,
-    prepareCredentials: () => void,
+    mode: AuthenticationMode,
   ): Promise<AsanaOAuthCoordinatorResult> {
     assertNotAborted(signal);
     if (this.authenticationInProgress) {
@@ -217,7 +178,12 @@ export class AsanaOAuthCoordinator {
     }
     this.authenticationInProgress = true;
     try {
-      prepareCredentials();
+      if (mode.kind === "reauthentication") {
+        const latest = this.secretStorage.load();
+        if (latest == null || latest.asana_client_secret == null) {
+          throw new AsanaOAuthCredentialError();
+        }
+      }
       assertNotAborted(signal);
 
       const client = new AsanaOAuthClient(
@@ -239,12 +205,20 @@ export class AsanaOAuthCoordinator {
         ),
       );
       assertNotAborted(signal);
-      await client.exchangeAuthorizationCode(
-        callbackResult.state,
-        callbackResult.code,
-        signal,
-      );
-      assertNotAborted(signal);
+      if (mode.kind === "initial") {
+        await client.exchangeInitialAuthorizationCode(
+          callbackResult.state,
+          callbackResult.code,
+          mode.clientSecret,
+          signal,
+        );
+      } else {
+        await client.exchangeAuthorizationCode(
+          callbackResult.state,
+          callbackResult.code,
+          signal,
+        );
+      }
       return coordinatorResultSchema.parse({
         kind: "authenticated",
         client_id: input.client_id,

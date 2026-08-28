@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { TokenProvider } from "../../asana/transport";
 import { identifierSchema } from "../../../shared/domain";
+import { asanaClientSecretSchema } from "../../../shared/setup/schemas";
 import {
   SecretStorage,
   type SecretStorageData,
@@ -167,6 +168,28 @@ function requireRefreshToken(response: OAuthTokenResponse): string {
   return response.refresh_token;
 }
 
+function createInitialSecretData(
+  clientSecret: string,
+  accessToken: string,
+  refreshToken: string,
+  latest: SecretStorageData | undefined,
+): SecretStorageData {
+  const externalCredentialReferences = latest?.external_credential_references;
+  if (externalCredentialReferences == null) {
+    return {
+      asana_client_secret: clientSecret,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    };
+  }
+  return {
+    asana_client_secret: clientSecret,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    external_credential_references: externalCredentialReferences,
+  };
+}
+
 /** Asana OAuth PKCE認証とトークン管理を提供します。 */
 export class AsanaOAuthClient implements TokenProvider {
   private readonly clientId: string;
@@ -202,24 +225,84 @@ export class AsanaOAuthClient implements TokenProvider {
     });
   }
 
+  /** 初回認証の認可コードを新しいClient Secretで交換して秘密情報を保存します。 */
+  public async exchangeInitialAuthorizationCode(
+    state: string,
+    code: string,
+    clientSecret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const validatedClientSecret = asanaClientSecretSchema.parse(clientSecret);
+    const validatedState = oauthStateSchema.parse(state);
+    const validatedCode = authorizationCodeSchema.parse(code);
+    const pendingAuthorization = this.takePendingAuthorization(validatedState);
+    const response = await this.requestAuthorizationCodeToken(
+      validatedCode,
+      pendingAuthorization,
+      validatedClientSecret,
+      signal,
+    );
+    const refreshToken = requireRefreshToken(response);
+    signal.throwIfAborted();
+    const latest = this.secretStorage.load();
+    this.secretStorage.save(
+      createInitialSecretData(
+        validatedClientSecret,
+        response.access_token,
+        refreshToken,
+        latest,
+      ),
+    );
+  }
+
   /** 認可コードを検証してトークンを保存します。 */
   public async exchangeAuthorizationCode(
     state: string,
     code: string,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<void> {
+    signal.throwIfAborted();
     const validatedState = oauthStateSchema.parse(state);
     const validatedCode = authorizationCodeSchema.parse(code);
+    const pendingAuthorization = this.takePendingAuthorization(validatedState);
+    const clientSecret = readClientSecret(this.secretStorage);
+    const response = await this.requestAuthorizationCodeToken(
+      validatedCode,
+      pendingAuthorization,
+      clientSecret,
+      signal,
+    );
+    const refreshToken = requireRefreshToken(response);
+    const latest = readLatestSecrets(this.secretStorage);
+    assertClientSecretUnchanged(latest, clientSecret);
+    signal.throwIfAborted();
+    this.secretStorage.save({
+      ...latest,
+      access_token: response.access_token,
+      refresh_token: refreshToken,
+    });
+  }
+
+  private takePendingAuthorization(validatedState: string): PendingAuthorization {
     const pendingAuthorization = this.pendingAuthorization;
     if (
-      pendingAuthorization == null ||
-      !isSameValue(pendingAuthorization.state, validatedState)
+      pendingAuthorization == null
+      || !isSameValue(pendingAuthorization.state, validatedState)
     ) {
       throw new AsanaOAuthStateError();
     }
     this.pendingAuthorization = undefined;
-    const clientSecret = readClientSecret(this.secretStorage);
-    const response = await this.requestToken(
+    return pendingAuthorization;
+  }
+
+  private requestAuthorizationCodeToken(
+    validatedCode: string,
+    pendingAuthorization: PendingAuthorization,
+    clientSecret: string,
+    signal: AbortSignal,
+  ): Promise<OAuthTokenResponse> {
+    return this.requestToken(
       new URLSearchParams({
         grant_type: "authorization_code",
         client_id: this.clientId,
@@ -230,14 +313,6 @@ export class AsanaOAuthClient implements TokenProvider {
       }),
       signal,
     );
-    const refreshToken = requireRefreshToken(response);
-    const latest = readLatestSecrets(this.secretStorage);
-    assertClientSecretUnchanged(latest, clientSecret);
-    this.secretStorage.save({
-      ...latest,
-      access_token: response.access_token,
-      refresh_token: refreshToken,
-    });
   }
 
   /** 保存済みアクセストークンをTokenProviderとして返します。 */
