@@ -10,9 +10,11 @@ import {
   codeVerifierSchema,
   oauthAuthorizationRequestSchema,
   oauthStateSchema,
+  oauthTokenErrorResponseSchema,
   oauthTokenResponseSchema,
   redirectUriSchema,
   type OAuthAuthorizationRequest,
+  type OAuthTokenErrorCode,
   type OAuthTokenResponse,
 } from "./schemas";
 import {
@@ -21,6 +23,7 @@ import {
   AsanaOAuthHttpError,
   AsanaOAuthResponseError,
   AsanaOAuthStateError,
+  AsanaOAuthTokenEndpointError,
   AsanaOAuthTransportError,
 } from "./errors";
 
@@ -65,6 +68,29 @@ function isJsonResponse(response: Response): boolean {
   const contentType = response.headers.get("content-type");
   const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase();
   return mediaType === jsonContentType;
+}
+
+function canContainStructuredTokenError(status: number): boolean {
+  return status === 400 || status === 401 || status === 403;
+}
+
+async function readStructuredTokenErrorCode(
+  response: Response,
+): Promise<OAuthTokenErrorCode | undefined> {
+  if (!isJsonResponse(response)) {
+    return undefined;
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return undefined;
+  }
+  const result = oauthTokenErrorResponseSchema.safeParse(payload);
+  if (!result.success) {
+    return undefined;
+  }
+  return result.data.error;
 }
 
 function readClientSecret(
@@ -276,6 +302,16 @@ export class AsanaOAuthClient implements TokenProvider {
 
     const responseRequestId = requestId(response);
     if (response.status < 200 || response.status > 299) {
+      if (canContainStructuredTokenError(response.status)) {
+        const errorCode = await readStructuredTokenErrorCode(response);
+        if (errorCode != null) {
+          throw new AsanaOAuthTokenEndpointError(
+            response.status,
+            errorCode,
+            responseRequestId,
+          );
+        }
+      }
       throw new AsanaOAuthHttpError(response.status, responseRequestId);
     }
     if (!isJsonResponse(response)) {

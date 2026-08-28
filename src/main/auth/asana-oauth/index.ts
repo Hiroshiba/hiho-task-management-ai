@@ -23,6 +23,7 @@ export {
   AsanaOAuthHttpError,
   AsanaOAuthResponseError,
   AsanaOAuthStateError,
+  AsanaOAuthTokenEndpointError,
   AsanaOAuthTransportError,
 } from "./errors";
 export {

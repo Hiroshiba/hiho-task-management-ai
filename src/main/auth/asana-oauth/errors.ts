@@ -1,3 +1,8 @@
+import {
+  oauthTokenErrorCodeSchema,
+  type OAuthTokenErrorCode,
+} from "./schemas";
+
 /** Asana OAuth処理の失敗を表すエラーです。 */
 export class AsanaOAuthError extends Error {
   protected constructor(message: string, options?: ErrorOptions) {
@@ -50,6 +55,21 @@ export class AsanaOAuthHttpError extends AsanaOAuthError {
     if (requestId != null && requestId.length > 0) {
       this.requestId = requestId;
     }
+  }
+}
+
+/** OAuthトークンエンドポイントの構造化エラーを表すエラーです。 */
+export class AsanaOAuthTokenEndpointError extends AsanaOAuthHttpError {
+  public readonly code: OAuthTokenErrorCode;
+
+  public constructor(
+    status: number,
+    code: OAuthTokenErrorCode,
+    requestId: string | undefined,
+  ) {
+    super(status, requestId);
+    this.name = "AsanaOAuthTokenEndpointError";
+    this.code = oauthTokenErrorCodeSchema.parse(code);
   }
 }
 

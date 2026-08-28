@@ -37,7 +37,12 @@ import {
   type AsanaDisplayOrderInput,
   type AsanaDisplayOrderService,
 } from "../asana/display-order";
-import { AsanaOAuthClient, AsanaOAuthCoordinator } from "../auth/asana-oauth";
+import {
+  AsanaOAuthClient,
+  AsanaOAuthCoordinator,
+  AsanaOAuthCredentialError,
+  AsanaOAuthTokenEndpointError,
+} from "../auth/asana-oauth";
 import { SecretStorage } from "../auth/secret-storage";
 import {
   initializeCodexWorkspace,
@@ -395,6 +400,25 @@ function contextMatchesSettings(
     && canonicalizeJson(context.section_gids) === canonicalizeJson(settings.section_gids);
 }
 
+function requiresAsanaReauthentication(error: unknown): boolean {
+  if (error instanceof AsanaOAuthCredentialError) {
+    return true;
+  }
+  if (!(error instanceof AsanaOAuthTokenEndpointError)) {
+    return false;
+  }
+  return error.code === "invalid_client"
+    || error.code === "invalid_grant"
+    || error.code === "unauthorized_client";
+}
+
+function throwTokenProviderError(error: unknown): never {
+  if (requiresAsanaReauthentication(error)) {
+    throw new AsanaAuthenticationError(error);
+  }
+  throw error;
+}
+
 function createMutableTokenProvider(): MutableTokenProviderPort {
   let provider: TokenProvider | undefined;
   return {
@@ -411,13 +435,21 @@ function createMutableTokenProvider(): MutableTokenProviderPort {
       if (provider == null) {
         throw new AsanaAuthenticationError();
       }
-      return provider.getAccessToken();
+      try {
+        return await provider.getAccessToken();
+      } catch (error) {
+        throwTokenProviderError(error);
+      }
     },
     async refreshAccessToken(): Promise<string> {
       if (provider == null) {
         throw new AsanaAuthenticationError();
       }
-      return provider.refreshAccessToken();
+      try {
+        return await provider.refreshAccessToken();
+      } catch (error) {
+        throwTokenProviderError(error);
+      }
     },
   };
 }

@@ -16,8 +16,8 @@ export class AsanaResponseError extends Error {
 
 /** Asana APIの認証に失敗したことを表します。 */
 export class AsanaAuthenticationError extends Error {
-  public constructor() {
-    super("Asana APIの認証に失敗しました。");
+  public constructor(cause?: unknown) {
+    super("Asana APIの認証に失敗しました。", { cause });
     this.name = "AsanaAuthenticationError";
   }
 }

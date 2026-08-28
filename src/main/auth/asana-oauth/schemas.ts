@@ -174,6 +174,22 @@ const tokenValueSchema = z
     message: "OAuthトークンに制御文字を指定できません。",
   });
 
+/** OAuthトークンエラーコードを検証するスキーマです。 */
+export const oauthTokenErrorCodeSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z][a-z0-9_]*$/u, {
+    message: "OAuthトークンエラーコードが不正です。",
+  });
+
+/** OAuthトークンエラー応答を検証するスキーマです。 */
+export const oauthTokenErrorResponseSchema = z
+  .object({
+    error: oauthTokenErrorCodeSchema,
+  })
+  .strip();
+
 /** OAuthトークン応答を検証するスキーマです。 */
 export const oauthTokenResponseSchema = z
   .object({
@@ -194,6 +210,7 @@ export const oauthAuthorizationRequestSchema = z
   .strict();
 
 export type OAuthTokenResponse = z.infer<typeof oauthTokenResponseSchema>;
+export type OAuthTokenErrorCode = z.infer<typeof oauthTokenErrorCodeSchema>;
 export type OAuthAuthorizationRequest = z.infer<
   typeof oauthAuthorizationRequestSchema
 >;
