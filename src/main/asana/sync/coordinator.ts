@@ -2,13 +2,17 @@ import { z } from "zod";
 import {
   asanaTagResponseSchema,
   asanaTaskResponseSchema,
+  canonicalizeJson,
+  cleanupItemsSchema,
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
   type AsanaTaskResponse,
+  type CleanupItem,
   type Task,
 } from "../../../shared/domain";
 import {
+  asanaSnapshotNormalizationResultSchema,
   calculateTaskRanking,
   ingestAsanaExternalData,
   normalizeAsanaSnapshot,
@@ -45,9 +49,9 @@ import {
   asanaNormalizationPlanApplierResultSchema,
 } from "./normalization-plan-applier";
 import { StorageDatabase } from "../../storage";
-import { cleanupItemsSchema } from "../../../shared/domain";
 
 const synchronizationModeSchema = z.enum(["full", "delta"]);
+const oauthMismatchManagedTaskThreshold = 10;
 const fallbackReasonSchema = z.enum([
   "sync_token_missing",
   "metadata_missing",
@@ -201,6 +205,146 @@ function sortedTasks(
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareStrings);
+}
+
+function uniqueCleanupItems(
+  items: readonly CleanupItem[],
+): CleanupItem[] {
+  const byValue = new Map<string, CleanupItem>();
+  for (const item of cleanupItemsSchema.parse(items)) {
+    byValue.set(canonicalizeJson(item), item);
+  }
+  return cleanupItemsSchema.parse(
+    [...byValue.entries()]
+      .sort(([left], [right]) => compareStrings(left, right))
+      .map(([, item]) => item),
+  );
+}
+
+function hasGlobalOAuthAppMismatch(
+  cleanupItems: readonly CleanupItem[],
+): boolean {
+  return cleanupItems.some(
+    (item) => item.kind === "oauth_app_mismatch" && item.task_gid == null,
+  );
+}
+
+function isOAuthAppMismatchSuspected(
+  input: AsanaSyncCoordinatorInput,
+  collection: CollectionSnapshot,
+): boolean {
+  if (collection.performed_mode !== "full") {
+    return false;
+  }
+  const sectionGids = new Set(
+    collection.metadata.sections.map((section) => section.gid),
+  );
+  const allConfiguredSectionsExist = Object.values(input.section_gids).every(
+    (sectionGid) => sectionGids.has(sectionGid),
+  );
+  const workspaceTagNames = new Set(
+    collection.workspace_tags.map((tag) => tag.name),
+  );
+  const allConfiguredTagsExist = setupManifest.tags.every((tag) =>
+    workspaceTagNames.has(tag.name),
+  );
+  return (
+    allConfiguredSectionsExist
+    && allConfiguredTagsExist
+    && collection.raw_tasks.length >= oauthMismatchManagedTaskThreshold
+    && collection.raw_tasks.every(
+      (task) => ingestAsanaExternalData(task).kind === "missing",
+    )
+  );
+}
+
+function shouldProtectExternalDataWrites(
+  input: AsanaSyncCoordinatorInput,
+  collection: CollectionSnapshot,
+  existingCleanupItems: readonly CleanupItem[],
+): boolean {
+  if (collection.performed_mode === "full") {
+    return isOAuthAppMismatchSuspected(input, collection);
+  }
+  return hasGlobalOAuthAppMismatch(existingCleanupItems);
+}
+
+function protectExternalDataWrites(
+  normalization: SnapshotNormalizationResult,
+  protectionRequired: boolean,
+): SnapshotNormalizationResult {
+  if (!protectionRequired) {
+    return asanaSnapshotNormalizationResultSchema.parse(normalization);
+  }
+  const emptyExternalDataWrites = Object.fromEntries(
+    Object.entries(normalization.external_data_writes).map(([name, writes]) => {
+      if (!Array.isArray(writes)) {
+        throw new Error("外部メタデータ書き込み計画が配列ではありません。");
+      }
+      return [name, []];
+    }),
+  );
+  return asanaSnapshotNormalizationResultSchema.parse({
+    ...normalization,
+    external_data_writes: emptyExternalDataWrites,
+  });
+}
+
+function createMissingTaskCleanupItem(taskGid: string): CleanupItem {
+  return {
+    kind: "missing_task",
+    task_gid: taskGid,
+    message: "Asana上で削除された可能性があります。",
+  };
+}
+
+function createMissingTaskCleanupItems(
+  previousTasks: readonly Task[],
+  rawTasks: readonly AsanaTaskResponse[],
+  existingCleanupItems: readonly CleanupItem[],
+): CleanupItem[] {
+  const currentTaskGids = new Set(rawTasks.map((task) => task.gid));
+  const newlyMissingItems = previousTasks
+    .filter((task) => !currentTaskGids.has(task.gid))
+    .map((task) => createMissingTaskCleanupItem(task.gid));
+  const retainedItems = existingCleanupItems
+    .filter((item) => item.kind === "missing_task")
+    .filter((item) => {
+      if (item.task_gid == null) {
+        throw new Error("保存済みの消失タスク要整理項目にタスクGIDがありません。");
+      }
+      return !currentTaskGids.has(item.task_gid);
+    });
+  return uniqueCleanupItems([...newlyMissingItems, ...retainedItems]);
+}
+
+function createGlobalOAuthAppMismatchCleanupItem(): CleanupItem {
+  return {
+    kind: "oauth_app_mismatch",
+    message: "同一のAsana OAuthアプリ設定が必要です。",
+  };
+}
+
+function createFinalNormalization(
+  normalization: SnapshotNormalizationResult,
+  protectionRequired: boolean,
+  missingTaskCleanupItems: readonly CleanupItem[],
+): SnapshotNormalizationResult {
+  const protectedNormalization = protectExternalDataWrites(
+    normalization,
+    protectionRequired,
+  );
+  const globalOAuthItems = protectionRequired
+    ? [createGlobalOAuthAppMismatchCleanupItem()]
+    : [];
+  return asanaSnapshotNormalizationResultSchema.parse({
+    ...protectedNormalization,
+    cleanup_items: uniqueCleanupItems([
+      ...protectedNormalization.cleanup_items,
+      ...globalOAuthItems,
+      ...missingTaskCleanupItems,
+    ]),
+  });
 }
 
 function isMetadataSufficient(
@@ -599,6 +743,10 @@ export class AsanaSyncCoordinator {
     this.synchronizationInProgress = true;
     try {
       const cachedEntries = this.database.getTaskCache();
+      const storedCleanupItems = this.database.getCleanupItems();
+      const existingCleanupItems = storedCleanupItems == null
+        ? []
+        : cleanupItemsSchema.parse(storedCleanupItems);
       const previousTasks = cachedEntries
         .map((entry) => entry.task)
         .sort((left, right) => compareStrings(left.gid, right.gid));
@@ -615,11 +763,19 @@ export class AsanaSyncCoordinator {
         existingMetadata,
         signal,
       );
-      const firstNormalization = normalizeSnapshot(
+      const protectionRequired = shouldProtectExternalDataWrites(
         validatedInput,
-        collection.raw_tasks,
-        previousTasks,
-        collection.inaccessible_gids,
+        collection,
+        existingCleanupItems,
+      );
+      const firstNormalization = protectExternalDataWrites(
+        normalizeSnapshot(
+          validatedInput,
+          collection.raw_tasks,
+          previousTasks,
+          collection.inaccessible_gids,
+        ),
+        protectionRequired,
       );
       const applicationResult = await this.planApplier.apply(
         {
@@ -642,19 +798,28 @@ export class AsanaSyncCoordinator {
         firstNormalization.tasks,
         collection.inaccessible_gids,
       );
+      const finalNormalization = createFinalNormalization(
+        secondNormalization,
+        protectionRequired,
+        createMissingTaskCleanupItems(
+          previousTasks,
+          refreshedRawTasks,
+          existingCleanupItems,
+        ),
+      );
       const syncedAt = isoDateTimeSchema.parse(this.timestampProvider());
       const metadata = createProjectMetadataCache(
         collection.metadata,
         syncedAt,
       );
       const rankingCache = createRankingCache(
-        secondNormalization,
+        finalNormalization,
         validatedInput.app_version,
         syncedAt,
       );
       const taskCacheEntries = createTaskCacheEntries(
         refreshedRawTasks,
-        secondNormalization,
+        finalNormalization,
         syncedAt,
       );
       const syncState = createSyncState(
@@ -670,16 +835,16 @@ export class AsanaSyncCoordinator {
         metadata,
         rankingCache,
         syncState,
-        secondNormalization.cleanup_items,
+        finalNormalization.cleanup_items,
       );
       const result = {
         requested_mode: validatedInput.mode,
         performed_mode: collection.performed_mode,
         synced_at: syncedAt,
         application_result: applicationResult,
-        remaining_plan: createNormalizationPlanSummary(secondNormalization),
-        critical_errors: secondNormalization.critical_errors,
-        cleanup_items: secondNormalization.cleanup_items,
+        remaining_plan: createNormalizationPlanSummary(finalNormalization),
+        critical_errors: finalNormalization.critical_errors,
+        cleanup_items: finalNormalization.cleanup_items,
         ranking_cache: rankingCache,
         ...(collection.fallback_reason == null
           ? {}
