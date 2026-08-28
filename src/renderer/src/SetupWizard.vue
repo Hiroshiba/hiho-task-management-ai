@@ -57,8 +57,6 @@ const externalMaxOutput = ref("1048576");
 const externalArgumentNames = ref("");
 const externalDomains = ref("");
 const externalMethods = ref("");
-const externalCredentialNames = ref("");
-const credentialRows = ref<{ name: string; value: string }[]>([]);
 const showExternalToolForm = ref(false);
 const localError = ref("");
 
@@ -257,33 +255,9 @@ function splitInput(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
 }
 
-function refreshCredentialRows(): void {
-  const previous = new Map(credentialRows.value.map((row) => [row.name, row.value]));
-  credentialRows.value = splitInput(externalCredentialNames.value).map((name) => ({
-    name,
-    value: previous.get(name) ?? "",
-  }));
-}
-
-function setCredentialValue(index: number, event: Event): void {
-  if (!(event.currentTarget instanceof HTMLInputElement)) {
-    throw new TypeError("資格情報入力元が不正です。");
-  }
-  const row = credentialRows.value[index];
-  if (row == null) {
-    throw new Error("資格情報入力行がありません。");
-  }
-  credentialRows.value[index] = { name: row.name, value: event.currentTarget.value };
-}
-
 function submitExternalTool(): void {
   localError.value = "";
   try {
-    refreshCredentialRows();
-    const credentialNames = splitInput(externalCredentialNames.value);
-    if (new Set(credentialNames).size !== credentialNames.length) {
-      throw new Error("資格情報参照名が重複しています。");
-    }
     const definition: Record<string, unknown> = {
       tool_id: externalToolId.value,
       executable: externalExecutable.value,
@@ -292,7 +266,7 @@ function submitExternalTool(): void {
       max_output_bytes: Number(externalMaxOutput.value),
       read_only: true,
       allowed_argument_names: splitInput(externalArgumentNames.value),
-      credential_reference_names: credentialNames,
+      credential_reference_names: [],
     };
     const domains = splitInput(externalDomains.value);
     if (domains.length > 0) {
@@ -302,23 +276,14 @@ function submitExternalTool(): void {
     if (methods.length > 0) {
       definition.allowed_http_methods = methods;
     }
-    const credentialEntries: [string, string][] = [];
-    for (const row of credentialRows.value) {
-      if (row.value.length === 0) {
-        throw new Error("資格情報の値がありません。");
-      }
-      credentialEntries.push([row.name, row.value]);
-    }
     const input = ipcExternalToolReplaceInputSchema.parse({
       definition,
-      credential_values: Object.fromEntries(credentialEntries),
+      credential_values: {},
     });
     emit("action", { kind: "configure_external_tool", input });
-    externalCredentialNames.value = "";
-    credentialRows.value = [];
     showExternalToolForm.value = false;
   } catch {
-    localError.value = "外部ツール定義とSecretStorageへ保存する秘密値を確認してください。";
+    localError.value = "資格情報不要の外部ツール定義を確認してください。";
   }
 }
 
@@ -642,7 +607,8 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-3"
       >
         <p class="text-sm text-slate-600">
-          外部ツールは登録済みの読み取り専用定義だけを利用します。
+          外部ツールは資格情報を必要としない読み取り専用定義だけを登録できます。
+          資格情報が必要な連携や安全なIPC権限境界を確認できないOSでは、外部情報取得の能力不足として利用できません。
         </p>
         <div
           v-if="!showExternalToolForm"
@@ -671,7 +637,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           @submit.prevent="submitExternalTool"
         >
           <p class="text-xs text-slate-600">
-            資格情報はSecretStorageへ保存し、送信後にこの画面から消去します。
+            資格情報を必要としない信頼済みの読み取り専用コマンドだけを登録してください。
           </p>
           <label
             class="field-label"
@@ -746,33 +712,6 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
             class="text-input"
             placeholder="GET, HEAD"
           ></label>
-          <label
-            class="field-label"
-            for="external-credentials"
-          >SecretStorage参照名<input
-            id="external-credentials"
-            v-model="externalCredentialNames"
-            class="text-input"
-            placeholder="任意、カンマ区切り"
-            autocomplete="off"
-            @blur="refreshCredentialRows"
-          ></label>
-          <div
-            v-if="credentialRows.length > 0"
-            class="grid gap-3"
-          >
-            <label
-              v-for="(credential, index) in credentialRows"
-              :key="credential.name"
-              class="field-label"
-            >{{ credential.name }}の秘密値<input
-              class="text-input"
-              type="password"
-              autocomplete="new-password"
-              :value="credential.value"
-              @input="setCredentialValue(index, $event)"
-            ></label>
-          </div>
           <div class="flex flex-wrap gap-2">
             <button
               type="submit"

@@ -11,6 +11,7 @@ import {
   type IpcObsidianNoteSummary,
   type IpcObsidianSearchResult,
   type IpcExternalToolReplaceInput,
+  type IpcSyncResult,
 } from "../../shared/ipc";
 import {
   setupStateSchema,
@@ -184,6 +185,36 @@ function showFailure(value: IpcFailure): void {
 
 function showUnexpectedFailure(): void {
   feedback.value = "予期しないエラーが発生しました。もう一度お試しください。";
+}
+
+function createSyncFeedback(result: IpcSyncResult): string {
+  let appliedCount = 0;
+  let alreadyAppliedCount = 0;
+  let conflictCount = 0;
+  for (const operation of result.application_result.operations) {
+    switch (operation.outcome) {
+      case "applied":
+        appliedCount += 1;
+        break;
+      case "already_applied":
+        alreadyAppliedCount += 1;
+        break;
+      case "conflict":
+        conflictCount += 1;
+        break;
+    }
+  }
+  const remainingWriteCount = result.remaining_plan.status_write_task_gids.length
+    + result.remaining_plan.external_write_task_gids.length
+    + result.remaining_plan.tag_write_task_gids.length;
+  return [
+    `同期しました。対象 ${result.application_result.affected_gids.length}件`,
+    `反映 ${appliedCount}件`,
+    `反映済み ${alreadyAppliedCount}件`,
+    `競合 ${conflictCount}件`,
+    `残り書き込み ${remainingWriteCount}件`,
+    `重大エラー ${result.critical_errors.length}件。`,
+  ].join("、");
 }
 
 function cleanupKindLabel(kind: ViewModelOverview["cleanup_items"][number]["kind"]): string {
@@ -457,6 +488,7 @@ async function manualSync(): Promise<void> {
       return;
     }
     syncState.value = rendererSyncStateSchema.parse({ kind: "synced", synced_at: result.value.synced_at });
+    feedback.value = createSyncFeedback(result.value);
     await loadOverview();
   } catch {
     showUnexpectedFailure();
