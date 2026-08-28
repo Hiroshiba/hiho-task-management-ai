@@ -2,14 +2,17 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   ipcFailureSchema,
+  ipcGuiEditResultSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianSearchInputSchema,
   ipcObsidianValidateInputSchema,
   ipcGuiEditInputSchema,
   ipcSyncStateEventSchema,
+  ipcSyncResultSchema,
   type IpcAiStatus,
   type IpcFailure,
+  type IpcGuiEditResult,
   type IpcObsidianNoteSummary,
   type IpcObsidianSearchResult,
   type IpcSyncResult,
@@ -123,9 +126,14 @@ type SyncStateReadResult =
   | { readonly kind: "received"; readonly value: IpcSyncStateEvent }
   | { readonly kind: "unavailable" };
 
+type GuiEditCompletion =
+  | { readonly kind: "settled"; readonly message: string }
+  | { readonly kind: "recovery_required"; readonly message: string };
+
 const screen = ref<RendererScreenState>(rendererScreenStateSchema.parse({ kind: "loading" }));
 const setupState = ref<SetupState | undefined>();
 const setupBusy = ref(false);
+const asanaAuthenticationBusy = ref(false);
 const overview = ref<ViewModelOverview | undefined>();
 const selectedTask = ref<ViewModelTaskDetail | undefined>();
 const selectedTaskGid = ref<string | undefined>();
@@ -153,6 +161,7 @@ let clockTimer: number | undefined;
 let taskDataGeneration = 0;
 let taskDetailGeneration = 0;
 let obsidianStatusGeneration = 0;
+let guiEditGeneration = 0;
 let lastLoadedSuccessfulSyncAt: string | undefined;
 let activeSyncReload: ActiveSyncReload = { kind: "idle" };
 
@@ -160,8 +169,11 @@ const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
 const canManualSync = computed(() => configured.value
   && activeSyncMode.value === "idle"
+  && !asanaAuthenticationBusy.value
   && connectionState.value.kind === "online"
-  && syncState.value.kind !== "syncing");
+  && syncState.value.kind !== "syncing"
+  && syncState.value.kind !== "authentication_required"
+  && syncState.value.kind !== "recovery_pending");
 const canWrite = computed(() => connectionState.value.kind === "online"
   && syncState.value.kind === "synced");
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
@@ -298,6 +310,37 @@ function createSyncFeedback(result: IpcSyncResult): string {
   ].join("、");
 }
 
+function recoveryRequiredFeedback(
+  writeOutcome: Extract<IpcGuiEditResult, { readonly outcome: "recovery_required" }>["write_outcome"],
+): string {
+  switch (writeOutcome) {
+    case "applied":
+      return "Asanaへの書き込みは反映されました。ローカル状態の再同期が必要です。";
+    case "already_applied":
+      return "Asanaへの書き込みはすでに反映済みです。ローカル状態の再同期が必要です。";
+    case "unknown":
+      return "Asanaへの書き込み結果を確認できません。ローカル状態の再同期が必要です。";
+  }
+}
+
+function guiEditResultFeedback(result: IpcGuiEditResult): string {
+  switch (result.outcome) {
+    case "applied":
+      return "変更を反映しました。";
+    case "already_applied":
+      return "変更はすでに反映済みです。";
+    case "conflict":
+      if (result.side_effect === "possible") {
+        return "最新状態と競合しました。Asana側へ変更された可能性があります。";
+      }
+      return "最新状態と競合したため変更しませんでした。";
+    case "rejected":
+      return "オフラインのため変更できませんでした。";
+    case "recovery_required":
+      return recoveryRequiredFeedback(result.write_outcome);
+  }
+}
+
 function cleanupKindLabel(kind: ViewModelOverview["cleanup_items"][number]["kind"]): string {
   switch (kind) {
     case "importance_tag_conflict":
@@ -400,10 +443,7 @@ function settledSyncState(
   return rendererSyncStateSchema.parse({ kind: "waiting" });
 }
 
-function handleSyncState(value: IpcSyncStateEvent): void {
-  if (value.last_successful_sync_at != null && configured.value) {
-    void reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
-  }
+function applySyncStateDisplay(value: IpcSyncStateEvent): void {
   if (value.kind === "syncing") {
     setConnectionState(
       chromiumConnectionState(),
@@ -441,7 +481,21 @@ function handleSyncState(value: IpcSyncStateEvent): void {
     );
     return;
   }
+  if (value.last_error_code != null) {
+    setConnectionState(
+      connectionStateForSyncFailure(value.last_error_code),
+      settledSyncState(value),
+    );
+    return;
+  }
   setConnectionState(chromiumConnectionState(), settledSyncState(value));
+}
+
+function handleSyncState(value: IpcSyncStateEvent): void {
+  if (value.last_successful_sync_at != null && configured.value) {
+    void reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
+  }
+  applySyncStateDisplay(value);
 }
 
 async function readCurrentSyncState(): Promise<SyncStateReadResult> {
@@ -752,6 +806,43 @@ async function completeCodexAuthenticationFromHeader(): Promise<void> {
   }
 }
 
+async function reauthenticateAsana(): Promise<void> {
+  if (asanaAuthenticationBusy.value
+    || !configured.value
+    || syncState.value.kind !== "authentication_required") {
+    return;
+  }
+  asanaAuthenticationBusy.value = true;
+  feedback.value = "";
+  const authenticationRequired = rendererSyncStateSchema.parse({
+    kind: "authentication_required",
+  });
+  try {
+    const result = await window.taskHub.asana.reauthenticateOAuth();
+    if (isFailure(result)) {
+      await reconcileSyncStateAfterFailure(authenticationRequired);
+      feedback.value = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
+      return;
+    }
+    const synchronized = ipcSyncResultSchema.parse(result.value);
+    setConnectionState("online", rendererSyncStateSchema.parse({
+      kind: "synced",
+      synced_at: synchronized.synced_at,
+    }));
+    const refreshResult = await reloadTaskDataAfterSuccessfulSync(synchronized.synced_at);
+    if (refreshResult.kind === "failed") {
+      feedback.value = "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。";
+      return;
+    }
+    feedback.value = "Asanaを再認証し、タスク表示を更新しました。";
+  } catch {
+    await reconcileSyncStateAfterFailure(authenticationRequired);
+    feedback.value = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
+  } finally {
+    asanaAuthenticationBusy.value = false;
+  }
+}
+
 function handleSetupAction(action: SetupAction): void {
   switch (action.kind) {
     case "start":
@@ -1000,6 +1091,35 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
   }
 }
 
+async function reloadTaskDataAfterGuiEdit(message: string, generation: number): Promise<void> {
+  if (generation === guiEditGeneration) {
+    feedback.value = message;
+  }
+  try {
+    await reloadTaskData();
+  } finally {
+    if (generation === guiEditGeneration) {
+      feedback.value = message;
+    }
+  }
+}
+
+async function reconcileSyncStateAfterGuiRecovery(
+  message: string,
+  generation: number,
+): Promise<void> {
+  try {
+    const result = await readCurrentSyncState();
+    if (result.kind === "received") {
+      applySyncStateDisplay(result.value);
+    }
+  } finally {
+    if (generation === guiEditGeneration) {
+      feedback.value = message;
+    }
+  }
+}
+
 async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
   const currentOverview = overview.value;
   if (currentOverview == null) {
@@ -1010,6 +1130,9 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
     feedback.value = writeUnavailableText("編集");
     return;
   }
+  guiEditGeneration += 1;
+  const generation = guiEditGeneration;
+  let completion: GuiEditCompletion;
   try {
     const validatedInput = ipcGuiEditInputSchema.parse({
       task_gid: input.task_gid,
@@ -1018,14 +1141,34 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
     });
     const result = await window.taskHub.gui.apply(validatedInput);
     if (isFailure(result)) {
-      showFailure(result);
-      return;
+      completion = {
+        kind: "settled",
+        message: displayFailure(result).message,
+      };
+    } else {
+      const validatedResult = ipcGuiEditResultSchema.parse(result.value);
+      completion = {
+        kind: validatedResult.outcome === "recovery_required"
+          ? "recovery_required"
+          : "settled",
+        message: guiEditResultFeedback(validatedResult),
+      };
     }
-    feedback.value = result.value.outcome === "conflict" ? "最新状態と競合しました。" : "変更を反映しました。";
-    await reloadTaskData();
   } catch {
-    showUnexpectedFailure();
+    completion = {
+      kind: "settled",
+      message: "予期しないエラーが発生しました。もう一度お試しください。",
+    };
   }
+  if (completion.kind === "recovery_required") {
+    try {
+      await reloadTaskDataAfterGuiEdit(completion.message, generation);
+    } finally {
+      await reconcileSyncStateAfterGuiRecovery(completion.message, generation);
+    }
+    return;
+  }
+  await reloadTaskDataAfterGuiEdit(completion.message, generation);
 }
 
 async function startAiSession(): Promise<void> {
@@ -1393,12 +1536,14 @@ onUnmounted(() => {
       :can-write="canWrite"
       :codex-state="codexState"
       :codex-authentication-busy="setupBusy"
+      :asana-authentication-busy="asanaAuthenticationBusy"
       :app-version="appVersion"
       :cleanup-count="cleanupCount"
       @sync="manualSync"
       @full-sync="fullSync"
       @new-ai-session="startAiSession"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
+      @reauthenticate-asana="reauthenticateAsana"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p

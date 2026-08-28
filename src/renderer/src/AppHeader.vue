@@ -17,6 +17,7 @@ const props = defineProps<{
   canWrite: boolean;
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
+  asanaAuthenticationBusy: boolean;
   appVersion: string;
   cleanupCount: number;
 }>();
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   (event: "full-sync"): void;
   (event: "new-ai-session"): void;
   (event: "complete-codex-authentication"): void;
+  (event: "reauthenticate-asana"): void;
 }>();
 
 const fullSyncConfirmationOpen = ref(false);
@@ -199,6 +201,16 @@ function jstDateTimeLabel(value: string | undefined): string {
         <span class="rounded-full bg-slate-100 px-3 py-1">要整理: {{ cleanupCount }}件</span>
       </div>
       <div class="flex items-center gap-2">
+        <button
+          v-if="configured && connectionState.sync.kind === 'authentication_required'"
+          type="button"
+          class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="asanaAuthenticationBusy"
+          aria-label="Asanaを再認証"
+          @click="emit('reauthenticate-asana')"
+        >
+          {{ asanaAuthenticationBusy ? "再認証中" : "Asanaを再認証" }}
+        </button>
         <button
           v-if="configured"
           type="button"
