@@ -17,6 +17,7 @@ import {
   type SetupReconciliationResult,
 } from "../asana/setup";
 import type { AsanaSetupClient } from "../asana/client/setup-client";
+import { validateVaultMappingPath } from "../obsidian";
 import type { StorageDatabase } from "../storage";
 import type { DeviceSettings, VaultMapping } from "../../shared/storage";
 import {
@@ -168,6 +169,7 @@ function validateAbortSignal(signal: AbortSignal): void {
     || typeof signal.aborted !== "boolean"
     || typeof signal.addEventListener !== "function"
     || typeof signal.removeEventListener !== "function"
+    || typeof signal.throwIfAborted !== "function"
   ) {
     throw new TypeError("AbortSignalが必要です。");
   }
@@ -848,17 +850,26 @@ export class SetupOrchestrator {
   }
 
   /** Vaultを設定するか明示的にスキップします。 */
-  public chooseVault(
+  public async chooseVault(
     input: SetupVaultChoiceInput,
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
+    signal.throwIfAborted();
     this.assertResumeCompleted();
     const validatedInput = setupVaultChoiceInputSchema.parse(input);
     assertStateKindTyped(this.state, ["vault_choice_required"]);
     const state = this.state;
     if (validatedInput.kind === "configure") {
-      const mapping: VaultMapping = vaultMappingSchema.parse(validatedInput.mapping);
+      const validatedVault = await validateVaultMappingPath(
+        validatedInput.mapping,
+        signal,
+      );
+      signal.throwIfAborted();
+      const mapping: VaultMapping = vaultMappingSchema.parse({
+        vault_id: validatedVault.vault_id,
+        absolute_path: validatedVault.real_path,
+      });
       this.database.saveVaultMapping(mapping);
       this.state = parseState({
         kind: "vault_configured",
@@ -866,14 +877,14 @@ export class SetupOrchestrator {
         context: state.context,
         vault_id: mapping.vault_id,
       });
-      return Promise.resolve(this.getState());
+      return this.getState();
     }
     this.state = parseState({
       kind: "vault_skipped",
       step: "external_tool",
       context: state.context,
     });
-    return Promise.resolve(this.getState());
+    return this.getState();
   }
 
   /** 外部読み取りツールを設定するか明示的にスキップします。 */

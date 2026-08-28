@@ -1,4 +1,3 @@
-import { isAbsolute } from "node:path";
 import {
   vaultMappingSchema,
   type VaultMapping,
@@ -12,11 +11,7 @@ interface VaultMappingRow {
 }
 
 function validateVaultMapping(mapping: VaultMapping): VaultMapping {
-  const validatedMapping = vaultMappingSchema.parse(mapping);
-  if (!isAbsolute(validatedMapping.absolute_path)) {
-    throw new Error("Vaultのパスは絶対パスで指定してください。");
-  }
-  return validatedMapping;
+  return vaultMappingSchema.parse(mapping);
 }
 
 function rowToVaultMapping(row: VaultMappingRow): VaultMapping {

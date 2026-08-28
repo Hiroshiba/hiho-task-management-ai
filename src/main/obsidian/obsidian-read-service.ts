@@ -41,6 +41,11 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+function hasTraversalSegment(value: string): boolean {
+  const segments = sep === "\\" ? value.split(/[\\/]/u) : value.split("/");
+  return segments.some((segment) => segment === "." || segment === "..");
+}
+
 function isValidRelativeMarkdownPath(value: string): boolean {
   if (
     value.length === 0
@@ -77,9 +82,7 @@ function createUtf8TextSchema(maximumBytes: number): z.ZodString {
   );
 }
 
-const absolutePathSchema = createUtf8TextSchema(maximumPathBytes)
-  .refine(isAbsolute, "絶対パスを指定してください。")
-  .refine((value) => !value.includes("\0"), "パスにNUL文字を指定できません。");
+const absolutePathSchema = vaultMappingSchema.shape.absolute_path;
 
 const relativeMarkdownPathSchema = z
   .string()
@@ -249,11 +252,16 @@ type ExistingPath = {
   readonly stats: Stats;
 };
 
+type MissingPathInspection = {
+  readonly kind: "missing";
+  readonly cause: unknown;
+};
+
 type MissingPath = {
   readonly kind: "missing";
 };
 
-type PathInspection = ExistingPath | MissingPath;
+type PathInspection = ExistingPath | MissingPathInspection;
 
 type ResolvedNotePath = {
   readonly kind: "resolved";
@@ -304,6 +312,7 @@ function validateAbortSignal(signal: AbortSignal): void {
     || typeof signal.aborted !== "boolean"
     || typeof signal.addEventListener !== "function"
     || typeof signal.removeEventListener !== "function"
+    || typeof signal.throwIfAborted !== "function"
   ) {
     throw new TypeError("AbortSignalが必要です。");
   }
@@ -343,27 +352,33 @@ function assertWithinRoot(rootPath: string, candidatePath: string): void {
   }
 }
 
-async function inspectExistingPath(absolutePath: string): Promise<PathInspection> {
+async function inspectExistingPath(
+  absolutePath: string,
+  signal: AbortSignal,
+): Promise<PathInspection> {
   const normalizedPath = resolve(absolutePath);
   const pathRoot = parsePath(normalizedPath).root;
   const segments = normalizedPath.slice(pathRoot.length).split(sep);
+  throwIfAborted(signal);
+  let rootStats: Stats;
+  try {
+    rootStats = await lstat(pathRoot);
+    throwIfAborted(signal);
+  } catch (error) {
+    if (isMissingFileSystemError(error)) {
+      return { kind: "missing", cause: error };
+    }
+    throw error;
+  }
+  if (rootStats.isSymbolicLink()) {
+    throw new ObsidianReadError(
+      "symlink_rejected",
+      "シンボリックリンクを経由するVaultパスは読み取れません。",
+    );
+  }
   let currentPath = pathRoot;
   if (segments.every((segment) => segment.length === 0)) {
-    try {
-      const stats = await lstat(normalizedPath);
-      if (stats.isSymbolicLink()) {
-        throw new ObsidianReadError(
-          "symlink_rejected",
-          "シンボリックリンクを経由するVaultパスは読み取れません。",
-        );
-      }
-      return { kind: "existing", stats };
-    } catch (error) {
-      if (isMissingFileSystemError(error)) {
-        return { kind: "missing" };
-      }
-      throw error;
-    }
+    return { kind: "existing", stats: rootStats };
   }
 
   for (const [index, segment] of segments.entries()) {
@@ -373,10 +388,12 @@ async function inspectExistingPath(absolutePath: string): Promise<PathInspection
     currentPath = join(currentPath, segment);
     let stats: Stats;
     try {
+      throwIfAborted(signal);
       stats = await lstat(currentPath);
+      throwIfAborted(signal);
     } catch (error) {
       if (isMissingFileSystemError(error)) {
-        return { kind: "missing" };
+        return { kind: "missing", cause: error };
       }
       throw error;
     }
@@ -390,7 +407,10 @@ async function inspectExistingPath(absolutePath: string): Promise<PathInspection
       (value) => value.length > 0,
     );
     if (remainingSegments.length > 0 && !stats.isDirectory()) {
-      return { kind: "missing" };
+      return {
+        kind: "missing",
+        cause: new Error("Vaultパスの途中にディレクトリではない要素があります。"),
+      };
     }
     if (remainingSegments.length === 0) {
       return { kind: "existing", stats };
@@ -402,15 +422,18 @@ async function inspectExistingPath(absolutePath: string): Promise<PathInspection
   );
 }
 
-async function validateRegisteredMapping(
+/** Vaultマッピングの存在と安全性を検証して実体パスを返します。 */
+export async function validateVaultMappingPath(
   mapping: VaultMapping,
   signal: AbortSignal,
-): Promise<RegisteredVault> {
+): Promise<ObsidianVaultValidationResult> {
+  validateAbortSignal(signal);
+  throwIfAborted(signal);
   const validatedMapping = vaultMappingSchema.parse(mapping);
   if (
     !isAbsolute(validatedMapping.absolute_path)
-    || validatedMapping.absolute_path.includes("\0")
     || hasControlCharacter(validatedMapping.absolute_path)
+    || hasTraversalSegment(validatedMapping.absolute_path)
   ) {
     throw new ObsidianReadError(
       "vault_unavailable",
@@ -419,11 +442,27 @@ async function validateRegisteredMapping(
   }
   const absolutePath = resolve(validatedMapping.absolute_path);
   throwIfAborted(signal);
-  const inspection = await inspectExistingPath(absolutePath);
+  let inspection: PathInspection;
+  try {
+    inspection = await inspectExistingPath(absolutePath, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      signal.throwIfAborted();
+    }
+    if (error instanceof ObsidianReadError) {
+      throw error;
+    }
+    throw new ObsidianReadError(
+      "vault_unavailable",
+      "登録されたVaultパスを検証できません。",
+      error,
+    );
+  }
   if (inspection.kind === "missing") {
     throw new ObsidianReadError(
       "vault_unavailable",
       "登録されたVaultディレクトリを確認できません。",
+      inspection.cause,
     );
   }
   if (!inspection.stats.isDirectory()) {
@@ -432,12 +471,26 @@ async function validateRegisteredMapping(
       "登録されたVaultパスはディレクトリではありません。",
     );
   }
-  const realPath = await realpath(absolutePath);
-  return {
+  let realPath: string;
+  try {
+    throwIfAborted(signal);
+    realPath = await realpath(absolutePath);
+    throwIfAborted(signal);
+  } catch (error) {
+    if (signal.aborted) {
+      signal.throwIfAborted();
+    }
+    throw new ObsidianReadError(
+      "vault_unavailable",
+      "登録されたVaultの実体パスを確認できません。",
+      error,
+    );
+  }
+  return vaultValidationResultSchema.parse({
     vault_id: validatedMapping.vault_id,
     absolute_path: absolutePath,
     real_path: realPath,
-  };
+  });
 }
 
 async function resolveNotePathWithinVault(
@@ -449,7 +502,7 @@ async function resolveNotePathWithinVault(
   throwIfAborted(signal);
   const candidatePath = resolve(vault.absolute_path, ...validatedPath.split("/"));
   assertWithinRoot(vault.absolute_path, candidatePath);
-  const inspection = await inspectExistingPath(candidatePath);
+  const inspection = await inspectExistingPath(candidatePath, signal);
   if (inspection.kind === "missing") {
     return { kind: "missing" };
   }
@@ -695,7 +748,7 @@ async function collectMarkdownPaths(
     for (const entry of entries) {
       throwIfAborted(signal);
       const childPath = join(directoryPath, entry.name);
-      const childInspection = await inspectExistingPath(childPath);
+      const childInspection = await inspectExistingPath(childPath, signal);
       if (childInspection.kind === "missing") {
         throw new ObsidianReadError(
           "path_changed",
@@ -967,6 +1020,6 @@ export class ObsidianReadService {
     if (mapping == null) {
       throw new Error("Vaultマッピングを取得できません。");
     }
-    return validateRegisteredMapping(mapping, signal);
+    return validateVaultMappingPath(mapping, signal);
   }
 }

@@ -4,6 +4,7 @@ import {
   cleanupItemsSchema,
   dateSchema,
   gidSchema,
+  getUtf8ByteLength,
   identifierSchema,
   importanceSchema,
   isoDateTimeSchema,
@@ -18,6 +19,16 @@ const nonEmptyTextSchema = z.string().refine((value) => value.length > 0, {
 const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "空白だけでない文字列を指定してください。",
 });
+
+const maximumVaultPathBytes = 4_096;
+
+function isAbsoluteVaultPath(value: string): boolean {
+  return (
+    value.startsWith("/")
+    || /^[A-Za-z]:[\\/]/u.test(value)
+    || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(value)
+  );
+}
 
 const customExternalDataCacheValidSchema = z
   .object({
@@ -416,7 +427,19 @@ export const externalToolCredentialReferenceNamesSchema = z
 export const vaultMappingSchema = z
   .object({
     vault_id: identifierSchema,
-    absolute_path: nonEmptyTextSchema,
+    absolute_path: nonEmptyTextSchema
+      .refine(
+        (value) => getUtf8ByteLength(value) <= maximumVaultPathBytes,
+        "Vaultの絶対パスが長さ上限を超えています。",
+      )
+      .refine(
+        (value) => !value.includes("\0"),
+        "Vaultの絶対パスにNUL文字を指定できません。",
+      )
+      .refine(
+        isAbsoluteVaultPath,
+        "Vaultのパスは絶対パスで指定してください。",
+      ),
   })
   .strict();
 

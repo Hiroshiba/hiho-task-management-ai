@@ -9,6 +9,7 @@ export {
   obsidianSearchResultArraySchema,
   obsidianVaultIdSchema,
   obsidianVaultValidationResultSchema,
+  validateVaultMappingPath,
   type ObsidianNoteReadResult,
   type ObsidianNoteSummary,
   type ObsidianReadErrorCode,
