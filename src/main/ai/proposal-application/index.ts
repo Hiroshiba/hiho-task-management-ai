@@ -16,10 +16,14 @@ export {
 export {
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,
+  asanaPostWriteSynchronizationFailureCodeSchema,
+  asanaPostWriteSynchronizationResultSchema,
   asanaProposalRecoveryInputSchema,
   asanaProposalRecoveryResultSchema,
   type AsanaProposalApplicationInput,
   type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryInput,
   type AsanaProposalRecoveryResult,
+  type PostWriteSynchronizationFailureCode,
+  type PostWriteSynchronizationResult,
 } from "./schemas";

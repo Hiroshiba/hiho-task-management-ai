@@ -5,10 +5,19 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { AsanaRequestScheduler } from "../asana/scheduler";
+import {
+  AsanaRequestAbortedError,
+  AsanaRequestScheduler,
+} from "../asana/scheduler";
 import {
   AsanaAuthenticationError,
+  AsanaEventsResetError,
+  AsanaHttpError,
+  AsanaPaymentRequiredError,
+  AsanaRateLimitError,
+  AsanaResponseError,
   AsanaTransport,
+  AsanaTransportError,
   type TokenProvider,
 } from "../asana/transport";
 import {
@@ -25,6 +34,7 @@ import {
   AsanaFullSyncSource,
   AsanaNormalizationPlanApplier,
   AsanaSyncCoordinator,
+  AsanaSyncInProgressError,
 } from "../asana/sync";
 import {
   AsanaSyncRuntime,
@@ -41,7 +51,10 @@ import {
   AsanaOAuthClient,
   AsanaOAuthCoordinator,
   AsanaOAuthCredentialError,
+  AsanaOAuthHttpError,
+  AsanaOAuthResponseError,
   AsanaOAuthTokenEndpointError,
+  AsanaOAuthTransportError,
   asanaOAuthCoordinatorResultSchema,
 } from "../auth/asana-oauth";
 import { SecretStorage } from "../auth/secret-storage";
@@ -74,9 +87,12 @@ import {
 import {
   AsanaProposalApplicationCoordinator,
   AsanaProposalOperationWriter,
+  asanaPostWriteSynchronizationResultSchema,
   type AsanaProposalApplicationInput,
   type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
+  type PostWriteSynchronizationFailureCode,
+  type PostWriteSynchronizationResult,
 } from "../ai/proposal-application";
 import {
   AsanaGuiEditService,
@@ -420,6 +436,93 @@ function throwTokenProviderError(error: unknown): never {
     throw new AsanaAuthenticationError(error);
   }
   throw error;
+}
+
+type PostWriteErrorClassification =
+  | {
+      readonly kind: "recovery_required";
+      readonly error_code: PostWriteSynchronizationFailureCode;
+    }
+  | { readonly kind: "unexpected" };
+
+function classifyPostWriteSynchronizationError(
+  error: unknown,
+): PostWriteErrorClassification {
+  if (error instanceof AsanaAuthenticationError) {
+    return { kind: "recovery_required", error_code: "authentication_required" };
+  }
+  if (error instanceof AsanaPaymentRequiredError) {
+    return { kind: "recovery_required", error_code: "payment_required" };
+  }
+  if (error instanceof AsanaRateLimitError) {
+    return { kind: "recovery_required", error_code: "rate_limited" };
+  }
+  if (error instanceof AsanaHttpError || error instanceof AsanaOAuthHttpError) {
+    return { kind: "recovery_required", error_code: "http_error" };
+  }
+  if (
+    error instanceof AsanaTransportError
+    || error instanceof AsanaOAuthTransportError
+  ) {
+    return { kind: "recovery_required", error_code: "transport_error" };
+  }
+  if (
+    error instanceof AsanaResponseError
+    || error instanceof AsanaOAuthResponseError
+  ) {
+    return { kind: "recovery_required", error_code: "response_error" };
+  }
+  if (error instanceof AsanaEventsResetError) {
+    return { kind: "recovery_required", error_code: "events_reset" };
+  }
+  if (error instanceof AsanaRequestAbortedError) {
+    return { kind: "recovery_required", error_code: "request_aborted" };
+  }
+  if (error instanceof AsanaSyncInProgressError) {
+    return { kind: "recovery_required", error_code: "sync_in_progress" };
+  }
+  return { kind: "unexpected" };
+}
+
+function postWriteRecoveryRequired(
+  errorCode: PostWriteSynchronizationFailureCode,
+): PostWriteSynchronizationResult {
+  return asanaPostWriteSynchronizationResultSchema.parse({
+    kind: "recovery_required",
+    error_code: errorCode,
+  });
+}
+
+function postWriteSynchronizationFromRuntimeResult(
+  result: AsanaSyncRuntimeResult,
+): PostWriteSynchronizationResult {
+  switch (result.kind) {
+    case "synchronized":
+      return asanaPostWriteSynchronizationResultSchema.parse({
+        kind: "synchronized",
+      });
+    case "rejected":
+      return postWriteRecoveryRequired(result.reason);
+    case "aborted":
+      return postWriteRecoveryRequired("aborted");
+    case "failed":
+      switch (result.error_code) {
+        case "authentication_required":
+        case "payment_required":
+        case "rate_limited":
+        case "http_error":
+        case "transport_error":
+        case "response_error":
+        case "events_reset":
+        case "request_aborted":
+        case "sync_in_progress":
+          return postWriteRecoveryRequired(result.error_code);
+        case "unexpected_error":
+          throw new Error("書き込み後の同期が想定外エラーで停止しました。", {
+            cause: result,
+          });
+      }
+  }
 }
 
 function createMutableTokenProvider(): MutableTokenProviderPort {
@@ -1642,31 +1745,108 @@ export class TaskHubApplication {
     await this.afterLocalStateRefresh(signal);
   }
 
-  private async afterGuiEdit(signal: AbortSignal): Promise<void> {
-    const result = await this.requireSynchronizedResult(
+  private afterGuiEdit(
+    signal: AbortSignal,
+  ): Promise<PostWriteSynchronizationResult> {
+    return this.resolvePostWriteSynchronization(
       this.requireRuntime().afterGuiEdit(signal),
+      signal,
     );
-    void result;
-    await this.afterLocalStateRefresh(signal);
   }
 
-  private async afterAiApply(signal: AbortSignal): Promise<void> {
+  private async afterAiApply(
+    signal: AbortSignal,
+  ): Promise<PostWriteSynchronizationResult> {
     if (this.journalRecoveryRunning) {
-      return;
+      return this.synchronizeRecoveredApplicationJournals(signal);
     }
     if (this.aiApplicationState !== "applying") {
       throw new Error("AI変更案の適用状態が同期開始条件を満たしません。");
     }
     this.aiApplicationState = "synchronizing";
     try {
-      const result = await this.requireSynchronizedResult(
+      return await this.resolvePostWriteSynchronization(
         this.requireRuntime().afterAiApply(signal),
+        signal,
       );
-      void result;
     } finally {
       this.aiApplicationState = "applying";
     }
-    await this.afterLocalStateRefresh(signal);
+  }
+
+  private async synchronizeRecoveredApplicationJournals(
+    signal: AbortSignal,
+  ): Promise<PostWriteSynchronizationResult> {
+    const context = this.requireContext();
+    try {
+      await this.syncCoordinator.coordinate(
+        {
+          mode: "delta",
+          project_gid: context.project_gid,
+          section_gids: context.section_gids,
+          device_id: context.device_id,
+          app_version: this.options.app_version,
+        },
+        signal,
+      );
+    } catch (error: unknown) {
+      if (signal.aborted) {
+        return postWriteRecoveryRequired("aborted");
+      }
+      const classification = classifyPostWriteSynchronizationError(error);
+      if (classification.kind === "recovery_required") {
+        return postWriteRecoveryRequired(classification.error_code);
+      }
+      throw new Error("AI適用ジャーナル復旧後の同期に失敗しました。", {
+        cause: error,
+      });
+    }
+    const synchronization = asanaPostWriteSynchronizationResultSchema.parse({
+      kind: "synchronized",
+    });
+    await this.refreshAuxiliaryStateAfterPostWrite(signal);
+    return synchronization;
+  }
+
+  private async resolvePostWriteSynchronization(
+    resultPromise: Promise<AsanaSyncRuntimeResult>,
+    signal: AbortSignal,
+  ): Promise<PostWriteSynchronizationResult> {
+    let runtimeResult: AsanaSyncRuntimeResult;
+    try {
+      runtimeResult = await resultPromise;
+    } catch (error: unknown) {
+      if (signal.aborted) {
+        return postWriteRecoveryRequired("aborted");
+      }
+      const classification = classifyPostWriteSynchronizationError(error);
+      if (classification.kind === "recovery_required") {
+        return postWriteRecoveryRequired(classification.error_code);
+      }
+      throw new Error("書き込み後の同期で想定外エラーが発生しました。", {
+        cause: error,
+      });
+    }
+    const synchronization = postWriteSynchronizationFromRuntimeResult(runtimeResult);
+    if (synchronization.kind === "recovery_required") {
+      return synchronization;
+    }
+    await this.refreshAuxiliaryStateAfterPostWrite(signal);
+    return synchronization;
+  }
+
+  private async refreshAuxiliaryStateAfterPostWrite(
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.afterLocalStateRefresh(signal);
+    } catch (error: unknown) {
+      this.recordFeatureFailure(
+        error,
+        "local_state_refresh",
+        "Asana同期後の補助的なローカル状態更新に失敗しました。",
+      );
+    }
   }
 
   private async requireSynchronizedBeforeAi(signal: AbortSignal): Promise<void> {

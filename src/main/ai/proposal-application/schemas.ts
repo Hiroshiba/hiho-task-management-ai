@@ -362,6 +362,31 @@ const recoveryInputSchema = z
     }
   });
 
+const postWriteSynchronizationFailureCodeSchema = z.enum([
+  "authentication_required",
+  "offline",
+  "aborted",
+  "stopped",
+  "payment_required",
+  "rate_limited",
+  "http_error",
+  "transport_error",
+  "response_error",
+  "events_reset",
+  "request_aborted",
+  "sync_in_progress",
+]);
+
+const postWriteSynchronizationResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("synchronized") }).strict(),
+  z
+    .object({
+      kind: z.literal("recovery_required"),
+      error_code: postWriteSynchronizationFailureCodeSchema,
+    })
+    .strict(),
+]);
+
 const applicationReasonCodeSchema = z.enum([
   "applied",
   "already_applied",
@@ -686,6 +711,12 @@ export type AsanaProposalApplicationInput = z.infer<typeof applicationInputSchem
 export type AsanaProposalApplicationResult = z.infer<typeof applicationResultSchema>;
 export type AsanaProposalRecoveryInput = z.infer<typeof recoveryInputSchema>;
 export type AsanaProposalRecoveryResult = z.infer<typeof recoveryResultSchema>;
+export type PostWriteSynchronizationFailureCode = z.infer<
+  typeof postWriteSynchronizationFailureCodeSchema
+>;
+export type PostWriteSynchronizationResult = z.infer<
+  typeof postWriteSynchronizationResultSchema
+>;
 
 /** 承認済みAI変更案の適用入力を検証するスキーマです。 */
 export const asanaProposalApplicationInputSchema = applicationInputSchema;
@@ -698,3 +729,11 @@ export const asanaProposalRecoveryInputSchema = recoveryInputSchema;
 
 /** 未完了ジャーナルの復旧結果を検証するスキーマです。 */
 export const asanaProposalRecoveryResultSchema = recoveryResultSchema;
+
+/** Asana書き込み後の同期失敗コードを検証するスキーマです。 */
+export const asanaPostWriteSynchronizationFailureCodeSchema =
+  postWriteSynchronizationFailureCodeSchema;
+
+/** Asana書き込み後の同期結果を検証するスキーマです。 */
+export const asanaPostWriteSynchronizationResultSchema =
+  postWriteSynchronizationResultSchema;

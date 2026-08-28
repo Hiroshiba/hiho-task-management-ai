@@ -19,8 +19,10 @@ import {
 import {
   AsanaProposalOperationWriter,
   asanaProposalOperationWriterResultSchema,
+  asanaPostWriteSynchronizationResultSchema,
   type AsanaProposalOperationWriterInput,
   type AsanaProposalOperationWriterResult,
+  type PostWriteSynchronizationResult,
 } from "../ai/proposal-application";
 import { AsanaReadClient } from "../asana/client/client";
 import {
@@ -28,6 +30,21 @@ import {
   type AsanaTaskInsertionPosition,
   type AsanaTaskUpdate,
 } from "../asana/client/task-write-client";
+import { AsanaRequestAbortedError } from "../asana/scheduler";
+import {
+  AsanaAuthenticationError,
+  AsanaEventsResetError,
+  AsanaHttpError,
+  AsanaPaymentRequiredError,
+  AsanaRateLimitError,
+  AsanaResponseError,
+  AsanaTransportError,
+} from "../asana/transport";
+import {
+  AsanaOAuthHttpError,
+  AsanaOAuthResponseError,
+  AsanaOAuthTransportError,
+} from "../auth/asana-oauth";
 import {
   asanaGuiEditInputSchema,
   asanaGuiEditResultSchema,
@@ -80,6 +97,15 @@ type AsanaGuiEditStatusWriteClient = Pick<
   AsanaTaskWriteClient,
   "addTaskToProject" | "addTaskToSection" | "updateTask"
 >;
+type GuiPostWriteDisposition =
+  | { readonly kind: "preserve" }
+  | {
+      readonly kind: "recovery_required";
+      readonly write_outcome: Extract<
+        AsanaGuiEditResult,
+        { readonly outcome: "recovery_required" }
+      >["write_outcome"];
+    };
 export type AsanaGuiEditRelationGraphValidationRequest =
   | {
       readonly kind: "dependencies";
@@ -110,6 +136,20 @@ export type AsanaGuiEditRelationGraphValidator = (
 
 /** GUI編集の操作IDを発行する関数です。 */
 export type AsanaGuiEditOperationIdProvider = () => string;
+
+function isKnownAsanaOperationalError(error: unknown): boolean {
+  return error instanceof AsanaTransportError
+    || error instanceof AsanaResponseError
+    || error instanceof AsanaAuthenticationError
+    || error instanceof AsanaEventsResetError
+    || error instanceof AsanaHttpError
+    || error instanceof AsanaPaymentRequiredError
+    || error instanceof AsanaRateLimitError
+    || error instanceof AsanaRequestAbortedError
+    || error instanceof AsanaOAuthTransportError
+    || error instanceof AsanaOAuthResponseError
+    || error instanceof AsanaOAuthHttpError;
+}
 
 function validateAbortSignal(signal: AbortSignal): void {
   if (
@@ -503,6 +543,25 @@ function resultFromWriter(
   }
 }
 
+function postWriteDisposition(
+  result: AsanaGuiEditResult,
+): GuiPostWriteDisposition {
+  switch (result.outcome) {
+    case "applied":
+      return { kind: "recovery_required", write_outcome: "applied" };
+    case "already_applied":
+      return { kind: "recovery_required", write_outcome: "already_applied" };
+    case "conflict":
+      return result.side_effect === "possible"
+        ? { kind: "recovery_required", write_outcome: "unknown" }
+        : { kind: "preserve" };
+    case "rejected":
+      return { kind: "preserve" };
+    case "recovery_required":
+      throw new Error("GUI編集の再同期要求結果を再処理できません。");
+  }
+}
+
 type StatusMembershipSnapshot =
   | { readonly kind: "absent" }
   | { readonly kind: "present"; readonly section_gid: string | null };
@@ -657,7 +716,7 @@ function statusTargetForOperation(
 /** GUI直接編集後に差分同期と順位再計算を呼び出す関数です。 */
 export type AsanaGuiEditPostApply = (
   signal: AbortSignal,
-) => Promise<void>;
+) => Promise<PostWriteSynchronizationResult>;
 
 /** オンラインのGUI直接編集をAsanaへ反映します。 */
 export class AsanaGuiEditService {
@@ -817,19 +876,16 @@ export class AsanaGuiEditService {
     baseline: ParsedBaselineExternal,
     signal: AbortSignal,
   ): Promise<AsanaGuiEditResult> {
-    let result: AsanaGuiEditResult;
-    try {
-      result = await this.writeActivityAnchor(
-        input,
-        operationId,
-        baseline,
-        signal,
-      );
-    } catch (error: unknown) {
-      return this.rethrowAfterPostApply(error, signal);
+    const result = await this.writeActivityAnchor(
+      input,
+      operationId,
+      baseline,
+      signal,
+    );
+    if (result.outcome === "recovery_required") {
+      return result;
     }
-    await this.postApply(signal);
-    return result;
+    return this.finalizePostWriteResult(result, signal);
   }
 
   private async writeActivityAnchor(
@@ -948,40 +1004,49 @@ export class AsanaGuiEditService {
       }
       throw error;
     }
-    await this.statusWriteClient.updateTask(
-      input.task_gid,
-      {
-        kind: "external",
-        value: { gid: current.response.gid, data: serialized },
-      },
-      signal,
-    );
-    const readBackTask = asanaTaskResponseSchema.parse(
-      await this.readClient.getTask(input.task_gid, signal),
-    );
-    if (readBackTask.gid !== input.task_gid) {
-      throw new Error("読み戻したAsanaタスクGIDが活動記録対象と一致しません。");
+    try {
+      await this.statusWriteClient.updateTask(
+        input.task_gid,
+        {
+          kind: "external",
+          value: { gid: current.response.gid, data: serialized },
+        },
+        signal,
+      );
+      const readBackTask = asanaTaskResponseSchema.parse(
+        await this.readClient.getTask(input.task_gid, signal),
+      );
+      if (readBackTask.gid !== input.task_gid) {
+        throw new Error("読み戻したAsanaタスクGIDが活動記録対象と一致しません。");
+      }
+      const readBackResult = baselineExternal(readBackTask);
+      const matches =
+        readBackResult.kind === "valid" &&
+        readBackResult.value.response.gid === current.response.gid &&
+        readBackResult.value.data.id === current.data.id &&
+        readBackResult.value.data.activity_anchor_on >= input.activity_date;
+      return matches
+        ? asanaGuiEditResultSchema.parse({
+            operation_id: operationId,
+            task_gid: input.task_gid,
+            outcome: "applied",
+            reason_code: "applied",
+          })
+        : asanaGuiEditResultSchema.parse({
+            operation_id: operationId,
+            task_gid: input.task_gid,
+            outcome: "conflict",
+            reason_code: "read_back_mismatch",
+            side_effect: "possible",
+          });
+    } catch (error: unknown) {
+      return this.resolvePossibleWriteError(
+        error,
+        input.task_gid,
+        operationId,
+        signal,
+      );
     }
-    const readBackResult = baselineExternal(readBackTask);
-    const matches =
-      readBackResult.kind === "valid" &&
-      readBackResult.value.response.gid === current.response.gid &&
-      readBackResult.value.data.id === current.data.id &&
-      readBackResult.value.data.activity_anchor_on >= input.activity_date;
-    return matches
-      ? asanaGuiEditResultSchema.parse({
-          operation_id: operationId,
-          task_gid: input.task_gid,
-          outcome: "applied",
-          reason_code: "applied",
-        })
-      : asanaGuiEditResultSchema.parse({
-          operation_id: operationId,
-          task_gid: input.task_gid,
-          outcome: "conflict",
-          reason_code: "read_back_mismatch",
-          side_effect: "possible",
-        });
   }
 
   private nextOperationId(): string {
@@ -1000,16 +1065,20 @@ export class AsanaGuiEditService {
         await this.writer.apply(writerInput, signal),
       );
     } catch (error: unknown) {
-      return this.rethrowAfterPostApply(error, signal);
+      return this.resolvePossibleWriteError(
+        error,
+        input.task_gid,
+        operationId,
+        signal,
+      );
     }
     let result: AsanaGuiEditResult;
     try {
       result = resultFromWriter(input, operationId, writerResult);
     } catch (error: unknown) {
-      return this.rethrowAfterPostApply(error, signal);
+      return this.rethrowUnexpectedAfterPostApply(error, signal);
     }
-    await this.postApply(signal);
-    return result;
+    return this.finalizePostWriteResult(result, signal);
   }
 
   private async applyStatusRepair(
@@ -1090,23 +1159,85 @@ export class AsanaGuiEditService {
             side_effect: "possible",
           });
       if (attempted) {
-        await this.postApply(signal);
+        return this.finalizePostWriteResult(result, signal);
       }
       return result;
     } catch (error: unknown) {
       if (attempted) {
-        return this.rethrowAfterPostApply(error, signal);
+        return this.resolvePossibleWriteError(
+          error,
+          input.task_gid,
+          operationId,
+          signal,
+        );
       }
       throw error;
     }
   }
 
-  private async rethrowAfterPostApply(
+  private async finalizePostWriteResult(
+    result: AsanaGuiEditResult,
+    signal: AbortSignal,
+  ): Promise<AsanaGuiEditResult> {
+    const synchronization = asanaPostWriteSynchronizationResultSchema.parse(
+      await this.postApply(signal),
+    );
+    if (synchronization.kind === "synchronized") {
+      return result;
+    }
+    const disposition = postWriteDisposition(result);
+    if (disposition.kind === "preserve") {
+      return result;
+    }
+    return asanaGuiEditResultSchema.parse({
+      operation_id: result.operation_id,
+      task_gid: result.task_gid,
+      outcome: "recovery_required",
+      reason_code: "local_resync_required",
+      write_outcome: disposition.write_outcome,
+      sync_error_code: synchronization.error_code,
+    });
+  }
+
+  private async resolvePossibleWriteError(
+    error: unknown,
+    taskGid: string,
+    operationId: string,
+    signal: AbortSignal,
+  ): Promise<AsanaGuiEditResult> {
+    const synchronization = await this.synchronizeAfterWriteError(error, signal);
+    if (
+      synchronization.kind === "recovery_required"
+      && (signal.aborted || isKnownAsanaOperationalError(error))
+    ) {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: taskGid,
+        outcome: "recovery_required",
+        reason_code: "local_resync_required",
+        write_outcome: "unknown",
+        sync_error_code: synchronization.error_code,
+      });
+    }
+    throw error;
+  }
+
+  private async rethrowUnexpectedAfterPostApply(
     error: unknown,
     signal: AbortSignal,
   ): Promise<never> {
+    await this.synchronizeAfterWriteError(error, signal);
+    throw error;
+  }
+
+  private async synchronizeAfterWriteError(
+    error: unknown,
+    signal: AbortSignal,
+  ): Promise<PostWriteSynchronizationResult> {
     try {
-      await this.postApply(signal);
+      return asanaPostWriteSynchronizationResultSchema.parse(
+        await this.postApply(signal),
+      );
     } catch (postApplyError: unknown) {
       throw new AggregateError(
         [error, postApplyError],
@@ -1114,6 +1245,5 @@ export class AsanaGuiEditService {
         { cause: error },
       );
     }
-    throw error;
   }
 }

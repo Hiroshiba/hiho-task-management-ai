@@ -185,6 +185,29 @@ const guiResultSchema = z.discriminatedUnion("outcome", [
       reason_code: z.literal("offline"),
     })
     .strict(),
+  z
+    .object({
+      operation_id: identifierSchema,
+      task_gid: gidSchema,
+      outcome: z.literal("recovery_required"),
+      reason_code: z.literal("local_resync_required"),
+      write_outcome: z.enum(["applied", "already_applied", "unknown"]),
+      sync_error_code: z.enum([
+        "authentication_required",
+        "offline",
+        "aborted",
+        "stopped",
+        "payment_required",
+        "rate_limited",
+        "http_error",
+        "transport_error",
+        "response_error",
+        "events_reset",
+        "request_aborted",
+        "sync_in_progress",
+      ]),
+    })
+    .strict(),
 ]);
 
 const syncFallbackReasonSchema = z.enum([

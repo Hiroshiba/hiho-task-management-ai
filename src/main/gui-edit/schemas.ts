@@ -14,6 +14,7 @@ import {
   taskStatusSchema,
   type Dependency,
 } from "../../shared/domain";
+import { asanaPostWriteSynchronizationFailureCodeSchema } from "../ai/proposal-application/schemas";
 
 const activeTaskStatusSchema = z.enum(["not_started", "in_progress"]);
 const taskTitleSchema = createUtf8ByteLimitedStringSchema(1024).refine(
@@ -227,11 +228,23 @@ const offlineResultSchema = z
   })
   .strict();
 
+const recoveryRequiredResultSchema = z
+  .object({
+    operation_id: identifierSchema,
+    task_gid: gidSchema,
+    outcome: z.literal("recovery_required"),
+    reason_code: z.literal("local_resync_required"),
+    write_outcome: z.enum(["applied", "already_applied", "unknown"]),
+    sync_error_code: asanaPostWriteSynchronizationFailureCodeSchema,
+  })
+  .strict();
+
 const guiResultSchema = z.discriminatedUnion("outcome", [
   appliedResultSchema,
   alreadyAppliedResultSchema,
   conflictResultSchema,
   offlineResultSchema,
+  recoveryRequiredResultSchema,
 ]);
 
 export type AsanaGuiEditInput = z.infer<typeof guiInputSchema>;

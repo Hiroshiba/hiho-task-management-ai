@@ -39,6 +39,7 @@ import {
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,
   asanaProposalOperationWriterResultSchema,
+  asanaPostWriteSynchronizationResultSchema,
   asanaProposalRecoveryInputSchema,
   asanaProposalRecoveryResultSchema,
   type AsanaProposalApplicationInput,
@@ -48,6 +49,7 @@ import {
   type AsanaProposalOperationWriterInput,
   type AsanaProposalOperationWriterResult,
   type AsanaProposalWriterTemporaryRefMapping,
+  type PostWriteSynchronizationResult,
 } from "./schemas";
 
 type ApplicationOperationResult =
@@ -517,18 +519,10 @@ async function finalizePendingJournals(
   if (pending.length === 0) {
     return;
   }
-  try {
-    throwIfAborted(signal);
-    await postApply(signal);
-    throwIfAborted(signal);
-  } catch (error) {
-    if (signal.aborted) {
-      signal.throwIfAborted();
-      throw error;
-    }
-    if (!isKnownAsanaOperationalError(error)) {
-      throw error;
-    }
+  const synchronization = asanaPostWriteSynchronizationResultSchema.parse(
+    await postApply(signal),
+  );
+  if (synchronization.kind === "recovery_required") {
     for (const item of pending) {
       item.operationResults.set(
         item.context.operation.operation_id,
@@ -1731,4 +1725,6 @@ export type ProposalApplicationUuidGenerator = () => string;
 export type ProposalApplicationTimestampProvider = () => string;
 
 /** 適用後の同期と順位再計算を実行します。 */
-export type ProposalApplicationPostApply = (signal: AbortSignal) => Promise<void>;
+export type ProposalApplicationPostApply = (
+  signal: AbortSignal,
+) => Promise<PostWriteSynchronizationResult>;
