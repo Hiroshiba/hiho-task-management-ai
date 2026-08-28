@@ -119,8 +119,13 @@ function validateAbortSignal(signal: AbortSignal): void {
   }
 }
 
-function today(): string {
-  return dateSchema.parse(new Date().toISOString().slice(0, 10));
+function today(currentTime: () => Date): string {
+  const now = currentTime();
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("能力検査の現在時刻が不正です。");
+  }
+  const japanTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return dateSchema.parse(japanTime.toISOString().slice(0, 10));
 }
 
 function parseTask(task: AsanaTaskResponse): AsanaTaskResponse {
@@ -210,10 +215,12 @@ export class AsanaCapabilityCheckError extends Error {
 export class AsanaCapabilityCheckService {
   private readonly readClient: CapabilityCheckReadClient;
   private readonly writeClient: CapabilityCheckWriteClient;
+  private readonly currentTime: () => Date;
 
   public constructor(
     readClient: CapabilityCheckReadClient,
     writeClient: CapabilityCheckWriteClient,
+    currentTime: () => Date,
   ) {
     if (
       typeof readClient?.listProjectTasks !== "function"
@@ -230,8 +237,12 @@ export class AsanaCapabilityCheckService {
     ) {
       throw new TypeError("能力検査の書き込みクライアントが必要です。");
     }
+    if (typeof currentTime !== "function") {
+      throw new TypeError("能力検査の現在時刻関数が必要です。");
+    }
     this.readClient = readClient;
     this.writeClient = writeClient;
+    this.currentTime = currentTime;
   }
 
   /** 初回設定でAsanaの必須操作能力を検査します。 */
@@ -262,7 +273,7 @@ export class AsanaCapabilityCheckService {
 
       const initialization = createInitialCustomExternalData({
         id: randomUUID(),
-        activity_anchor_on: today(),
+        activity_anchor_on: today(this.currentTime),
         last_active_status: "not_started",
         device_id: "capability_check",
         created_via: "capability_check",
