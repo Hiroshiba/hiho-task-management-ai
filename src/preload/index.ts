@@ -18,6 +18,8 @@ import {
   ipcAiStatusEventSchema,
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
+  ipcAsanaReauthenticateOAuthInputSchema,
+  ipcAsanaReauthenticateOAuthResponseSchema,
   ipcAppVersionSchema,
   ipcEmptyRequestSchema,
   ipcExternalToolListResponseSchema,
@@ -99,6 +101,14 @@ const api: TaskHubApi = {
   app: {
     getVersion: (): Promise<string> =>
       invokeEmpty("app:get-version", ipcAppVersionSchema),
+  },
+  asana: {
+    reauthenticateOAuth: () => invoke(
+      "asana:reauthenticate-oauth",
+      ipcAsanaReauthenticateOAuthInputSchema,
+      ipcAsanaReauthenticateOAuthResponseSchema,
+      undefined,
+    ),
   },
   readModel: {
     getOverview: () => invoke(

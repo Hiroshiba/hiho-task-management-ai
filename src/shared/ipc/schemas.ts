@@ -504,6 +504,7 @@ export const ipcFailureSchema = failureSchema;
 export const ipcAppVersionSchema = appVersionSchema;
 export const ipcChannelSchema = z.enum([
   "app:get-version",
+  "asana:reauthenticate-oauth",
   "read-model:get-overview",
   "read-model:get-task-detail",
   "sync:run",
@@ -563,6 +564,8 @@ export const ipcSyncResponseSchema = responseSchema(syncResultSchema);
 export const ipcSyncStateEventSchema = syncStateEventSchema;
 export const ipcSyncGetStateInputSchema = emptyRequestSchema;
 export const ipcSyncGetStateResponseSchema = responseSchema(syncStateEventSchema);
+export const ipcAsanaReauthenticateOAuthInputSchema = emptyRequestSchema;
+export const ipcAsanaReauthenticateOAuthResponseSchema = responseSchema(syncResultSchema);
 export const ipcSetupStateResponseSchema = responseSchema(setupStateSchema);
 export const ipcSetupStartInputSchema = setupEmptyInputSchema;
 export const ipcSetupCompleteCodexAuthenticationInputSchema = setupEmptyInputSchema;

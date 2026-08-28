@@ -17,6 +17,8 @@ export {
   ipcAiStatusEventSchema,
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
+  ipcAsanaReauthenticateOAuthInputSchema,
+  ipcAsanaReauthenticateOAuthResponseSchema,
   ipcAppVersionSchema,
   ipcAppVersionResponseSchema,
   ipcChannelSchema,

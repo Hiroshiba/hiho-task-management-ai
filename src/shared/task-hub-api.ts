@@ -44,6 +44,9 @@ export interface TaskHubApi {
   readonly app: {
     readonly getVersion: () => Promise<string>;
   };
+  readonly asana: {
+    readonly reauthenticateOAuth: () => IpcResult<IpcSyncResult>;
+  };
   readonly readModel: {
     readonly getOverview: () => IpcResult<IpcReadModelOverview>;
     readonly getTaskDetail: (taskGid: string) => IpcResult<IpcReadModelTaskDetail>;

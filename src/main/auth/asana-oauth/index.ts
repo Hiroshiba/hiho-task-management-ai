@@ -5,8 +5,10 @@ export {
   AsanaOAuthCoordinator,
   asanaOAuthCoordinatorInputSchema,
   asanaOAuthCoordinatorResultSchema,
+  asanaOAuthReauthenticationInputSchema,
   type AsanaOAuthCoordinatorInput,
   type AsanaOAuthCoordinatorResult,
+  type AsanaOAuthReauthenticationInput,
 } from "./coordinator";
 export {
   AsanaOAuthCredentialError,

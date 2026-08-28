@@ -2,6 +2,7 @@ export {
   IpcHandlerRegistry,
   registerIpcHandlers,
   type IpcAiPort,
+  type IpcAsanaPort,
   type IpcDiagnosticPort,
   type IpcExternalToolPort,
   type IpcGuiEditPort,

@@ -42,6 +42,7 @@ import {
   AsanaOAuthCoordinator,
   AsanaOAuthCredentialError,
   AsanaOAuthTokenEndpointError,
+  asanaOAuthCoordinatorResultSchema,
 } from "../auth/asana-oauth";
 import { SecretStorage } from "../auth/secret-storage";
 import {
@@ -146,6 +147,7 @@ import {
 } from "../../shared/setup";
 import {
   type IpcAiPort,
+  type IpcAsanaPort,
   type IpcGuiEditPort,
   type IpcObsidianPort,
   type IpcReadModelPort,
@@ -239,6 +241,7 @@ type SyncDiagnosticState =
 
 const maximumApprovalTaskCount = 10_000;
 const diagnosticLogRetentionLimit = 1_000;
+const asanaOAuthReauthenticationTimeoutMilliseconds = 120_000;
 
 function diagnosticCodeForChannel(
   channel: string,
@@ -834,6 +837,7 @@ export class TaskHubApplication {
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
   public getIpcPorts(): IpcServicePorts {
     return {
+      asana: this.createAsanaPort(),
       readModel: this.createReadModelPort(),
       sync: this.createSyncPort(),
       setup: this.createSetupPort(),
@@ -892,6 +896,44 @@ export class TaskHubApplication {
       return;
     }
     runtime.setOnline(online);
+  }
+
+  /** 保存済み認証情報でAsana OAuthを再認証して同期を再開します。 */
+  public async reauthenticateAsanaOAuth(
+    signal: AbortSignal,
+  ): Promise<IpcSyncResult> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    this.assertOperationalReady();
+    const storedSettings = this.database.getDeviceSettings();
+    if (storedSettings == null) {
+      throw new Error("設定済みAsana OAuthの端末設定がありません。");
+    }
+    const settings = deviceSettingsSchema.parse(storedSettings);
+    if (!contextMatchesSettings(this.requireContext(), settings)) {
+      throw new Error("設定済み文脈と端末設定が一致しません。");
+    }
+    const authentication = asanaOAuthCoordinatorResultSchema.parse(
+      await this.oauth.reauthenticate(
+        {
+          client_id: settings.client_id,
+          redirect_uri: this.options.redirect_uri,
+          timeout_milliseconds: asanaOAuthReauthenticationTimeoutMilliseconds,
+        },
+        signal,
+      ),
+    );
+    if (authentication.client_id !== settings.client_id) {
+      throw new Error("Asana OAuth再認証結果のClient IDが一致しません。");
+    }
+    throwIfAborted(signal);
+    this.configureAsanaFromSettings(settings);
+    const synchronized = await this.requireSynchronizedResult(
+      this.requireRuntime().onOnline(signal),
+    );
+    await this.afterSynchronizedState(synchronized, signal);
+    await this.verifyConfiguredCodexCapabilities(signal);
+    return toIpcSyncResult(synchronized.result);
   }
 
   private resolveDeviceId(): string {
@@ -2197,6 +2239,12 @@ export class TaskHubApplication {
         this.requireContext().project_gid,
         gidSchema.parse(taskGid),
       ),
+    };
+  }
+
+  private createAsanaPort(): IpcAsanaPort {
+    return {
+      reauthenticateOAuth: (signal) => this.reauthenticateAsanaOAuth(signal),
     };
   }
 

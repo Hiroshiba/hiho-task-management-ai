@@ -30,6 +30,8 @@ import {
   ipcAiStartNewSessionResponseSchema,
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
+  ipcAsanaReauthenticateOAuthInputSchema,
+  ipcAsanaReauthenticateOAuthResponseSchema,
   ipcChannelSchema,
   ipcEmptyRequestSchema,
   ipcExternalToolListResponseSchema,
@@ -129,6 +131,11 @@ export interface IpcSyncPort {
   onState?(listener: (state: IpcSyncStateEvent) => void): () => void;
 }
 
+/** 設定済みAsana認証操作をIPCへ提供するポートです。 */
+export interface IpcAsanaPort {
+  reauthenticateOAuth(signal: AbortSignal): MaybePromise<IpcSyncResult>;
+}
+
 /** 初回設定の状態機械をIPCへ提供するポートです。 */
 export interface IpcSetupPort {
   getState(): MaybePromise<IpcSetupState>;
@@ -186,6 +193,7 @@ export interface IpcObsidianPort {
 
 /** IPCの依存ポートをまとめた設定です。 */
 export interface IpcServicePorts {
+  readonly asana?: IpcAsanaPort;
   readonly readModel?: IpcReadModelPort;
   readonly sync?: IpcSyncPort;
   readonly setup?: IpcSetupPort;
@@ -318,6 +326,19 @@ export class IpcHandlerRegistry {
   }
 
   private registerInvokeHandlers(ipcMain: IpcMain): void {
+    this.registerHandle(
+      ipcMain,
+      "asana:reauthenticate-oauth",
+      ipcAsanaReauthenticateOAuthInputSchema,
+      ipcAsanaReauthenticateOAuthResponseSchema,
+      async (_input, signal) => {
+        const port = this.options.ports.asana;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.reauthenticateOAuth(signal);
+      },
+    );
     this.registerHandle(
       ipcMain,
       "read-model:get-overview",

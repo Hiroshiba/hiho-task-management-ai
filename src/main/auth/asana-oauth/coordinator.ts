@@ -16,6 +16,7 @@ import {
   AsanaOAuthAuthenticationInProgressError,
   AsanaOAuthAuthorizationUrlOpenError,
   AsanaOAuthCallbackAbortedError,
+  AsanaOAuthCredentialError,
 } from "./errors";
 
 const maximumTimeoutMilliseconds = 86_400_000;
@@ -55,6 +56,10 @@ const coordinatorInputSchema = z
   })
   .strict();
 
+const reauthenticationInputSchema = coordinatorInputSchema
+  .omit({ client_secret: true })
+  .strict();
+
 const coordinatorResultSchema = z
   .object({
     kind: z.literal("authenticated"),
@@ -66,12 +71,18 @@ export type AsanaOAuthCoordinatorInput = z.infer<typeof coordinatorInputSchema>;
 export type AsanaOAuthCoordinatorResult = z.infer<
   typeof coordinatorResultSchema
 >;
+export type AsanaOAuthReauthenticationInput = z.infer<
+  typeof reauthenticationInputSchema
+>;
 
 /** Asana OAuth認証調整の入力を検証するスキーマです。 */
 export const asanaOAuthCoordinatorInputSchema = coordinatorInputSchema;
 
 /** Asana OAuth認証調整の結果を検証するスキーマです。 */
 export const asanaOAuthCoordinatorResultSchema = coordinatorResultSchema;
+
+/** 設定済みAsana OAuth再認証の入力を検証するスキーマです。 */
+export const asanaOAuthReauthenticationInputSchema = reauthenticationInputSchema;
 
 function toAuthorizationUrlOpenError(
   error: unknown,
@@ -165,29 +176,61 @@ export class AsanaOAuthCoordinator {
     signal: AbortSignal,
   ): Promise<AsanaOAuthCoordinatorResult> {
     const validatedInput = coordinatorInputSchema.parse(input);
+    return this.authenticateExclusively(
+      validatedInput,
+      signal,
+      () => {
+        const latest = this.secretStorage.load();
+        this.secretStorage.save(
+          createCredentialData(validatedInput.client_secret, latest),
+        );
+      },
+    );
+  }
+
+  /** 保存済みClient Secretを使って設定済みAsana OAuthを再認証します。 */
+  public async reauthenticate(
+    input: AsanaOAuthReauthenticationInput,
+    signal: AbortSignal,
+  ): Promise<AsanaOAuthCoordinatorResult> {
+    const validatedInput = reauthenticationInputSchema.parse(input);
+    return this.authenticateExclusively(
+      validatedInput,
+      signal,
+      () => {
+        const latest = this.secretStorage.load();
+        if (latest == null || latest.asana_client_secret == null) {
+          throw new AsanaOAuthCredentialError();
+        }
+      },
+    );
+  }
+
+  private async authenticateExclusively(
+    input: AsanaOAuthReauthenticationInput,
+    signal: AbortSignal,
+    prepareCredentials: () => void,
+  ): Promise<AsanaOAuthCoordinatorResult> {
     assertNotAborted(signal);
     if (this.authenticationInProgress) {
       throw new AsanaOAuthAuthenticationInProgressError();
     }
     this.authenticationInProgress = true;
     try {
-      const latest = this.secretStorage.load();
-      this.secretStorage.save(
-        createCredentialData(validatedInput.client_secret, latest),
-      );
+      prepareCredentials();
       assertNotAborted(signal);
 
       const client = new AsanaOAuthClient(
-        validatedInput.client_id,
-        validatedInput.redirect_uri,
+        input.client_id,
+        input.redirect_uri,
         this.secretStorage,
       );
       const authorizationRequest = client.createAuthorizationRequest();
       const callbackResult = await waitForAsanaOAuthLoopbackCallback(
         {
-          redirect_uri: validatedInput.redirect_uri,
+          redirect_uri: input.redirect_uri,
           expected_state: authorizationRequest.state,
-          timeout_milliseconds: validatedInput.timeout_milliseconds,
+          timeout_milliseconds: input.timeout_milliseconds,
         },
         signal,
         () => runAbortableOperation(
@@ -204,7 +247,7 @@ export class AsanaOAuthCoordinator {
       assertNotAborted(signal);
       return coordinatorResultSchema.parse({
         kind: "authenticated",
-        client_id: validatedInput.client_id,
+        client_id: input.client_id,
       });
     } finally {
       this.authenticationInProgress = false;
