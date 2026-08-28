@@ -514,6 +514,8 @@ const diagnosticSeveritySchema = z.enum(["debug", "info", "warning", "error"]);
 export const diagnosticCodeSchema = z.enum([
   "app.start",
   "app.stop",
+  "app.error",
+  "ipc.error",
   "sync.started",
   "sync.completed",
   "sync.failed",
@@ -530,6 +532,7 @@ export const diagnosticCodeSchema = z.enum([
   "proposal.application",
   "codex.status",
   "codex.protocol",
+  "external_tools.status",
   "storage.error",
 ]);
 
