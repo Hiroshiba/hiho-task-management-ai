@@ -39,13 +39,15 @@ import {
   externalToolMaxConnections,
   externalToolMaxDiagnostics,
   externalToolMaxJsonDepth,
+  externalToolMaxOutputRecords,
   externalToolMaxRequestBytes,
   externalToolMaxResponseBytes,
   externalToolMaximumRetries,
+  externalToolOutputSchema,
   externalToolProtocolVersion,
   externalToolRequestSchema,
   externalToolResponseSchema,
-  externalToolMaxOutputRecords,
+  externalToolStatusEvidenceAttemptSchema,
   type ExternalToolBrokerOptions,
   type ExternalToolBrokerStartResult,
   type ExternalToolCredentialProvider,
@@ -56,6 +58,7 @@ import {
   type ExternalToolInvocation,
   type ExternalToolOutput,
   type ExternalToolResponse,
+  type ExternalToolStatusEvidenceAttempt,
 } from "./schemas";
 import { ExternalToolError } from "./errors";
 
@@ -323,6 +326,7 @@ function validateAbortSignal(signal: AbortSignal): void {
     || typeof signal.aborted !== "boolean"
     || typeof signal.addEventListener !== "function"
     || typeof signal.removeEventListener !== "function"
+    || typeof signal.throwIfAborted !== "function"
   ) {
     throw new TypeError("AbortSignalが必要です。");
   }
@@ -1793,6 +1797,7 @@ export class ExternalToolBroker {
   private readonly childWorkingRootPath: string;
   private readonly registry: ExternalToolBrokerOptions["registry"];
   private readonly credentialProvider: ExternalToolCredentialProvider | undefined;
+  private readonly statusEvidenceCollector: ExternalToolBrokerOptions["status_evidence_collector"];
   private readonly connectionInfoPath: string;
   private state: BrokerState = "created";
   private server: Server | undefined;
@@ -1815,6 +1820,7 @@ export class ExternalToolBroker {
     this.childWorkingRootPath = validatedOptions.child_work_root_path;
     this.registry = validatedOptions.registry;
     this.credentialProvider = validatedOptions.credential_provider;
+    this.statusEvidenceCollector = validatedOptions.status_evidence_collector;
     this.connectionInfoPath = join(this.tmpDirectoryPath, "contextctl-connection.json");
     if (isBrokerSupportedPlatform()) {
       ensureChildWorkingRoot(this.childWorkingRootPath, this.tmpDirectoryPath);
@@ -2140,11 +2146,15 @@ export class ExternalToolBroker {
       );
     }
     validateInvocationArguments(tool, validatedInvocation.args);
+    const statusEvidenceAttempt = externalToolStatusEvidenceAttemptSchema.parse(
+      this.statusEvidenceCollector.captureAttempt(),
+    );
     const runController = new AbortController();
     const runSignal = AbortSignal.any([signal, runController.signal]);
     const completion = this.executeRun(
       tool,
       validatedInvocation,
+      statusEvidenceAttempt,
       runController,
       runSignal,
     );
@@ -2158,6 +2168,7 @@ export class ExternalToolBroker {
   private async executeRun(
     tool: ExternalToolDefinition,
     validatedInvocation: ExternalToolInvocation,
+    statusEvidenceAttempt: ExternalToolStatusEvidenceAttempt,
     runController: AbortController,
     runSignal: AbortSignal,
   ): Promise<ExternalToolExecutionResult> {
@@ -2191,10 +2202,20 @@ export class ExternalToolBroker {
         runSignal,
       );
       const secrets = Object.values(credentials);
-      const output = parseToolOutput(rawOutput, secrets);
+      const output = externalToolOutputSchema.parse(
+        parseToolOutput(rawOutput, secrets),
+      );
+      const evidence = this.statusEvidenceCollector.record(
+        statusEvidenceAttempt,
+        output,
+      );
+      if (statusEvidenceAttempt.kind === "inactive" && evidence.length !== 0) {
+        throw new Error("収集対象外の外部ツール実行へ構造化根拠を記録できません。");
+      }
       return externalToolExecutionResultSchema.parse({
         tool_id: validatedInvocation.tool_id,
         output,
+        evidence,
       });
     } finally {
       this.activeRuns.delete(runController);
@@ -2541,6 +2562,7 @@ export class ExternalToolBroker {
             ok: true,
             tool_id: result.tool_id,
             output: result.output,
+            evidence: result.evidence,
           };
         } catch (error) {
           this.recordDiagnostic(error, "execution_error");

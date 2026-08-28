@@ -1,10 +1,14 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import type { JsonValue } from "../../shared/domain";
+import {
+  createUtf8ByteLimitedStringSchema,
+  gidSchema,
+  type JsonValue,
+} from "../../shared/domain";
 
 export const externalToolProtocolVersion = 1;
 export const externalToolMaxRequestBytes = 64 * 1024;
-export const externalToolMaxResponseBytes = 1_200_000;
+export const externalToolMaxResponseBytes = 2_400_000;
 export const externalToolMaxJsonDepth = 24;
 export const externalToolMaxConnections = 8;
 export const externalToolMaxSubcommands = 32;
@@ -16,12 +20,15 @@ export const externalToolMaxOutputRecords = 10_000;
 export const externalToolMaxDomains = 32;
 export const externalToolMaxDiagnostics = 64;
 export const externalToolMaximumRetries = 2;
+export const externalToolMaxStatusEvidence = 256;
 
 const maximumIdentifierCharacters = 64;
 const maximumExecutableCharacters = 4_096;
 const maximumDomainCharacters = 253;
 const maximumCredentialValueBytes = 4_096;
 const maximumArgumentNameCharacters = 66;
+const maximumStatusEvidenceLocatorBytes = 4_096;
+const maximumStatusEvidenceTargetTaskGidBytes = 200;
 
 const readOnlyCommandHeads = new Set([
   "fetch",
@@ -369,6 +376,77 @@ const jsonValueSchema = z.custom<JsonValue>(isSafeJsonValue, {
   message: "外部ツール出力は制御文字のないJSON値でなければなりません。",
 });
 
+const statusEvidenceLocatorSchema = createUtf8ByteLimitedStringSchema(
+  maximumStatusEvidenceLocatorBytes,
+)
+  .refine((value) => value.trim() === value && value.length > 0, {
+    message: "外部状態根拠locatorは前後に空白のない空でない文字列で指定してください。",
+  })
+  .refine((value) => !hasControlCharacter(value), {
+    message: "外部状態根拠locatorに制御文字を指定できません。",
+  });
+
+const statusEvidenceTargetTaskGidSchema = createUtf8ByteLimitedStringSchema(
+  maximumStatusEvidenceTargetTaskGidBytes,
+)
+  .refine((value) => gidSchema.safeParse(value).success, {
+    message: "外部状態根拠の対象タスクGIDが不正です。",
+  })
+  .refine((value) => !hasControlCharacter(value), {
+    message: "外部状態根拠の対象タスクGIDに制御文字を指定できません。",
+  });
+
+const statusEvidenceAttemptIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((value) => value.trim() === value && !/\s/u.test(value), {
+    message: "外部状態根拠attempt IDは空白を含まない値で指定してください。",
+  })
+  .refine((value) => !hasControlCharacter(value), {
+    message: "外部状態根拠attempt IDに制御文字を指定できません。",
+  });
+
+/** 外部ツール実行開始時に捕捉する収集attemptを検証するスキーマです。 */
+export const externalToolStatusEvidenceAttemptSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("inactive") }).strict(),
+  z
+    .object({
+      kind: z.literal("active"),
+      attempt_id: statusEvidenceAttemptIdSchema,
+    })
+    .strict(),
+]);
+
+/** 外部ツール出力から得た完了・取り下げ根拠を検証するスキーマです。 */
+export const externalToolStatusEvidenceSchema = z
+  .object({
+    kind: z.literal("external_tool"),
+    locator: statusEvidenceLocatorSchema,
+    target_task_gid: statusEvidenceTargetTaskGidSchema,
+    status: z.enum(["closed", "completed", "cancelled"]),
+  })
+  .strict();
+
+/** 一回の外部ツール応答に含める構造化根拠を検証するスキーマです。 */
+export const externalToolStatusEvidenceCollectionSchema = z
+  .array(externalToolStatusEvidenceSchema)
+  .max(externalToolMaxStatusEvidence)
+  .superRefine((evidence, context) => {
+    const seen = new Set<string>();
+    evidence.forEach((item, index) => {
+      if (seen.has(item.locator)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "locator"],
+          message: "外部状態根拠locatorを重複指定できません。",
+        });
+        return;
+      }
+      seen.add(item.locator);
+    });
+  });
+
 export const externalToolErrorCodeSchema = z.enum([
   "invalid_request",
   "capability_invalid",
@@ -493,7 +571,7 @@ export const externalToolRequestSchema = z
   })
   .strict();
 
-const externalToolOutputSchema = z.discriminatedUnion("format", [
+export const externalToolOutputSchema = z.discriminatedUnion("format", [
   z
     .object({
       format: z.literal("json"),
@@ -513,6 +591,7 @@ export const externalToolExecutionResultSchema = z
   .object({
     tool_id: toolIdSchema,
     output: externalToolOutputSchema,
+    evidence: externalToolStatusEvidenceCollectionSchema,
   })
   .strict();
 
@@ -530,6 +609,7 @@ export const externalToolResponseSchema = z.union([
       ok: z.literal(true),
       tool_id: toolIdSchema,
       output: externalToolOutputSchema,
+      evidence: externalToolStatusEvidenceCollectionSchema,
     })
     .strict(),
   z
@@ -590,6 +670,13 @@ export const externalToolBrokerOptionsSchema = z
         "資格情報プロバイダーが不正です。",
       )
       .optional(),
+    status_evidence_collector: z.custom<ExternalToolStatusEvidenceCollectorPort>(
+      (value) => typeof value === "object"
+        && value != null
+        && typeof Reflect.get(value, "captureAttempt") === "function"
+        && typeof Reflect.get(value, "record") === "function",
+      "外部状態根拠collectorが必要です。",
+    ),
   })
   .strict();
 
@@ -606,6 +693,12 @@ export type ExternalToolDefinition = z.infer<typeof externalToolDefinitionSchema
 export type ExternalToolInvocation = z.infer<typeof externalToolInvocationSchema>;
 export type ExternalToolRequest = z.infer<typeof externalToolRequestSchema>;
 export type ExternalToolOutput = z.infer<typeof externalToolOutputSchema>;
+export type ExternalToolStatusEvidence = z.infer<
+  typeof externalToolStatusEvidenceSchema
+>;
+export type ExternalToolStatusEvidenceAttempt = z.infer<
+  typeof externalToolStatusEvidenceAttemptSchema
+>;
 export type ExternalToolExecutionResult = z.infer<
   typeof externalToolExecutionResultSchema
 >;
@@ -627,6 +720,14 @@ export type ExternalToolCredentialProvider = (
 export type ExternalToolRegistryLike = {
   readonly get: (toolId: string) => ExternalToolDefinition;
   readonly list: () => readonly ExternalToolDefinition[];
+};
+
+export type ExternalToolStatusEvidenceCollectorPort = {
+  readonly captureAttempt: () => ExternalToolStatusEvidenceAttempt;
+  readonly record: (
+    attempt: ExternalToolStatusEvidenceAttempt,
+    output: ExternalToolOutput,
+  ) => readonly ExternalToolStatusEvidence[];
 };
 
 export { isSafeJsonValue };

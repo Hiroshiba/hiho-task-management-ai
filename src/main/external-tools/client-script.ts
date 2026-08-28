@@ -32,11 +32,14 @@ const path = require("node:path");
 const connectionInfoPath = ${serializedPath};
 const protocolVersion = 1;
 const maxRequestBytes = 64 * 1024;
-const maxResponseBytes = 1200000;
+const maxResponseBytes = 2400000;
 const maxJsonDepth = 24;
 const maxArguments = 32;
 const maxArgumentBytes = 4096;
 const maxOutputRecords = 10000;
+const maxStatusEvidence = 256;
+const maxStatusEvidenceLocatorBytes = 4096;
+const maxStatusEvidenceTargetTaskGidBytes = 200;
 const requestTimeoutMilliseconds = 35000;
 const errorCodes = new Set([
   "invalid_request",
@@ -122,6 +125,40 @@ function isJsonValue(value, maximumDepth) {
       }
       stack.push({ value: item, depth: frame.depth + 1 });
     }
+  }
+  return true;
+}
+
+function isStatusEvidence(value) {
+  return (
+    isPlainObject(value)
+    && Object.keys(value).length === 4
+    && value.kind === "external_tool"
+    && typeof value.locator === "string"
+    && value.locator.length > 0
+    && value.locator.trim() === value.locator
+    && Buffer.byteLength(value.locator, "utf8") <= maxStatusEvidenceLocatorBytes
+    && !hasControlCharacter(value.locator)
+    && typeof value.target_task_gid === "string"
+    && value.target_task_gid.length > 0
+    && value.target_task_gid.trim() === value.target_task_gid
+    && !/\s/u.test(value.target_task_gid)
+    && Buffer.byteLength(value.target_task_gid, "utf8") <= maxStatusEvidenceTargetTaskGidBytes
+    && !hasControlCharacter(value.target_task_gid)
+    && (value.status === "closed" || value.status === "completed" || value.status === "cancelled")
+  );
+}
+
+function isStatusEvidenceCollection(value) {
+  if (!Array.isArray(value) || value.length > maxStatusEvidence) {
+    return false;
+  }
+  const locators = new Set();
+  for (const evidence of value) {
+    if (!isStatusEvidence(evidence) || locators.has(evidence.locator)) {
+      return false;
+    }
+    locators.add(evidence.locator);
   }
   return true;
 }
@@ -515,7 +552,7 @@ function validateResponse(value, expectedToolId) {
   }
   if (value.ok === true) {
     if (
-      Object.keys(value).length !== 3
+      Object.keys(value).length !== 4
       || typeof value.tool_id !== "string"
       || !/^[a-z][a-z0-9._-]{0,63}$/u.test(value.tool_id)
       || value.tool_id !== expectedToolId
@@ -523,6 +560,7 @@ function validateResponse(value, expectedToolId) {
       || (value.output.format === "json" && (Object.keys(value.output).length !== 2 || !isJsonValue(value.output.value, maxJsonDepth)))
       || (value.output.format === "jsonl" && (Object.keys(value.output).length !== 2 || !Array.isArray(value.output.values) || value.output.values.length === 0 || value.output.values.length > maxOutputRecords || !value.output.values.every((item) => isJsonValue(item, maxJsonDepth))))
       || (value.output.format !== "json" && value.output.format !== "jsonl")
+      || !isStatusEvidenceCollection(value.evidence)
     ) {
       throw invalid("contextctl成功応答が不正です。");
     }
