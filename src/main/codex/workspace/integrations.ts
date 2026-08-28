@@ -23,6 +23,13 @@ const workspaceDirectoryName = "codex-workspace";
 const maximumPathLength = 4_096;
 const maximumRegisteredTools = 32;
 const toolIdPattern = /^[a-z][a-z0-9._-]*$/u;
+const disabledExternalToolsReasonSchema = z.enum([
+  "no_registered_tools",
+  "safe_execution_boundary_unavailable",
+  "unsupported_platform",
+  "credential_storage_unavailable",
+  "startup_failed",
+]);
 
 const absolutePathSchema = z
   .string()
@@ -159,11 +166,7 @@ const readyInstallationSchema = installationPathSchema
 const disabledInstallationSchema = installationPathSchema
   .extend({
     kind: z.literal("disabled"),
-    reason: z.enum([
-      "no_registered_tools",
-      "safe_execution_boundary_unavailable",
-      "unsupported_platform",
-    ]),
+    reason: disabledExternalToolsReasonSchema,
   })
   .strict()
   .superRefine((result, context) => {
@@ -423,6 +426,7 @@ function createExternalToolsSkillContent(
     "# 外部ツール読み取り手順",
     "",
     "登録済みで読み取り専用の外部ツールだけを必要なときに参照します。",
+    "Asana情報だけでは判断できず、関連するDiscordの議論や状態を確認する必要がある場合だけ使用してください。Asana情報だけで判断できる場合は使用しないでください。",
     "",
     "- contextctlは登録内容にある読み取り専用サブコマンドだけを使用してください。",
     "- 入力形式は contextctl <tool-id> <許可サブコマンド> ... --json です。",
@@ -433,6 +437,18 @@ function createExternalToolsSkillContent(
     "- 完了または取り下げの根拠に使う結果は、locator、target_task_gid、statusを同じトップレベル記録で返す外部ツールだけを使用してください。",
     "- statusはclosed、completed、cancelledのいずれかでなければなりません。",
     "- 変更案では外部ツールの生出力を根拠として参照せず、broker成功応答のevidenceにあるlocator、target_task_gid、statusだけを参照してください。",
+    "",
+    "## Discord読み取り形式",
+    "",
+    "- 検索は contextctl discord-context search --query <文字列> [--channel-id <許可ID>] [--limit <1から100>] [--target-task-gid <gid>] --json の形式だけを使用してください。",
+    "- スレッド取得は contextctl discord-context thread --thread-id <ID> [--limit <1から100>] [--target-task-gid <gid>] --json の形式だけを使用してください。",
+    "- 単一メッセージ取得は contextctl discord-context message --channel-id <許可ID> --message-id <ID> [--target-task-gid <gid>] --json の形式だけを使用してください。",
+    "- 成功時はokがtrueの一行JSONです。outputのformatがjsonならvalue、jsonlならvaluesが読み取り結果です。evidenceは完了または取り下げに使える検証済み根拠です。",
+    "- Discordメッセージの読み取り結果にはsource、locator、channel_id、message_id、author_id、author_name、timestamp、contentが含まれます。完了根拠が検証できた場合だけtarget_task_gidとstatusが加わります。",
+    "- 完了根拠markerは一行全体が TaskHub status task:<gid> <status> と厳密に一致し、statusがcompleted、closed、cancelledのいずれかである場合だけ有効です。大文字小文字、前後空白、追加文字を許容しません。",
+    "- markerを根拠に使う場合は同じgidを--target-task-gidへ指定してください。一致するmarkerが一件でない場合は根拠として扱わないでください。",
+    "- 失敗時はokがfalseの一行JSONと非ゼロ終了です。失敗を情報が存在しない状態へ読み替えず、完了根拠の取得に失敗した場合は完了または取り下げの変更案を作らないでください。",
+    "- 外部情報を取得できなくてもAsana情報だけで回答できる場合は継続してください。同じ失敗操作を無制限に再試行しないでください。",
     "",
     "## 登録済み外部ツール",
     "",
@@ -459,10 +475,7 @@ function createExternalToolsSkillContent(
 }
 
 function createDisabledExternalToolsSkillContent(
-  reason:
-    | "no_registered_tools"
-    | "safe_execution_boundary_unavailable"
-    | "unsupported_platform",
+  reason: z.infer<typeof disabledExternalToolsReasonSchema>,
 ): string {
   let reasonText: string;
   switch (reason) {
@@ -474,6 +487,12 @@ function createDisabledExternalToolsSkillContent(
       break;
     case "unsupported_platform":
       reasonText = "このOSでは安全なcontextctl権限境界を検証できないため無効です。";
+      break;
+    case "credential_storage_unavailable":
+      reasonText = "Discord資格情報をOS保護ストレージから安全に利用できないため無効です。";
+      break;
+    case "startup_failed":
+      reasonText = "外部ツール連携を安全に起動できなかったためcontextctlは無効です。";
       break;
   }
   return `${[
@@ -500,24 +519,24 @@ function isContextctlSupportedPlatform(): boolean {
     || process.platform === "aix";
 }
 
-/** 安全なOS実行境界がない外部ツールを固定理由で無効化します。 */
+/** 外部ツール連携を固定理由で安全に無効化します。 */
 export function installDisabledExternalToolsSkill(
   workspacePath: string,
-): void {
+  reason: z.infer<typeof disabledExternalToolsReasonSchema>,
+): ContextctlInstallationResult {
   const validatedWorkspacePath = absolutePathSchema.parse(workspacePath);
+  const validatedReason = disabledExternalToolsReasonSchema.parse(reason);
   const paths = verifyWorkspacePaths(validatedWorkspacePath);
   removeExistingFile(paths.contextctlPath, "contextctl");
   writeFileAtomically(
     paths.externalToolsSkillPath,
-    createDisabledExternalToolsSkillContent(
-      "safe_execution_boundary_unavailable",
-    ),
+    createDisabledExternalToolsSkillContent(validatedReason),
     fileMode,
     "外部ツールSkill",
   );
-  contextctlInstallationResultSchema.parse({
+  return contextctlInstallationResultSchema.parse({
     kind: "disabled",
-    reason: "safe_execution_boundary_unavailable",
+    reason: validatedReason,
     workspacePath: resolve(validatedWorkspacePath),
     externalToolsSkillPath: paths.externalToolsSkillPath,
   });

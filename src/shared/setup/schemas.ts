@@ -8,6 +8,8 @@ import {
 import { deviceSectionGidsSchema, vaultMappingSchema } from "../storage";
 
 const maximumAsanaClientSecretBytes = 1024;
+const maximumDiscordBotTokenBytes = 4_096;
+const maximumDiscordChannels = 16;
 
 const asanaClientSecretSchema = createUtf8ByteLimitedStringSchema(
   maximumAsanaClientSecretBytes,
@@ -86,6 +88,13 @@ const setupCodexAvailabilitySchema = z.discriminatedUnion("kind", [
 
 const setupCodexAvailableSchema = z.object({ kind: z.literal("available") }).strict();
 
+const setupExternalToolUnavailableReasonSchema = z.enum([
+  "unsupported_platform",
+  "safe_execution_boundary_unavailable",
+  "credential_storage_unavailable",
+  "startup_failed",
+]);
+
 const setupResourceIssueSchema = z
   .object({
     resource: z.enum(["section", "tag"]),
@@ -115,6 +124,46 @@ const setupContextWithTestTaskSchema = setupContextSchema
     test_task_gid: gidSchema,
   })
   .strict();
+
+const discordChannelIdSchema = z
+  .string()
+  .regex(/^[1-9][0-9]{16,19}$/u, "DiscordチャンネルIDが不正です。");
+
+const configuredDiscordChannelIdsSchema = z
+  .array(discordChannelIdSchema)
+  .min(1)
+  .max(maximumDiscordChannels)
+  .superRefine((channelIds, context) => {
+    const seen = new Set<string>();
+    channelIds.forEach((channelId, index) => {
+      if (seen.has(channelId)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "同じDiscordチャンネルIDを重複指定できません。",
+        });
+        return;
+      }
+      seen.add(channelId);
+    });
+  });
+
+const setupExternalToolSelectionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("skipped") }).strict(),
+  z
+    .object({
+      kind: z.literal("configured"),
+      tool_id: z.literal("discord-context"),
+      allowed_channel_ids: configuredDiscordChannelIdsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason_code: setupExternalToolUnavailableReasonSchema,
+    })
+    .strict(),
+]);
 
 const setupStateSchema = z.discriminatedUnion("kind", [
   z
@@ -261,6 +310,16 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("external_tool_configured"),
       step: z.literal("full_sync"),
       context: setupContextWithTestTaskSchema,
+      tool_id: z.literal("discord-context"),
+      allowed_channel_ids: configuredDiscordChannelIdsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("external_tool_unavailable"),
+      step: z.literal("full_sync"),
+      context: setupContextWithTestTaskSchema,
+      reason_code: setupExternalToolUnavailableReasonSchema,
     })
     .strict(),
   z
@@ -268,6 +327,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("full_sync_required"),
       step: z.literal("full_sync"),
       context: setupContextWithTestTaskSchema,
+      external_tool: setupExternalToolSelectionSchema,
     })
     .strict(),
   z
@@ -275,6 +335,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("codex_capability_required"),
       step: z.literal("codex_capability"),
       context: setupContextWithTestTaskSchema,
+      external_tool: setupExternalToolSelectionSchema,
     })
     .strict(),
   z
@@ -282,6 +343,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("ready"),
       step: z.literal("ready"),
       context: setupContextWithTestTaskSchema,
+      external_tool: setupExternalToolSelectionSchema,
     })
     .strict(),
 ]);
@@ -329,11 +391,30 @@ const setupVaultChoiceInputSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const setupExternalToolChoiceInputSchema = z
+const discordBotTokenSchema = createUtf8ByteLimitedStringSchema(
+  maximumDiscordBotTokenBytes,
+)
+  .min(1)
+  .regex(/^[A-Za-z0-9._-]+$/u, "Discord Bot Tokenに使用できない文字が含まれています。")
+  .refine((value) => value === value.trim(), "Discord Bot Tokenの前後に空白を含めることはできません。")
+  .refine((value) => !/\s/u.test(value), "Discord Bot Tokenに空白を含めることはできません。")
+  .refine((value) => !hasControlCharacter(value), "Discord Bot Tokenに制御文字を含めることはできません。");
+
+const setupDiscordExternalToolConfigurationInputSchema = z
   .object({
-    kind: z.literal("skip"),
+    bot_token: discordBotTokenSchema,
+    allowed_channel_ids: configuredDiscordChannelIdsSchema,
   })
   .strict();
+
+const setupExternalToolChoiceInputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("skip") }).strict(),
+  setupDiscordExternalToolConfigurationInputSchema
+    .safeExtend({
+      kind: z.literal("configure_discord"),
+    })
+    .strict(),
+]);
 
 function hasControlCharacter(value: string): boolean {
   for (const character of value) {
@@ -354,7 +435,10 @@ export {
   setupCredentialsInputSchema,
   setupCodexAvailabilitySchema,
   codexUnavailableReasonSchema,
+  setupDiscordExternalToolConfigurationInputSchema,
   setupExternalToolChoiceInputSchema,
+  setupExternalToolSelectionSchema,
+  setupExternalToolUnavailableReasonSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
   setupRedirectUriSchema,
@@ -370,7 +454,16 @@ export type SetupState = z.infer<typeof setupStateSchema>;
 export type SetupCodexAvailability = z.infer<typeof setupCodexAvailabilitySchema>;
 export type SetupCodexUnavailableReason = z.infer<typeof codexUnavailableReasonSchema>;
 export type SetupCredentialsInput = z.infer<typeof setupCredentialsInputSchema>;
+export type SetupDiscordExternalToolConfigurationInput = z.infer<
+  typeof setupDiscordExternalToolConfigurationInputSchema
+>;
 export type SetupExternalToolChoiceInput = z.infer<typeof setupExternalToolChoiceInputSchema>;
+export type SetupExternalToolSelection = z.infer<
+  typeof setupExternalToolSelectionSchema
+>;
+export type SetupExternalToolUnavailableReason = z.infer<
+  typeof setupExternalToolUnavailableReasonSchema
+>;
 export type SetupProject = z.infer<typeof setupProjectSchema>;
 export type SetupProjectSelectionInput = z.infer<typeof setupProjectSelectionInputSchema>;
 export type SetupResourceIssue = z.infer<typeof setupResourceIssueSchema>;

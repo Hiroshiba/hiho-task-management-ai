@@ -25,7 +25,10 @@ import {
   codexUnavailableReasonSchema,
   setupCredentialsInputSchema,
   setupCodexAvailabilitySchema,
+  setupDiscordExternalToolConfigurationInputSchema,
   setupExternalToolChoiceInputSchema,
+  setupExternalToolSelectionSchema,
+  setupExternalToolUnavailableReasonSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
   setupRedirectUriSchema,
@@ -35,7 +38,10 @@ import {
   setupWorkspaceSelectionInputSchema,
   type SetupCredentialsInput,
   type SetupCodexAvailability,
+  type SetupDiscordExternalToolConfigurationInput,
   type SetupExternalToolChoiceInput,
+  type SetupExternalToolSelection,
+  type SetupExternalToolUnavailableReason,
   type SetupProject,
   type SetupProjectSelectionInput,
   type SetupResourceIssue,
@@ -108,6 +114,61 @@ export type SetupCheckpointPort = {
   readonly save: (state: SetupState) => void;
 };
 
+export type SetupExternalToolConfigurationResult =
+  | {
+      readonly kind: "configured";
+      readonly tool_id: "discord-context";
+      readonly allowed_channel_ids: readonly string[];
+    }
+  | {
+      readonly kind: "unavailable";
+      readonly reason_code: SetupExternalToolUnavailableReason;
+    };
+
+export type SetupExternalToolDeactivationResult =
+  | { readonly kind: "deactivated" }
+  | {
+      readonly kind: "unavailable";
+      readonly reason_code: SetupExternalToolUnavailableReason;
+    };
+
+export type SetupExternalToolPort = {
+  readonly configureDiscord: (
+    input: SetupDiscordExternalToolConfigurationInput,
+    signal: AbortSignal,
+  ) => Promise<SetupExternalToolConfigurationResult>;
+  readonly deactivateDiscord: (
+    signal: AbortSignal,
+  ) => Promise<SetupExternalToolDeactivationResult>;
+};
+
+const setupExternalToolConfigurationResultSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("configured"),
+      tool_id: z.literal("discord-context"),
+      allowed_channel_ids:
+        setupDiscordExternalToolConfigurationInputSchema.shape.allowed_channel_ids,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason_code: setupExternalToolUnavailableReasonSchema,
+    })
+    .strict(),
+]);
+
+const setupExternalToolDeactivationResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("deactivated") }).strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason_code: setupExternalToolUnavailableReasonSchema,
+    })
+    .strict(),
+]);
+
 export type SetupFullSyncInput = {
   readonly device_id: string;
   readonly client_id: string;
@@ -141,6 +202,7 @@ export type SetupOrchestratorOptions = {
   readonly capability: SetupCapabilityPort;
   readonly database: SetupDatabasePort;
   readonly checkpoint: SetupCheckpointPort;
+  readonly externalTool: SetupExternalToolPort;
   readonly fullSync: SetupFullSyncPort;
 };
 
@@ -155,6 +217,7 @@ const setupOrchestratorOptionsSchema = z
     capability: z.unknown(),
     database: z.unknown(),
     checkpoint: z.unknown(),
+    externalTool: z.unknown(),
     fullSync: z.unknown(),
   })
   .strict();
@@ -352,10 +415,46 @@ function requiresContextRevalidation(state: SetupState): boolean {
     "vault_configured",
     "external_tool_skipped",
     "external_tool_configured",
+    "external_tool_unavailable",
     "full_sync_required",
     "codex_capability_required",
     "ready",
   ].includes(state.kind);
+}
+
+function externalToolSelectionFromState(
+  state: Extract<
+    SetupState,
+    {
+      kind:
+        | "external_tool_skipped"
+        | "external_tool_configured"
+        | "external_tool_unavailable"
+        | "full_sync_required"
+        | "codex_capability_required"
+        | "ready";
+    }
+  >,
+): SetupExternalToolSelection {
+  switch (state.kind) {
+    case "external_tool_skipped":
+      return setupExternalToolSelectionSchema.parse({ kind: "skipped" });
+    case "external_tool_configured":
+      return setupExternalToolSelectionSchema.parse({
+        kind: "configured",
+        tool_id: state.tool_id,
+        allowed_channel_ids: state.allowed_channel_ids,
+      });
+    case "external_tool_unavailable":
+      return setupExternalToolSelectionSchema.parse({
+        kind: "unavailable",
+        reason_code: state.reason_code,
+      });
+    case "full_sync_required":
+    case "codex_capability_required":
+    case "ready":
+      return setupExternalToolSelectionSchema.parse(state.external_tool);
+  }
 }
 
 function sameSectionGids(
@@ -442,6 +541,7 @@ function updateStateCodexAvailability(
     case "vault_configured":
     case "external_tool_skipped":
     case "external_tool_configured":
+    case "external_tool_unavailable":
     case "full_sync_required":
     case "codex_capability_required":
     case "ready":
@@ -485,6 +585,7 @@ export class SetupOrchestrator {
   private readonly capability: SetupCapabilityPort;
   private readonly database: SetupDatabasePort;
   private readonly checkpoint: SetupCheckpointPort;
+  private readonly externalTool: SetupExternalToolPort;
   private readonly fullSync: SetupFullSyncPort;
   private state: SetupState;
   private resumeRequired: boolean;
@@ -511,6 +612,8 @@ export class SetupOrchestrator {
     validateFunction(options.database.saveVaultMapping, "Vault保存関数が必要です。");
     validateFunction(options.checkpoint.load, "初回設定チェックポイント取得関数が必要です。");
     validateFunction(options.checkpoint.save, "初回設定チェックポイント保存関数が必要です。");
+    validateFunction(options.externalTool.configureDiscord, "Discord外部ツール設定関数が必要です。");
+    validateFunction(options.externalTool.deactivateDiscord, "Discord外部ツール無効化関数が必要です。");
     validateFunction(options.fullSync, "フル同期関数が必要です。");
     this.codex = options.codex;
     this.oauth = options.oauth;
@@ -519,6 +622,7 @@ export class SetupOrchestrator {
     this.capability = options.capability;
     this.database = options.database;
     this.checkpoint = options.checkpoint;
+    this.externalTool = options.externalTool;
     this.fullSync = options.fullSync;
     const initialState = parseState({
       kind: "created",
@@ -949,22 +1053,157 @@ export class SetupOrchestrator {
     return this.getState();
   }
 
-  /** 利用できない外部読み取りツールを明示的にスキップします。 */
-  public chooseExternalTool(
+  /** 固定Discord読取連携を設定するか明示的にスキップします。 */
+  public async chooseExternalTool(
     input: SetupExternalToolChoiceInput,
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
+    signal.throwIfAborted();
     this.assertResumeCompleted();
-    setupExternalToolChoiceInputSchema.parse(input);
+    const validatedInput = setupExternalToolChoiceInputSchema.parse(input);
     assertStateKindTyped(this.state, ["vault_skipped", "vault_configured"]);
     const state = this.state;
-    this.state = parseState({
+    if (validatedInput.kind === "configure_discord") {
+      const configuration = setupDiscordExternalToolConfigurationInputSchema.parse({
+        bot_token: validatedInput.bot_token,
+        allowed_channel_ids: validatedInput.allowed_channel_ids,
+      });
+      const result = setupExternalToolConfigurationResultSchema.parse(
+        await this.externalTool.configureDiscord(configuration, signal),
+      );
+      if (result.kind === "configured") {
+        return this.commitExternalToolChoice(state, parseState({
+          kind: "external_tool_configured",
+          step: "full_sync",
+          context: state.context,
+          tool_id: result.tool_id,
+          allowed_channel_ids: result.allowed_channel_ids,
+        }), signal);
+      }
+      const deactivation = setupExternalToolDeactivationResultSchema.parse(
+        await this.externalTool.deactivateDiscord(signal),
+      );
+      const reasonCode = deactivation.kind === "unavailable"
+        ? deactivation.reason_code
+        : result.reason_code;
+      return this.commitExternalToolChoice(state, parseState({
+        kind: "external_tool_unavailable",
+        step: "full_sync",
+        context: state.context,
+        reason_code: reasonCode,
+      }), signal);
+    }
+    const deactivation = setupExternalToolDeactivationResultSchema.parse(
+      await this.externalTool.deactivateDiscord(signal),
+    );
+    if (deactivation.kind === "unavailable") {
+      return this.commitExternalToolChoice(state, parseState({
+        kind: "external_tool_unavailable",
+        step: "full_sync",
+        context: state.context,
+        reason_code: deactivation.reason_code,
+      }), signal);
+    }
+    return this.commitExternalToolChoice(state, parseState({
       kind: "external_tool_skipped",
       step: "full_sync",
       context: state.context,
-    });
-    return Promise.resolve(this.getState());
+    }), signal);
+  }
+
+  /** 保存済み外部ツール選択を取得します。 */
+  public getExternalToolSelection(): SetupExternalToolSelection | undefined {
+    switch (this.state.kind) {
+      case "external_tool_skipped":
+      case "external_tool_configured":
+      case "external_tool_unavailable":
+      case "full_sync_required":
+      case "codex_capability_required":
+      case "ready":
+        return externalToolSelectionFromState(this.state);
+      default:
+        return undefined;
+    }
+  }
+
+  /** 外部ツール選択を安全停止状態へ更新します。 */
+  public markExternalToolUnavailable(
+    reasonCode: SetupExternalToolUnavailableReason,
+  ): SetupState {
+    const reason = setupExternalToolUnavailableReasonSchema.parse(reasonCode);
+    const state = this.state;
+    let nextState: SetupState;
+    switch (state.kind) {
+      case "external_tool_configured":
+      case "external_tool_skipped":
+      case "external_tool_unavailable":
+        nextState = parseState({
+          kind: "external_tool_unavailable",
+          step: "full_sync",
+          context: state.context,
+          reason_code: reason,
+        });
+        break;
+      case "full_sync_required":
+      case "codex_capability_required":
+      case "ready":
+        nextState = parseState({
+          ...state,
+          external_tool: {
+            kind: "unavailable",
+            reason_code: reason,
+          },
+        });
+        break;
+      default:
+        throw new Error("現在の初回設定状態には外部ツール選択がありません。");
+    }
+    this.checkpoint.save(nextState);
+    this.state = nextState;
+    return parseState(nextState);
+  }
+
+  private async commitExternalToolChoice(
+    previousState: Extract<SetupState, { kind: "vault_skipped" | "vault_configured" }>,
+    nextState: SetupState,
+    signal: AbortSignal,
+  ): Promise<SetupState> {
+    assertStateKindTyped(nextState, [
+      "external_tool_skipped",
+      "external_tool_configured",
+      "external_tool_unavailable",
+    ]);
+    try {
+      signal.throwIfAborted();
+      this.checkpoint.save(nextState);
+    } catch (error: unknown) {
+      const deactivationSignal = new AbortController().signal;
+      let deactivation: SetupExternalToolDeactivationResult;
+      try {
+        deactivation = setupExternalToolDeactivationResultSchema.parse(
+          await this.externalTool.deactivateDiscord(deactivationSignal),
+        );
+      } catch (deactivationError: unknown) {
+        this.state = previousState;
+        throw new AggregateError(
+          [error, deactivationError],
+          "外部ツール選択を確定できず安全な無効化も失敗しました。",
+          { cause: error },
+        );
+      }
+      this.state = previousState;
+      if (deactivation.kind === "unavailable") {
+        throw new AggregateError(
+          [error, new Error("外部ツール選択の確定失敗後にDiscord連携を無効化できませんでした。")],
+          "外部ツール選択を確定できず安全な無効化も完了しませんでした。",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    this.state = nextState;
+    return parseState(nextState);
   }
 
   /** 初回設定用のフル同期を完了します。 */
@@ -974,13 +1213,16 @@ export class SetupOrchestrator {
     assertStateKindTyped(this.state, [
       "external_tool_skipped",
       "external_tool_configured",
+      "external_tool_unavailable",
       "full_sync_required",
     ]);
     const state = this.state;
+    const externalTool = externalToolSelectionFromState(state);
     this.state = parseState({
       kind: "full_sync_required",
       step: "full_sync",
       context: state.context,
+      external_tool: externalTool,
     });
     this.checkpoint.save(this.state);
     const fullSyncInput = setupFullSyncInputSchema.parse({
@@ -997,6 +1239,7 @@ export class SetupOrchestrator {
       kind: "codex_capability_required",
       step: "codex_capability",
       context: state.context,
+      external_tool: externalTool,
     });
     return this.getState();
   }
@@ -1027,6 +1270,7 @@ export class SetupOrchestrator {
         ...state.context,
         codex: availability,
       },
+      external_tool: state.external_tool,
     });
     return this.getState();
   }
