@@ -369,6 +369,7 @@ export const deviceSectionGidsSchema = z
 /** 秘密情報を含まない端末設定を検証するスキーマです。 */
 export const deviceSettingsSchema = z
   .object({
+    device_id: identifierSchema,
     client_id: identifierSchema,
     workspace_gid: gidSchema,
     project_gid: gidSchema,

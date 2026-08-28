@@ -36,7 +36,7 @@ import {
 } from "../../shared/storage";
 import type { SqliteDatabase } from "./types";
 
-export const storageSchemaVersion = 2;
+export const storageSchemaVersion = 3;
 export const storageBusyTimeoutMilliseconds = 5_000;
 
 const storageTableNames = [
@@ -86,6 +86,7 @@ CREATE TABLE sync_state (
 );
 CREATE TABLE device_settings (
   settings_key INTEGER PRIMARY KEY NOT NULL CHECK (settings_key = 1),
+  device_id TEXT NOT NULL,
   client_id TEXT NOT NULL,
   workspace_gid TEXT NOT NULL,
   project_gid TEXT NOT NULL,
