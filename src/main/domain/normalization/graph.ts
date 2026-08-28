@@ -421,6 +421,17 @@ function createCycleCleanup(
   return cleanupItemSchema.parse(item);
 }
 
+function createChildrenOnlyCompletionConfirmationCleanup(
+  taskGid: string,
+): CleanupItem {
+  const item: CleanupItem = {
+    kind: "children_only_completion_confirmation",
+    task_gid: taskGid,
+    message: `親タスクGID ${taskGid} はすべての子タスクが完了しているため、親タスクの完了を確認してください。`,
+  };
+  return cleanupItemSchema.parse(item);
+}
+
 function addParent(
   childrenByParent: Map<string, Set<string>>,
   parentGid: string,
@@ -750,6 +761,11 @@ export function normalizeTaskGraph(
       parentReasonResult.hasChildren &&
       parentReasonResult.allChildrenCompleted &&
       !parentCycle;
+    if (completionConfirmation) {
+      cleanupItems.push(
+        createChildrenOnlyCompletionConfirmationCleanup(task.gid),
+      );
+    }
     const reasons: BlockReason[] = [
       ...dependencyReasons,
       ...parentReasonResult.reasons,
