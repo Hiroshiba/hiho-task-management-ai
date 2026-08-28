@@ -176,6 +176,7 @@ const rendererGuiOperationSchema = z.discriminatedUnion("kind", [
       value: z.enum(["not_started", "in_progress"]),
     })
     .strict(),
+  z.object({ kind: z.literal("mark_activity") }).strict(),
   z.object({ kind: z.literal("set_importance"), value: importanceSchema }).strict(),
   z.object({ kind: z.literal("set_due"), value: rendererDueValueSchema }).strict(),
   z.object({ kind: z.literal("clear_due") }).strict(),

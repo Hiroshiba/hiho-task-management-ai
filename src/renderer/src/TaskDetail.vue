@@ -666,6 +666,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 @click="submitOperation({ kind: 'restore', value: 'in_progress' })"
               >
                 進行中へ復帰
+              </button><button
+                type="button"
+                class="secondary-button"
+                :disabled="!props.canWrite"
+                @click="submitOperation({ kind: 'mark_activity' })"
+              >
+                活動あり
               </button>
             </div>
           </div>

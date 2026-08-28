@@ -1,4 +1,5 @@
 import {
+  CustomExternalDataCapacityError,
   serializeCustomExternalData,
   asanaTaskResponseSchema,
   identifierSchema,
@@ -7,7 +8,10 @@ import {
   type Dependency,
   type TaskStatus,
 } from "../../shared/domain";
-import { ingestAsanaExternalData } from "../domain";
+import {
+  ingestAsanaExternalData,
+  mergeCustomExternalData,
+} from "../domain";
 import {
   proposalOperationSchema,
   type ProposalOperation,
@@ -54,6 +58,10 @@ type ExternalOperation = Exclude<
   AsanaGuiEditOperation,
   | { readonly kind: "complete" }
   | { readonly kind: "withdraw" }
+>;
+type ProposalGuiOperation = Exclude<
+  AsanaGuiEditOperation,
+  { readonly kind: "mark_activity" }
 >;
 type ProposalDependency = Extract<
   ProposalOperation,
@@ -311,30 +319,31 @@ function buildProposalOperation(
   input: AsanaGuiEditInput,
   operationId: string,
   external: ParsedBaselineExternal | undefined,
+  operation: ProposalGuiOperation,
 ): ProposalOperation {
   const common = proposalOperationInput(input, operationId);
   const task = input.baseline_task;
-  switch (input.operation.kind) {
+  switch (operation.kind) {
     case "update_title":
       return parseProposalOperation({
         ...common,
         operation: "update_title",
         before: task.name,
-        after: input.operation.value,
+        after: operation.value,
       });
     case "update_notes":
       return parseProposalOperation({
         ...common,
         operation: "update_notes",
         before: task.notes,
-        after: input.operation.value,
+        after: operation.value,
       });
     case "set_status":
       return statusOperation(
         input,
         operationId,
         statusFromTask(task, input.project_gid, input.section_gids),
-        input.operation.value,
+        operation.value,
       );
     case "complete":
       return statusOperation(
@@ -355,21 +364,21 @@ function buildProposalOperation(
         input,
         operationId,
         statusFromTask(task, input.project_gid, input.section_gids),
-        input.operation.value,
+        operation.value,
       );
     case "set_importance":
       return parseProposalOperation({
         ...common,
         operation: "set_importance",
         before: importanceFromTask(task),
-        after: input.operation.value,
+        after: operation.value,
       });
     case "set_due":
       return parseProposalOperation({
         ...common,
         operation: "set_due",
         before: dueFromTask(task),
-        after: input.operation.value,
+        after: operation.value,
       });
     case "clear_due":
       return parseProposalOperation({
@@ -383,7 +392,7 @@ function buildProposalOperation(
         ...common,
         operation: "set_area",
         before: areaFromTask(task),
-        after: input.operation.value,
+        after: operation.value,
       });
     case "set_dependencies":
       if (external == null) {
@@ -393,14 +402,14 @@ function buildProposalOperation(
         ...common,
         operation: "set_dependencies",
         before: proposalDependencies(external.data.dependencies),
-        after: proposalDependencies(input.operation.value),
+        after: proposalDependencies(operation.value),
       });
     case "set_parent":
       return parseProposalOperation({
         ...common,
         operation: "set_parent",
         before: proposalParent(task),
-        after: input.operation.value,
+        after: operation.value,
       });
     case "set_parent_work_mode":
       if (external == null) {
@@ -410,7 +419,7 @@ function buildProposalOperation(
         ...common,
         operation: "set_parent_work_mode",
         before: external.data.parent_work_mode,
-        after: input.operation.value,
+        after: operation.value,
       });
     case "link_obsidian":
       if (external == null) {
@@ -420,7 +429,7 @@ function buildProposalOperation(
         ...common,
         operation: "link_obsidian",
         before: { kind: "absent" },
-        after: input.operation.value,
+        after: operation.value,
       });
     case "unlink_obsidian":
       if (external == null) {
@@ -429,7 +438,7 @@ function buildProposalOperation(
       return parseProposalOperation({
         ...common,
         operation: "unlink_obsidian",
-        before: input.operation.value,
+        before: operation.value,
         after: { kind: "absent" },
       });
   }
@@ -445,6 +454,16 @@ function operationUsesExternalData(
     return operation.value !== "completed" && operation.value !== "withdrawn";
   }
   return true;
+}
+
+function nonRegressingActivityDate(
+  activityDate: string,
+  external: ParsedBaselineExternal | undefined,
+): string {
+  if (external == null || external.data.activity_anchor_on <= activityDate) {
+    return activityDate;
+  }
+  return external.data.activity_anchor_on;
 }
 
 function resultFromWriter(
@@ -756,7 +775,23 @@ export class AsanaGuiEditService {
         });
       }
     }
-    const operation = buildProposalOperation(validatedInput, operationId, external);
+    if (validatedInput.operation.kind === "mark_activity") {
+      if (external == null) {
+        throw new Error("活動記録操作にはCustom external dataが必要です。");
+      }
+      return this.applyMarkActivity(
+        validatedInput,
+        operationId,
+        external,
+        signal,
+      );
+    }
+    const operation = buildProposalOperation(
+      validatedInput,
+      operationId,
+      external,
+      validatedInput.operation,
+    );
     const writerInput: AsanaProposalOperationWriterInput = {
       operation,
       project_gid: validatedInput.project_gid,
@@ -764,13 +799,189 @@ export class AsanaGuiEditService {
       section_gids: validatedInput.section_gids,
       device_id: validatedInput.device_id,
       created_via: validatedInput.created_via,
-      activity_date: validatedInput.activity_date,
+      activity_date: nonRegressingActivityDate(
+        validatedInput.activity_date,
+        external,
+      ),
       temporary_ref_to_gid: [],
       ...(requiresExternal && external != null
         ? { baseline_external_data: external.response }
         : {}),
     };
     return this.applyWriter(writerInput, validatedInput, operationId, signal);
+  }
+
+  private async applyMarkActivity(
+    input: AsanaGuiEditInput,
+    operationId: string,
+    baseline: ParsedBaselineExternal,
+    signal: AbortSignal,
+  ): Promise<AsanaGuiEditResult> {
+    let result: AsanaGuiEditResult;
+    try {
+      result = await this.writeActivityAnchor(
+        input,
+        operationId,
+        baseline,
+        signal,
+      );
+    } catch (error: unknown) {
+      return this.rethrowAfterPostApply(error, signal);
+    }
+    await this.postApply(signal);
+    return result;
+  }
+
+  private async writeActivityAnchor(
+    input: AsanaGuiEditInput,
+    operationId: string,
+    baseline: ParsedBaselineExternal,
+    signal: AbortSignal,
+  ): Promise<AsanaGuiEditResult> {
+    const currentTask = asanaTaskResponseSchema.parse(
+      await this.readClient.getTask(input.task_gid, signal),
+    );
+    if (currentTask.gid !== input.task_gid) {
+      throw new Error("取得したAsanaタスクGIDが活動記録対象と一致しません。");
+    }
+    const projectMemberships = currentTask.memberships.filter(
+      (membership) => membership.project.gid === input.project_gid,
+    );
+    if (projectMemberships.length !== 1) {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "conflict",
+        reason_code: "baseline_changed",
+        side_effect: "none",
+      });
+    }
+    const currentResult = baselineExternal(currentTask);
+    if (currentResult.kind === "conflict") {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "conflict",
+        reason_code: currentResult.reason_code,
+        side_effect: "none",
+      });
+    }
+    const current = currentResult.value;
+    if (
+      current.response.gid !== baseline.response.gid ||
+      current.data.id !== baseline.data.id
+    ) {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "conflict",
+        reason_code: "external_identity_mismatch",
+        side_effect: "none",
+      });
+    }
+    if (current.data.activity_anchor_on >= input.activity_date) {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "already_applied",
+        reason_code: "already_applied",
+      });
+    }
+    let merged: ReturnType<typeof mergeCustomExternalData>;
+    try {
+      merged = mergeCustomExternalData({
+        baseline: {
+          ...baseline.data,
+          activity_anchor_on: current.data.activity_anchor_on,
+        },
+        current: current.data,
+        operations: [
+          {
+            operation: "set_activity_anchor_on",
+            before: current.data.activity_anchor_on,
+            after: input.activity_date,
+          },
+        ],
+        last_writer: input.device_id,
+      });
+    } catch (error: unknown) {
+      if (error instanceof CustomExternalDataCapacityError) {
+        return asanaGuiEditResultSchema.parse({
+          operation_id: operationId,
+          task_gid: input.task_gid,
+          outcome: "conflict",
+          reason_code: "external_capacity_exceeded",
+          side_effect: "none",
+        });
+      }
+      throw error;
+    }
+    if (merged.kind === "conflict") {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "conflict",
+        reason_code: "merge_conflict",
+        side_effect: "none",
+      });
+    }
+    if (merged.kind === "already_applied") {
+      return asanaGuiEditResultSchema.parse({
+        operation_id: operationId,
+        task_gid: input.task_gid,
+        outcome: "already_applied",
+        reason_code: "already_applied",
+      });
+    }
+    let serialized: string;
+    try {
+      serialized = serializeCustomExternalData(merged.data);
+    } catch (error: unknown) {
+      if (error instanceof CustomExternalDataCapacityError) {
+        return asanaGuiEditResultSchema.parse({
+          operation_id: operationId,
+          task_gid: input.task_gid,
+          outcome: "conflict",
+          reason_code: "external_capacity_exceeded",
+          side_effect: "none",
+        });
+      }
+      throw error;
+    }
+    await this.statusWriteClient.updateTask(
+      input.task_gid,
+      {
+        kind: "external",
+        value: { gid: current.response.gid, data: serialized },
+      },
+      signal,
+    );
+    const readBackTask = asanaTaskResponseSchema.parse(
+      await this.readClient.getTask(input.task_gid, signal),
+    );
+    if (readBackTask.gid !== input.task_gid) {
+      throw new Error("読み戻したAsanaタスクGIDが活動記録対象と一致しません。");
+    }
+    const readBackResult = baselineExternal(readBackTask);
+    const matches =
+      readBackResult.kind === "valid" &&
+      readBackResult.value.response.gid === current.response.gid &&
+      readBackResult.value.data.id === current.data.id &&
+      readBackResult.value.data.activity_anchor_on >= input.activity_date;
+    return matches
+      ? asanaGuiEditResultSchema.parse({
+          operation_id: operationId,
+          task_gid: input.task_gid,
+          outcome: "applied",
+          reason_code: "applied",
+        })
+      : asanaGuiEditResultSchema.parse({
+          operation_id: operationId,
+          task_gid: input.task_gid,
+          outcome: "conflict",
+          reason_code: "read_back_mismatch",
+          side_effect: "possible",
+        });
   }
 
   private nextOperationId(): string {

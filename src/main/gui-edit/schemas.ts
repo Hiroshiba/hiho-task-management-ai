@@ -77,6 +77,11 @@ const guiOperationSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
+      kind: z.literal("mark_activity"),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("set_importance"),
       value: importanceSchema,
     })

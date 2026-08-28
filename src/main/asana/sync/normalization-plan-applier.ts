@@ -3,10 +3,12 @@ import {
   asanaTagResponseSchema,
   asanaTaskResponseSchema,
   canonicalizeJson,
+  dateSchema,
   gidSchema,
   identifierSchema,
   serializeCustomExternalData,
   type AsanaTaskResponse,
+  type CustomExternalData,
 } from "../../../shared/domain";
 import { AsanaReadClient } from "../client/client";
 import {
@@ -19,7 +21,10 @@ import {
   type CustomExternalDataInitializationResult,
   type ExternalDataIngestionResult,
 } from "../../domain/external-data-ingestion";
-import { mergeCustomExternalData } from "../../domain/external-data-merge";
+import {
+  mergeCustomExternalData,
+  type CustomExternalDataMergeOperation,
+} from "../../domain/external-data-merge";
 import {
   asanaSnapshotNormalizationResultSchema,
   type SnapshotNormalizationResult,
@@ -82,6 +87,16 @@ const updateLastActiveStatusResultSchema = z
   })
   .strict();
 
+const updateActivityAnchorOnResultSchema = z
+  .object({
+    operation: z.literal("update_activity_anchor_on"),
+    task_gid: gidSchema,
+    value: dateSchema,
+    outcome: operationOutcomeSchema,
+    reason_code: operationReasonCodeSchema,
+  })
+  .strict();
+
 const addTagResultSchema = z
   .object({
     operation: z.literal("add_tag"),
@@ -107,6 +122,7 @@ const operationResultSchema = z.discriminatedUnion("operation", [
   setCompletedResultSchema,
   initializeExternalDataResultSchema,
   updateLastActiveStatusResultSchema,
+  updateActivityAnchorOnResultSchema,
   addTagResultSchema,
   removeTagResultSchema,
 ]);
@@ -259,6 +275,9 @@ type AsanaNormalizationPlanOperationResult = z.infer<
 type TagOperationResult =
   | z.infer<typeof addTagResultSchema>
   | z.infer<typeof removeTagResultSchema>;
+type OperationOutcome = z.infer<typeof operationOutcomeSchema>;
+type OperationReasonCode = z.infer<typeof operationReasonCodeSchema>;
+type ActiveTaskStatus = z.infer<typeof activeTaskStatusSchema>;
 type AsanaTagResponse = z.infer<typeof asanaTagResponseSchema>;
 type PreparedTagPlan = {
   readonly task_gid: string;
@@ -291,6 +310,8 @@ function operationKey(operation: AsanaNormalizationPlanOperationResult): string 
       return `${operation.task_gid}\u0000initialize_external_data`;
     case "update_last_active_status":
       return `${operation.task_gid}\u0000update_last_active_status`;
+    case "update_activity_anchor_on":
+      return `${operation.task_gid}\u0000update_activity_anchor_on`;
     case "add_tag":
       return `${operation.task_gid}\u0000add_tag\u0000${operation.tag_gid}`;
     case "remove_tag":
@@ -543,17 +564,48 @@ function checkInitialExternalReadBack(
   return ingestAsanaExternalData(task).kind === "valid";
 }
 
-function checkLastActiveReadBack(
+function readBackExternalData(
   task: AsanaTaskResponse,
   expectedExternalGid: string,
-  expectedValue: "not_started" | "in_progress",
-): boolean {
+  expectedExternalId: string,
+): CustomExternalData | undefined {
   if (task.external == null || task.external.gid !== expectedExternalGid) {
-    return false;
+    return undefined;
   }
   const ingestion = ingestAsanaExternalData(task);
-  return ingestion.kind === "valid" &&
-    ingestion.data.last_active_status === expectedValue;
+  if (ingestion.kind !== "valid" || ingestion.data.id !== expectedExternalId) {
+    return undefined;
+  }
+  return ingestion.data;
+}
+
+function externalUpdateResults(
+  taskGid: string,
+  lastActiveStatus: ActiveTaskStatus | undefined,
+  activityAnchorOn: string | undefined,
+  outcome: OperationOutcome,
+  reasonCode: OperationReasonCode,
+): AsanaNormalizationPlanOperationResult[] {
+  const results: AsanaNormalizationPlanOperationResult[] = [];
+  if (lastActiveStatus != null) {
+    results.push({
+      operation: "update_last_active_status",
+      task_gid: taskGid,
+      value: lastActiveStatus,
+      outcome,
+      reason_code: reasonCode,
+    });
+  }
+  if (activityAnchorOn != null) {
+    results.push({
+      operation: "update_activity_anchor_on",
+      task_gid: taskGid,
+      value: activityAnchorOn,
+      outcome,
+      reason_code: reasonCode,
+    });
+  }
+  return results;
 }
 
 function resolveTagGid(
@@ -692,6 +744,16 @@ function validatePlanTargets(
     const baselineExternal = ingestAsanaExternalData(task);
     if (baselineExternal.kind !== "valid") {
       throw new Error("last_active_status更新のbaseline外部データがvalidではありません。");
+    }
+  }
+  for (const update of result.external_data_writes.activity_anchor_on_updates) {
+    const task = requireTask(taskByGid, update.task_gid);
+    const baselineExternal = ingestAsanaExternalData(task);
+    if (baselineExternal.kind !== "valid") {
+      throw new Error("activity_anchor_on更新のbaseline外部データがvalidではありません。");
+    }
+    if (update.update.value <= baselineExternal.data.activity_anchor_on) {
+      throw new Error("activity_anchor_onを同日以前へ更新できません。");
     }
   }
   for (const plan of result.tag_plans) {
@@ -880,10 +942,17 @@ export class AsanaNormalizationPlanApplier {
         update,
       ]),
     );
+    const activityAnchorOnByGid = new Map(
+      result.external_data_writes.activity_anchor_on_updates.map((update) => [
+        update.task_gid,
+        update,
+      ]),
+    );
     const externalTaskGids = [
       ...new Set([
         ...initializationByGid.keys(),
         ...lastActiveByGid.keys(),
+        ...activityAnchorOnByGid.keys(),
       ]),
     ].sort(compareStrings);
     for (const taskGid of externalTaskGids) {
@@ -899,12 +968,14 @@ export class AsanaNormalizationPlanApplier {
         continue;
       }
       const lastActive = lastActiveByGid.get(taskGid);
-      if (lastActive == null) {
+      const activityAnchorOn = activityAnchorOnByGid.get(taskGid);
+      if (lastActive == null && activityAnchorOn == null) {
         throw new Error("外部データ書込みの対象を取得できません。");
       }
-      await this.applyLastActiveStatusUpdate(
-        lastActive.task_gid,
-        lastActive.update.value,
+      await this.applyExternalDataUpdate(
+        taskGid,
+        lastActive?.update.value,
+        activityAnchorOn?.update.value,
         taskByGid,
         deviceId,
         operations,
@@ -974,18 +1045,22 @@ export class AsanaNormalizationPlanApplier {
     });
   }
 
-  private async applyLastActiveStatusUpdate(
+  private async applyExternalDataUpdate(
     taskGid: string,
-    value: "not_started" | "in_progress",
+    lastActiveStatus: ActiveTaskStatus | undefined,
+    activityAnchorOn: string | undefined,
     taskByGid: ReadonlyMap<string, AsanaTaskResponse>,
     deviceId: string,
     operations: AsanaNormalizationPlanOperationResult[],
     signal: AbortSignal,
   ): Promise<void> {
+    if (lastActiveStatus == null && activityAnchorOn == null) {
+      throw new Error("外部データ更新内容がありません。");
+    }
     const baselineTask = requireTask(taskByGid, taskGid);
     const baselineExternal = ingestAsanaExternalData(baselineTask);
     if (baselineExternal.kind !== "valid") {
-      throw new Error("last_active_status更新のbaseline外部データがvalidではありません。");
+      throw new Error("外部データ更新のbaseline外部データがvalidではありません。");
     }
     const baselineExternalResponse = requireExternalDataResponse(baselineTask);
     const currentTask = parseFetchedTask(
@@ -994,13 +1069,13 @@ export class AsanaNormalizationPlanApplier {
     );
     const currentExternal = ingestAsanaExternalData(currentTask);
     if (currentExternal.kind !== "valid") {
-      operations.push({
-        operation: "update_last_active_status",
-        task_gid: taskGid,
-        value,
-        outcome: "conflict",
-        reason_code: externalConflictReason(currentExternal),
-      });
+      operations.push(...externalUpdateResults(
+        taskGid,
+        lastActiveStatus,
+        activityAnchorOn,
+        "conflict",
+        externalConflictReason(currentExternal),
+      ));
       return;
     }
     const currentExternalResponse = requireExternalDataResponse(currentTask);
@@ -1008,45 +1083,87 @@ export class AsanaNormalizationPlanApplier {
       baselineExternal.data.id !== currentExternal.data.id ||
       baselineExternalResponse.gid !== currentExternalResponse.gid
     ) {
-      operations.push({
-        operation: "update_last_active_status",
-        task_gid: taskGid,
-        value,
-        outcome: "conflict",
-        reason_code: "external_identity_mismatch",
-      });
+      operations.push(...externalUpdateResults(
+        taskGid,
+        lastActiveStatus,
+        activityAnchorOn,
+        "conflict",
+        "external_identity_mismatch",
+      ));
+      return;
+    }
+
+    let mergeBaseline = baselineExternal.data;
+    const mergeOperations: CustomExternalDataMergeOperation[] = [];
+    let pendingLastActiveStatus: ActiveTaskStatus | undefined;
+    let pendingActivityAnchorOn: string | undefined;
+    if (lastActiveStatus != null) {
+      if (currentExternal.data.last_active_status === lastActiveStatus) {
+        operations.push(...externalUpdateResults(
+          taskGid,
+          lastActiveStatus,
+          undefined,
+          "already_applied",
+          "already_applied",
+        ));
+      } else {
+        pendingLastActiveStatus = lastActiveStatus;
+        mergeOperations.push({
+          operation: "set_last_active_status",
+          before: baselineExternal.data.last_active_status,
+          after: lastActiveStatus,
+        });
+      }
+    }
+    if (activityAnchorOn != null) {
+      if (currentExternal.data.activity_anchor_on >= activityAnchorOn) {
+        operations.push(...externalUpdateResults(
+          taskGid,
+          undefined,
+          activityAnchorOn,
+          "already_applied",
+          "already_applied",
+        ));
+      } else {
+        pendingActivityAnchorOn = activityAnchorOn;
+        mergeBaseline = {
+          ...mergeBaseline,
+          activity_anchor_on: currentExternal.data.activity_anchor_on,
+        };
+        mergeOperations.push({
+          operation: "set_activity_anchor_on",
+          before: currentExternal.data.activity_anchor_on,
+          after: activityAnchorOn,
+        });
+      }
+    }
+    if (mergeOperations.length === 0) {
       return;
     }
     const merged = mergeCustomExternalData({
-      baseline: baselineExternal.data,
+      baseline: mergeBaseline,
       current: currentExternal.data,
-      operations: [
-        {
-          operation: "set_last_active_status",
-          before: baselineExternal.data.last_active_status,
-          after: value,
-        },
-      ],
+      operations: mergeOperations,
       last_writer: deviceId,
     });
     switch (merged.kind) {
       case "conflict":
-        operations.push({
-          operation: "update_last_active_status",
-          task_gid: taskGid,
-          value,
-          outcome: "conflict",
-          reason_code: "merge_conflict",
-        });
+        operations.push(...externalUpdateResults(
+          taskGid,
+          pendingLastActiveStatus,
+          pendingActivityAnchorOn,
+          "conflict",
+          "merge_conflict",
+        ));
         return;
       case "already_applied":
-        operations.push({
-          operation: "update_last_active_status",
-          task_gid: taskGid,
-          value,
-          outcome: "already_applied",
-          reason_code: "already_applied",
-        });
+        operations.push(...externalUpdateResults(
+          taskGid,
+          pendingLastActiveStatus,
+          pendingActivityAnchorOn,
+          "already_applied",
+          "already_applied",
+        ));
         return;
       case "merged":
         break;
@@ -1067,18 +1184,33 @@ export class AsanaNormalizationPlanApplier {
       await this.readClient.getTask(taskGid, signal),
       taskGid,
     );
-    const readBackMatches = checkLastActiveReadBack(
+    const readBackExternal = readBackExternalData(
       readBack,
       currentExternalResponse.gid,
-      value,
+      currentExternal.data.id,
     );
-    operations.push({
-      operation: "update_last_active_status",
-      task_gid: taskGid,
-      value,
-      outcome: readBackMatches ? "applied" : "conflict",
-      reason_code: readBackMatches ? "applied" : "read_back_mismatch",
-    });
+    if (pendingLastActiveStatus != null) {
+      const matches = readBackExternal?.last_active_status === pendingLastActiveStatus;
+      operations.push(...externalUpdateResults(
+        taskGid,
+        pendingLastActiveStatus,
+        undefined,
+        matches ? "applied" : "conflict",
+        matches ? "applied" : "read_back_mismatch",
+      ));
+    }
+    if (pendingActivityAnchorOn != null) {
+      const matches =
+        readBackExternal != null &&
+        readBackExternal.activity_anchor_on >= pendingActivityAnchorOn;
+      operations.push(...externalUpdateResults(
+        taskGid,
+        undefined,
+        pendingActivityAnchorOn,
+        matches ? "applied" : "conflict",
+        matches ? "applied" : "read_back_mismatch",
+      ));
+    }
   }
 
   private async applyTagWrites(

@@ -105,6 +105,13 @@ const lastActiveStatusUpdateSchema = z
   })
   .strict();
 
+const activityAnchorOnUpdateSchema = z
+  .object({
+    kind: z.literal("set"),
+    value: dateSchema,
+  })
+  .strict();
+
 const statusNotificationSchema = z
   .object({
     kind: z.literal("status_reconciled"),
@@ -429,10 +436,34 @@ const lastActiveUpdateArraySchema = z
     }
   });
 
+const activityAnchorOnUpdateArraySchema = z
+  .array(
+    z
+      .object({
+        task_gid: gidSchema,
+        update: activityAnchorOnUpdateSchema,
+      })
+      .strict(),
+  )
+  .superRefine((updates, context) => {
+    const gids = updates.map((update) => update.task_gid);
+    const parsed = taskGidArrayResultSchema.safeParse(gids);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: ["activity_anchor_on_updates", ...issue.path],
+          message: issue.message,
+        });
+      }
+    }
+  });
+
 const externalDataWritePlanSchema = z
   .object({
     initialization_requests: taskInitializationArraySchema,
     last_active_status_updates: lastActiveUpdateArraySchema,
+    activity_anchor_on_updates: activityAnchorOnUpdateArraySchema,
   })
   .strict();
 
@@ -554,8 +585,10 @@ const inputSchema = z
   .object({
     project_gid: gidSchema,
     section_gids: statusSectionConfigurationSchema,
+    activity_date: dateSchema,
     tasks: inputArraySchema,
     previous_tasks: previousTaskArraySchema,
+    activity_baseline_tasks: previousTaskArraySchema,
     inaccessible_gids: uniqueGidArraySchema,
   })
   .strict();
@@ -598,6 +631,9 @@ const resultSchema = z
     const lastActiveGids = result.external_data_writes.last_active_status_updates.map(
       (update) => update.task_gid,
     );
+    const activityAnchorOnGids = result.external_data_writes.activity_anchor_on_updates.map(
+      (update) => update.task_gid,
+    );
     addTaskSubsetIssues(
       taskGidSet,
       initializationGids,
@@ -610,6 +646,12 @@ const resultSchema = z
       ["external_data_writes", "last_active_status_updates"],
       context,
     );
+    addTaskSubsetIssues(
+      taskGidSet,
+      activityAnchorOnGids,
+      ["external_data_writes", "activity_anchor_on_updates"],
+      context,
+    );
     addTaskSubsetIssues(taskGidSet, result.critical_errors.map((error) => error.task_gid), ["critical_errors"], context);
     const initializationSet = new Set(initializationGids);
     for (const [index, gid] of lastActiveGids.entries()) {
@@ -618,6 +660,15 @@ const resultSchema = z
           code: "custom",
           path: ["external_data_writes", "last_active_status_updates", index, "task_gid"],
           message: "同じタスクへ初期化要求とlast_active_status更新を同時に指定できません。",
+        });
+      }
+    }
+    for (const [index, gid] of activityAnchorOnGids.entries()) {
+      if (initializationSet.has(gid)) {
+        context.addIssue({
+          code: "custom",
+          path: ["external_data_writes", "activity_anchor_on_updates", index, "task_gid"],
+          message: "同じタスクへ初期化要求とactivity_anchor_on更新を同時に指定できません。",
         });
       }
     }

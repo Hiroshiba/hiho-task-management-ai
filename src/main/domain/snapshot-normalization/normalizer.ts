@@ -1,4 +1,5 @@
 import {
+  areaTagNameSchema,
   asanaTaskResponseSchema,
   canonicalizeJson,
   cleanupItemSchema,
@@ -62,6 +63,11 @@ type StatusProjection = {
 };
 
 type MembershipState = "valid" | "missing" | "multiple";
+
+type ActivityTagConflictState = {
+  readonly importance: boolean;
+  readonly area: boolean;
+};
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -264,6 +270,87 @@ function sortObsidianLinks(
     }
     return left.confidence - right.confidence;
   });
+}
+
+function sameDependencies(
+  left: readonly Dependency[],
+  right: readonly Dependency[],
+): boolean {
+  return canonicalizeJson(sortDependencies(left)) ===
+    canonicalizeJson(sortDependencies(right));
+}
+
+function sameOptionalString(
+  left: string | undefined,
+  right: string | undefined,
+): boolean {
+  if (left == null || right == null) {
+    return left == null && right == null;
+  }
+  return left === right;
+}
+
+function restoredToActiveStatus(previous: Task, current: Task): boolean {
+  const wasInactive =
+    previous.status === "completed" || previous.status === "withdrawn";
+  const isActive =
+    current.status === "not_started" || current.status === "in_progress";
+  return wasInactive && isActive;
+}
+
+function activityTagConflictState(
+  task: AsanaTaskResponse,
+): ActivityTagConflictState {
+  const importanceCount = task.tags.filter((tag) =>
+    /^TaskHub\/重要度\/[1-5]$/u.test(tag.name),
+  ).length;
+  const areaCount = task.tags.filter((tag) =>
+    areaTagNameSchema.safeParse(tag.name).success,
+  ).length;
+  return {
+    importance: importanceCount > 1,
+    area: areaCount > 1,
+  };
+}
+
+function hasSubstantiveActivityChange(
+  previous: Task,
+  current: Task,
+  tagConflicts: ActivityTagConflictState,
+): boolean {
+  return (
+    previous.title !== current.title ||
+    previous.notes !== current.notes ||
+    !sameOptionalString(previous.due_on, current.due_on) ||
+    !sameOptionalString(previous.due_at, current.due_at) ||
+    (!tagConflicts.importance && previous.importance !== current.importance) ||
+    (!tagConflicts.area && previous.area !== current.area) ||
+    !sameDependencies(previous.dependencies, current.dependencies) ||
+    !sameOptionalString(previous.parent_gid, current.parent_gid) ||
+    canonicalizeJson(sortedUnique(previous.child_gids)) !==
+      canonicalizeJson(sortedUnique(current.child_gids)) ||
+    previous.parent_work_mode !== current.parent_work_mode ||
+    restoredToActiveStatus(previous, current)
+  );
+}
+
+function createActivityAnchorOnUpdate(
+  previous: Task | undefined,
+  current: Task,
+  activityDate: string,
+  tagConflicts: ActivityTagConflictState,
+): SnapshotExternalDataWritePlan["activity_anchor_on_updates"][number] | undefined {
+  if (
+    previous == null ||
+    activityDate <= current.activity_anchor_on ||
+    !hasSubstantiveActivityChange(previous, current, tagConflicts)
+  ) {
+    return undefined;
+  }
+  return {
+    task_gid: current.gid,
+    update: { kind: "set", value: activityDate },
+  };
 }
 
 function cloneExternalMetadata(data: CustomExternalData): ExternalProjection {
@@ -615,12 +702,16 @@ export function normalizeAsanaSnapshot(
   const previousByGid = new Map(
     validatedInput.previous_tasks.map((task) => [task.gid, task]),
   );
+  const activityBaselineByGid = new Map(
+    validatedInput.activity_baseline_tasks.map((task) => [task.gid, task]),
+  );
   const sortedTasks = [...validatedInput.tasks].sort((left, right) =>
     compareStrings(left.gid, right.gid),
   );
   const childGidsByParent = createChildGidsByParent(sortedTasks);
   const statusPlans: SnapshotStatusPlan[] = [];
   const lastActiveStatusUpdates: SnapshotExternalDataWritePlan["last_active_status_updates"] = [];
+  const activityAnchorOnUpdates: SnapshotExternalDataWritePlan["activity_anchor_on_updates"] = [];
   const initializationRequests: SnapshotExternalDataInitializationRequest[] = [];
   const tagPlans: SnapshotTagPlan[] = [];
   const normalizedTasks: Task[] = [];
@@ -635,11 +726,20 @@ export function normalizeAsanaSnapshot(
     readonly parent_work_mode: ParentWorkMode;
   }[] = [];
   const baseTasksByGid = new Map<string, Task>();
+  const validExternalDataGids = new Set<string>();
+  const activityTagConflictsByGid = new Map<string, ActivityTagConflictState>();
 
   for (const task of sortedTasks) {
     const parsedTask = asanaTaskResponseSchema.parse(task);
+    activityTagConflictsByGid.set(
+      parsedTask.gid,
+      activityTagConflictState(parsedTask),
+    );
     const previous = previousByGid.get(parsedTask.gid);
     const ingestion = ingestAsanaExternalData(parsedTask);
+    if (ingestion.kind === "valid") {
+      validExternalDataGids.add(parsedTask.gid);
+    }
     const external = projectExternalData(parsedTask, ingestion, previous);
     const status = createMembershipStatusProjection(
       parsedTask,
@@ -723,6 +823,21 @@ export function normalizeAsanaSnapshot(
     normalizedTasks.push(tagged.task);
     tagPlans.push(tagged.plan);
     cleanupItems.push(...tagged.cleanup);
+    if (validExternalDataGids.has(tagged.task.gid)) {
+      const tagConflicts = activityTagConflictsByGid.get(tagged.task.gid);
+      if (tagConflicts == null) {
+        throw new Error("活動判定用のタグ競合状態を取得できません。");
+      }
+      const activityUpdate = createActivityAnchorOnUpdate(
+        activityBaselineByGid.get(tagged.task.gid),
+        tagged.task,
+        validatedInput.activity_date,
+        tagConflicts,
+      );
+      if (activityUpdate != null) {
+        activityAnchorOnUpdates.push(activityUpdate);
+      }
+    }
   }
 
   const result = {
@@ -731,6 +846,7 @@ export function normalizeAsanaSnapshot(
     external_data_writes: {
       initialization_requests: initializationRequests,
       last_active_status_updates: lastActiveStatusUpdates,
+      activity_anchor_on_updates: activityAnchorOnUpdates,
     },
     tag_plans: tagPlans,
     graph,

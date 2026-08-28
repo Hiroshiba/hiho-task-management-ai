@@ -125,6 +125,7 @@ const guiOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("complete") }).strict(),
   z.object({ kind: z.literal("withdraw") }).strict(),
   z.object({ kind: z.literal("restore"), value: activeTaskStatusSchema }).strict(),
+  z.object({ kind: z.literal("mark_activity") }).strict(),
   z.object({ kind: z.literal("set_importance"), value: importanceSchema }).strict(),
   z.object({ kind: z.literal("set_due"), value: dueValueSchema }).strict(),
   z.object({ kind: z.literal("clear_due") }).strict(),
@@ -201,34 +202,76 @@ const syncCriticalErrorCodeSchema = z.enum([
   "dependency_cycle",
   "parent_cycle",
 ]);
-const normalizationOperationResultSchema = z
-  .object({
-    operation: z.enum([
-      "move_section",
-      "set_completed",
-      "initialize_external_data",
-      "update_last_active_status",
-      "add_tag",
-      "remove_tag",
-    ]),
-    task_gid: gidSchema,
-    section_gid: gidSchema.optional(),
-    completed: z.boolean().optional(),
-    value: activeTaskStatusSchema.optional(),
-    tag_gid: gidSchema.optional(),
-    outcome: z.enum(["applied", "already_applied", "conflict"]),
-    reason_code: z.enum([
-      "applied",
-      "already_applied",
-      "already_initialized",
-      "baseline_changed",
-      "read_back_mismatch",
-      "external_unreadable",
-      "external_identity_mismatch",
-      "merge_conflict",
-    ]),
-  })
-  .strict();
+const normalizationOperationOutcomeSchema = z.enum([
+  "applied",
+  "already_applied",
+  "conflict",
+]);
+const normalizationOperationReasonCodeSchema = z.enum([
+  "applied",
+  "already_applied",
+  "already_initialized",
+  "baseline_changed",
+  "read_back_mismatch",
+  "external_unreadable",
+  "external_identity_mismatch",
+  "merge_conflict",
+]);
+const normalizationOperationCommonShape = {
+  task_gid: gidSchema,
+  outcome: normalizationOperationOutcomeSchema,
+  reason_code: normalizationOperationReasonCodeSchema,
+};
+const normalizationOperationResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("move_section"),
+      ...normalizationOperationCommonShape,
+      section_gid: gidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("set_completed"),
+      ...normalizationOperationCommonShape,
+      completed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("initialize_external_data"),
+      ...normalizationOperationCommonShape,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("update_last_active_status"),
+      ...normalizationOperationCommonShape,
+      value: activeTaskStatusSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("update_activity_anchor_on"),
+      ...normalizationOperationCommonShape,
+      value: dateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("add_tag"),
+      ...normalizationOperationCommonShape,
+      tag_gid: gidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("remove_tag"),
+      ...normalizationOperationCommonShape,
+      tag_gid: gidSchema,
+    })
+    .strict(),
+]);
 const normalizationApplicationResultSchema = z
   .object({
     affected_gids: z.array(gidSchema),

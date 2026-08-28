@@ -4,6 +4,7 @@ import {
   asanaTaskResponseSchema,
   canonicalizeJson,
   cleanupItemsSchema,
+  dateSchema,
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
@@ -205,6 +206,18 @@ function sortedTasks(
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareStrings);
+}
+
+function jstDateFromTimestamp(timestamp: string): string {
+  const epoch = Date.parse(timestamp);
+  if (Number.isNaN(epoch)) {
+    throw new Error("同期日時をJSTの日付へ変換できません。");
+  }
+  const jstDate = new Date(epoch + 9 * 60 * 60 * 1000);
+  const year = String(jstDate.getUTCFullYear()).padStart(4, "0");
+  const month = String(jstDate.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(jstDate.getUTCDate()).padStart(2, "0");
+  return dateSchema.parse(`${year}-${month}-${day}`);
 }
 
 function uniqueCleanupItems(
@@ -612,6 +625,9 @@ function createNormalizationPlanSummary(
       ...normalization.external_data_writes.last_active_status_updates.map(
         (update) => update.task_gid,
       ),
+      ...normalization.external_data_writes.activity_anchor_on_updates.map(
+        (update) => update.task_gid,
+      ),
     ]),
     tag_write_task_gids: sortedUnique(
       normalization.tag_plans
@@ -663,13 +679,17 @@ function normalizeSnapshot(
   input: AsanaSyncCoordinatorInput,
   rawTasks: readonly AsanaTaskResponse[],
   previousTasks: readonly Task[],
+  activityBaselineTasks: readonly Task[],
   inaccessibleGids: readonly string[],
+  activityDate: string,
 ): SnapshotNormalizationResult {
   return normalizeAsanaSnapshot({
     project_gid: input.project_gid,
     section_gids: input.section_gids,
+    activity_date: activityDate,
     tasks: sortedTasks(rawTasks),
     previous_tasks: [...previousTasks],
+    activity_baseline_tasks: [...activityBaselineTasks],
     inaccessible_gids: [...inaccessibleGids],
   });
 }
@@ -763,6 +783,8 @@ export class AsanaSyncCoordinator {
         existingMetadata,
         signal,
       );
+      const syncedAt = isoDateTimeSchema.parse(this.timestampProvider());
+      const activityDate = jstDateFromTimestamp(syncedAt);
       const protectionRequired = shouldProtectExternalDataWrites(
         validatedInput,
         collection,
@@ -773,7 +795,9 @@ export class AsanaSyncCoordinator {
           validatedInput,
           collection.raw_tasks,
           previousTasks,
+          previousTasks,
           collection.inaccessible_gids,
+          activityDate,
         ),
         protectionRequired,
       );
@@ -796,7 +820,9 @@ export class AsanaSyncCoordinator {
         validatedInput,
         refreshedRawTasks,
         firstNormalization.tasks,
+        previousTasks,
         collection.inaccessible_gids,
+        activityDate,
       );
       const finalNormalization = createFinalNormalization(
         secondNormalization,
@@ -807,7 +833,6 @@ export class AsanaSyncCoordinator {
           existingCleanupItems,
         ),
       );
-      const syncedAt = isoDateTimeSchema.parse(this.timestampProvider());
       const metadata = createProjectMetadataCache(
         collection.metadata,
         syncedAt,
