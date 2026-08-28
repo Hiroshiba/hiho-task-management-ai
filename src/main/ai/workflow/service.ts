@@ -1949,6 +1949,7 @@ export class AiWorkflowService {
     }
     const request = aiWorkflowTurnRequestSchema.parse(input);
     throwIfAborted(signal);
+    this.assertProposalCapacity();
     let retryCount = 0;
     while (retryCount <= 1) {
       let prepared: PreparedTurn | undefined;
@@ -2250,16 +2251,18 @@ export class AiWorkflowService {
   }
 
   private storeProposal(stored: StoredProposal): void {
-    if (this.proposals.size >= maximumWorkflowProposals) {
-      const oldest = this.proposals.keys().next().value;
-      if (oldest == null) {
-        throw new AiWorkflowError("変更案の保持領域を確認できません。");
-      }
-      this.proposals.delete(oldest);
+    if (this.proposals.has(stored.proposal_id)) {
+      throw new AiWorkflowError("同じ変更案IDを重複して保持できません。");
     }
+    this.assertProposalCapacity();
     this.proposals.set(stored.proposal_id, stored);
-    if (this.proposals.size > maximumWorkflowProposals) {
-      throw new AiWorkflowError("変更案の保持上限を超えました。");
+  }
+
+  private assertProposalCapacity(): void {
+    if (this.proposals.size >= maximumWorkflowProposals) {
+      throw new AiWorkflowStateError(
+        "保持中の変更案が上限に達しています。新しい変更案を作る前に既存案を承認または却下してください。",
+      );
     }
   }
 
