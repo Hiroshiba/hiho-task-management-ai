@@ -84,6 +84,7 @@ const applicationOptionsSchema = z
     now_provider: functionSchema,
     open_authorization_url: functionSchema,
     open_codex_authorization_url: functionSchema,
+    open_path: functionSchema,
     notify_unexpected_error: functionSchema,
     diagnostic: functionSchema,
   })
@@ -99,6 +100,10 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
   ) => Promise<void> | void;
   readonly open_codex_authorization_url: (
     authorizationUrl: string,
+    signal: AbortSignal,
+  ) => Promise<void> | void;
+  readonly open_path: (
+    absolutePath: string,
     signal: AbortSignal,
   ) => Promise<void> | void;
   readonly notify_unexpected_error: (error: unknown) => void;
