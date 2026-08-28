@@ -317,12 +317,6 @@ export class IpcHandlerRegistry {
     this.registeredIpcMain = undefined;
   }
 
-  private createAbortSignal(): AbortSignal {
-    const controller = new AbortController();
-    this.activeAbortControllers.add(controller);
-    return controller.signal;
-  }
-
   private registerInvokeHandlers(ipcMain: IpcMain): void {
     this.registerHandle(
       ipcMain,
@@ -356,12 +350,12 @@ export class IpcHandlerRegistry {
       "sync:run",
       ipcSyncInputSchema,
       ipcSyncResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.sync;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.run(input, this.createAbortSignal());
+        return port.run(input, signal);
       },
     );
     this.registerHandle(
@@ -395,12 +389,12 @@ export class IpcHandlerRegistry {
       "setup:start",
       ipcSetupStartInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.start(this.createAbortSignal());
+        return port.start(signal);
       },
     );
     this.registerHandle(
@@ -408,12 +402,12 @@ export class IpcHandlerRegistry {
       "setup:complete-codex-authentication",
       ipcSetupCompleteCodexAuthenticationInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.completeCodexAuthentication(this.createAbortSignal());
+        return port.completeCodexAuthentication(signal);
       },
     );
     this.registerHandle(
@@ -421,12 +415,12 @@ export class IpcHandlerRegistry {
       "setup:authenticate-asana",
       ipcSetupAuthenticateAsanaInputSchema,
       ipcSetupStateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.authenticateAsana(input, this.createAbortSignal());
+        return port.authenticateAsana(input, signal);
       },
     );
     this.registerHandle(
@@ -434,12 +428,12 @@ export class IpcHandlerRegistry {
       "setup:list-workspaces",
       ipcSetupListWorkspacesInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.listWorkspaces(this.createAbortSignal());
+        return port.listWorkspaces(signal);
       },
     );
     this.registerHandle(
@@ -447,12 +441,12 @@ export class IpcHandlerRegistry {
       "setup:select-workspace",
       ipcSetupSelectWorkspaceInputSchema,
       ipcSetupStateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.selectWorkspace(input, this.createAbortSignal());
+        return port.selectWorkspace(input, signal);
       },
     );
     this.registerHandle(
@@ -460,12 +454,12 @@ export class IpcHandlerRegistry {
       "setup:select-project",
       ipcSetupSelectProjectInputSchema,
       ipcSetupStateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.selectProject(input, this.createAbortSignal());
+        return port.selectProject(input, signal);
       },
     );
     this.registerHandle(
@@ -473,12 +467,12 @@ export class IpcHandlerRegistry {
       "setup:retry-resources",
       ipcSetupRetryResourcesInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.retryResources(this.createAbortSignal());
+        return port.retryResources(signal);
       },
     );
     this.registerHandle(
@@ -486,12 +480,12 @@ export class IpcHandlerRegistry {
       "setup:run-capability",
       ipcSetupRunCapabilityInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.runCapability(this.createAbortSignal());
+        return port.runCapability(signal);
       },
     );
     this.registerHandle(
@@ -499,12 +493,12 @@ export class IpcHandlerRegistry {
       "setup:choose-vault",
       ipcSetupChooseVaultInputSchema,
       ipcSetupStateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.chooseVault(input, this.createAbortSignal());
+        return port.chooseVault(input, signal);
       },
     );
     this.registerHandle(
@@ -512,12 +506,12 @@ export class IpcHandlerRegistry {
       "setup:choose-external-tool",
       ipcSetupChooseExternalToolInputSchema,
       ipcSetupStateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.chooseExternalTool(input, this.createAbortSignal());
+        return port.chooseExternalTool(input, signal);
       },
     );
     this.registerHandle(
@@ -525,12 +519,12 @@ export class IpcHandlerRegistry {
       "setup:run-full-sync",
       ipcSetupRunFullSyncInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.runFullSync(this.createAbortSignal());
+        return port.runFullSync(signal);
       },
     );
     this.registerHandle(
@@ -538,12 +532,12 @@ export class IpcHandlerRegistry {
       "setup:run-codex-capability",
       ipcSetupRunCodexCapabilityInputSchema,
       ipcSetupStateResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.runCodexCapability(this.createAbortSignal());
+        return port.runCodexCapability(signal);
       },
     );
     this.registerHandle(
@@ -551,12 +545,12 @@ export class IpcHandlerRegistry {
       "gui:apply",
       ipcGuiEditInputSchema,
       ipcGuiEditResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.gui;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.apply(input, this.createAbortSignal());
+        return port.apply(input, signal);
       },
     );
     this.registerHandle(
@@ -564,12 +558,12 @@ export class IpcHandlerRegistry {
       "ai:start-turn",
       ipcAiTurnInputSchema,
       ipcAiTurnResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.ai;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.startTurn(input, this.createAbortSignal());
+        return port.startTurn(input, signal);
       },
     );
     this.registerHandle(
@@ -577,12 +571,12 @@ export class IpcHandlerRegistry {
       "ai:start-new-session",
       ipcAiStartNewSessionInputSchema,
       ipcAiStartNewSessionResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.ai;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.startNewSession(this.createAbortSignal());
+        return port.startNewSession(signal);
       },
     );
     this.registerHandle(
@@ -656,12 +650,12 @@ export class IpcHandlerRegistry {
       "ai:approve",
       ipcAiApprovalInputSchema,
       ipcAiApprovalResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.ai;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.approve(input, this.createAbortSignal());
+        return port.approve(input, signal);
       },
     );
     this.registerHandle(
@@ -714,12 +708,12 @@ export class IpcHandlerRegistry {
       "obsidian:list-vaults",
       ipcObsidianListVaultsInputSchema,
       ipcObsidianListVaultsResponseSchema,
-      async () => {
+      async (_input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        const vaultIds = [...await port.listVaults(this.createAbortSignal())].sort(compareStrings);
+        const vaultIds = [...await port.listVaults(signal)].sort(compareStrings);
         return { vault_ids: vaultIds };
       },
     );
@@ -728,12 +722,12 @@ export class IpcHandlerRegistry {
       "obsidian:validate-vault",
       ipcObsidianValidateInputSchema,
       ipcObsidianValidateResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.validateVault(input.vault_id, this.createAbortSignal());
+        return port.validateVault(input.vault_id, signal);
       },
     );
     this.registerHandle(
@@ -741,12 +735,12 @@ export class IpcHandlerRegistry {
       "obsidian:list-notes",
       ipcObsidianListInputSchema,
       ipcObsidianListResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return [...await port.listNotes(input.vault_id, this.createAbortSignal())];
+        return [...await port.listNotes(input.vault_id, signal)];
       },
     );
     this.registerHandle(
@@ -754,7 +748,7 @@ export class IpcHandlerRegistry {
       "obsidian:resolve-path",
       ipcObsidianPathInputSchema,
       ipcObsidianPathResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
@@ -762,7 +756,7 @@ export class IpcHandlerRegistry {
         return port.resolvePath(
           input.vault_id,
           input.relative_path,
-          this.createAbortSignal(),
+          signal,
         );
       },
     );
@@ -771,7 +765,7 @@ export class IpcHandlerRegistry {
       "obsidian:note-exists",
       ipcObsidianPathInputSchema,
       ipcObsidianPathResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
@@ -779,7 +773,7 @@ export class IpcHandlerRegistry {
         return port.noteExists(
           input.vault_id,
           input.relative_path,
-          this.createAbortSignal(),
+          signal,
         );
       },
     );
@@ -788,12 +782,12 @@ export class IpcHandlerRegistry {
       "obsidian:search",
       ipcObsidianSearchInputSchema,
       ipcObsidianSearchResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return [...await port.search(input.vault_id, input.query, this.createAbortSignal())];
+        return [...await port.search(input.vault_id, input.query, signal)];
       },
     );
     this.registerHandle(
@@ -801,12 +795,12 @@ export class IpcHandlerRegistry {
       "obsidian:read-note",
       ipcObsidianPathInputSchema,
       ipcObsidianReadResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.readNote(input.vault_id, input.relative_path, this.createAbortSignal());
+        return port.readNote(input.vault_id, input.relative_path, signal);
       },
     );
     this.registerHandle(
@@ -814,12 +808,12 @@ export class IpcHandlerRegistry {
       "obsidian:open-note",
       ipcObsidianOpenNoteInputSchema,
       ipcObsidianOpenNoteResponseSchema,
-      async (input) => {
+      async (input, signal) => {
         const port = this.options.ports.obsidian;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        await port.openNote(input.vault_id, input.relative_path, this.createAbortSignal());
+        await port.openNote(input.vault_id, input.relative_path, signal);
         return createCompletedValue();
       },
     );
@@ -830,7 +824,7 @@ export class IpcHandlerRegistry {
     channel: string,
     inputSchema: z.ZodType<TInput>,
     responseSchema: z.ZodType<IpcResponse<TOutput>>,
-    operation: (input: TInput) => MaybePromise<TOutput>,
+    operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
   ): void {
     const validatedChannel = ipcChannelSchema.parse(channel);
     ipcMain.handle(validatedChannel, (event, payload: unknown) =>
@@ -853,44 +847,43 @@ export class IpcHandlerRegistry {
     payload: unknown,
     inputSchema: z.ZodType<TInput>,
     responseSchema: z.ZodType<IpcResponse<TOutput>>,
-    operation: (input: TInput) => MaybePromise<TOutput>,
+    operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
   ): Promise<IpcResponse<TOutput>> {
+    const controller = new AbortController();
+    this.activeAbortControllers.add(controller);
     try {
-      assertTrustedIpcSender(
-        event,
-        this.options.rendererWebContents,
-        this.options.rendererUrl,
-      );
-    } catch (error: unknown) {
-      this.options.diagnostic.record(error, channel);
-      return responseSchema.parse(this.createFailure("sender_untrusted"));
-    }
-    let input: TInput;
-    try {
-      input = inputSchema.parse(payload);
-    } catch (error: unknown) {
-      this.options.diagnostic.record(error, channel);
-      return responseSchema.parse(this.createFailure("invalid_request"));
-    }
-    const controllersBeforeOperation = new Set(this.activeAbortControllers);
-    try {
-      const value = await operation(input);
-      return responseSchema.parse({ kind: "ok", value });
-    } catch (error: unknown) {
-      if (error instanceof IpcCapabilityUnavailableError) {
-        return responseSchema.parse(this.createFailure("not_configured"));
+      try {
+        assertTrustedIpcSender(
+          event,
+          this.options.rendererWebContents,
+          this.options.rendererUrl,
+        );
+      } catch (error: unknown) {
+        this.options.diagnostic.record(error, channel);
+        return responseSchema.parse(this.createFailure("sender_untrusted"));
       }
-      this.options.diagnostic.record(error, channel);
-      const code: IpcFailure["code"] = error instanceof z.ZodError
-        ? "invalid_response"
-        : "operation_failed";
-      return responseSchema.parse(this.createFailure(code));
-    } finally {
-      for (const controller of this.activeAbortControllers) {
-        if (!controllersBeforeOperation.has(controller)) {
-          this.activeAbortControllers.delete(controller);
+      let input: TInput;
+      try {
+        input = inputSchema.parse(payload);
+      } catch (error: unknown) {
+        this.options.diagnostic.record(error, channel);
+        return responseSchema.parse(this.createFailure("invalid_request"));
+      }
+      try {
+        const value = await operation(input, controller.signal);
+        return responseSchema.parse({ kind: "ok", value });
+      } catch (error: unknown) {
+        if (error instanceof IpcCapabilityUnavailableError) {
+          return responseSchema.parse(this.createFailure("not_configured"));
         }
+        this.options.diagnostic.record(error, channel);
+        const code: IpcFailure["code"] = error instanceof z.ZodError
+          ? "invalid_response"
+          : "operation_failed";
+        return responseSchema.parse(this.createFailure(code));
       }
+    } finally {
+      this.activeAbortControllers.delete(controller);
     }
   }
 
