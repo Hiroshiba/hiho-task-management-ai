@@ -51,6 +51,7 @@ const errorCodes = new Set([
   "forbidden_subcommand",
   "forbidden_write_operation",
   "forbidden_network",
+  "credential_unavailable",
   "tool_not_found",
   "tool_execution_failed",
   "execution_timeout",

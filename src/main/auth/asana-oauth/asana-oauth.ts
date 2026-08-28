@@ -174,19 +174,11 @@ function createInitialSecretData(
   refreshToken: string,
   latest: SecretStorageData | undefined,
 ): SecretStorageData {
-  const externalCredentialReferences = latest?.external_credential_references;
-  if (externalCredentialReferences == null) {
-    return {
-      asana_client_secret: clientSecret,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    };
-  }
   return {
+    ...latest,
     asana_client_secret: clientSecret,
     access_token: accessToken,
     refresh_token: refreshToken,
-    external_credential_references: externalCredentialReferences,
   };
 }
 

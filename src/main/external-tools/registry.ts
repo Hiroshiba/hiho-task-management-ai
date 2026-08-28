@@ -9,6 +9,7 @@ function cloneDefinition(definition: ExternalToolDefinition): ExternalToolDefini
     ...definition,
     allowed_subcommands: [...definition.allowed_subcommands],
     allowed_argument_names: [...definition.allowed_argument_names],
+    allowed_channel_ids: [...definition.allowed_channel_ids],
     ...(definition.allowed_domains == null
       ? {}
       : { allowed_domains: [...definition.allowed_domains] }),

@@ -3,9 +3,13 @@ import { z } from "zod";
 function hasControlCharacter(value: string): boolean {
   return value.split("").some((character) => {
     const codePoint = character.codePointAt(0);
-    return codePoint != null && (codePoint <= 31 || codePoint === 127);
+    return codePoint != null && (
+      codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
+    );
   });
 }
+
+const maximumDiscordBotTokenBytes = 4_096;
 
 const secretValueSchema = z
   .string()
@@ -27,6 +31,24 @@ const credentialReferenceSchema = z
     message: "資格情報参照に制御文字を指定できません。",
   });
 
+const discordBotTokenSchema = secretValueSchema
+  .regex(
+    /^[A-Za-z0-9._-]+$/u,
+    "Discord Bot Tokenの形式が不正です。",
+  )
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= maximumDiscordBotTokenBytes,
+    "Discord Bot Tokenが長すぎます。",
+  )
+  .refine(
+    (value) => value === value.trim(),
+    "Discord Bot Tokenの前後に空白を含めることはできません。",
+  )
+  .refine(
+    (value) => !/\s/u.test(value),
+    "Discord Bot Tokenに空白を含めることはできません。",
+  );
+
 const externalCredentialReferencesSchema = z.record(
   credentialReferenceSchema,
   credentialReferenceSchema,
@@ -38,6 +60,7 @@ export const secretStorageSchema = z
     asana_client_secret: secretValueSchema.optional(),
     access_token: secretValueSchema.optional(),
     refresh_token: secretValueSchema.optional(),
+    discord_bot_token: discordBotTokenSchema.optional(),
     external_credential_references: externalCredentialReferencesSchema.optional(),
   })
   .strict();

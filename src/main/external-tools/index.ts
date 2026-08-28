@@ -14,6 +14,11 @@ export {
   createContextctlClientScript,
 } from "./client-script";
 export {
+  createDiscordExternalToolDefinition,
+  discordExternalToolCredentialReferenceName,
+  SecretStorageDiscordCredentialProvider,
+} from "./discord";
+export {
   externalToolBrokerOptionsSchema,
   externalToolBrokerStartResultSchema,
   externalToolConnectionInfoSchema,
@@ -28,6 +33,7 @@ export {
   externalToolStatusEvidenceAttemptSchema,
   externalToolStatusEvidenceCollectionSchema,
   externalToolStatusEvidenceSchema,
+  type DiscordCredentialProviderPort,
   type ExternalToolBrokerOptions,
   type ExternalToolBrokerStartResult,
   type ExternalToolDefinition,

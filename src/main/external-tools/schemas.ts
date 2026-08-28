@@ -26,6 +26,7 @@ const maximumIdentifierCharacters = 64;
 const maximumExecutableCharacters = 4_096;
 const maximumDomainCharacters = 253;
 const maximumArgumentNameCharacters = 66;
+const maximumDiscordChannels = 16;
 const maximumStatusEvidenceLocatorBytes = 4_096;
 const maximumStatusEvidenceTargetTaskGidBytes = 200;
 
@@ -341,6 +342,11 @@ const domainSchema = z
 
 const httpMethodSchema = z.enum(["GET", "HEAD", "OPTIONS"]);
 
+/** DiscordチャンネルIDを検証します。 */
+export const discordChannelIdSchema = z
+  .string()
+  .regex(/^[1-9][0-9]{16,19}$/u, "DiscordチャンネルIDが不正です。");
+
 const capabilitySchema = z
   .string()
   .regex(/^[0-9a-f]{64}$/u, "外部ツールの能力値が不正です。");
@@ -446,6 +452,7 @@ export const externalToolErrorCodeSchema = z.enum([
   "forbidden_subcommand",
   "forbidden_write_operation",
   "forbidden_network",
+  "credential_unavailable",
   "tool_not_found",
   "tool_execution_failed",
   "execution_timeout",
@@ -483,26 +490,54 @@ const diagnosticCodeSchema = z.enum([
 /** 読み取り専用外部ツールの登録内容を検証するスキーマです。 */
 export const externalToolDefinitionSchema = z
   .object({
-    tool_id: toolIdSchema,
-    executable: executableSchema,
+    adapter: z.literal("discord"),
+    tool_id: toolIdSchema.pipe(z.literal("discord-context")),
+    executable: executableSchema.pipe(z.literal("contextctl")),
     allowed_subcommands: z
       .array(commandSchema)
       .min(1)
-      .max(externalToolMaxSubcommands),
+      .max(externalToolMaxSubcommands)
+      .pipe(z.tuple([
+        z.literal("search"),
+        z.literal("thread"),
+        z.literal("message"),
+      ])),
     timeout_ms: z
       .number()
       .int()
       .min(1)
-      .max(externalToolMaxExecutionMilliseconds),
+      .max(externalToolMaxExecutionMilliseconds)
+      .pipe(z.literal(externalToolMaxExecutionMilliseconds)),
     max_output_bytes: z
       .number()
       .int()
       .min(1)
-      .max(externalToolMaxOutputBytes),
+      .max(externalToolMaxOutputBytes)
+      .pipe(z.literal(externalToolMaxOutputBytes)),
     read_only: z.literal(true),
-    allowed_argument_names: z.array(argumentNameSchema).max(64),
-    allowed_domains: z.array(domainSchema).max(externalToolMaxDomains).optional(),
-    allowed_http_methods: z.array(httpMethodSchema).max(3).optional(),
+    allowed_argument_names: z
+      .array(argumentNameSchema)
+      .max(64)
+      .pipe(z.tuple([
+        z.literal("--channel-id"),
+        z.literal("--limit"),
+        z.literal("--message-id"),
+        z.literal("--query"),
+        z.literal("--target-task-gid"),
+        z.literal("--thread-id"),
+      ])),
+    allowed_domains: z
+      .array(domainSchema)
+      .max(externalToolMaxDomains)
+      .pipe(z.tuple([z.literal("discord.com")])),
+    allowed_http_methods: z
+      .array(httpMethodSchema)
+      .max(3)
+      .pipe(z.tuple([z.literal("GET")])),
+    allowed_channel_ids: z
+      .array(discordChannelIdSchema)
+      .min(1)
+      .max(maximumDiscordChannels),
   })
   .strict()
   .superRefine((value, context) => {
@@ -541,6 +576,14 @@ export const externalToolDefinitionSchema = z
           message: "同じHTTPメソッドを重複して登録できません。",
         });
       }
+    }
+    const channelIds = new Set(value.allowed_channel_ids);
+    if (channelIds.size !== value.allowed_channel_ids.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["allowed_channel_ids"],
+        message: "同じDiscordチャンネルIDを重複して登録できません。",
+      });
     }
   });
 
@@ -646,7 +689,6 @@ export const externalToolDiagnosticsSchema = z
 export const externalToolBrokerOptionsSchema = z
   .object({
     tmp_directory_path: absolutePathSchema,
-    child_work_root_path: absolutePathSchema,
     registry: z.custom<ExternalToolRegistryLike>(
       (value) =>
         typeof value === "object"
@@ -654,6 +696,14 @@ export const externalToolBrokerOptionsSchema = z
         && typeof Reflect.get(value, "get") === "function"
         && typeof Reflect.get(value, "list") === "function",
       "外部ツールレジストリが必要です。",
+    ),
+    discord_credential_provider: z.custom<DiscordCredentialProviderPort>(
+      (value) =>
+        typeof value === "object"
+        && value != null
+        && typeof Reflect.get(value, "hasBotToken") === "function"
+        && typeof Reflect.get(value, "getBotToken") === "function",
+      "Discord資格情報providerが必要です。",
     ),
     status_evidence_collector: z.custom<ExternalToolStatusEvidenceCollectorPort>(
       (value) => typeof value === "object"
@@ -700,6 +750,11 @@ export type ExternalToolDiagnosticCode = z.infer<typeof diagnosticCodeSchema>;
 export type ExternalToolRegistryLike = {
   readonly get: (toolId: string) => ExternalToolDefinition;
   readonly list: () => readonly ExternalToolDefinition[];
+};
+
+export type DiscordCredentialProviderPort = {
+  readonly hasBotToken: () => boolean;
+  readonly getBotToken: () => string;
 };
 
 export type ExternalToolStatusEvidenceCollectorPort = {

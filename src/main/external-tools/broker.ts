@@ -2,16 +2,12 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
-  mkdtempSync,
-  readdirSync,
   readFileSync,
   renameSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
 import {
   isAbsolute,
   join,
@@ -25,7 +21,6 @@ import {
   type Server,
   type Socket,
 } from "node:net";
-import type { JsonValue } from "../../shared/domain";
 import {
   externalToolBrokerOptionsSchema,
   externalToolBrokerStartResultSchema,
@@ -38,7 +33,6 @@ import {
   externalToolMaxConnections,
   externalToolMaxDiagnostics,
   externalToolMaxJsonDepth,
-  externalToolMaxOutputRecords,
   externalToolMaxRequestBytes,
   externalToolMaxResponseBytes,
   externalToolMaximumRetries,
@@ -59,27 +53,13 @@ import {
   type ExternalToolStatusEvidenceAttempt,
 } from "./schemas";
 import { ExternalToolError } from "./errors";
+import { executeDiscordReadInvocation } from "./discord";
 
 const directoryMode = 0o700;
 const connectionInfoMode = 0o600;
 const unixSocketMode = 0o600;
 const maximumRequestMilliseconds = 35_000;
-const processTerminationGraceMilliseconds = 250;
-const childWorkingDirectoryMode = 0o500;
-const transientProcessErrorCodes = new Set([
-  "EAGAIN",
-  "ECONNRESET",
-  "EPIPE",
-  "ETIMEDOUT",
-  "EAI_AGAIN",
-  "ENETUNREACH",
-]);
-const safeParentEnvironmentNames = new Set([
-  "PATH",
-  "PATHEXT",
-  "SYSTEMROOT",
-  "WINDIR",
-]);
+const externalToolRetryDelayMilliseconds = 1_000;
 const forbiddenArgumentNamePrefixes = [
   "auth",
   "base",
@@ -173,10 +153,6 @@ type InternalDiagnostic = {
   readonly code: ExternalToolDiagnosticCode;
   readonly cause: unknown;
 };
-
-type ProcessOutcome =
-  | { readonly kind: "succeeded"; readonly output: Buffer }
-  | { readonly kind: "failed"; readonly error: Error };
 
 type FileSaveResult =
   | { readonly kind: "succeeded" }
@@ -288,43 +264,6 @@ function jsonDepth(value: unknown, depth: number, maximumDepth: number): number 
   return deepest;
 }
 
-function isParsedJsonValue(value: unknown): value is JsonValue {
-  type Frame = { readonly value: unknown };
-  const stack: Frame[] = [{ value }];
-  while (stack.length > 0) {
-    const frame = stack.pop();
-    if (frame == null) {
-      throw new Error("JSON値検証のスタックが不正です。");
-    }
-    if (frame.value === null || typeof frame.value === "string" || typeof frame.value === "boolean") {
-      continue;
-    }
-    if (typeof frame.value === "number") {
-      if (!Number.isFinite(frame.value)) {
-        return false;
-      }
-      continue;
-    }
-    if (typeof frame.value !== "object") {
-      return false;
-    }
-    if (Array.isArray(frame.value)) {
-      for (const item of frame.value) {
-        stack.push({ value: item });
-      }
-      continue;
-    }
-    const prototype = Reflect.getPrototypeOf(frame.value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      return false;
-    }
-    for (const item of Object.values(frame.value)) {
-      stack.push({ value: item });
-    }
-  }
-  return true;
-}
-
 function createCapability(): string {
   return randomBytes(32).toString("hex");
 }
@@ -404,213 +343,6 @@ function ensureIpcDirectory(directoryPath: string): void {
         false,
       );
     }
-  }
-}
-
-function verifyChildWorkingDirectory(directoryPath: string): void {
-  let stats: Stats;
-  try {
-    stats = lstatSync(directoryPath);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリを確認できません。",
-      false,
-      error,
-    );
-  }
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリが不正です。",
-      false,
-    );
-  }
-  if (process.platform !== "win32" && (stats.mode & 0o777) !== childWorkingDirectoryMode) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリの権限が不正です。",
-      false,
-    );
-  }
-  if (!isCurrentUser(stats)) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリの所有者が不正です。",
-      false,
-    );
-  }
-  let entries: string[];
-  try {
-    entries = readdirSync(directoryPath);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリの内容を確認できません。",
-      false,
-      error,
-    );
-  }
-  if (entries.length !== 0) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリは空でなければなりません。",
-      false,
-    );
-  }
-}
-
-function pathsOverlap(firstPath: string, secondPath: string): boolean {
-  const first = resolve(firstPath);
-  const second = resolve(secondPath);
-  const firstToSecond = relative(first, second);
-  const secondToFirst = relative(second, first);
-  const isContained = (candidate: string): boolean =>
-    candidate.length === 0
-    || (candidate !== ".." && !candidate.startsWith(`..${sep}`) && !isAbsolute(candidate));
-  return isContained(firstToSecond) || isContained(secondToFirst);
-}
-
-function ensureChildWorkingRoot(
-  childWorkingRootPath: string,
-  tmpDirectoryPath: string,
-): void {
-  const normalizedRoot = resolve(childWorkingRootPath);
-  if (
-    normalizedRoot === parse(normalizedRoot).root
-    || pathsOverlap(childWorkingRootPath, tmpDirectoryPath)
-  ) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートが専用ディレクトリではありません。",
-      false,
-    );
-  }
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(childWorkingRootPath);
-  } catch (error) {
-    if (error instanceof ExternalToolError) {
-      throw error;
-    }
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートを確認できません。",
-      false,
-      error,
-    );
-  }
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートが不正です。",
-      false,
-    );
-  }
-  try {
-    chmodSync(childWorkingRootPath, directoryMode);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートの権限を設定できません。",
-      false,
-      error,
-    );
-  }
-  const securedStats = lstatSync(childWorkingRootPath);
-  if (
-    securedStats.isSymbolicLink()
-    || !securedStats.isDirectory()
-    || (process.platform !== "win32" && (securedStats.mode & 0o777) !== directoryMode)
-    || !isCurrentUser(securedStats)
-  ) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートを安全に検証できません。",
-      false,
-    );
-  }
-}
-
-function createChildWorkingDirectory(childWorkingRootPath: string): string {
-  let parentStats: Stats;
-  try {
-    parentStats = lstatWithoutSymlink(childWorkingRootPath);
-  } catch (error) {
-    if (error instanceof ExternalToolError) {
-      throw error;
-    }
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリの親を確認できません。",
-      false,
-      error,
-    );
-  }
-  if (!parentStats.isDirectory()) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリの親が不正です。",
-      false,
-    );
-  }
-  if (
-    (process.platform !== "win32" && (parentStats.mode & 0o777) !== directoryMode)
-    || !isCurrentUser(parentStats)
-  ) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ルートの権限が不正です。",
-      false,
-    );
-  }
-  let childDirectoryPath: string;
-  try {
-    childDirectoryPath = mkdtempSync(join(childWorkingRootPath, ".contextctl-child-"));
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリを作成できません。",
-      false,
-      error,
-    );
-  }
-  try {
-    chmodSync(childDirectoryPath, childWorkingDirectoryMode);
-    verifyChildWorkingDirectory(childDirectoryPath);
-    return childDirectoryPath;
-  } catch (error) {
-    let cleanupError: unknown;
-    try {
-      rmdirSync(childDirectoryPath);
-    } catch (caughtError) {
-      cleanupError = caughtError;
-    }
-    if (cleanupError != null) {
-      throw new ExternalToolError(
-        "permission_denied",
-        "外部ツール作業ディレクトリの作成と後処理に失敗しました。",
-        false,
-        new AggregateError([error, cleanupError], "外部ツール作業ディレクトリの作成に失敗しました。", {
-          cause: error,
-        }),
-      );
-    }
-    throw error;
-  }
-}
-
-function removeChildWorkingDirectory(directoryPath: string): void {
-  verifyChildWorkingDirectory(directoryPath);
-  try {
-    rmdirSync(directoryPath);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール作業ディレクトリを削除できません。",
-      false,
-      error,
-    );
   }
 }
 
@@ -1002,7 +734,9 @@ function validateInvocationArguments(
   args: readonly string[],
 ): void {
   let totalArgumentBytes = 0;
-  const allowedArgumentNames = new Set(tool.allowed_argument_names);
+  const allowedArgumentNames = new Set<string>(tool.allowed_argument_names);
+  const allowedHttpMethods: readonly string[] = tool.allowed_http_methods;
+  const allowedDomains: readonly string[] = tool.allowed_domains;
   for (const [index, argument] of args.entries()) {
     totalArgumentBytes += new TextEncoder().encode(argument).byteLength;
     if (totalArgumentBytes > externalToolMaxRequestBytes) {
@@ -1043,7 +777,7 @@ function validateInvocationArguments(
     const method = readHttpMethod(args, index);
     if (method != null && (
       !isReadOnlyHttpMethod(method)
-      || !(tool.allowed_http_methods ?? []).includes(method)
+      || !allowedHttpMethods.includes(method)
     )) {
       throw new ExternalToolError(
         "forbidden_write_operation",
@@ -1081,8 +815,7 @@ function validateInvocationArguments(
           false,
         );
       }
-      const domains = tool.allowed_domains ?? [];
-      if (!domains.includes(parsed.hostname.toLowerCase())) {
+      if (!allowedDomains.includes(parsed.hostname.toLowerCase())) {
         throw new ExternalToolError(
           "forbidden_network",
           "許可されていない外部URLです。",
@@ -1090,200 +823,6 @@ function validateInvocationArguments(
         );
       }
     }
-  }
-}
-
-function sanitizeControlCharacters(value: string, preserveLineFeed: boolean): string {
-  return [...value]
-    .filter((character) => {
-      const codePoint = character.codePointAt(0);
-      if (codePoint == null) {
-        return false;
-      }
-      if (preserveLineFeed && codePoint === 10) {
-        return true;
-      }
-      return !(
-        codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
-      );
-    })
-    .join("");
-}
-
-function sanitizeString(value: string): string {
-  return sanitizeControlCharacters(value, false);
-}
-
-function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
-  return Array.isArray(value);
-}
-
-function sanitizeJsonValue(value: JsonValue): JsonValue {
-  type Frame =
-    | { readonly kind: "enter"; readonly value: JsonValue }
-    | { readonly kind: "exit"; readonly value: JsonValue };
-  type Result =
-    | { readonly kind: "pending" }
-    | { readonly kind: "complete"; readonly value: JsonValue };
-  const stack: Frame[] = [{ kind: "enter", value }];
-  const transformed = new WeakMap<object, JsonValue>();
-  const ancestors = new WeakSet<object>();
-  let result: Result = { kind: "pending" };
-  const getTransformedValue = (item: JsonValue): JsonValue => {
-    if (item !== null && typeof item === "object") {
-      const transformedValue = transformed.get(item);
-      if (transformedValue == null) {
-        throw new Error("外部ツール出力の正規化状態が不正です。");
-      }
-      return transformedValue;
-    }
-    if (typeof item === "string") {
-      return sanitizeString(item);
-    }
-    return item;
-  };
-  while (stack.length > 0) {
-    const frame = stack.pop();
-    if (frame == null) {
-      throw new Error("外部ツール出力の正規化スタックが不正です。");
-    }
-    if (frame.kind === "enter") {
-      if (frame.value === null || typeof frame.value !== "object") {
-        result = { kind: "complete", value: getTransformedValue(frame.value) };
-        continue;
-      }
-      if (ancestors.has(frame.value)) {
-        throw new ExternalToolError(
-          "invalid_output",
-          "外部ツール出力に循環参照があります。",
-          false,
-        );
-      }
-      ancestors.add(frame.value);
-      stack.push({ kind: "exit", value: frame.value });
-      if (isJsonArray(frame.value)) {
-        for (const item of frame.value) {
-          stack.push({ kind: "enter", value: item });
-        }
-      } else {
-        for (const item of Object.values(frame.value)) {
-          stack.push({ kind: "enter", value: item });
-        }
-      }
-      continue;
-    }
-    if (frame.value === null || typeof frame.value !== "object") {
-      throw new Error("外部ツール出力の終了状態が不正です。");
-    }
-    ancestors.delete(frame.value);
-    if (isJsonArray(frame.value)) {
-      const items = frame.value.map((item) => getTransformedValue(item));
-      transformed.set(frame.value, items);
-      if (stack.length === 0) {
-        result = { kind: "complete", value: items };
-      }
-      continue;
-    }
-    const keys = new Set<string>();
-    const entries: Array<[string, JsonValue]> = [];
-    for (const [key, item] of Object.entries(frame.value)) {
-      const sanitizedKey = sanitizeString(key);
-      if (keys.has(sanitizedKey)) {
-        throw new ExternalToolError(
-          "invalid_output",
-          "外部ツール出力のキーを安全に正規化できません。",
-          false,
-        );
-      }
-      keys.add(sanitizedKey);
-      entries.push([sanitizedKey, getTransformedValue(item)]);
-    }
-    const object = Object.fromEntries(entries);
-    transformed.set(frame.value, object);
-    if (stack.length === 0) {
-      result = { kind: "complete", value: object };
-    }
-  }
-  if (result.kind !== "complete") {
-    throw new Error("外部ツール出力の正規化結果がありません。");
-  }
-  return result.value;
-}
-
-function parseJsonValue(raw: string): JsonValue {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new ExternalToolError(
-      "invalid_output",
-      "外部ツール出力のJSONが不正です。",
-      false,
-      error,
-    );
-  }
-  if (
-    jsonDepth(parsed, 0, externalToolMaxJsonDepth) > externalToolMaxJsonDepth
-    || !isParsedJsonValue(parsed)
-  ) {
-    throw new ExternalToolError(
-      "invalid_output",
-      "外部ツール出力がJSON値として不正です。",
-      false,
-    );
-  }
-  return parsed;
-}
-
-function parseToolOutput(output: Buffer): ExternalToolOutput {
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(output);
-  } catch (error) {
-    throw new ExternalToolError(
-      "invalid_utf8",
-      "外部ツール出力をUTF-8として読み取れません。",
-      false,
-      error,
-    );
-  }
-  const normalized = sanitizeControlCharacters(text, true);
-  const trimmed = normalized.trim();
-  if (trimmed.length === 0) {
-    throw new ExternalToolError(
-      "invalid_output",
-      "外部ツール出力が空です。",
-      false,
-    );
-  }
-  try {
-    const parsed = parseJsonValue(trimmed);
-    const sanitized = sanitizeJsonValue(parsed);
-    return {
-      format: "json",
-      value: sanitized,
-    };
-  } catch (error) {
-    if (!(error instanceof ExternalToolError) || error.code !== "invalid_output") {
-      throw error;
-    }
-    const lines = normalized
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    if (lines.length === 0 || lines.length > externalToolMaxOutputRecords) {
-      throw new ExternalToolError(
-        "invalid_output",
-        "外部ツール出力がJSONLとして不正です。",
-        false,
-        error,
-      );
-    }
-    const values = lines.map((line) => sanitizeJsonValue(parseJsonValue(line)));
-    return {
-      format: "jsonl",
-      values,
-    };
   }
 }
 
@@ -1314,6 +853,7 @@ function errorMessage(code: import("./schemas").ExternalToolErrorCode): string {
     forbidden_subcommand: "許可されていないサブコマンドです。",
     forbidden_write_operation: "書き込み系の外部ツール操作は実行できません。",
     forbidden_network: "許可されていない外部ネットワーク操作です。",
+    credential_unavailable: "外部ツールの資格情報を利用できません。",
     tool_not_found: "外部ツール実行ファイルが見つかりません。",
     tool_execution_failed: "外部ツールの実行に失敗しました。",
     execution_timeout: "外部ツールの実行時間が上限を超えました。",
@@ -1354,262 +894,43 @@ function serializeResponse(response: ExternalToolResponse): string {
   return `${serialized}\n`;
 }
 
-function classifyProcessError(error: unknown): ExternalToolError {
-  const code = errorCode(error);
-  if (code === "ENOENT") {
-    return new ExternalToolError(
-      "tool_not_found",
-      "外部ツール実行ファイルが見つかりません。",
-      false,
-      error,
-    );
-  }
-  if (code === "EACCES" || code === "EPERM") {
-    return new ExternalToolError(
-      "tool_execution_failed",
-      "外部ツールを実行できません。",
-      false,
-      error,
-    );
-  }
-  return new ExternalToolError(
-    "tool_execution_failed",
-    "外部ツールの実行に失敗しました。",
-    code == null || transientProcessErrorCodes.has(code),
-    error,
-  );
+function isRetryableExternalToolError(error: unknown): error is ExternalToolError {
+  return error instanceof ExternalToolError && error.retryable;
 }
 
-function runChildProcess(
-  tool: ExternalToolDefinition,
-  invocation: ExternalToolInvocation,
-  tmpDirectoryPath: string,
-  signal: AbortSignal,
-): Promise<Buffer> {
+function waitForRetry(retryCount: number, signal: AbortSignal): Promise<void> {
   throwIfAborted(signal);
-  const environment: Record<string, string> = {};
-  for (const name of safeParentEnvironmentNames) {
-    const value = process.env[name];
-    if (value != null) {
-      environment[name] = value;
-    }
-  }
-  const argv = [invocation.subcommand, ...invocation.args];
-  const workingDirectory = createChildWorkingDirectory(
-    tmpDirectoryPath,
-  );
-  let child: ChildProcess;
-  try {
-    child = spawn(tool.executable, argv, {
-      env: environment,
-      shell: false,
-      stdio: ["ignore", "pipe", "ignore"],
-      cwd: workingDirectory,
-      windowsHide: true,
-    });
-  } catch (error) {
-    try {
-      removeChildWorkingDirectory(workingDirectory);
-    } catch (cleanupError) {
-      throw new ExternalToolError(
-        "tool_execution_failed",
-        "外部ツールの起動と作業ディレクトリの後処理に失敗しました。",
-        false,
-        new AggregateError([error, cleanupError], "外部ツールの起動に失敗しました。", {
-          cause: error,
-        }),
-      );
-    }
-    throw classifyProcessError(error);
-  }
-  const stdout = child.stdout;
-  return new Promise<Buffer>((resolvePromise, rejectPromise) => {
-    type ProcessLifecycle =
-      | { readonly kind: "starting" }
-      | { readonly kind: "running"; readonly timeout: NodeJS.Timeout }
-      | {
-        readonly kind: "terminating";
-        readonly error: Error;
-        readonly timeout: NodeJS.Timeout;
-        readonly graceTimeout: NodeJS.Timeout;
-      }
-      | { readonly kind: "finished" };
-    const lifecycle: { current: ProcessLifecycle } = {
-      current: { kind: "starting" },
-    };
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    const finish = (outcome: ProcessOutcome): void => {
-      const current = lifecycle.current;
-      if (current.kind === "finished") {
-        return;
-      }
-      if (current.kind === "starting") {
-        throw new Error("外部ツールプロセスの状態が開始前です。");
-      }
-      clearTimeout(current.timeout);
-      if (current.kind === "terminating") {
-        clearTimeout(current.graceTimeout);
-      }
-      let cleanupError: unknown;
-      try {
-        removeChildWorkingDirectory(workingDirectory);
-      } catch (error) {
-        cleanupError = error;
-      }
-      let finalOutcome = outcome;
-      if (cleanupError != null) {
-        if (outcome.kind === "failed") {
-          finalOutcome = {
-            kind: "failed",
-            error: new ExternalToolError(
-              "tool_execution_failed",
-              "外部ツール実行と作業ディレクトリの後処理に失敗しました。",
-              false,
-              new AggregateError([outcome.error, cleanupError], "外部ツール実行に失敗しました。", {
-                cause: outcome.error,
-              }),
-            ),
-          };
-        } else {
-          finalOutcome = {
-            kind: "failed",
-            error: new ExternalToolError(
-              "tool_execution_failed",
-              "外部ツール作業ディレクトリの後処理に失敗しました。",
-              false,
-              cleanupError,
-            ),
-          };
-        }
-      }
-      lifecycle.current = { kind: "finished" };
+  return new Promise<void>((resolvePromise, rejectPromise) => {
+    const timeout = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
-      child.removeListener("error", onError);
-      child.removeListener("close", onClose);
-      if (stdout != null) {
-        stdout.removeListener("data", onData);
-        stdout.removeListener("error", onError);
-      }
-      if (finalOutcome.kind === "succeeded") {
-        resolvePromise(finalOutcome.output);
-      } else {
-        rejectPromise(finalOutcome.error);
-      }
-    };
-    const requestTermination = (error: Error): void => {
-      const current = lifecycle.current;
-      if (current.kind === "finished" || current.kind === "terminating") {
-        return;
-      }
-      if (current.kind === "starting") {
-        throw new Error("外部ツールプロセスの状態が開始前です。");
-      }
-      child.kill("SIGTERM");
-      const graceTimeout = setTimeout(() => {
-        if (lifecycle.current.kind !== "terminating") {
-          return;
-        }
-        child.kill("SIGKILL");
-      }, processTerminationGraceMilliseconds);
-      lifecycle.current = {
-        kind: "terminating",
-        error,
-        timeout: current.timeout,
-        graceTimeout,
-      };
-    };
-    const onData = (chunk: Buffer): void => {
-      if (lifecycle.current.kind !== "running") {
-        return;
-      }
-      totalBytes += chunk.byteLength;
-      if (totalBytes > tool.max_output_bytes) {
-        requestTermination(new ExternalToolError(
-          "output_too_large",
-          "外部ツール出力がサイズ上限を超えました。",
-          false,
-        ));
-        return;
-      }
-      chunks.push(chunk);
-    };
-    const onError = (error: Error): void => {
-      if (lifecycle.current.kind === "terminating") {
-        return;
-      }
-      requestTermination(classifyProcessError(error));
-    };
-    const onClose = (code: number | null): void => {
-      const current = lifecycle.current;
-      if (current.kind === "terminating") {
-        finish({ kind: "failed", error: current.error });
-        return;
-      }
-      if (current.kind !== "running") {
-        return;
-      }
-      if (code === 0) {
-        finish({ kind: "succeeded", output: Buffer.concat(chunks, totalBytes) });
-        return;
-      }
-      finish({
-        kind: "failed",
-        error: new ExternalToolError(
-          "tool_execution_failed",
-          "外部ツールが読み取りに失敗しました。",
-          true,
-        ),
-      });
-    };
+      resolvePromise();
+    }, externalToolRetryDelayMilliseconds * retryCount);
     const onAbort = (): void => {
-      requestTermination(createAbortError(signal));
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      rejectPromise(createAbortError(signal));
     };
-    const timer = setTimeout(() => {
-      requestTermination(new ExternalToolError(
-        "execution_timeout",
-        "外部ツールの実行時間が上限を超えました。",
-        false,
-      ));
-    }, tool.timeout_ms);
-    lifecycle.current = { kind: "running", timeout: timer };
-    child.once("error", onError);
-    child.once("close", onClose);
     signal.addEventListener("abort", onAbort, { once: true });
-    if (stdout != null) {
-      stdout.on("data", onData);
-      stdout.once("error", onError);
-    } else {
-      requestTermination(new ExternalToolError(
-        "tool_execution_failed",
-        "外部ツールの標準出力を取得できません。",
-        false,
-      ));
-    }
     if (signal.aborted) {
       onAbort();
     }
   });
 }
 
-function isRetryableExternalToolError(error: unknown): error is ExternalToolError {
-  return error instanceof ExternalToolError && error.retryable;
-}
-
 async function runWithRetries(
   tool: ExternalToolDefinition,
   invocation: ExternalToolInvocation,
-  childWorkingRootPath: string,
+  credentialProvider: ExternalToolBrokerOptions["discord_credential_provider"],
   signal: AbortSignal,
-): Promise<Buffer> {
+): Promise<ExternalToolOutput> {
   let retryCount = 0;
   while (true) {
     throwIfAborted(signal);
     try {
-      return await runChildProcess(
+      return await executeDiscordReadInvocation(
         tool,
         invocation,
-        childWorkingRootPath,
+        credentialProvider,
         signal,
       );
     } catch (error) {
@@ -1617,6 +938,7 @@ async function runWithRetries(
         throw error;
       }
       retryCount += 1;
+      await waitForRetry(retryCount, signal);
     }
   }
 }
@@ -1660,8 +982,8 @@ function isBrokerSupportedPlatform(): boolean {
 /** 読み取り専用外部ツールを実行するメインプロセス内ブローカーです。 */
 export class ExternalToolBroker {
   private readonly tmpDirectoryPath: string;
-  private readonly childWorkingRootPath: string;
   private readonly registry: ExternalToolBrokerOptions["registry"];
+  private readonly discordCredentialProvider: ExternalToolBrokerOptions["discord_credential_provider"];
   private readonly statusEvidenceCollector: ExternalToolBrokerOptions["status_evidence_collector"];
   private readonly connectionInfoPath: string;
   private state: BrokerState = "created";
@@ -1682,13 +1004,10 @@ export class ExternalToolBroker {
   public constructor(options: ExternalToolBrokerOptions) {
     const validatedOptions = externalToolBrokerOptionsSchema.parse(options);
     this.tmpDirectoryPath = validatedOptions.tmp_directory_path;
-    this.childWorkingRootPath = validatedOptions.child_work_root_path;
     this.registry = validatedOptions.registry;
+    this.discordCredentialProvider = validatedOptions.discord_credential_provider;
     this.statusEvidenceCollector = validatedOptions.status_evidence_collector;
     this.connectionInfoPath = join(this.tmpDirectoryPath, "contextctl-connection.json");
-    if (isBrokerSupportedPlatform()) {
-      ensureChildWorkingRoot(this.childWorkingRootPath, this.tmpDirectoryPath);
-    }
   }
 
   /** 外部ツール用の安全なローカルIPCを起動します。 */
@@ -1995,7 +1314,8 @@ export class ExternalToolBroker {
     const tool = externalToolDefinitionSchema.parse(
       this.registry.get(validatedInvocation.tool_id),
     );
-    if (!tool.allowed_subcommands.includes(validatedInvocation.subcommand)) {
+    const allowedSubcommands: readonly string[] = tool.allowed_subcommands;
+    if (!allowedSubcommands.includes(validatedInvocation.subcommand)) {
       throw new ExternalToolError(
         "forbidden_subcommand",
         "許可されていないサブコマンドです。",
@@ -2029,16 +1349,44 @@ export class ExternalToolBroker {
     runController: AbortController,
     runSignal: AbortSignal,
   ): Promise<ExternalToolExecutionResult> {
+    const timeoutController = new AbortController();
+    const executionSignal = AbortSignal.any([
+      runSignal,
+      timeoutController.signal,
+    ]);
+    const timeout = setTimeout(() => {
+      timeoutController.abort();
+    }, tool.timeout_ms);
     try {
-      const rawOutput = await runWithRetries(
-        tool,
-        validatedInvocation,
-        this.childWorkingRootPath,
-        runSignal,
-      );
-      const output = externalToolOutputSchema.parse(
-        parseToolOutput(rawOutput),
-      );
+      let output: ExternalToolOutput;
+      try {
+        output = externalToolOutputSchema.parse(
+          await runWithRetries(
+            tool,
+            validatedInvocation,
+            this.discordCredentialProvider,
+            executionSignal,
+          ),
+        );
+      } catch (error) {
+        if (timeoutController.signal.aborted && !runSignal.aborted) {
+          throw new ExternalToolError(
+            "execution_timeout",
+            "外部ツールの実行時間が上限を超えました。",
+            false,
+            error,
+          );
+        }
+        throw error;
+      }
+      if (timeoutController.signal.aborted && !runSignal.aborted) {
+        throw new ExternalToolError(
+          "execution_timeout",
+          "外部ツールの実行時間が上限を超えました。",
+          false,
+        );
+      }
+      throwIfAborted(runSignal);
       const evidence = this.statusEvidenceCollector.record(
         statusEvidenceAttempt,
         output,
@@ -2052,6 +1400,7 @@ export class ExternalToolBroker {
         evidence,
       });
     } finally {
+      clearTimeout(timeout);
       this.activeRuns.delete(runController);
     }
   }
