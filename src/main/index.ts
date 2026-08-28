@@ -1,22 +1,105 @@
-import { app, BrowserWindow, ipcMain, session, shell } from "electron";
-import { join } from "node:path";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  net,
+  powerMonitor,
+  session,
+  shell,
+} from "electron";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import type { DiagnosticRecord } from "./application/diagnostics";
+import { TaskHubApplication } from "./application/service";
+import { IpcHandlerRegistry } from "./ipc";
 import {
+  assertAllowedAsanaAuthorizationUrl,
+  assertAllowedCodexAuthorizationUrl,
   assertAllowedExternalUrl,
   assertTrustedIpcSender,
   isApplicationUrl,
 } from "./security";
 
 const appGetVersionChannel = "app:get-version";
+const asanaRedirectUri = "http://127.0.0.1:53682/oauth/asana/callback";
+const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-let mainWindow: BrowserWindow | undefined;
+const singleInstanceLockAcquired = app.requestSingleInstanceLock();
+const resolvedAbsolutePathSchema = z
+  .string()
+  .min(1)
+  .max(4_096)
+  .refine(isAbsolute, "解決済みパスは絶対パスでなければなりません。")
+  .refine((value) => !value.includes("\0"), "解決済みパスにNUL文字を指定できません。");
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
+type ShutdownState =
+  | { readonly kind: "running" }
+  | { readonly kind: "stopping" }
+  | { readonly kind: "stopped" };
+
+type OnlineMonitorState =
+  | { readonly kind: "stopped" }
+  | {
+      readonly kind: "running";
+      readonly timer: ReturnType<typeof setInterval>;
+      readonly lastOnline: boolean;
+    };
+
+let mainWindow: BrowserWindow | undefined;
+let mainWindowRegistry: IpcHandlerRegistry | undefined;
+let taskHubApplication: TaskHubApplication | undefined;
+let lifecycleController: AbortController | undefined;
+let windowCreationPromise: Promise<void> | undefined;
+let backgroundOperations: Promise<void> = Promise.resolve();
+let shutdownState: ShutdownState = { kind: "running" };
+let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
+let foregroundScheduled = false;
+let onlinePollScheduled = false;
+let powerMonitorRegistered = false;
+let versionIpcRegistered = false;
+
+function recordDiagnostic(
+  code: DiagnosticRecord["code"],
+  severity: DiagnosticRecord["severity"],
+): void {
+  const application = taskHubApplication;
+  if (application == null) {
+    console.error("診断情報を記録できませんでした。");
+    return;
   }
-});
+  try {
+    application.recordDiagnostic(code, severity);
+  } catch {
+    console.error("診断情報を記録できませんでした。");
+  }
+}
+
+function recordServiceDiagnostic(error: unknown, channel: string): void {
+  void error;
+  switch (channel) {
+    case "sync":
+    case "display_order":
+      recordDiagnostic("sync.failed", "error");
+      return;
+    case "codex":
+      recordDiagnostic("codex.status", "error");
+      return;
+    case "external_tools":
+      recordDiagnostic("external_tools.status", "error");
+      return;
+    case "application_journal":
+      recordDiagnostic("proposal.application", "error");
+      return;
+    case "ipc":
+    case "sync_state_listener":
+    case "ai_status_listener":
+      recordDiagnostic("ipc.error", "error");
+      return;
+    default:
+      recordDiagnostic("app.error", "error");
+  }
+}
 
 function getRendererUrl(): string {
   if (app.isPackaged) {
@@ -83,8 +166,85 @@ function configureContentSecurityPolicy(): void {
   });
 }
 
+function configurePermissionPolicy(): void {
+  const applicationSession = session.defaultSession;
+  applicationSession.setPermissionCheckHandler(() => false);
+  applicationSession.setPermissionRequestHandler(
+    (webContents, permission, callback) => {
+      void webContents;
+      void permission;
+      callback(false);
+    },
+  );
+  applicationSession.setDevicePermissionHandler(() => false);
+}
+
+async function openAuthorizedExternalUrl(
+  rawUrl: string,
+  signal: AbortSignal,
+  validate: (value: string) => URL,
+): Promise<void> {
+  signal.throwIfAborted();
+  const validatedUrl = validate(rawUrl);
+  await shell.openExternal(validatedUrl.href);
+  signal.throwIfAborted();
+}
+
+async function openResolvedPath(
+  rawPath: string,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  const absolutePath = resolvedAbsolutePathSchema.parse(rawPath);
+  const result = await shell.openPath(absolutePath);
+  if (result !== "") {
+    throw new Error("ローカルパスを開けませんでした。");
+  }
+  signal.throwIfAborted();
+}
+
+function createTaskHubApplication(controller: AbortController): TaskHubApplication {
+  const userDataPath = app.getPath("userData");
+  return new TaskHubApplication({
+    user_data_path: userDataPath,
+    database_path: join(userDataPath, "taskhub.sqlite3"),
+    secret_storage_path: join(userDataPath, "secret-storage.json"),
+    checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
+    redirect_uri: asanaRedirectUri,
+    app_version: app.getVersion(),
+    codex_executable: "codex",
+    read_only_vault_paths: [],
+    lifecycle_signal: controller.signal,
+    online_provider: () => net.isOnline(),
+    now_provider: () => new Date(),
+    open_authorization_url: (authorizationUrl, signal) =>
+      openAuthorizedExternalUrl(
+        authorizationUrl,
+        signal,
+        assertAllowedAsanaAuthorizationUrl,
+      ),
+    open_codex_authorization_url: (authorizationUrl, signal) =>
+      openAuthorizedExternalUrl(
+        authorizationUrl,
+        signal,
+        assertAllowedCodexAuthorizationUrl,
+      ),
+    open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
+    notify_unexpected_error: (error) => {
+      void error;
+      recordDiagnostic("app.error", "error");
+    },
+    diagnostic: recordServiceDiagnostic,
+  });
+}
+
 function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {
   window.webContents.on("will-navigate", (event, requestedUrl) => {
+    if (!isApplicationUrl(requestedUrl, rendererUrl)) {
+      event.preventDefault();
+    }
+  });
+  window.webContents.on("will-redirect", (event, requestedUrl) => {
     if (!isApplicationUrl(requestedUrl, rendererUrl)) {
       event.preventDefault();
     }
@@ -93,31 +253,203 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const externalUrl = assertAllowedExternalUrl(url);
-      shell.openExternal(externalUrl.href).catch((error: unknown) => {
-        console.error("外部URLを開けませんでした。", error);
+      void shell.openExternal(externalUrl.href).catch(() => {
+        recordDiagnostic("app.error", "error");
       });
-    } catch (error: unknown) {
-      console.error("外部URLを開けませんでした。", error);
+    } catch {
+      recordDiagnostic("app.error", "error");
     }
     return { action: "deny" };
   });
 }
 
-function registerIpcHandlers(rendererUrl: string): void {
-  ipcMain.handle(appGetVersionChannel, (event, payload: unknown): Promise<string> => {
+function registerVersionIpcHandler(rendererUrl: string): void {
+  ipcMain.handle(appGetVersionChannel, (event, payload: unknown): string => {
     z.undefined().parse(payload);
 
-    if (mainWindow == null) {
+    const window = mainWindow;
+    if (window == null) {
       throw new Error("メインウィンドウが初期化されていません。");
     }
 
-    assertTrustedIpcSender(event, mainWindow.webContents, rendererUrl);
-    return Promise.resolve(app.getVersion());
+    assertTrustedIpcSender(event, window.webContents, rendererUrl);
+    return app.getVersion();
+  });
+  versionIpcRegistered = true;
+}
+
+function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
+  try {
+    registry.dispose();
+  } catch {
+    recordDiagnostic("ipc.error", "error");
+  }
+  if (mainWindowRegistry === registry) {
+    mainWindowRegistry = undefined;
+  }
+}
+
+function enqueueBackgroundOperation(
+  operation: () => Promise<void>,
+  failureCode: DiagnosticRecord["code"],
+): void {
+  backgroundOperations = backgroundOperations.then(async () => {
+    const controller = lifecycleController;
+    if (
+      shutdownState.kind !== "running"
+      || controller == null
+      || controller.signal.aborted
+    ) {
+      return;
+    }
+    try {
+      await operation();
+    } catch {
+      if (!controller.signal.aborted) {
+        recordDiagnostic(failureCode, "error");
+      }
+    }
   });
 }
 
-async function createMainWindow(): Promise<void> {
-  const rendererUrl = getRendererUrl();
+function scheduleForegroundSync(): void {
+  if (foregroundScheduled || shutdownState.kind !== "running") {
+    return;
+  }
+  foregroundScheduled = true;
+  enqueueBackgroundOperation(async () => {
+    try {
+      const application = taskHubApplication;
+      const controller = lifecycleController;
+      if (application == null || controller == null) {
+        throw new Error("アプリケーションが初期化されていません。");
+      }
+      if (application.getState().kind !== "configured") {
+        return;
+      }
+      await application.onForeground(controller.signal);
+    } finally {
+      foregroundScheduled = false;
+    }
+  }, "sync.failed");
+}
+
+function updateOnlineMonitorState(
+  monitor: Extract<OnlineMonitorState, { readonly kind: "running" }>,
+  lastOnline: boolean,
+): void {
+  const activeMonitor = onlineMonitorState;
+  if (
+    activeMonitor.kind === "running"
+    && activeMonitor.timer === monitor.timer
+  ) {
+    onlineMonitorState = {
+      kind: "running",
+      timer: monitor.timer,
+      lastOnline,
+    };
+  }
+}
+
+function scheduleOnlinePoll(): void {
+  if (onlinePollScheduled || shutdownState.kind !== "running") {
+    return;
+  }
+  onlinePollScheduled = true;
+  enqueueBackgroundOperation(async () => {
+    try {
+      const monitor = onlineMonitorState;
+      const application = taskHubApplication;
+      if (monitor.kind !== "running" || application == null) {
+        return;
+      }
+      const currentOnline = net.isOnline();
+      if (currentOnline === monitor.lastOnline) {
+        return;
+      }
+      const applicationConfigured = application.getState().kind === "configured";
+      if (!currentOnline) {
+        if (applicationConfigured) {
+          application.setOnline(false);
+        }
+        updateOnlineMonitorState(monitor, false);
+        return;
+      }
+      if (!applicationConfigured) {
+        updateOnlineMonitorState(monitor, true);
+        return;
+      }
+      try {
+        await application.onOnline();
+      } catch (error) {
+        try {
+          application.setOnline(false);
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            "オンライン復帰失敗後の状態復元に失敗しました。",
+          );
+        }
+        throw error;
+      }
+      updateOnlineMonitorState(monitor, true);
+    } finally {
+      onlinePollScheduled = false;
+    }
+  }, "sync.failed");
+}
+
+function startOperationalEventMonitoring(): void {
+  if (onlineMonitorState.kind !== "stopped" || powerMonitorRegistered) {
+    throw new Error("運用イベント監視は重複開始できません。");
+  }
+  const timer = setInterval(scheduleOnlinePoll, onlinePollIntervalMilliseconds);
+  onlineMonitorState = {
+    kind: "running",
+    timer,
+    lastOnline: net.isOnline(),
+  };
+  powerMonitor.on("resume", scheduleForegroundSync);
+  powerMonitorRegistered = true;
+}
+
+function stopOperationalEventMonitoring(): void {
+  const monitor = onlineMonitorState;
+  if (monitor.kind === "running") {
+    clearInterval(monitor.timer);
+    onlineMonitorState = { kind: "stopped" };
+  }
+  if (powerMonitorRegistered) {
+    powerMonitor.removeListener("resume", scheduleForegroundSync);
+    powerMonitorRegistered = false;
+  }
+}
+
+function showAndFocusMainWindow(): boolean {
+  if (shutdownState.kind !== "running") {
+    return false;
+  }
+  const window = mainWindow;
+  if (window == null || window.isDestroyed()) {
+    return false;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  if (!window.isVisible()) {
+    window.show();
+  }
+  window.focus();
+  return true;
+}
+
+async function createMainWindow(
+  rendererUrl: string,
+  application: TaskHubApplication,
+): Promise<void> {
+  if (shutdownState.kind !== "running") {
+    return;
+  }
   const window = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -128,40 +460,159 @@ async function createMainWindow(): Promise<void> {
       preload: join(__dirname, "../preload/index.mjs"),
     },
   });
+  const registry = new IpcHandlerRegistry({
+    rendererWebContents: window.webContents,
+    rendererUrl,
+    ports: application.getIpcPorts(),
+    diagnostic: {
+      record: () => recordDiagnostic("ipc.error", "error"),
+    },
+  });
 
   mainWindow = window;
-  configureWindowSecurity(window, rendererUrl);
-  window.once("ready-to-show", () => {
-    window.show();
-  });
-  window.on("closed", () => {
+  mainWindowRegistry = registry;
+  try {
+    configureWindowSecurity(window, rendererUrl);
+    registry.register(ipcMain);
+    window.once("ready-to-show", () => {
+      if (!window.isDestroyed()) {
+        showAndFocusMainWindow();
+      }
+    });
+    window.on("focus", scheduleForegroundSync);
+    window.on("close", (event) => {
+      if (process.platform === "darwin" && shutdownState.kind === "running") {
+        event.preventDefault();
+        window.hide();
+        return;
+      }
+      disposeMainWindowRegistry(registry);
+    });
+    window.once("closed", () => {
+      if (mainWindow === window) {
+        mainWindow = undefined;
+      }
+    });
+    if (app.isPackaged) {
+      await window.loadFile(fileURLToPath(rendererUrl));
+    } else {
+      await window.loadURL(rendererUrl);
+    }
+  } catch (error) {
+    disposeMainWindowRegistry(registry);
     if (mainWindow === window) {
       mainWindow = undefined;
     }
-  });
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+    throw error;
+  }
+}
 
-  if (app.isPackaged) {
-    await window.loadFile(fileURLToPath(rendererUrl));
-  } else {
-    await window.loadURL(rendererUrl);
+function ensureMainWindow(
+  rendererUrl: string,
+  application: TaskHubApplication,
+): Promise<void> {
+  if (shutdownState.kind !== "running") {
+    return Promise.resolve();
+  }
+  if (mainWindow != null && !mainWindow.isDestroyed()) {
+    return Promise.resolve();
+  }
+  if (windowCreationPromise != null) {
+    return windowCreationPromise;
+  }
+  windowCreationPromise = createMainWindow(rendererUrl, application).finally(() => {
+    windowCreationPromise = undefined;
+  });
+  return windowCreationPromise;
+}
+
+async function stopApplication(): Promise<void> {
+  lifecycleController?.abort();
+  stopOperationalEventMonitoring();
+  const registry = mainWindowRegistry;
+  if (registry != null) {
+    disposeMainWindowRegistry(registry);
+  }
+  if (versionIpcRegistered) {
+    try {
+      ipcMain.removeHandler(appGetVersionChannel);
+    } catch {
+      recordDiagnostic("ipc.error", "error");
+    }
+    versionIpcRegistered = false;
+  }
+  await backgroundOperations;
+  const application = taskHubApplication;
+  if (application != null) {
+    try {
+      await application.stop();
+    } catch {
+      recordDiagnostic("app.error", "error");
+      console.error("アプリケーションの停止に失敗しました。");
+    }
   }
 }
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
   configureContentSecurityPolicy();
+  configurePermissionPolicy();
   const rendererUrl = getRendererUrl();
-  registerIpcHandlers(rendererUrl);
-  await createMainWindow();
+  const controller = new AbortController();
+  lifecycleController = controller;
+  const application = createTaskHubApplication(controller);
+  taskHubApplication = application;
+  await application.start(controller.signal);
+  registerVersionIpcHandler(rendererUrl);
+  startOperationalEventMonitoring();
+  await ensureMainWindow(rendererUrl, application);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createMainWindow();
+    if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
+      void ensureMainWindow(rendererUrl, application).catch(() => {
+        recordDiagnostic("app.error", "error");
+      });
     }
   });
 }
 
-void bootstrap().catch((error: unknown) => {
-  console.error("アプリケーションの起動に失敗しました。", error);
-  app.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
 });
+
+app.on("before-quit", (event) => {
+  if (shutdownState.kind === "stopped") {
+    return;
+  }
+  event.preventDefault();
+  if (shutdownState.kind === "stopping") {
+    return;
+  }
+  shutdownState = { kind: "stopping" };
+  void stopApplication().then(() => {
+    shutdownState = { kind: "stopped" };
+    app.quit();
+  }).catch(() => {
+    recordDiagnostic("app.error", "error");
+    console.error("アプリケーションの停止に失敗しました。");
+    shutdownState = { kind: "stopped" };
+    app.quit();
+  });
+});
+
+if (!singleInstanceLockAcquired) {
+  shutdownState = { kind: "stopped" };
+  app.quit();
+} else {
+  app.on("second-instance", showAndFocusMainWindow);
+  void bootstrap().catch(() => {
+    recordDiagnostic("app.error", "error");
+    console.error("アプリケーションの起動に失敗しました。");
+    app.quit();
+  });
+}
