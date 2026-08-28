@@ -1,12 +1,17 @@
 export {
   graphValidationInputSchema,
   graphValidationResultSchema,
+  selectedProposalGraphValidationInputSchema,
+  selectedProposalGraphValidationResultSchema,
   validateProposalGraph,
+  validateSelectedProposalGraph,
   type GraphValidationError,
   type GraphValidationGroupResult,
   type GraphValidationInput,
   type GraphValidationOperationResult,
   type GraphValidationResult,
+  type SelectedProposalGraphValidationInput,
+  type SelectedProposalGraphValidationResult,
 } from "./graph";
 export {
   proposalValidationInputSchema,

@@ -12,6 +12,7 @@ import {
   classifyProposalConflicts,
   type ProposalApprovalResult,
 } from "../proposal-approval";
+import { validateSelectedProposalGraph } from "../proposal-validation";
 import {
   type Proposal,
   type ProposalGroup,
@@ -55,6 +56,8 @@ import {
 type ApplicationOperationResult =
   AsanaProposalApplicationResult["operations"][number];
 type ApplicationGroupResult = AsanaProposalApplicationResult["groups"][number];
+type ApprovalOperationResult = ProposalApprovalResult["operations"][number];
+type ApprovalGroupResult = ProposalApprovalResult["groups"][number];
 type ApplicationReasonCode = ApplicationOperationResult["reason_code"];
 type RecoveryReasonCode =
   AsanaProposalRecoveryResult["unresolved_journals"][number]["reason_code"];
@@ -216,6 +219,32 @@ function approvalGroupMap(
     result.set(group.group_id, group);
   }
   return result;
+}
+
+function collectApplicableOperationIds(
+  contexts: readonly OperationContext[],
+  selectedOperationIds: ReadonlySet<string>,
+  approvalOperations: ReadonlyMap<string, ApprovalOperationResult>,
+  approvalGroups: ReadonlyMap<string, ApprovalGroupResult>,
+): readonly string[] {
+  const operationIds: string[] = [];
+  for (const context of contexts) {
+    if (!selectedOperationIds.has(context.operation.operation_id)) {
+      continue;
+    }
+    const classification = approvalOperations.get(context.operation.operation_id);
+    if (classification == null) {
+      throw new Error("承認競合結果の操作がありません。");
+    }
+    const group = approvalGroups.get(context.group.group_id);
+    if (group == null) {
+      throw new Error("承認競合結果のグループがありません。");
+    }
+    if (classification.kind === "applicable" && group.applicable) {
+      operationIds.push(context.operation.operation_id);
+    }
+  }
+  return operationIds;
 }
 
 function temporaryMappingMap(
@@ -662,6 +691,22 @@ function selectedOperationSet(
   return new Set(input.approval_input.selected_operation_ids);
 }
 
+function validateAtomicSelection(
+  proposal: Proposal,
+  selectedOperationIds: ReadonlySet<string>,
+): void {
+  for (const group of proposal.groups) {
+    if (!group.atomic) {
+      continue;
+    }
+    const selectedCount = group.operations.filter((operation) =>
+      selectedOperationIds.has(operation.operation_id)).length;
+    if (selectedCount > 0 && selectedCount !== group.operations.length) {
+      throw new Error(`atomicグループ ${group.group_id} の操作を部分選択できません。`);
+    }
+  }
+}
+
 function operationPhase(operation: ProposalOperation): number {
   if (operation.operation === "create_task") {
     return 0;
@@ -1013,18 +1058,37 @@ export class AsanaProposalApplicationCoordinator {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const validatedInput = asanaProposalApplicationInputSchema.parse(input);
-    const approval = proposalApprovalResultSchema.parse(
-      classifyProposalConflicts(validatedInput.approval_input),
-    );
     const contexts = flattenProposal(validatedInput.approval_input.proposal);
     const contextMap = operationMap(contexts);
     const selected = selectedOperationSet(validatedInput);
+    validateAtomicSelection(validatedInput.approval_input.proposal, selected);
+    const approval = proposalApprovalResultSchema.parse(
+      classifyProposalConflicts(validatedInput.approval_input),
+    );
     const approvalOperations = approvalOperationMap(approval);
     const approvalGroups = approvalGroupMap(approval);
+    const applicableOperationIds = collectApplicableOperationIds(
+      contexts,
+      selected,
+      approvalOperations,
+      approvalGroups,
+    );
+    const graphSafety = validateSelectedProposalGraph({
+      proposal: validatedInput.approval_input.proposal,
+      managed_tasks: validatedInput.approval_input.current_tasks,
+      selected_operation_ids: [...applicableOperationIds],
+      temporary_ref_mappings: validatedInput.approval_input.journal_task_mappings,
+    });
+    if (graphSafety.kind === "unsafe") {
+      throw new Error(
+        "競合分類後の実適用操作だけでは依存関係または親子関係に新しい循環が生じます。",
+      );
+    }
+    const applicable = new Set(applicableOperationIds);
     const mappings = temporaryMappingMap(
       validatedInput.approval_input.journal_task_mappings,
     );
-    const uuids = issueCreateUuids(contexts, selected, this.uuidGenerator);
+    const uuids = issueCreateUuids(contexts, applicable, this.uuidGenerator);
     const baselines = baselineExternalMap(validatedInput.baseline_external_data);
     validateBaselineCoverage(contexts, selected, mappings, baselines);
     const operationResults = new Map<string, ApplicationOperationResult>();
@@ -1083,16 +1147,8 @@ export class AsanaProposalApplicationCoordinator {
       }
     }
     const applicableContexts = orderApplicableContexts(
-      contexts.filter((context) => {
-        if (!selected.has(context.operation.operation_id)) {
-          return false;
-        }
-        const classification = approvalOperations.get(context.operation.operation_id);
-        const group = approvalGroups.get(context.group.group_id);
-        return classification?.kind === "applicable"
-          && group?.applicable === true
-          && !operationGroupsBlocked.has(context.group.group_id);
-      }),
+      contexts.filter((context) =>
+        applicable.has(context.operation.operation_id)),
       mappings,
     );
 

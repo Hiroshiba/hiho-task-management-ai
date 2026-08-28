@@ -5,6 +5,7 @@ import {
   type ProposalOperation,
 } from "../../../shared/ai";
 import {
+  gidSchema,
   identifierSchema,
   taskSchema,
   type Task,
@@ -18,6 +19,8 @@ import {
 const maximumManagedTasks = 10000;
 const maximumCycleNodes = 10000;
 const maximumCycles = 10000;
+const maximumSelectedOperations = 256;
+const maximumTemporaryRefMappings = 256;
 
 const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0, {
   message: "空白だけでない文字列を指定してください。",
@@ -38,6 +41,56 @@ const managedTasksSchema = z
         return;
       }
       seen.add(task.gid);
+    });
+  });
+
+const selectedOperationIdsSchema = z
+  .array(identifierSchema)
+  .max(maximumSelectedOperations)
+  .superRefine((operationIds, context) => {
+    const seen = new Set<string>();
+    operationIds.forEach((operationId, index) => {
+      if (seen.has(operationId)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: `operation_id ${operationId} を重複指定できません。`,
+        });
+      }
+      seen.add(operationId);
+    });
+  });
+
+const temporaryRefMappingSchema = z
+  .object({
+    temporary_ref: identifierSchema,
+    task_gid: gidSchema,
+  })
+  .strict();
+
+const temporaryRefMappingsSchema = z
+  .array(temporaryRefMappingSchema)
+  .max(maximumTemporaryRefMappings)
+  .superRefine((mappings, context) => {
+    const temporaryRefs = new Set<string>();
+    const taskGids = new Set<string>();
+    mappings.forEach((mapping, index) => {
+      if (temporaryRefs.has(mapping.temporary_ref)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "temporary_ref"],
+          message: `temporary_ref ${mapping.temporary_ref} を重複指定できません。`,
+        });
+      }
+      if (taskGids.has(mapping.task_gid)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "task_gid"],
+          message: `対応先タスクGID ${mapping.task_gid} を重複指定できません。`,
+        });
+      }
+      temporaryRefs.add(mapping.temporary_ref);
+      taskGids.add(mapping.task_gid);
     });
   });
 
@@ -144,6 +197,48 @@ const cyclesSchema = z
     });
   });
 
+const selectedGraphSafeResultSchema = z
+  .object({
+    kind: z.literal("safe"),
+    dependency_cycles: cyclesSchema.length(0),
+    parent_cycles: cyclesSchema.length(0),
+  })
+  .strict();
+
+const selectedGraphUnsafeResultSchema = z
+  .object({
+    kind: z.literal("unsafe"),
+    dependency_cycles: cyclesSchema,
+    parent_cycles: cyclesSchema,
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (result.dependency_cycles.length === 0 && result.parent_cycles.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["kind"],
+        message: "unsafeには依存循環または親子循環が必要です。",
+      });
+    }
+  });
+
+/** 明示選択した操作集合のグラフ検証入力を検証するスキーマです。 */
+export const selectedProposalGraphValidationInputSchema = z
+  .object({
+    proposal: proposalSchema,
+    managed_tasks: managedTasksSchema,
+    selected_operation_ids: selectedOperationIdsSchema,
+    temporary_ref_mappings: temporaryRefMappingsSchema,
+  })
+  .strict()
+  .superRefine(validateSelectedInputContext);
+
+/** 明示選択した操作集合のグラフ検証結果を検証するスキーマです。 */
+export const selectedProposalGraphValidationResultSchema = z.discriminatedUnion(
+  "kind",
+  [selectedGraphSafeResultSchema, selectedGraphUnsafeResultSchema],
+);
+
 const graphValidationGroupResultSchema = z
   .object({
     group_id: identifierSchema,
@@ -185,6 +280,12 @@ export type GraphValidationGroupResult = z.infer<
 export type GraphValidationResult = z.infer<
   typeof graphValidationResultSchema
 >;
+export type SelectedProposalGraphValidationInput = z.infer<
+  typeof selectedProposalGraphValidationInputSchema
+>;
+export type SelectedProposalGraphValidationResult = z.infer<
+  typeof selectedProposalGraphValidationResultSchema
+>;
 
 type ProposalTarget = Extract<
   ProposalOperation,
@@ -220,6 +321,140 @@ type CycleProjection = {
   readonly operation_ids_by_cycle: ReadonlyMap<string, readonly string[]>;
 };
 
+function collectOperationTargets(
+  operation: ProposalOperation,
+): readonly ProposalTarget[] {
+  const targets: ProposalTarget[] = [];
+  const addTarget = (target: ProposalTarget): void => {
+    targets.push(target);
+  };
+  if (operation.operation === "create_task") {
+    if (operation.creation.kind === "split_child") {
+      addTarget(operation.creation.parent);
+    }
+    if (operation.after.parent != null) {
+      addTarget(operation.after.parent);
+    }
+    for (const dependency of operation.after.dependencies ?? []) {
+      addTarget(dependency.target);
+    }
+    return targets;
+  }
+  addTarget(operation.target);
+  if (operation.operation === "set_dependencies") {
+    for (const dependency of operation.before) {
+      addTarget(dependency.target);
+    }
+    for (const dependency of operation.after) {
+      addTarget(dependency.target);
+    }
+  }
+  if (operation.operation === "set_parent") {
+    if (operation.before.kind !== "absent") {
+      addTarget(operation.before);
+    }
+    if (operation.after.kind !== "absent") {
+      addTarget(operation.after);
+    }
+  }
+  return targets;
+}
+
+function collectTemporaryReferences(
+  operation: ProposalOperation,
+): readonly string[] {
+  const references = new Set<string>();
+  for (const target of collectOperationTargets(operation)) {
+    if (target.kind === "temporary") {
+      references.add(target.ref);
+    }
+  }
+  return [...references];
+}
+
+function validateSelectedInputContext(
+  input: SelectedProposalGraphValidationInput,
+  context: z.RefinementCtx,
+): void {
+  const operations = new Map<string, ProposalOperation>();
+  const creates = new Map<
+    string,
+    Extract<ProposalOperation, { readonly operation: "create_task" }>
+  >();
+  for (const group of input.proposal.groups) {
+    for (const operation of group.operations) {
+      operations.set(operation.operation_id, operation);
+      if (operation.operation === "create_task") {
+        creates.set(operation.temporary_ref, operation);
+      }
+    }
+  }
+  const managedTaskGids = new Set(input.managed_tasks.map((task) => task.gid));
+  const mappings = new Map<string, string>();
+  input.temporary_ref_mappings.forEach((mapping, index) => {
+    mappings.set(mapping.temporary_ref, mapping.task_gid);
+    if (!creates.has(mapping.temporary_ref)) {
+      context.addIssue({
+        code: "custom",
+        path: ["temporary_ref_mappings", index, "temporary_ref"],
+        message: `temporary_ref ${mapping.temporary_ref} に対応する作成操作がありません。`,
+      });
+    }
+  });
+  const selected = new Set(input.selected_operation_ids);
+  input.selected_operation_ids.forEach((operationId, index) => {
+    const operation = operations.get(operationId);
+    if (operation == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["selected_operation_ids", index],
+        message: `operation_id ${operationId} が変更案にありません。`,
+      });
+      return;
+    }
+    if (
+      operation.operation === "create_task"
+      && mappings.has(operation.temporary_ref)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["selected_operation_ids", index],
+        message: `対応済みtemporary_ref ${operation.temporary_ref} の作成操作は投影対象にできません。`,
+      });
+    }
+    for (const target of collectOperationTargets(operation)) {
+      if (target.kind === "existing" && !managedTaskGids.has(target.gid)) {
+        context.addIssue({
+          code: "custom",
+          path: ["selected_operation_ids", index],
+          message: `参照先タスクGID ${target.gid} が現在グラフにありません。`,
+        });
+      }
+    }
+    for (const temporaryRef of collectTemporaryReferences(operation)) {
+      const mappedGid = mappings.get(temporaryRef);
+      if (mappedGid != null) {
+        if (!managedTaskGids.has(mappedGid)) {
+          context.addIssue({
+            code: "custom",
+            path: ["selected_operation_ids", index],
+            message: `temporary_ref ${temporaryRef} の対応先タスクGID ${mappedGid} が現在グラフにありません。`,
+          });
+        }
+        continue;
+      }
+      const create = creates.get(temporaryRef);
+      if (create == null || !selected.has(create.operation_id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["selected_operation_ids", index],
+          message: `temporary_ref ${temporaryRef} の作成操作または対応済みGIDがありません。`,
+        });
+      }
+    }
+  });
+}
+
 function compareStrings(left: string, right: string): number {
   if (left < right) {
     return -1;
@@ -234,9 +469,16 @@ function edgeKey(from: NodeKey, to: NodeKey): string {
   return `${from}\u0000${to}`;
 }
 
-function targetKey(target: ProposalTarget): NodeKey {
+function targetKey(
+  target: ProposalTarget,
+  temporaryRefMappings: ReadonlyMap<string, string>,
+): NodeKey {
   if (target.kind === "existing") {
     return `existing:${target.gid}`;
+  }
+  const mappedGid = temporaryRefMappings.get(target.ref);
+  if (mappedGid != null) {
+    return `existing:${mappedGid}`;
   }
   return `temporary:${target.ref}`;
 }
@@ -381,16 +623,22 @@ function addCreateTaskEdges(
   dependencyGraph: GraphState,
   parentGraph: GraphState,
   operation: Extract<RelationOperation, { readonly operation: "create_task" }>,
+  temporaryRefMappings: ReadonlyMap<string, string>,
 ): void {
   const node = `temporary:${operation.temporary_ref}`;
   if (operation.after.parent != null) {
-    addProjectedEdge(parentGraph, targetKey(operation.after.parent), node, operation.operation_id);
+    addProjectedEdge(
+      parentGraph,
+      targetKey(operation.after.parent, temporaryRefMappings),
+      node,
+      operation.operation_id,
+    );
   }
   for (const dependency of operation.after.dependencies ?? []) {
     addProjectedEdge(
       dependencyGraph,
       node,
-      targetKey(dependency.target),
+      targetKey(dependency.target, temporaryRefMappings),
       operation.operation_id,
     );
   }
@@ -400,15 +648,16 @@ function applyRelationOperation(
   dependencyGraph: GraphState,
   parentGraph: GraphState,
   operation: Exclude<RelationOperation, { readonly operation: "create_task" }>,
+  temporaryRefMappings: ReadonlyMap<string, string>,
 ): void {
-  const target = targetKey(operation.target);
+  const target = targetKey(operation.target, temporaryRefMappings);
   if (operation.operation === "set_dependencies") {
     removeOutgoingEdges(dependencyGraph, target, operation.operation_id);
     for (const dependency of operation.after) {
       addProjectedEdge(
         dependencyGraph,
         target,
-        targetKey(dependency.target),
+        targetKey(dependency.target, temporaryRefMappings),
         operation.operation_id,
       );
     }
@@ -418,7 +667,7 @@ function applyRelationOperation(
   if (operation.after.kind !== "absent") {
     addProjectedEdge(
       parentGraph,
-      targetKey(operation.after),
+      targetKey(operation.after, temporaryRefMappings),
       target,
       operation.operation_id,
     );
@@ -621,12 +870,12 @@ function createSelectedOperationIds(
 }
 
 function relationOperations(
-  contexts: readonly OperationContext[],
+  proposal: Proposal,
   selectedOperationIds: ReadonlySet<string>,
 ): readonly RelationOperation[] {
-  return contexts
-    .filter((context) => selectedOperationIds.has(context.operation.operation_id))
-    .map((context) => context.operation)
+  return proposal.groups
+    .flatMap((group) => group.operations)
+    .filter((operation) => selectedOperationIds.has(operation.operation_id))
     .filter((operation): operation is RelationOperation =>
       operation.operation === "create_task"
       || operation.operation === "set_dependencies"
@@ -637,6 +886,7 @@ function relationOperations(
 function createProjection(
   tasks: readonly Task[],
   operations: readonly RelationOperation[],
+  temporaryRefMappings: ReadonlyMap<string, string>,
 ): {
   readonly dependency: CycleProjection;
   readonly parent: CycleProjection;
@@ -654,11 +904,21 @@ function createProjection(
     addCreateTaskNode(dependencyProjected, parentProjected, operation);
   }
   for (const operation of createOperations) {
-    addCreateTaskEdges(dependencyProjected, parentProjected, operation);
+    addCreateTaskEdges(
+      dependencyProjected,
+      parentProjected,
+      operation,
+      temporaryRefMappings,
+    );
   }
   for (const operation of operations) {
     if (operation.operation !== "create_task") {
-      applyRelationOperation(dependencyProjected, parentProjected, operation);
+      applyRelationOperation(
+        dependencyProjected,
+        parentProjected,
+        operation,
+        temporaryRefMappings,
+      );
     }
   }
   return {
@@ -954,8 +1214,12 @@ export function validateProposalGraph(
     parsedInput.basic_validation_result,
   );
   const selectedOperationIds = createSelectedOperationIds(contexts);
-  const operations = relationOperations(contexts, selectedOperationIds);
-  const projection = createProjection(parsedInput.managed_tasks, operations);
+  const operations = relationOperations(parsedInput.proposal, selectedOperationIds);
+  const projection = createProjection(
+    parsedInput.managed_tasks,
+    operations,
+    new Map<string, string>(),
+  );
   const errorsByOperation = createGraphErrors(
     contexts,
     parsedInput.basic_validation_result,
@@ -968,4 +1232,38 @@ export function validateProposalGraph(
     parent_cycles: projection.parent.cycles,
   };
   return graphValidationResultSchema.parse(result);
+}
+
+/** 明示選択した操作だけを現在グラフへ投影して新規循環の有無を検証します。 */
+export function validateSelectedProposalGraph(
+  input: SelectedProposalGraphValidationInput,
+): SelectedProposalGraphValidationResult {
+  const parsedInput = selectedProposalGraphValidationInputSchema.parse(input);
+  const selectedOperationIds = new Set(parsedInput.selected_operation_ids);
+  const temporaryRefMappings = new Map(
+    parsedInput.temporary_ref_mappings.map((mapping) => [
+      mapping.temporary_ref,
+      mapping.task_gid,
+    ]),
+  );
+  const operations = relationOperations(parsedInput.proposal, selectedOperationIds);
+  const projection = createProjection(
+    parsedInput.managed_tasks,
+    operations,
+    temporaryRefMappings,
+  );
+  const dependencyCycles = projection.dependency.cycles;
+  const parentCycles = projection.parent.cycles;
+  if (dependencyCycles.length === 0 && parentCycles.length === 0) {
+    return selectedProposalGraphValidationResultSchema.parse({
+      kind: "safe",
+      dependency_cycles: [],
+      parent_cycles: [],
+    });
+  }
+  return selectedProposalGraphValidationResultSchema.parse({
+    kind: "unsafe",
+    dependency_cycles: dependencyCycles,
+    parent_cycles: parentCycles,
+  });
 }

@@ -59,6 +59,7 @@ import {
   trustedStatusEvidenceReferencesSchema,
   validateProposal,
   validateProposalGraph,
+  validateSelectedProposalGraph,
   type GraphValidationResult,
   type ProposalValidationResult,
   type TrustedStatusEvidenceReference,
@@ -1474,6 +1475,23 @@ function collectTemporaryReferences(operation: ProposalOperation): readonly stri
   return references;
 }
 
+function assertSelectedProposalGraphIsSafe(
+  stored: StoredProposal,
+  selectedOperationIds: readonly string[],
+): void {
+  const result = validateSelectedProposalGraph({
+    proposal: stored.proposal,
+    managed_tasks: stored.snapshot.tasks,
+    selected_operation_ids: [...selectedOperationIds],
+    temporary_ref_mappings: [],
+  });
+  if (result.kind === "unsafe") {
+    throw new AiWorkflowSelectionError(
+      "選択した操作だけを適用すると依存関係または親子関係に新しい循環が生じます。",
+    );
+  }
+}
+
 function revalidateProposal(
   proposal: Proposal,
   stored: StoredProposal,
@@ -1791,6 +1809,7 @@ export class AiWorkflowService {
     const request = aiWorkflowSelectionRequestSchema.parse(input);
     const stored = this.getStoredProposal(request.proposal_id);
     const selectedOperationIds = resolveSelectedOperationIds(stored, request.selection);
+    assertSelectedProposalGraphIsSafe(stored, selectedOperationIds);
     const updated: StoredProposal = {
       ...stored,
       selected_operation_ids: [...selectedOperationIds],
@@ -1866,6 +1885,7 @@ export class AiWorkflowService {
     throwIfAborted(signal);
     const stored = this.getStoredProposal(request.proposal_id);
     const selectedOperationIds = resolveSelectedOperationIds(stored, request.selection);
+    assertSelectedProposalGraphIsSafe(stored, selectedOperationIds);
     if (this.options.isOnline() !== true) {
       throw new AiWorkflowOfflineError();
     }
