@@ -385,7 +385,9 @@ function isEndpoint(value) {
   return (
     typeof value === "string"
     && !hasControlCharacter(value)
-    && (path.isAbsolute(value) || /^\\\\\.\\pipe\\[A-Za-z0-9._-]+$/u.test(value))
+    && (process.platform === "win32"
+      ? /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(value)
+      : path.isAbsolute(value))
   );
 }
 
@@ -410,15 +412,12 @@ function verifyNoSymlinkPath(targetPath) {
 }
 
 function verifyConnectionInfoFile() {
-  if (process.platform === "win32") {
-    throw invalid("contextctlはこの環境では利用できません。");
-  }
   verifyNoSymlinkPath(connectionInfoPath);
   const stats = fs.lstatSync(connectionInfoPath);
   if (
     stats.isSymbolicLink()
     || !stats.isFile()
-    || (stats.mode & 0o777) !== 0o600
+    || (process.platform !== "win32" && (stats.mode & 0o777) !== 0o600)
     || !isCurrentUser(stats)
   ) {
     throw invalid("contextctl接続情報の権限が不正です。");
@@ -427,7 +426,10 @@ function verifyConnectionInfoFile() {
 
 function verifyEndpoint(endpoint) {
   if (process.platform === "win32") {
-    throw invalid("contextctlはこの環境では利用できません。");
+    if (!/^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(endpoint)) {
+      throw invalid("contextctl IPC接続先が不正です。");
+    }
+    return;
   }
   verifyNoSymlinkPath(endpoint);
   const stats = fs.lstatSync(endpoint);

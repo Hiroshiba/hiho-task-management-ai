@@ -339,23 +339,31 @@ const capabilitySchema = z
   .string()
   .regex(/^[0-9a-f]{64}$/u, "外部ツールの能力値が不正です。");
 
+const windowsPipeEndpointPattern = /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u;
+const windowsPipePrefix = "\\\\.\\pipe\\";
+
 const absolutePathSchema = z
   .string()
   .min(1)
   .max(maximumExecutableCharacters)
   .refine(isAbsolute, "パスは絶対パスで指定してください。")
   .refine((value) => !hasControlCharacter(value), "パスに制御文字を指定できません。")
-  .refine((value) => !value.includes("\0"), "パスにNUL文字を指定できません。");
+  .refine((value) => !value.includes("\0"), "パスにNUL文字を指定できません。")
+  .refine(
+    (value) => !value.toLowerCase().startsWith(windowsPipePrefix),
+    "名前付きパイプは専用形式で指定してください。",
+  );
 
-const endpointSchema = z
+const windowsPipeEndpointSchema = z
   .string()
   .min(1)
   .max(maximumExecutableCharacters)
   .refine((value) => !hasControlCharacter(value), "IPC接続先に制御文字を指定できません。")
-  .refine(
-    (value) => isAbsolute(value) || /^\\\\\.\\pipe\\[A-Za-z0-9._-]+$/u.test(value),
-    "IPC接続先が不正です。",
-  );
+  .refine((value) => windowsPipeEndpointPattern.test(value), "IPC接続先が不正です。");
+
+const endpointSchema = process.platform === "win32"
+  ? windowsPipeEndpointSchema
+  : absolutePathSchema;
 
 const jsonValueSchema = z.custom<JsonValue>(isSafeJsonValue, {
   message: "外部ツール出力は制御文字のないJSON値でなければなりません。",

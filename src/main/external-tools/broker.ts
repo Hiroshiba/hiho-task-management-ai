@@ -456,7 +456,7 @@ function lstatWithoutSymlink(directoryPath: string): Stats {
 }
 
 function isWindowsPipe(endpoint: string): boolean {
-  return /^\\\\\.\\pipe\\[A-Za-z0-9._-]+$/u.test(endpoint);
+  return /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(endpoint);
 }
 
 function ensureIpcDirectory(directoryPath: string): void {
@@ -529,7 +529,7 @@ function verifyChildWorkingDirectory(directoryPath: string): void {
       false,
     );
   }
-  if ((stats.mode & 0o777) !== childWorkingDirectoryMode) {
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== childWorkingDirectoryMode) {
     throw new ExternalToolError(
       "permission_denied",
       "外部ツール作業ディレクトリの権限が不正です。",
@@ -813,7 +813,7 @@ function writeConnectionInfoAtomically(
     if (
       stats.isSymbolicLink()
       || !stats.isFile()
-      || (stats.mode & 0o777) !== connectionInfoMode
+      || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
       || !isCurrentUser(stats)
     ) {
       throw new ExternalToolError(
@@ -863,7 +863,7 @@ function readConnectionInfo(connectionInfoPath: string): ConnectionInfo {
   if (
     stats.isSymbolicLink()
     || !stats.isFile()
-    || (stats.mode & 0o777) !== connectionInfoMode
+    || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
     || !isCurrentUser(stats)
   ) {
     throw new ExternalToolError(
@@ -913,7 +913,7 @@ function removeConnectionInfo(
   if (
     stats.isSymbolicLink()
     || !stats.isFile()
-    || (stats.mode & 0o777) !== connectionInfoMode
+    || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
     || !isCurrentUser(stats)
   ) {
     throw new ExternalToolError(
@@ -1778,7 +1778,8 @@ function createBrokerStoppedError(): ExternalToolError {
 }
 
 function isBrokerSupportedPlatform(): boolean {
-  return process.platform === "linux"
+  return process.platform === "win32"
+    || process.platform === "linux"
     || process.platform === "darwin"
     || process.platform === "freebsd"
     || process.platform === "openbsd"
@@ -1854,6 +1855,13 @@ export class ExternalToolBroker {
       const endpoint = externalToolConnectionInfoSchema.shape.endpoint.parse(
         createEndpoint(this.tmpDirectoryPath),
       );
+      if (process.platform === "win32" && !isWindowsPipe(endpoint)) {
+        throw new ExternalToolError(
+          "ipc_unavailable",
+          "外部ツールIPC接続先が不正です。",
+          false,
+        );
+      }
       if (!isWindowsPipe(endpoint) && Buffer.byteLength(endpoint, "utf8") >= 108) {
         throw new ExternalToolError(
           "ipc_unavailable",
@@ -2294,7 +2302,11 @@ export class ExternalToolBroker {
       server.once("listening", onListening);
       stopSignal.addEventListener("abort", onAbort, { once: true });
       try {
-        server.listen(endpoint);
+        server.listen({
+          path: endpoint,
+          readableAll: false,
+          writableAll: false,
+        });
       } catch (error) {
         if (stopSignal.aborted) {
           rejectStopped();

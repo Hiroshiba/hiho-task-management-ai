@@ -261,7 +261,10 @@ function verifyDirectory(directoryPath: string, label: string): void {
   assertOwned(stats, label);
   chmodSync(directoryPath, directoryMode);
   const securedStats = lstatWithoutSymlink(directoryPath, label);
-  if (!securedStats.isDirectory() || (securedStats.mode & 0o777) !== directoryMode) {
+  if (
+    !securedStats.isDirectory()
+    || (process.platform !== "win32" && (securedStats.mode & 0o777) !== directoryMode)
+  ) {
     throw new CodexWorkspaceError(`${label}の権限を固定できません。`);
   }
   assertOwned(securedStats, label);
@@ -273,7 +276,7 @@ function verifySecureFile(filePath: string, label: string, mode: number): void {
     throw new CodexWorkspaceError(`${label}が想定外のファイルです。`);
   }
   assertOwned(stats, label);
-  if ((stats.mode & 0o777) !== mode) {
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== mode) {
     throw new CodexWorkspaceError(`${label}の権限を固定できません。`);
   }
 }
@@ -399,7 +402,7 @@ function assertConnectionInfoPath(
     throw new CodexWorkspaceError("外部ツール接続情報が想定外のファイルです。");
   }
   assertOwned(stats, "外部ツール接続情報");
-  if ((stats.mode & 0o777) !== fileMode) {
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== fileMode) {
     throw new CodexWorkspaceError("外部ツール接続情報の権限が不正です。");
   }
 }
@@ -419,6 +422,7 @@ function createExternalToolsSkillContent(
     "",
     "- contextctlは登録内容にある読み取り専用サブコマンドだけを使用してください。",
     "- 入力形式は contextctl <tool-id> <許可サブコマンド> ... --json です。",
+    "- 直接実行できない環境では node bin/contextctl <tool-id> <許可サブコマンド> ... --json として呼び出してください。",
     "- 資格情報、実行ファイルのパス、外部本文を取得または保存しないでください。",
     "- 外部サービスへ書き込まず、変更、削除、送信の操作を実行しないでください。",
     "- 出力をファイルや長期メモへ保存せず、その場の判断材料として使用してください。",
@@ -466,23 +470,26 @@ function createDisabledExternalToolsSkillContent(reason: "no_registered_tools" |
   ].join("\n")}\n`;
 }
 
+function isContextctlSupportedPlatform(): boolean {
+  return process.platform === "win32"
+    || process.platform === "linux"
+    || process.platform === "darwin"
+    || process.platform === "freebsd"
+    || process.platform === "openbsd"
+    || process.platform === "sunos"
+    || process.platform === "aix";
+}
+
 /** 外部ツールブローカー接続用contextctlと読み取り専用Skillを導入します。 */
 export function installContextctlClientScript(
   input: ContextctlInstallationInput,
 ): ContextctlInstallationResult {
   const validatedInput = contextctlInstallationInputSchema.parse(input);
   const workspacePath = resolve(validatedInput.workspacePath);
-  const externalToolsSkillPath = join(
-    workspacePath,
-    ".agents",
-    "skills",
-    "external-tools",
-    "SKILL.md",
-  );
   const paths = verifyWorkspacePaths(workspacePath);
   const definitions = [...validatedInput.toolDefinitions].sort((left, right) =>
     compareStrings(left.tool_id, right.tool_id));
-  if (process.platform === "win32") {
+  if (!isContextctlSupportedPlatform()) {
     removeExistingFile(paths.contextctlPath, "contextctl");
     writeFileAtomically(
       paths.externalToolsSkillPath,
@@ -494,7 +501,7 @@ export function installContextctlClientScript(
       kind: "disabled",
       reason: "unsupported_platform",
       workspacePath,
-      externalToolsSkillPath,
+      externalToolsSkillPath: paths.externalToolsSkillPath,
     });
   }
   if (definitions.length === 0) {
