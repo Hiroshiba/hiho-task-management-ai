@@ -556,6 +556,35 @@ export class SetupOrchestrator {
     return state;
   }
 
+  /** readyチェックポイントから非秘密の端末設定を復元します。 */
+  public restoreReadyDeviceSettings(): DeviceSettings {
+    const state = this.state;
+    assertStateKindTyped(state, ["ready"]);
+    const checkpointSettings = deviceSettingsSchema.parse({
+      device_id: state.context.device_id,
+      client_id: state.context.client_id,
+      workspace_gid: state.context.workspace_gid,
+      project_gid: state.context.project_gid,
+      section_gids: state.context.section_gids,
+    });
+    const savedSettings = this.database.getDeviceSettings();
+    if (savedSettings == null) {
+      this.database.saveDeviceSettings(checkpointSettings);
+      return checkpointSettings;
+    }
+    const settings = deviceSettingsSchema.parse(savedSettings);
+    if (
+      settings.device_id !== checkpointSettings.device_id
+      || settings.client_id !== checkpointSettings.client_id
+      || settings.workspace_gid !== checkpointSettings.workspace_gid
+      || settings.project_gid !== checkpointSettings.project_gid
+      || !sameSectionGids(settings.section_gids, checkpointSettings.section_gids)
+    ) {
+      throw new Error("端末設定と保存済み初回設定が一致しません。");
+    }
+    return settings;
+  }
+
   /** 保存済み初回設定をAsanaの実状態と再照合して再開します。 */
   public async resume(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);
@@ -609,20 +638,7 @@ export class SetupOrchestrator {
       throw new Error("保存済み初期設定リソースとAsanaの実状態が一致しません。");
     }
     if (state.kind === "ready") {
-      const savedSettings = this.database.getDeviceSettings();
-      if (savedSettings == null) {
-        throw new Error("ready状態に対応する端末設定がありません。");
-      }
-      const settings = deviceSettingsSchema.parse(savedSettings);
-      if (
-        settings.device_id !== state.context.device_id
-        || settings.client_id !== state.context.client_id
-        || settings.workspace_gid !== state.context.workspace_gid
-        || settings.project_gid !== state.context.project_gid
-        || !sameSectionGids(settings.section_gids, state.context.section_gids)
-      ) {
-        throw new Error("端末設定と保存済み初回設定が一致しません。");
-      }
+      this.restoreReadyDeviceSettings();
     }
     this.resumeRequired = false;
     return this.getState();

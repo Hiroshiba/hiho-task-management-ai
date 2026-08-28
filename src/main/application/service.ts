@@ -740,9 +740,15 @@ export class TaskHubApplication {
     }
     this.recordDiagnostic("app.start", "info");
     let state = this.setup.getState();
+    const readyCheckpointOffline = state.kind === "ready" && !this.isOnline();
+    if (state.kind === "ready") {
+      this.configureAsanaFromSettings(
+        this.setup.restoreReadyDeviceSettings(),
+      );
+    }
     if (state.kind === "created" || state.kind === "codex_cli_ready") {
       state = await this.setup.start(signal);
-    } else {
+    } else if (!readyCheckpointOffline) {
       await this.restorePersistedCodexSession(state, signal);
       if (state.kind === "resources_requires_action" || isContextState(state)) {
         state = await this.setup.resume(signal);
@@ -1382,7 +1388,8 @@ export class TaskHubApplication {
     }
     this.configureOperationalServices();
     const runtime = this.requireRuntime();
-    let synchronizationDeferred = runtime.getState().kind === "offline";
+    const startedOffline = runtime.getState().kind === "offline";
+    let synchronizationDeferred = startedOffline;
     if (!synchronizationDeferred) {
       try {
         await this.recoverApplicationJournal(signal);
@@ -1398,7 +1405,9 @@ export class TaskHubApplication {
       }
     }
     await this.startExternalTools(signal);
-    await this.startCodexForConfigured(signal);
+    if (!startedOffline) {
+      await this.startCodexForConfigured(signal);
+    }
     if (!synchronizationDeferred) {
       const runtimeResult = await runtime.start(signal);
       if (runtimeResult.kind === "synchronized") {
