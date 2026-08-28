@@ -1,1 +1,43 @@
 @import "tailwindcss";
+
+@layer components {
+  .primary-button {
+    @apply inline-flex items-center justify-center rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .secondary-button {
+    @apply inline-flex items-center justify-center rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .choice-button {
+    @apply flex w-full items-center justify-between rounded-md border border-slate-300 px-3 py-2 text-left text-sm text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .text-button {
+    @apply text-sm font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .field-group {
+    @apply flex flex-col gap-2;
+  }
+
+  .field-label {
+    @apply flex flex-col gap-1 text-sm font-medium text-slate-800;
+  }
+
+  .text-input {
+    @apply min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-600 disabled:cursor-not-allowed disabled:bg-slate-100;
+  }
+
+  .section-heading {
+    @apply text-base font-semibold text-slate-900;
+  }
+
+  .table-label {
+    @apply block text-xs font-medium text-slate-500;
+  }
+
+  .table-value {
+    @apply mt-1 block text-sm text-slate-800;
+  }
+}
