@@ -17,3 +17,12 @@ export {
   type AsanaSetupResourceCoordinatorInput,
   type AsanaSetupResourceCoordinatorResult,
 } from "./resource-coordinator";
+export {
+  AsanaCapabilityCheckService,
+  AsanaCapabilityCheckError,
+  capabilityCheckFailureReasonSchema,
+  capabilityCheckInputSchema,
+  capabilityCheckResultSchema,
+  type AsanaCapabilityCheckInput,
+  type AsanaCapabilityCheckResult,
+} from "./capability-check";
