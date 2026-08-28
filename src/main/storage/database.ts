@@ -1,6 +1,10 @@
 import BetterSqlite3 from "better-sqlite3";
 import { isAbsolute } from "node:path";
-import { CleanupItemsCacheStore } from "./cleanup-items-cache";
+import {
+  aggregateCleanupItems,
+  CleanupItemsCacheStore,
+  replaceCleanupItemsByKinds as createCleanupItemsReplacement,
+} from "./cleanup-items-cache";
 import { DiagnosticLogStore } from "./diagnostic-log";
 import { ApplicationJournalStore } from "./application-journal";
 import {
@@ -34,6 +38,10 @@ import {
   syncStateSchema,
   taskCacheEntriesSchema,
 } from "../../shared/storage";
+import {
+  cleanupItemsSchema,
+  type CleanupItemKind,
+} from "../../shared/domain";
 import type { SqliteDatabase } from "./types";
 
 export const storageSchemaVersion = 3;
@@ -51,6 +59,15 @@ const storageTableNames = [
   "diagnostic_log",
   "external_tool_definitions",
 ] as const;
+
+const localAsynchronousCleanupItemKinds: readonly CleanupItemKind[] = [
+  "proposal_conflict",
+  "broken_vault_link",
+];
+
+const localAsynchronousCleanupItemKindSet = new Set(
+  localAsynchronousCleanupItemKinds,
+);
 
 const storageSchemaSql = `
 CREATE TABLE task_cache (
@@ -286,10 +303,21 @@ export class StorageDatabase {
       throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
     }
     const save = this.database.transaction(() => {
+      const storedCleanupItems = this.cleanupItemsCacheStore.get();
+      const existingCleanupItems = storedCleanupItems == null
+        ? cleanupItemsSchema.parse([])
+        : storedCleanupItems;
+      const localCleanupItems = existingCleanupItems.filter((item) =>
+        localAsynchronousCleanupItemKindSet.has(item.kind),
+      );
+      const aggregatedCleanupItems = aggregateCleanupItems([
+        ...validatedCleanupItems,
+        ...localCleanupItems,
+      ]);
       this.taskCacheStore.replace(validatedEntries);
       this.projectMetadataCacheStore.save(validatedMetadata);
       this.rankingCacheStore.save(validatedRanking);
-      this.cleanupItemsCacheStore.save(validatedCleanupItems);
+      this.cleanupItemsCacheStore.save(aggregatedCleanupItems);
       this.syncStateStore.save(validatedSyncState);
     });
     save();
@@ -328,6 +356,48 @@ export class StorageDatabase {
   /** 要整理項目キャッシュを読み出します。 */
   public getCleanupItems(): CleanupItemsCache | undefined {
     return this.cleanupItemsCacheStore.get();
+  }
+
+  /** 指定種別の要整理項目を一つのトランザクションで置き換えます。 */
+  public replaceCleanupItemsByKinds(
+    kinds: readonly CleanupItemKind[],
+    replacementItems: CleanupItemsCache,
+  ): CleanupItemsCache {
+    const replace = this.database.transaction(() => {
+      const storedItems = this.cleanupItemsCacheStore.get();
+      const existingItems = storedItems == null
+        ? cleanupItemsSchema.parse([])
+        : storedItems;
+      const aggregatedItems = createCleanupItemsReplacement(
+        existingItems,
+        kinds,
+        replacementItems,
+      );
+      this.cleanupItemsCacheStore.save(aggregatedItems);
+      return aggregatedItems;
+    });
+    return replace();
+  }
+
+  /** 指定種別の要整理項目を一つのトランザクションで既存項目へ統合します。 */
+  public mergeCleanupItemsByKinds(
+    kinds: readonly CleanupItemKind[],
+    items: CleanupItemsCache,
+  ): CleanupItemsCache {
+    const merge = this.database.transaction(() => {
+      const storedItems = this.cleanupItemsCacheStore.get();
+      const existingItems = storedItems == null
+        ? cleanupItemsSchema.parse([])
+        : storedItems;
+      const validatedItems = createCleanupItemsReplacement([], kinds, items);
+      const aggregatedItems = aggregateCleanupItems([
+        ...existingItems,
+        ...validatedItems,
+      ]);
+      this.cleanupItemsCacheStore.save(aggregatedItems);
+      return aggregatedItems;
+    });
+    return merge();
   }
 
   /** プロジェクトの同期状態を保存します。 */

@@ -1,4 +1,10 @@
 import {
+  canonicalizeJson,
+  cleanupItemKindSchema,
+  cleanupItemsSchema,
+  type CleanupItemKind,
+} from "../../shared/domain";
+import {
   cleanupItemsCacheSchema,
   type CleanupItemsCache,
 } from "../../shared/storage";
@@ -8,6 +14,75 @@ import type { SqliteDatabase } from "./types";
 interface CleanupItemsCacheRow {
   readonly cache_key: number;
   readonly cleanup_items_json: string;
+}
+
+const cleanupItemKindsSchema = cleanupItemKindSchema
+  .array()
+  .min(1, "置換対象の要整理種別を一つ以上指定してください。")
+  .superRefine((kinds, context) => {
+    const seen = new Set<CleanupItemKind>();
+    kinds.forEach((kind, index) => {
+      if (seen.has(kind)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "同じ要整理種別を重複して指定できません。",
+        });
+      }
+      seen.add(kind);
+    });
+  });
+
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
+/** 要整理項目を内容で重複排除し、決定的な順序へ整列します。 */
+export function aggregateCleanupItems(
+  items: readonly CleanupItemsCache[number][],
+): CleanupItemsCache {
+  const byValue = new Map<string, CleanupItemsCache[number]>();
+  for (const item of cleanupItemsSchema.parse(items)) {
+    byValue.set(canonicalizeJson(item), item);
+  }
+  return cleanupItemsCacheSchema.parse(
+    [...byValue.entries()]
+      .sort(([left], [right]) => compareStrings(left, right))
+      .map(([, item]) => item),
+  );
+}
+
+/** 指定種別を置換し、それ以外の要整理項目と統合します。 */
+export function replaceCleanupItemsByKinds(
+  existingItems: readonly CleanupItemsCache[number][],
+  kinds: readonly CleanupItemKind[],
+  replacementItems: readonly CleanupItemsCache[number][],
+): CleanupItemsCache {
+  const validatedExistingItems = cleanupItemsCacheSchema.parse(existingItems);
+  const validatedKinds = cleanupItemKindsSchema.parse(kinds);
+  const validatedReplacementItems = cleanupItemsCacheSchema.parse(
+    replacementItems,
+  );
+  const replacementKindSet = new Set(validatedKinds);
+  validatedReplacementItems.forEach((item, index) => {
+    if (!replacementKindSet.has(item.kind)) {
+      throw new Error(
+        `置換項目 ${index} の要整理種別 ${item.kind} は置換対象に含まれていません。`,
+      );
+    }
+  });
+  return aggregateCleanupItems([
+    ...validatedExistingItems.filter(
+      (item) => !replacementKindSet.has(item.kind),
+    ),
+    ...validatedReplacementItems,
+  ]);
 }
 
 function rowToCleanupItems(row: CleanupItemsCacheRow): CleanupItemsCache {
