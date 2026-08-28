@@ -310,13 +310,12 @@ function issueCreateUuids(
 ): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
   const seen = new Set<string>();
-  for (const context of contexts) {
-    if (
-      !selectedOperationIds.has(context.operation.operation_id)
-      || context.operation.operation !== "create_task"
-    ) {
-      continue;
-    }
+  const createContexts = contexts
+    .filter((context) =>
+      selectedOperationIds.has(context.operation.operation_id)
+      && context.operation.operation === "create_task")
+    .sort(compareOperationContexts);
+  for (const context of createContexts) {
     const uuid = z.uuid().parse(uuidGenerator());
     if (seen.has(uuid)) {
       throw new Error("作成UUIDが重複しています。");
@@ -685,6 +684,144 @@ function operationPhase(operation: ProposalOperation): number {
   }
 }
 
+function compareOperationContexts(
+  left: OperationContext,
+  right: OperationContext,
+): number {
+  if (left.operation.operation_id < right.operation.operation_id) {
+    return -1;
+  }
+  if (left.operation.operation_id > right.operation.operation_id) {
+    return 1;
+  }
+  return 0;
+}
+
+function createTaskTemporaryReferences(
+  operation: ProposalOperation,
+): readonly string[] {
+  if (operation.operation !== "create_task") {
+    throw new Error("create_task以外から一時参照の依存関係を取得できません。");
+  }
+  const references = new Set<string>();
+  if (operation.after.parent?.kind === "temporary") {
+    references.add(operation.after.parent.ref);
+  }
+  for (const dependency of operation.after.dependencies ?? []) {
+    if (dependency.target.kind === "temporary") {
+      references.add(dependency.target.ref);
+    }
+  }
+  return [...references].sort();
+}
+
+function orderCreateTaskContexts(
+  contexts: readonly OperationContext[],
+  mappings: ReadonlyMap<string, string>,
+): readonly OperationContext[] {
+  const contextByTemporaryRef = new Map<string, OperationContext>();
+  const contextByOperationId = new Map<string, OperationContext>();
+  const dependentOperationIds = new Map<string, Set<string>>();
+  const dependencyCounts = new Map<string, number>();
+  for (const context of contexts) {
+    if (context.operation.operation !== "create_task") {
+      throw new Error("create_task以外を作成順に含められません。");
+    }
+    if (contextByTemporaryRef.has(context.operation.temporary_ref)) {
+      throw new Error("create_taskのtemporary_refが重複しています。");
+    }
+    if (contextByOperationId.has(context.operation.operation_id)) {
+      throw new Error("create_taskのoperation_idが重複しています。");
+    }
+    contextByTemporaryRef.set(context.operation.temporary_ref, context);
+    contextByOperationId.set(context.operation.operation_id, context);
+    dependentOperationIds.set(context.operation.operation_id, new Set());
+    dependencyCounts.set(context.operation.operation_id, 0);
+  }
+
+  for (const context of contexts) {
+    for (const temporaryRef of createTaskTemporaryReferences(context.operation)) {
+      const dependency = contextByTemporaryRef.get(temporaryRef);
+      if (dependency == null) {
+        if (mappings.has(temporaryRef)) {
+          continue;
+        }
+        throw new Error("create_taskが参照するtemporary_refを解決できません。");
+      }
+      const dependents = dependentOperationIds.get(
+        dependency.operation.operation_id,
+      );
+      const dependencyCount = dependencyCounts.get(
+        context.operation.operation_id,
+      );
+      if (dependents == null || dependencyCount == null) {
+        throw new Error("create_taskの一時参照グラフが不正です。");
+      }
+      if (dependents.has(context.operation.operation_id)) {
+        continue;
+      }
+      dependents.add(context.operation.operation_id);
+      dependencyCounts.set(context.operation.operation_id, dependencyCount + 1);
+    }
+  }
+
+  const ready = contexts
+    .filter((context) => dependencyCounts.get(context.operation.operation_id) === 0)
+    .sort(compareOperationContexts);
+  const ordered: OperationContext[] = [];
+  while (ready.length > 0) {
+    const context = ready.shift();
+    if (context == null) {
+      throw new Error("create_taskの作成順を取得できません。");
+    }
+    ordered.push(context);
+    const dependents = dependentOperationIds.get(context.operation.operation_id);
+    if (dependents == null) {
+      throw new Error("create_taskの一時参照グラフが不正です。");
+    }
+    for (const dependentOperationId of [...dependents].sort()) {
+      const dependent = contextByOperationId.get(dependentOperationId);
+      const dependencyCount = dependencyCounts.get(dependentOperationId);
+      if (dependent == null || dependencyCount == null || dependencyCount < 1) {
+        throw new Error("create_taskの一時参照グラフが不正です。");
+      }
+      const remainingCount = dependencyCount - 1;
+      dependencyCounts.set(dependentOperationId, remainingCount);
+      if (remainingCount === 0) {
+        ready.push(dependent);
+        ready.sort(compareOperationContexts);
+      }
+    }
+  }
+  if (ordered.length !== contexts.length) {
+    throw new Error("create_taskの一時参照関係が循環しています。");
+  }
+  return ordered;
+}
+
+function orderApplicableContexts(
+  contexts: readonly OperationContext[],
+  mappings: ReadonlyMap<string, string>,
+): readonly OperationContext[] {
+  const createContexts = contexts.filter(
+    (context) => context.operation.operation === "create_task",
+  );
+  const remainingContexts = contexts
+    .filter((context) => context.operation.operation !== "create_task")
+    .sort((left, right) => {
+      const phaseDifference = operationPhase(left.operation)
+        - operationPhase(right.operation);
+      if (phaseDifference !== 0) {
+        return phaseDifference;
+      }
+      return compareOperationContexts(left, right);
+    });
+  return [
+    ...orderCreateTaskContexts(createContexts, mappings),
+    ...remainingContexts,
+  ];
+}
+
 function markAtomicGroupBlocked(
   contexts: readonly OperationContext[],
   selectedOperationIds: ReadonlySet<string>,
@@ -951,8 +1088,8 @@ export class AsanaProposalApplicationCoordinator {
         );
       }
     }
-    const applicableContexts = contexts
-      .filter((context) => {
+    const applicableContexts = orderApplicableContexts(
+      contexts.filter((context) => {
         if (!selected.has(context.operation.operation_id)) {
           return false;
         }
@@ -961,10 +1098,9 @@ export class AsanaProposalApplicationCoordinator {
         return classification?.kind === "applicable"
           && group?.applicable === true
           && !operationGroupsBlocked.has(context.group.group_id);
-      })
-      .sort((left, right) => {
-        return operationPhase(left.operation) - operationPhase(right.operation);
-      });
+      }),
+      mappings,
+    );
 
     for (const context of applicableContexts) {
       throwIfAborted(signal);
