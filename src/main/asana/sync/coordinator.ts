@@ -21,9 +21,12 @@ import {
   syncStateSchema,
   taskCacheEntriesSchema,
   type ProjectMetadataCache,
+  type RankingExclusionReason,
   type RankingCache,
+  type RankingScoreBreakdown,
   type SyncState,
   type TaskCacheEntry,
+  type RankingTieBreak,
 } from "../../../shared/storage";
 import { AsanaReadClient } from "../client/client";
 import { setupManifest } from "../setup/manifest";
@@ -304,7 +307,7 @@ function buildCustomExternalDataCache(
     case "broken":
       return { status: "broken", raw: task.external.data };
     case "identity_mismatch":
-      return { status: "valid", raw: task.external.data };
+      return undefined;
     case "unknown_version":
       return {
         status: "unknown_version",
@@ -386,15 +389,67 @@ function createRankingCache(
       gid: task.gid,
       rank: task.rank,
       score_breakdown: task.score_breakdown,
+      release_target_gids: task.release_target_gids,
+      reason_chips: task.reason_chips,
+      tie_break: task.tie_break,
+      detail: {
+        exclusion_reasons: task.detail.exclusion_reasons,
+        tie_break: task.detail.tie_break,
+        reason_chips: task.detail.reason_chips,
+        text: createRankingDetailText(
+          task.score_breakdown,
+          task.detail.exclusion_reasons,
+          task.detail.reason_chips,
+          task.detail.tie_break,
+        ),
+      },
     })),
     excluded_tasks: ranking.excluded_tasks.map((task) => ({
       gid: task.gid,
-      exclusion_reasons: task.exclusion_reasons.map((reason) => reason.code),
+      exclusion_reasons: task.exclusion_reasons,
       ...(task.score_breakdown == null
         ? {}
         : { score_breakdown: task.score_breakdown }),
+      release_target_gids: task.release_target_gids,
+      reason_chips: task.reason_chips,
+      tie_break: task.tie_break,
+      detail: {
+        exclusion_reasons: task.detail.exclusion_reasons,
+        tie_break: task.detail.tie_break,
+        reason_chips: task.detail.reason_chips,
+        text: createRankingDetailText(
+          task.score_breakdown,
+          task.detail.exclusion_reasons,
+          task.detail.reason_chips,
+          task.detail.tie_break,
+        ),
+      },
     })),
   });
+}
+
+function createRankingDetailText(
+  scoreBreakdown: RankingScoreBreakdown | undefined,
+  exclusionReasons: readonly RankingExclusionReason[],
+  reasonChips: readonly string[],
+  tieBreak: RankingTieBreak,
+): string {
+  const scoreText = scoreBreakdown == null
+    ? "点数: 完全ブロックのため算出しません。"
+    : `点数: 重要度${scoreBreakdown.importance_points}、期限${scoreBreakdown.deadline_points}、解放${scoreBreakdown.release_points}、一部ブロック減点${scoreBreakdown.partial_block_penalty}、停滞減点${scoreBreakdown.stagnation_penalty}、実行点${scoreBreakdown.execution_points}`;
+  const exclusionText = exclusionReasons.length === 0
+    ? "除外理由: なし"
+    : `除外理由: ${exclusionReasons.map((reason) => reason.message).join("、")}`;
+  const effectiveDueText = tieBreak.effective_due_at == null
+    ? "なし"
+    : tieBreak.effective_due_at;
+  const tieBreakText = `タイブレーク: 実効期限${effectiveDueText}、重要度${tieBreak.importance}、解放点${tieBreak.release_points}、活動基準日${tieBreak.activity_anchor_on}、GID${tieBreak.gid}`;
+  return [
+    scoreText,
+    exclusionText,
+    `理由チップ: ${reasonChips.join("、")}`,
+    tieBreakText,
+  ].join("\n");
 }
 
 function createNormalizationPlanSummary(
@@ -615,6 +670,7 @@ export class AsanaSyncCoordinator {
         metadata,
         rankingCache,
         syncState,
+        secondNormalization.cleanup_items,
       );
       const result = {
         requested_mode: validatedInput.mode,

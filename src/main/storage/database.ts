@@ -1,7 +1,12 @@
 import BetterSqlite3 from "better-sqlite3";
 import { isAbsolute } from "node:path";
+import { CleanupItemsCacheStore } from "./cleanup-items-cache";
 import { DiagnosticLogStore } from "./diagnostic-log";
 import { ApplicationJournalStore } from "./application-journal";
+import {
+  ExternalToolDefinitionStore,
+  type ExternalToolDefinitionRecord,
+} from "./external-tool-definitions";
 import { ProjectMetadataCacheStore } from "./project-metadata-cache";
 import { RankingCacheStore } from "./ranking-cache";
 import { SyncStateStore } from "./sync-state";
@@ -12,6 +17,7 @@ import type {
   ApplicationJournal,
   ApplicationJournalResult,
   ApplicationJournalStage,
+  CleanupItemsCache,
   DeviceSettings,
   DiagnosticLogEntry,
   ProjectMetadataCache,
@@ -21,20 +27,29 @@ import type {
   TaskCacheEntry,
   VaultMapping,
 } from "../../shared/storage";
+import {
+  cleanupItemsCacheSchema,
+  projectMetadataCacheSchema,
+  rankingCacheSchema,
+  syncStateSchema,
+  taskCacheEntriesSchema,
+} from "../../shared/storage";
 import type { SqliteDatabase } from "./types";
 
-export const storageSchemaVersion = 1;
+export const storageSchemaVersion = 2;
 export const storageBusyTimeoutMilliseconds = 5_000;
 
 const storageTableNames = [
   "task_cache",
   "project_metadata_cache",
   "ranking_cache",
+  "cleanup_items_cache",
   "sync_state",
   "device_settings",
   "vault_mappings",
   "application_journal",
   "diagnostic_log",
+  "external_tool_definitions",
 ] as const;
 
 const storageSchemaSql = `
@@ -59,6 +74,10 @@ CREATE TABLE ranking_cache (
   ranked_tasks_json TEXT NOT NULL,
   excluded_tasks_json TEXT NOT NULL
 );
+CREATE TABLE cleanup_items_cache (
+  cache_key INTEGER PRIMARY KEY NOT NULL CHECK (cache_key = 1),
+  cleanup_items_json TEXT NOT NULL
+);
 CREATE TABLE sync_state (
   project_gid TEXT PRIMARY KEY NOT NULL,
   events_token TEXT,
@@ -68,6 +87,7 @@ CREATE TABLE sync_state (
 CREATE TABLE device_settings (
   settings_key INTEGER PRIMARY KEY NOT NULL CHECK (settings_key = 1),
   client_id TEXT NOT NULL,
+  workspace_gid TEXT NOT NULL,
   project_gid TEXT NOT NULL,
   not_started_section_gid TEXT NOT NULL,
   in_progress_section_gid TEXT NOT NULL,
@@ -103,6 +123,11 @@ CREATE TABLE diagnostic_log (
   operation_id TEXT,
   app_version TEXT,
   codex_version TEXT
+);
+CREATE TABLE external_tool_definitions (
+  tool_id TEXT PRIMARY KEY NOT NULL,
+  definition_json TEXT NOT NULL,
+  credential_reference_names_json TEXT NOT NULL
 );
 `;
 
@@ -189,11 +214,13 @@ export class StorageDatabase {
   private readonly taskCacheStore: TaskCacheStore;
   private readonly projectMetadataCacheStore: ProjectMetadataCacheStore;
   private readonly rankingCacheStore: RankingCacheStore;
+  private readonly cleanupItemsCacheStore: CleanupItemsCacheStore;
   private readonly syncStateStore: SyncStateStore;
   private readonly deviceSettingsStore: DeviceSettingsStore;
   private readonly vaultMappingStore: VaultMappingStore;
   private readonly applicationJournalStore: ApplicationJournalStore;
   private readonly diagnosticLogStore: DiagnosticLogStore;
+  private readonly externalToolDefinitionStore: ExternalToolDefinitionStore;
 
   public constructor(dbPath: string) {
     validateDatabasePath(dbPath);
@@ -210,11 +237,13 @@ export class StorageDatabase {
     this.taskCacheStore = new TaskCacheStore(database);
     this.projectMetadataCacheStore = new ProjectMetadataCacheStore(database);
     this.rankingCacheStore = new RankingCacheStore(database);
+    this.cleanupItemsCacheStore = new CleanupItemsCacheStore(database);
     this.syncStateStore = new SyncStateStore(database);
     this.deviceSettingsStore = new DeviceSettingsStore(database);
     this.vaultMappingStore = new VaultMappingStore(database);
     this.applicationJournalStore = new ApplicationJournalStore(database);
     this.diagnosticLogStore = new DiagnosticLogStore(database);
+    this.externalToolDefinitionStore = new ExternalToolDefinitionStore(database);
   }
 
   /** SQLite接続を閉じます。 */
@@ -245,15 +274,22 @@ export class StorageDatabase {
     metadata: ProjectMetadataCache,
     ranking: RankingCache,
     syncState: SyncState,
+    cleanupItems: CleanupItemsCache,
   ): void {
-    if (metadata.project.gid !== syncState.project_gid) {
+    const validatedEntries = taskCacheEntriesSchema.parse(entries);
+    const validatedMetadata = projectMetadataCacheSchema.parse(metadata);
+    const validatedRanking = rankingCacheSchema.parse(ranking);
+    const validatedSyncState = syncStateSchema.parse(syncState);
+    const validatedCleanupItems = cleanupItemsCacheSchema.parse(cleanupItems);
+    if (validatedMetadata.project.gid !== validatedSyncState.project_gid) {
       throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
     }
     const save = this.database.transaction(() => {
-      this.taskCacheStore.replace(entries);
-      this.projectMetadataCacheStore.save(metadata);
-      this.rankingCacheStore.save(ranking);
-      this.syncStateStore.save(syncState);
+      this.taskCacheStore.replace(validatedEntries);
+      this.projectMetadataCacheStore.save(validatedMetadata);
+      this.rankingCacheStore.save(validatedRanking);
+      this.cleanupItemsCacheStore.save(validatedCleanupItems);
+      this.syncStateStore.save(validatedSyncState);
     });
     save();
   }
@@ -286,6 +322,11 @@ export class StorageDatabase {
   /** 算出済み順位キャッシュを読み出します。 */
   public getRankingCache(): RankingCache | undefined {
     return this.rankingCacheStore.get();
+  }
+
+  /** 要整理項目キャッシュを読み出します。 */
+  public getCleanupItems(): CleanupItemsCache | undefined {
+    return this.cleanupItemsCacheStore.get();
   }
 
   /** プロジェクトの同期状態を保存します。 */
@@ -379,11 +420,33 @@ export class StorageDatabase {
     return this.diagnosticLogStore.getAll();
   }
 
+  /** 外部ツール定義を保存します。 */
+  public saveExternalToolDefinition(record: ExternalToolDefinitionRecord): void {
+    this.externalToolDefinitionStore.save(record);
+  }
+
+  /** 外部ツール定義を一つのトランザクションで置き換えます。 */
+  public replaceExternalToolDefinitions(
+    records: readonly ExternalToolDefinitionRecord[],
+  ): void {
+    this.externalToolDefinitionStore.replace(records);
+  }
+
+  /** 外部ツール定義を削除します。 */
+  public deleteExternalToolDefinition(toolId: string): void {
+    this.externalToolDefinitionStore.delete(toolId);
+  }
+
+  /** 外部ツール定義を全件読み出します。 */
+  public getExternalToolDefinitions(): readonly ExternalToolDefinitionRecord[] {
+    return this.externalToolDefinitionStore.getAll();
+  }
+
   /** 再構築可能なキャッシュだけを全消去します。 */
   public clearCaches(): void {
     const clear = this.database.transaction(() => {
       this.database.exec(
-        "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM sync_state; DELETE FROM diagnostic_log;",
+        "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM cleanup_items_cache; DELETE FROM sync_state; DELETE FROM diagnostic_log;",
       );
     });
     clear();

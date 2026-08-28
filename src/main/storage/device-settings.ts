@@ -4,6 +4,7 @@ import type { SqliteDatabase } from "./types";
 interface DeviceSettingsRow {
   readonly settings_key: number;
   readonly client_id: string;
+  readonly workspace_gid: string;
   readonly project_gid: string;
   readonly not_started_section_gid: string;
   readonly in_progress_section_gid: string;
@@ -17,6 +18,7 @@ function rowToDeviceSettings(row: DeviceSettingsRow): DeviceSettings {
   }
   return deviceSettingsSchema.parse({
     client_id: row.client_id,
+    workspace_gid: row.workspace_gid,
     project_gid: row.project_gid,
     section_gids: {
       not_started: row.not_started_section_gid,
@@ -38,14 +40,15 @@ export class DeviceSettingsStore {
       "DELETE FROM device_settings WHERE settings_key = 1",
     );
     this.saveStatement = database.prepare<
-      [number, string, string, string, string, string, string],
+      [number, string, string, string, string, string, string, string],
       unknown
     >(
       `INSERT INTO device_settings
-         (settings_key, client_id, project_gid, not_started_section_gid, in_progress_section_gid, completed_section_gid, withdrawn_section_gid)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (settings_key, client_id, workspace_gid, project_gid, not_started_section_gid, in_progress_section_gid, completed_section_gid, withdrawn_section_gid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(settings_key) DO UPDATE SET
          client_id = excluded.client_id,
+         workspace_gid = excluded.workspace_gid,
          project_gid = excluded.project_gid,
          not_started_section_gid = excluded.not_started_section_gid,
          in_progress_section_gid = excluded.in_progress_section_gid,
@@ -53,7 +56,7 @@ export class DeviceSettingsStore {
          withdrawn_section_gid = excluded.withdrawn_section_gid`,
     );
     this.selectStatement = database.prepare<[], DeviceSettingsRow>(
-      "SELECT settings_key, client_id, project_gid, not_started_section_gid, in_progress_section_gid, completed_section_gid, withdrawn_section_gid FROM device_settings WHERE settings_key = 1",
+      "SELECT settings_key, client_id, workspace_gid, project_gid, not_started_section_gid, in_progress_section_gid, completed_section_gid, withdrawn_section_gid FROM device_settings WHERE settings_key = 1",
     );
   }
 
@@ -63,6 +66,7 @@ export class DeviceSettingsStore {
     this.saveStatement.run(
       1,
       validatedSettings.client_id,
+      validatedSettings.workspace_gid,
       validatedSettings.project_gid,
       validatedSettings.section_gids.not_started,
       validatedSettings.section_gids.in_progress,

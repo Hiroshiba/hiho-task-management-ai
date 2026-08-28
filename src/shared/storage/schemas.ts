@@ -1,8 +1,11 @@
 import { z } from "zod";
 import {
   asanaTaskResponseSchema,
+  cleanupItemsSchema,
+  dateSchema,
   gidSchema,
   identifierSchema,
+  importanceSchema,
   isoDateTimeSchema,
   taskSchema,
   taskTagSchema,
@@ -127,6 +130,9 @@ export const taskCacheDiffSchema = z
     });
   });
 
+/** 同期で保存する要整理項目のキャッシュを検証するスキーマです。 */
+export const cleanupItemsCacheSchema = cleanupItemsSchema;
+
 const projectMetadataProjectSchema = z
   .object({
     gid: gidSchema,
@@ -199,11 +205,60 @@ export const rankingExclusionReasonCodeSchema = z.enum([
   "critical_error",
 ]);
 
+/** 順位除外理由のコードと説明を検証するスキーマです。 */
+export const rankingExclusionReasonSchema = z
+  .object({
+    code: rankingExclusionReasonCodeSchema,
+    message: nonBlankTextSchema,
+  })
+  .strict();
+
+/** 順位の同点判定値を検証するスキーマです。 */
+export const rankingTieBreakSchema = z
+  .object({
+    effective_due_at: isoDateTimeSchema.optional(),
+    importance: importanceSchema,
+    release_points: z.number().int().nonnegative(),
+    activity_anchor_on: dateSchema,
+    gid: gidSchema,
+  })
+  .strict();
+
+/** 順位説明からタスク本文を除いた保存部分を検証するスキーマです。 */
+export const rankingCacheDetailSchema = z
+  .object({
+    exclusion_reasons: z.array(rankingExclusionReasonSchema),
+    tie_break: rankingTieBreakSchema,
+    reason_chips: z.array(nonBlankTextSchema),
+    text: nonEmptyTextSchema,
+  })
+  .strict();
+
+const rankingReleaseTargetGidsSchema = z
+  .array(gidSchema)
+  .superRefine((gids, context) => {
+    const seen = new Set<string>();
+    gids.forEach((gid, index) => {
+      if (seen.has(gid)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "同じ解放対象タスクGIDを重複して保存できません。",
+        });
+      }
+      seen.add(gid);
+    });
+  });
+
 const rankingCacheRankedTaskSchema = z
   .object({
     gid: gidSchema,
     rank: z.number().int().positive(),
     score_breakdown: rankingScoreBreakdownSchema,
+    release_target_gids: rankingReleaseTargetGidsSchema,
+    reason_chips: z.array(nonBlankTextSchema),
+    tie_break: rankingTieBreakSchema,
+    detail: rankingCacheDetailSchema,
   })
   .strict();
 
@@ -211,12 +266,12 @@ const rankingCacheExcludedTaskSchema = z
   .object({
     gid: gidSchema,
     exclusion_reasons: z
-      .array(rankingExclusionReasonCodeSchema)
+      .array(rankingExclusionReasonSchema)
       .min(1)
       .superRefine((reasons, context) => {
-        const seen = new Set<string>();
+        const seen = new Set<RankingExclusionReasonCode>();
         reasons.forEach((reason, index) => {
-          if (seen.has(reason)) {
+          if (seen.has(reason.code)) {
             context.addIssue({
               code: "custom",
               path: [index],
@@ -224,10 +279,14 @@ const rankingCacheExcludedTaskSchema = z
             });
             return;
           }
-          seen.add(reason);
+          seen.add(reason.code);
         });
       }),
     score_breakdown: rankingScoreBreakdownSchema.optional(),
+    release_target_gids: rankingReleaseTargetGidsSchema,
+    reason_chips: z.array(nonBlankTextSchema),
+    tie_break: rankingTieBreakSchema,
+    detail: rankingCacheDetailSchema,
   })
   .strict();
 
@@ -311,10 +370,46 @@ export const deviceSectionGidsSchema = z
 export const deviceSettingsSchema = z
   .object({
     client_id: identifierSchema,
+    workspace_gid: gidSchema,
     project_gid: gidSchema,
     section_gids: deviceSectionGidsSchema,
   })
   .strict();
+
+/** 外部ツールが参照する資格情報名の配列を検証するスキーマです。 */
+export const externalToolCredentialReferenceNamesSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(128)
+      .refine((value) => value.trim().length > 0, {
+        message: "資格情報参照名を空白だけにできません。",
+      })
+      .refine(
+        (value) => ![...value].some((character) => {
+          const codePoint = character.codePointAt(0);
+          return codePoint != null && (codePoint <= 31 || (codePoint >= 127 && codePoint <= 159));
+        }),
+        {
+          message: "資格情報参照名に制御文字を指定できません。",
+        },
+      ),
+  )
+  .max(64)
+  .superRefine((names, context) => {
+    const seen = new Set<string>();
+    names.forEach((name, index) => {
+      if (seen.has(name)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "同じ資格情報参照名を重複して保存できません。",
+        });
+      }
+      seen.add(name);
+    });
+  });
 
 /** Vaultと端末絶対パスの対応を検証するスキーマです。 */
 export const vaultMappingSchema = z
@@ -432,14 +527,21 @@ export const diagnosticLogEntrySchema = z
 export type CustomExternalDataCache = z.infer<typeof customExternalDataCacheSchema>;
 export type TaskCacheEntry = z.infer<typeof taskCacheEntrySchema>;
 export type TaskCacheDiff = z.infer<typeof taskCacheDiffSchema>;
+export type CleanupItemsCache = z.infer<typeof cleanupItemsCacheSchema>;
 export type ProjectMetadataCache = z.infer<typeof projectMetadataCacheSchema>;
 export type ProjectMetadataSection = z.infer<typeof projectMetadataSectionSchema>;
 export type RankingScoreBreakdown = z.infer<typeof rankingScoreBreakdownSchema>;
 export type RankingExclusionReasonCode = z.infer<typeof rankingExclusionReasonCodeSchema>;
+export type RankingExclusionReason = z.infer<typeof rankingExclusionReasonSchema>;
+export type RankingCacheDetail = z.infer<typeof rankingCacheDetailSchema>;
+export type RankingTieBreak = z.infer<typeof rankingTieBreakSchema>;
 export type RankingCache = z.infer<typeof rankingCacheSchema>;
 export type SyncState = z.infer<typeof syncStateSchema>;
 export type DeviceSectionGids = z.infer<typeof deviceSectionGidsSchema>;
 export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
+export type ExternalToolCredentialReferenceNames = z.infer<
+  typeof externalToolCredentialReferenceNamesSchema
+>;
 export type VaultMapping = z.infer<typeof vaultMappingSchema>;
 export type ApplicationJournalTarget = z.infer<typeof applicationJournalTargetSchema>;
 export type ApplicationJournalStage = z.infer<typeof applicationJournalStageSchema>;
