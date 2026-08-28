@@ -9,6 +9,7 @@ defineProps<{
   canManualSync: boolean;
   canWrite: boolean;
   codexState: RendererCodexState;
+  codexAuthenticationBusy: boolean;
   appVersion: string;
   cleanupCount: number;
 }>();
@@ -16,6 +17,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: "sync"): void;
   (event: "new-ai-session"): void;
+  (event: "complete-codex-authentication"): void;
 }>();
 
 function syncLabel(state: RendererSyncState): string {
@@ -104,9 +106,20 @@ function jstDateTimeLabel(value: string | undefined): string {
           手動同期
         </button>
         <button
+          v-if="codexState.kind === 'authentication_required'"
           type="button"
           class="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="codexState.kind !== 'ready' || !canWrite"
+          :disabled="codexAuthenticationBusy"
+          aria-label="Codex認証を完了"
+          @click="emit('complete-codex-authentication')"
+        >
+          Codex認証を完了
+        </button>
+        <button
+          v-else-if="codexState.kind === 'ready'"
+          type="button"
+          class="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="!canWrite"
           aria-label="新しいAIセッションを開始"
           @click="emit('new-ai-session')"
         >

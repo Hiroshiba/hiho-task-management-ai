@@ -407,6 +407,34 @@ async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
   }
 }
 
+async function completeCodexAuthenticationFromHeader(): Promise<void> {
+  if (setupBusy.value) {
+    return;
+  }
+  const keepDashboard = screen.value.kind === "dashboard";
+  setupBusy.value = true;
+  feedback.value = "";
+  try {
+    const result = await window.taskHub.setup.completeCodexAuthentication();
+    if (isFailure(result)) {
+      showFailure(result);
+      return;
+    }
+    const state = setupStateSchema.parse(result.value);
+    if (keepDashboard && state.kind !== "ready") {
+      throw new Error("設定済み状態のCodex認証結果が不正です。");
+    }
+    applySetupState(state);
+    if (keepDashboard) {
+      await loadInitialCodexStatus();
+    }
+  } catch {
+    showUnexpectedFailure();
+  } finally {
+    setupBusy.value = false;
+  }
+}
+
 function handleSetupAction(action: SetupAction): void {
   switch (action.kind) {
     case "start":
@@ -945,10 +973,12 @@ onUnmounted(() => {
       :can-manual-sync="canManualSync"
       :can-write="canWrite"
       :codex-state="codexState"
+      :codex-authentication-busy="setupBusy"
       :app-version="appVersion"
       :cleanup-count="cleanupCount"
       @sync="manualSync"
       @new-ai-session="startAiSession"
+      @complete-codex-authentication="completeCodexAuthenticationFromHeader"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p
