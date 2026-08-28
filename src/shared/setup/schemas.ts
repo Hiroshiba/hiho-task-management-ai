@@ -209,13 +209,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
-      kind: z.literal("external_tool_choice_required"),
-      step: z.literal("external_tool"),
-      context: setupContextWithTestTaskSchema,
-    })
-    .strict(),
-  z
-    .object({
       kind: z.literal("external_tool_skipped"),
       step: z.literal("full_sync"),
       context: setupContextWithTestTaskSchema,
