@@ -34,6 +34,19 @@ const onlineSyncIntervalMilliseconds = 60 * 1000;
 
 type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
 type StorageDatabasePort = Pick<StorageDatabase, "getSyncState">;
+type BeforeSynchronization = (
+  signal: AbortSignal,
+) => void | PromiseLike<void>;
+type OnlineReadiness =
+  | { readonly kind: "ready" }
+  | {
+      readonly kind: "unavailable";
+      readonly result: AsanaSyncRuntimeResult;
+    };
+type RuntimeConnectionState =
+  | { readonly kind: "offline" }
+  | { readonly kind: "recovery_pending" }
+  | { readonly kind: "online" };
 type Deferred<T> = {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -180,6 +193,7 @@ export class AsanaSyncRuntime {
   private readonly database: StorageDatabasePort;
   private readonly configuration: AsanaSyncRuntimeConfiguration;
   private readonly lifecycleSignal: AbortSignal;
+  private readonly beforeSynchronization: BeforeSynchronization;
   private readonly notifyUnexpectedError: AsanaSyncRuntimeUnexpectedErrorNotifier;
   private readonly nowProvider: () => string;
   private readonly stopController = new AbortController();
@@ -195,7 +209,7 @@ export class AsanaSyncRuntime {
   private runningMode: AsanaSyncRuntimeSynchronizationMode | undefined;
   private runGeneration = 0;
   private activeRunGeneration: number | undefined;
-  private online: boolean;
+  private connectionState: RuntimeConnectionState;
   private stopped: boolean;
   private lastSuccessfulSyncAt: string | undefined;
   private lastErrorCode: AsanaSyncRuntimeErrorCode | undefined;
@@ -206,26 +220,31 @@ export class AsanaSyncRuntime {
     database: StorageDatabasePort,
     configuration: AsanaSyncRuntimeConfiguration,
     lifecycleSignal: AbortSignal,
+    beforeSynchronization: BeforeSynchronization,
     notifyUnexpectedError: AsanaSyncRuntimeUnexpectedErrorNotifier,
     nowProvider: () => string,
   ) {
     validateFunction(coordinator?.coordinate, "Asana同期コーディネーターが必要です。");
     validateFunction(database?.getSyncState, "同期状態の保存先が必要です。");
     validateAbortSignal(lifecycleSignal);
+    validateFunction(beforeSynchronization, "同期前フックが必要です。");
     validateFunction(notifyUnexpectedError, "予期しないエラー通知関数が必要です。");
     validateFunction(nowProvider, "現在時刻関数が必要です。");
     this.configuration = asanaSyncRuntimeConfigurationSchema.parse(configuration);
     this.coordinator = coordinator;
     this.database = database;
     this.lifecycleSignal = lifecycleSignal;
+    this.beforeSynchronization = beforeSynchronization;
     this.notifyUnexpectedError = notifyUnexpectedError;
     this.nowProvider = nowProvider;
     const existingState = this.readSyncState();
     this.lastSuccessfulSyncAt = existingState?.last_successful_sync_at;
-    this.online = this.configuration.initial_online && !lifecycleSignal.aborted;
+    this.connectionState = this.configuration.initial_online && !lifecycleSignal.aborted
+      ? { kind: "online" }
+      : { kind: "offline" };
     this.stopped = lifecycleSignal.aborted;
     this.state = asanaSyncRuntimeStateSchema.parse(
-      this.online
+      this.connectionState.kind === "online"
         ? this.createOnlineState()
         : this.createOfflineState(),
     );
@@ -281,11 +300,11 @@ export class AsanaSyncRuntime {
     if (this.stopped) {
       throw new Error("同期ランタイムは停止済みです。");
     }
-    if (this.online === online) {
-      return;
-    }
-    this.online = online;
     if (!online) {
+      if (this.connectionState.kind === "offline") {
+        return;
+      }
+      this.connectionState = { kind: "offline" };
       this.clearTimer();
       this.pendingMode = undefined;
       this.pendingBarrier = false;
@@ -293,8 +312,25 @@ export class AsanaSyncRuntime {
       this.publishState(this.createOfflineState());
       return;
     }
-    this.lastErrorCode = undefined;
-    this.publishState(this.createOnlineState());
+    if (this.connectionState.kind === "offline") {
+      this.connectionState = { kind: "recovery_pending" };
+    }
+    this.armTimer();
+  }
+
+  /** ネットワーク接続を保ったまま同期前復旧待ちへ移行します。 */
+  public deferSynchronizationUntilRecovery(): void {
+    if (this.stopped) {
+      throw new Error("同期ランタイムは停止済みです。");
+    }
+    if (this.connectionState.kind === "online") {
+      this.connectionState = { kind: "recovery_pending" };
+    }
+    this.clearTimer();
+    this.pendingMode = undefined;
+    this.pendingBarrier = false;
+    this.activeRunController?.abort();
+    this.publishState(this.createOfflineState());
     this.armTimer();
   }
 
@@ -303,6 +339,9 @@ export class AsanaSyncRuntime {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return createAbortResult();
+    }
+    if (this.stopped) {
+      return createRejectedResult("stopped");
     }
     this.setOnline(true);
     return this.requestSelectedMode(false, signal);
@@ -326,7 +365,7 @@ export class AsanaSyncRuntime {
   public async stop(): Promise<void> {
     if (!this.stopped) {
       this.stopped = true;
-      this.online = false;
+      this.connectionState = { kind: "offline" };
       this.pendingMode = undefined;
       this.pendingBarrier = false;
       this.clearTimer();
@@ -344,38 +383,84 @@ export class AsanaSyncRuntime {
     }
   }
 
-  private requestAfterApplyBarrier(
+  private async requestAfterApplyBarrier(
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
-      return Promise.resolve(createAbortResult());
+      return createAbortResult();
     }
     if (this.stopped) {
-      return Promise.resolve(createRejectedResult("stopped"));
+      return createRejectedResult("stopped");
     }
-    if (!this.online) {
-      return Promise.resolve(createRejectedResult("offline"));
+    const readiness = await this.ensureOnline(signal);
+    if (readiness.kind === "unavailable") {
+      return readiness.result;
     }
     return this.requestMode("delta", signal, true);
   }
 
-  private requestSelectedMode(
+  private async requestSelectedMode(
     forceFull: boolean,
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
-      return Promise.resolve(createAbortResult());
+      return createAbortResult();
     }
     if (this.stopped) {
-      return Promise.resolve(createRejectedResult("stopped"));
+      return createRejectedResult("stopped");
     }
-    if (!this.online) {
-      return Promise.resolve(createRejectedResult("offline"));
+    const readiness = await this.ensureOnline(signal);
+    if (readiness.kind === "unavailable") {
+      return readiness.result;
     }
     const mode = forceFull ? "full" : this.selectMode();
     return this.requestMode(mode, signal, false);
+  }
+
+  private async ensureOnline(signal: AbortSignal): Promise<OnlineReadiness> {
+    validateAbortSignal(signal);
+    if (signal.aborted) {
+      return { kind: "unavailable", result: createAbortResult() };
+    }
+    if (this.stopped) {
+      return { kind: "unavailable", result: createRejectedResult("stopped") };
+    }
+    if (this.connectionState.kind === "online") {
+      return { kind: "ready" };
+    }
+    if (this.connectionState.kind === "offline") {
+      return { kind: "unavailable", result: createRejectedResult("offline") };
+    }
+    try {
+      await this.beforeSynchronization(signal);
+    } catch (error: unknown) {
+      if (signal.aborted) {
+        return { kind: "unavailable", result: createAbortResult() };
+      }
+      throw error;
+    }
+    if (signal.aborted) {
+      return { kind: "unavailable", result: createAbortResult() };
+    }
+    if (this.stopped) {
+      return { kind: "unavailable", result: createRejectedResult("stopped") };
+    }
+    const currentConnectionState = this.readConnectionState();
+    if (currentConnectionState.kind === "offline") {
+      return { kind: "unavailable", result: createRejectedResult("offline") };
+    }
+    if (currentConnectionState.kind === "recovery_pending") {
+      this.connectionState = { kind: "online" };
+      this.lastErrorCode = undefined;
+      this.publishState(this.createOnlineState());
+    }
+    return { kind: "ready" };
+  }
+
+  private readConnectionState(): RuntimeConnectionState {
+    return this.connectionState;
   }
 
   private selectMode(): AsanaSyncRuntimeSynchronizationMode {
@@ -511,7 +596,7 @@ export class AsanaSyncRuntime {
         ]);
         this.runningMode = mode;
         const result = await this.execute(mode, operationSignal);
-        if (!this.online || this.stopped) {
+        if (this.connectionState.kind !== "online" || this.stopped) {
           this.pendingMode = undefined;
           this.pendingBarrier = false;
           return result;
@@ -545,7 +630,11 @@ export class AsanaSyncRuntime {
     mode: AsanaSyncRuntimeSynchronizationMode,
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeResult> {
-    if (signal.aborted || !this.online || this.stopped) {
+    if (
+      signal.aborted
+      || this.connectionState.kind !== "online"
+      || this.stopped
+    ) {
       if (signal.aborted) {
         return createAbortResult();
       }
@@ -554,15 +643,36 @@ export class AsanaSyncRuntime {
       }
       return createRejectedResult("offline");
     }
-    this.publishState(this.createSyncingState(mode));
-    const input = asanaSyncCoordinatorInputSchema.parse({
-      mode,
-      project_gid: this.configuration.project_gid,
-      section_gids: this.configuration.section_gids,
-      device_id: this.configuration.device_id,
-      app_version: this.configuration.app_version,
-    });
     try {
+      await this.beforeSynchronization(signal);
+    } catch (error: unknown) {
+      if (signal.aborted) {
+        return createAbortResult();
+      }
+      throw error;
+    }
+    if (
+      signal.aborted
+      || this.connectionState.kind !== "online"
+      || this.stopped
+    ) {
+      if (signal.aborted) {
+        return createAbortResult();
+      }
+      if (this.stopped) {
+        return createRejectedResult("stopped");
+      }
+      return createRejectedResult("offline");
+    }
+    try {
+      this.publishState(this.createSyncingState(mode));
+      const input = asanaSyncCoordinatorInputSchema.parse({
+        mode,
+        project_gid: this.configuration.project_gid,
+        section_gids: this.configuration.section_gids,
+        device_id: this.configuration.device_id,
+        app_version: this.configuration.app_version,
+      });
       const coordinated = await this.coordinator.coordinate(input, signal);
       if (signal.aborted) {
         return createAbortResult();
@@ -574,7 +684,7 @@ export class AsanaSyncRuntime {
       return createSynchronizedResult(mode, result);
     } catch (error: unknown) {
       if (signal.aborted || error instanceof AsanaRequestAbortedError) {
-        if (this.online && !this.stopped) {
+        if (this.connectionState.kind === "online" && !this.stopped) {
           this.publishState(this.createOnlineState());
         }
         return createAbortResult();
@@ -668,28 +778,36 @@ export class AsanaSyncRuntime {
   }
 
   private armTimer(): void {
-    if (this.timer != null || this.running != null || !this.online || this.stopped) {
+    if (
+      this.timer != null
+      || this.running != null
+      || this.connectionState.kind === "offline"
+      || this.stopped
+    ) {
       return;
     }
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      if (!this.online || this.stopped) {
+      if (this.connectionState.kind === "offline" || this.stopped) {
         return;
       }
       const timerSignal = createCombinedSignal([
         this.lifecycleSignal,
         this.stopController.signal,
       ]);
-      let timerRun: Promise<AsanaSyncRuntimeResult>;
-      try {
-        timerRun = this.requestSelectedMode(false, timerSignal);
-      } catch (error: unknown) {
-        this.notifyUnexpectedError(error);
-        return;
-      }
-      timerRun.catch((error: unknown) => {
-        this.notifyUnexpectedError(error);
-      });
+      const timerRun = this.requestSelectedMode(false, timerSignal);
+      void timerRun.then(
+        () => {
+          this.armTimer();
+        },
+        (error: unknown) => {
+          try {
+            this.notifyUnexpectedError(error);
+          } finally {
+            this.armTimer();
+          }
+        },
+      );
     }, onlineSyncIntervalMilliseconds);
   }
 
@@ -706,7 +824,7 @@ export class AsanaSyncRuntime {
       return;
     }
     this.stopped = true;
-    this.online = false;
+    this.connectionState = { kind: "offline" };
     this.pendingMode = undefined;
     this.pendingBarrier = false;
     this.clearTimer();

@@ -69,6 +69,7 @@ import {
   AsanaProposalApplicationCoordinator,
   AsanaProposalOperationWriter,
   type AsanaProposalApplicationInput,
+  type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
 } from "../ai/proposal-application";
 import {
@@ -561,6 +562,8 @@ export class TaskHubApplication {
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
   private journalRecoveryPending: boolean;
   private journalRecoveryRunning = false;
+  private journalRecoveryPromise: Promise<void> | undefined;
+  private aiApplicationState: "idle" | "applying" | "synchronizing" = "idle";
   private readyActivated = false;
   private stopped = false;
 
@@ -816,11 +819,29 @@ export class TaskHubApplication {
   public async onOnline(): Promise<void> {
     this.assertOperationalReady();
     const runtime = this.requireRuntime();
-    const result = await this.requireSynchronizedResult(
-      runtime.onOnline(this.options.lifecycle_signal),
+    let result: AsanaSyncRuntimeResult;
+    try {
+      result = await runtime.onOnline(this.options.lifecycle_signal);
+    } catch (error: unknown) {
+      this.recordDiagnostic("sync.failed", "error");
+      throw error;
+    }
+    if (result.kind === "synchronized") {
+      await this.afterSynchronizedState(result, this.options.lifecycle_signal);
+      await this.verifyConfiguredCodexCapabilities(this.options.lifecycle_signal);
+      return;
+    }
+    if (result.kind === "failed") {
+      return;
+    }
+    if (result.kind === "aborted") {
+      throw new Error("Asana同期が中断されました。");
+    }
+    throw new Error(
+      result.reason === "offline"
+        ? "オフライン中はAsana同期を実行できません。"
+        : "停止済みのAsana同期ランタイムは実行できません。",
     );
-    await this.afterSynchronizedState(result, this.options.lifecycle_signal);
-    await this.verifyConfiguredCodexCapabilities(this.options.lifecycle_signal);
   }
 
   /** ネットワーク状態を同期ランタイムへ渡します。 */
@@ -958,6 +979,7 @@ export class TaskHubApplication {
         initial_online: online,
       },
       this.options.lifecycle_signal,
+      (signal) => this.beforeAsanaSynchronization(signal),
       (error) => this.notifyUnexpectedError(error, "sync"),
       () => createNowIso(this.options.now_provider),
     );
@@ -1018,7 +1040,16 @@ export class TaskHubApplication {
       externalStatusEvidenceCollector: this.externalStatusEvidenceCollector,
       applicationCoordinator: {
         apply: async (input, signal) => {
-          const result = await applicationCoordinator.apply(input, signal);
+          if (this.aiApplicationState !== "idle") {
+            throw new Error("AI変更案を同時に適用できません。");
+          }
+          this.aiApplicationState = "applying";
+          let result: AsanaProposalApplicationResult;
+          try {
+            result = await applicationCoordinator.apply(input, signal);
+          } finally {
+            this.aiApplicationState = "idle";
+          }
           this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
           this.diagnostics.record({
             code: "proposal.application",
@@ -1311,6 +1342,25 @@ export class TaskHubApplication {
     return coordinator;
   }
 
+  private async beforeAsanaSynchronization(signal: AbortSignal): Promise<void> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    if (this.aiApplicationState === "synchronizing") {
+      return;
+    }
+    if (this.aiApplicationState === "applying") {
+      throw new Error("AI変更案の適用完了前に別の同期を開始できません。");
+    }
+    await this.recoverApplicationJournal(signal);
+    throwIfAborted(signal);
+    if (
+      this.journalRecoveryPending
+      || this.database.getIncompleteApplicationJournals().length > 0
+    ) {
+      throw new Error("未完了のAI適用ジャーナルを復旧するまで同期を開始できません。");
+    }
+  }
+
   private async stopAsyncService(
     service: { stop(): Promise<void> } | undefined,
     errors: unknown[],
@@ -1331,30 +1381,37 @@ export class TaskHubApplication {
       return;
     }
     this.configureOperationalServices();
-    try {
-      await this.recoverApplicationJournal(signal);
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.recordFeatureFailure(
-        error,
-        "application_journal",
-        "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
-      );
-      throw error;
+    const runtime = this.requireRuntime();
+    let synchronizationDeferred = runtime.getState().kind === "offline";
+    if (!synchronizationDeferred) {
+      try {
+        await this.recoverApplicationJournal(signal);
+      } catch (error: unknown) {
+        this.rethrowFeatureAbort(error, signal);
+        this.recordFeatureFailure(
+          error,
+          "application_journal",
+          "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
+        );
+        runtime.deferSynchronizationUntilRecovery();
+        synchronizationDeferred = true;
+      }
     }
     await this.startExternalTools(signal);
     await this.startCodexForConfigured(signal);
-    const runtimeResult = await this.requireRuntime().start(signal);
-    if (runtimeResult.kind === "synchronized") {
-      await this.afterSynchronizedState(runtimeResult, signal);
-      await this.verifyConfiguredCodexCapabilities(signal);
-    } else if (runtimeResult.kind === "aborted") {
-      throw new Error("設定済みアプリケーションの起動同期が中断されました。");
-    } else if (
-      runtimeResult.kind === "rejected"
-      && runtimeResult.reason === "stopped"
-    ) {
-      throw new Error("停止済みのAsana同期ランタイムは起動できません。");
+    if (!synchronizationDeferred) {
+      const runtimeResult = await runtime.start(signal);
+      if (runtimeResult.kind === "synchronized") {
+        await this.afterSynchronizedState(runtimeResult, signal);
+        await this.verifyConfiguredCodexCapabilities(signal);
+      } else if (runtimeResult.kind === "aborted") {
+        throw new Error("設定済みアプリケーションの起動同期が中断されました。");
+      } else if (
+        runtimeResult.kind === "rejected"
+        && runtimeResult.reason === "stopped"
+      ) {
+        throw new Error("停止済みのAsana同期ランタイムは起動できません。");
+      }
     }
     this.readyActivated = true;
   }
@@ -1400,11 +1457,30 @@ export class TaskHubApplication {
   }
 
   private async recoverApplicationJournal(signal: AbortSignal): Promise<void> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const runningRecovery = this.journalRecoveryPromise;
+    if (runningRecovery != null) {
+      await runningRecovery;
+      throwIfAborted(signal);
+      return;
+    }
+    const recovery = this.performApplicationJournalRecovery(signal);
+    this.journalRecoveryPromise = recovery;
+    try {
+      await recovery;
+    } finally {
+      if (this.journalRecoveryPromise === recovery) {
+        this.journalRecoveryPromise = undefined;
+      }
+    }
+  }
+
+  private async performApplicationJournalRecovery(
+    signal: AbortSignal,
+  ): Promise<void> {
     const incomplete = this.database.getIncompleteApplicationJournals();
-    if (
-      this.journalRecoveryRunning
-      || (!this.journalRecoveryPending && incomplete.length === 0)
-    ) {
+    if (!this.journalRecoveryPending && incomplete.length === 0) {
       return;
     }
     this.journalRecoveryPending = true;
@@ -1495,10 +1571,18 @@ export class TaskHubApplication {
     if (this.journalRecoveryRunning) {
       return;
     }
-    const result = await this.requireSynchronizedResult(
-      this.requireRuntime().afterAiApply(signal),
-    );
-    void result;
+    if (this.aiApplicationState !== "applying") {
+      throw new Error("AI変更案の適用状態が同期開始条件を満たしません。");
+    }
+    this.aiApplicationState = "synchronizing";
+    try {
+      const result = await this.requireSynchronizedResult(
+        this.requireRuntime().afterAiApply(signal),
+      );
+      void result;
+    } finally {
+      this.aiApplicationState = "applying";
+    }
     await this.afterLocalStateRefresh(signal);
   }
 
