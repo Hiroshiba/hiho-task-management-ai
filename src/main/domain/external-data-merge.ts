@@ -348,6 +348,26 @@ function resolveScalar<T>(
   return { kind: "conflict", field };
 }
 
+function resolveActivityAnchorOn(
+  baseline: string,
+  current: string,
+  after: string,
+): { readonly value: string; readonly changed: boolean } {
+  const validatedBaseline = dateSchema.parse(baseline);
+  const validatedCurrent = dateSchema.parse(current);
+  const validatedAfter = dateSchema.parse(after);
+  const currentOrBaseline = compareStrings(validatedCurrent, validatedBaseline) >= 0
+    ? validatedCurrent
+    : validatedBaseline;
+  const value = compareStrings(validatedAfter, currentOrBaseline) > 0
+    ? validatedAfter
+    : currentOrBaseline;
+  return {
+    value,
+    changed: value !== validatedCurrent,
+  };
+}
+
 function resolveCollection<T>(
   field: "dependencies" | "obsidian_links",
   baseline: readonly T[],
@@ -516,16 +536,11 @@ function mergeData(
         break;
       }
       case "set_activity_anchor_on": {
-        const field = "activity_anchor_on";
-        const resolved = resolveScalar(
-          field,
+        const resolved = resolveActivityAnchorOn(
           baseline.activity_anchor_on,
           current.activity_anchor_on,
           operation.after,
         );
-        if (resolved.kind === "conflict") {
-          return mergeResultSchema.parse(resolved);
-        }
         activityAnchorOn = resolved.value;
         changed = changed || resolved.changed;
         break;
