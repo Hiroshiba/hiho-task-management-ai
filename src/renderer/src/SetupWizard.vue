@@ -7,6 +7,7 @@ import {
   setupVaultChoiceInputSchema,
   setupWorkspaceSelectionInputSchema,
   type SetupExternalToolChoiceInput,
+  type SetupExternalToolUnavailableReason,
   type SetupProjectSelectionInput,
   type SetupState,
   type SetupVaultChoiceInput,
@@ -27,7 +28,10 @@ type SetupAction =
   | { readonly kind: "retry_resources" }
   | { readonly kind: "run_capability" }
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
-  | { readonly kind: "choose_external_tool"; readonly input: SetupExternalToolChoiceInput }
+  | {
+      readonly kind: "choose_external_tool";
+      readonly request: ReturnType<Window["taskHub"]["setup"]["chooseExternalTool"]>;
+    }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
 
@@ -42,6 +46,8 @@ const emit = defineEmits<{
 
 const clientId = ref("");
 const clientSecretInput = ref<HTMLInputElement | null>(null);
+const discordBotTokenInput = ref<HTMLInputElement | null>(null);
+const discordChannelIds = ref("");
 const timeoutMilliseconds = ref("120000");
 const projectName = ref("");
 const vaultId = ref("");
@@ -61,8 +67,19 @@ function clearClientSecret(): void {
   }
 }
 
-watch(() => props.state?.kind, clearClientSecret);
-onBeforeUnmount(clearClientSecret);
+function clearDiscordBotToken(): void {
+  if (discordBotTokenInput.value != null) {
+    discordBotTokenInput.value.value = "";
+  }
+}
+
+function clearSensitiveInputs(): void {
+  clearClientSecret();
+  clearDiscordBotToken();
+}
+
+watch(() => props.state?.kind, clearSensitiveInputs);
+onBeforeUnmount(clearSensitiveInputs);
 
 function stateTitle(state: SetupState | undefined): string {
   if (state == null) {
@@ -94,6 +111,7 @@ function stateTitle(state: SetupState | undefined): string {
       return "外部読み取りツールを設定します";
     case "external_tool_skipped":
     case "external_tool_configured":
+    case "external_tool_unavailable":
     case "full_sync_required":
       return "初回同期を実行します";
     case "codex_capability_required":
@@ -127,6 +145,9 @@ function stateDescription(state: SetupState | undefined): string {
   }
   if (state.kind === "resources_requires_action") {
     return "必須セクションやタグの不足、重複、名前変更を確認してから再照合します。";
+  }
+  if (state.kind === "external_tool_unavailable") {
+    return `${externalToolUnavailableReasonLabel(state.reason_code)} 外部情報取得を無効にしたまま初回設定を続けられます。`;
   }
   return "現在の手順を完了して次へ進んでください。";
 }
@@ -171,6 +192,21 @@ function capabilityReasonLabel(reason: "task_create_failed" | "task_update_faile
       return "検査後の整理能力を確認できませんでした。";
     case "unknown":
       return "能力検査を完了できませんでした。";
+  }
+}
+
+function externalToolUnavailableReasonLabel(
+  reason: SetupExternalToolUnavailableReason,
+): string {
+  switch (reason) {
+    case "unsupported_platform":
+      return "このOSではDiscord読取連携を安全に利用できません。";
+    case "safe_execution_boundary_unavailable":
+      return "Discord読取連携の安全な実行境界を用意できません。";
+    case "credential_storage_unavailable":
+      return "Discord Bot Tokenを安全に保存できません。";
+    case "startup_failed":
+      return "Discord読取連携を開始できませんでした。";
   }
 }
 
@@ -251,9 +287,48 @@ function selectProject(value: string): void {
   }
 }
 
+function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {
+  try {
+    const request = window.taskHub.setup.chooseExternalTool(input);
+    void request.then(clearDiscordBotToken, clearDiscordBotToken);
+    emit("action", { kind: "choose_external_tool", request });
+  } catch {
+    localError.value = "Discord読取連携の設定を開始できませんでした。";
+  } finally {
+    clearDiscordBotToken();
+  }
+}
+
+function parseDiscordChannelIds(value: string): string[] {
+  return value
+    .split(/[\n,]+/u)
+    .map((channelId) => channelId.trim())
+    .filter((channelId) => channelId.length > 0);
+}
+
+function submitDiscordExternalTool(): void {
+  localError.value = "";
+  const tokenInput = discordBotTokenInput.value;
+  if (tokenInput == null) {
+    throw new Error("Discord Bot Token入力欄が見つかりません。");
+  }
+  const parsed = setupExternalToolChoiceInputSchema.safeParse({
+    kind: "configure_discord",
+    bot_token: tokenInput.value,
+    allowed_channel_ids: parseDiscordChannelIds(discordChannelIds.value),
+  });
+  if (!parsed.success) {
+    clearDiscordBotToken();
+    localError.value = "Discord Bot Tokenと許可チャンネルIDを確認してください。";
+    return;
+  }
+  beginExternalToolChoice(parsed.data);
+}
+
 function skipExternalTool(): void {
+  localError.value = "";
   const input = setupExternalToolChoiceInputSchema.parse({ kind: "skip" });
-  emit("action", { kind: "choose_external_tool", input });
+  beginExternalToolChoice(input);
 }
 
 function workspaceOptions(state: SetupState | undefined): readonly { gid: string; name: string }[] {
@@ -573,15 +648,52 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
 
       <div
         v-else-if="isState(props.state, 'vault_skipped', 'vault_configured')"
-        class="space-y-3"
+        class="space-y-4"
       >
         <p class="text-sm text-slate-600">
-          この実装では安全な資格情報境界と実行境界を提供できないため、外部ツール連携は利用できません。
-          外部情報取得の能力不足として初回設定を続行します。
+          読み取り専用のDiscord連携を登録できます。利用できる操作は検索、スレッド取得、メッセージ取得だけです。
+          任意の実行ファイルや書き込み操作は登録できません。
         </p>
+        <form
+          class="grid gap-4 sm:max-w-xl"
+          @submit.prevent="submitDiscordExternalTool"
+        >
+          <label
+            class="field-label"
+            for="discord-bot-token"
+          >Discord Bot Token<input
+            id="discord-bot-token"
+            ref="discordBotTokenInput"
+            class="text-input"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+          ></label>
+          <label
+            class="field-label"
+            for="discord-channel-ids"
+          >許可するDiscordチャンネルID<textarea
+            id="discord-channel-ids"
+            v-model="discordChannelIds"
+            class="text-input min-h-24"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="123456789012345678, 234567890123456789"
+          /></label>
+          <p class="text-xs leading-5 text-slate-500">
+            チャンネルIDはカンマまたは改行で区切ってください。Bot Tokenは保護ストレージへ送信し、Codexへ渡しません。
+          </p>
+          <button
+            type="submit"
+            class="primary-button"
+            :disabled="props.busy"
+          >
+            Discord読取を登録
+          </button>
+        </form>
         <button
           type="button"
-          class="primary-button"
+          class="secondary-button"
           :disabled="props.busy"
           @click="skipExternalTool"
         >
@@ -590,9 +702,23 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
       </div>
 
       <div
-        v-else-if="isState(props.state, 'external_tool_skipped', 'external_tool_configured', 'full_sync_required')"
+        v-else-if="isState(props.state, 'external_tool_skipped', 'external_tool_configured', 'external_tool_unavailable', 'full_sync_required')"
         class="space-y-3"
       >
+        <p
+          v-if="props.state.kind === 'external_tool_configured'"
+          class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+          role="status"
+        >
+          Discord読取連携を登録しました。
+        </p>
+        <p
+          v-if="props.state.kind === 'external_tool_unavailable'"
+          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          role="status"
+        >
+          {{ externalToolUnavailableReasonLabel(props.state.reason_code) }}
+        </p>
         <p class="text-sm text-slate-600">
           専用プロジェクトから初回の完全同期を実行します。
         </p>

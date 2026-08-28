@@ -20,7 +20,6 @@ import {
 } from "../../shared/ipc";
 import {
   setupStateSchema,
-  type SetupExternalToolChoiceInput,
   type SetupProjectSelectionInput,
   type SetupState,
   type SetupVaultChoiceInput,
@@ -82,7 +81,7 @@ type SetupAction =
   | { readonly kind: "retry_resources" }
   | { readonly kind: "run_capability" }
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
-  | { readonly kind: "choose_external_tool"; readonly input: SetupExternalToolChoiceInput }
+  | { readonly kind: "choose_external_tool"; readonly request: Promise<SetupResult> }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
 
@@ -989,7 +988,7 @@ function handleSetupAction(action: SetupAction): void {
       void runSetupRequest(window.taskHub.setup.chooseVault(action.input));
       return;
     case "choose_external_tool":
-      void runSetupRequest(window.taskHub.setup.chooseExternalTool(action.input));
+      void runSetupRequest(action.request);
       return;
     case "run_full_sync":
       void runSetupRequest(window.taskHub.setup.runFullSync());
