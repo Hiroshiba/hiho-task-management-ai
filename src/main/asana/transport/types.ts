@@ -31,3 +31,7 @@ export type AsanaRequest<T> =
   | AsanaGetRequest<T>
   | AsanaPostRequest<T>
   | AsanaPutRequest<T>;
+
+export interface AsanaTransportRequestPort {
+  request<T>(request: AsanaRequest<T>, signal: AbortSignal): Promise<T>;
+}

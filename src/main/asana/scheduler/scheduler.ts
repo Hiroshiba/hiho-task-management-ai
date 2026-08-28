@@ -2,12 +2,62 @@ const maximumReadConcurrency = 5;
 const maximumWriteConcurrency = 1;
 const maximumAttempts = 120;
 const attemptWindowMilliseconds = 60_000;
+const lowPriorityRateHeadroom = 10;
+const maximumHighPriorityStartsWhileLowWaiting = 8;
 
 export type AsanaRequestKind = "read" | "write";
+export type AsanaRequestPriority = "high" | "normal" | "low";
+
+/** 優先度を固定したAsanaリクエスト受付範囲を表します。 */
+export interface AsanaRequestPriorityScope {
+  schedule<T>(
+    kind: AsanaRequestKind,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+}
 
 interface QueueItem {
   readonly isCancelled: () => boolean;
   readonly start: () => void;
+}
+
+interface PriorityQueues {
+  readonly high: QueueItem[];
+  readonly normal: QueueItem[];
+  readonly low: QueueItem[];
+}
+
+interface QueueSelection {
+  readonly item: QueueItem;
+  readonly priority: AsanaRequestPriority;
+}
+
+const priorityOrder: readonly AsanaRequestPriority[] = [
+  "high",
+  "normal",
+  "low",
+];
+
+function createPriorityQueues(): PriorityQueues {
+  return { high: [], normal: [], low: [] };
+}
+
+function validatePriority(priority: AsanaRequestPriority): void {
+  if (priority !== "high" && priority !== "normal" && priority !== "low") {
+    throw new Error("Asanaリクエストの優先度が不正です。");
+  }
+}
+
+function validateAbortSignal(signal: AbortSignal): void {
+  if (
+    signal == null
+    || typeof signal.aborted !== "boolean"
+    || typeof signal.addEventListener !== "function"
+    || typeof signal.removeEventListener !== "function"
+  ) {
+    throw new TypeError("AbortSignalが必要です。");
+  }
 }
 
 /** Asanaリクエストが実行開始前に中断されたことを表します。 */
@@ -20,13 +70,14 @@ export class AsanaRequestAbortedError extends Error {
 
 /** Asanaリクエストを並列数とレート上限に従って実行します。 */
 export class AsanaRequestScheduler {
-  private readonly readQueue: QueueItem[] = [];
-  private readonly writeQueue: QueueItem[] = [];
+  private readonly readQueues = createPriorityQueues();
+  private readonly writeQueues = createPriorityQueues();
   private readonly attemptTimestamps: number[] = [];
   private readActiveCount = 0;
   private writeActiveCount = 0;
   private rateLimitTimer: ReturnType<typeof setTimeout> | undefined;
   private nextKindToStart: AsanaRequestKind = "read";
+  private highPriorityStartsWhileLowWaiting = 0;
 
   /** Asanaリクエストをスケジュールします。 */
   public schedule<T>(
@@ -34,8 +85,36 @@ export class AsanaRequestScheduler {
     signal: AbortSignal,
     operation: () => Promise<T>,
   ): Promise<T> {
+    return this.scheduleAtPriority("normal", kind, signal, operation);
+  }
+
+  /** 指定優先度のAsanaリクエスト受付範囲を作成します。 */
+  public withPriority(
+    priority: AsanaRequestPriority,
+  ): AsanaRequestPriorityScope {
+    validatePriority(priority);
+    return {
+      schedule: <T>(
+        kind: AsanaRequestKind,
+        signal: AbortSignal,
+        operation: () => Promise<T>,
+      ): Promise<T> => this.scheduleAtPriority(priority, kind, signal, operation),
+    };
+  }
+
+  private scheduleAtPriority<T>(
+    priority: AsanaRequestPriority,
+    kind: AsanaRequestKind,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    validatePriority(priority);
     if (kind !== "read" && kind !== "write") {
       throw new Error("Asanaリクエスト種別が不正です。");
+    }
+    validateAbortSignal(signal);
+    if (typeof operation !== "function") {
+      throw new TypeError("Asanaリクエスト操作関数が必要です。");
     }
     if (signal.aborted) {
       return Promise.reject(new AsanaRequestAbortedError());
@@ -70,6 +149,7 @@ export class AsanaRequestScheduler {
           this.writeActiveCount += 1;
         }
         this.attemptTimestamps.push(Date.now());
+        this.notePriorityStart(priority);
 
         const result = (async (): Promise<T> => operation())();
         void result.then(resolve, reject).finally(finish);
@@ -95,19 +175,24 @@ export class AsanaRequestScheduler {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       if (kind === "read") {
-        this.readQueue.push(item);
+        this.readQueues[priority].push(item);
       } else {
-        this.writeQueue.push(item);
+        this.writeQueues[priority].push(item);
+      }
+      if (signal.aborted) {
+        cancel();
+        return;
       }
       this.pump();
     });
   }
 
   private pump(): void {
-    this.removeCancelledItems(this.readQueue);
-    this.removeCancelledItems(this.writeQueue);
+    this.removeCancelledItems(this.readQueues);
+    this.removeCancelledItems(this.writeQueues);
     this.removeExpiredAttempts();
-    if (this.readQueue.length === 0 && this.writeQueue.length === 0) {
+    if (!this.hasPendingItems()) {
+      this.highPriorityStartsWhileLowWaiting = 0;
       this.clearRateLimitTimer();
       return;
     }
@@ -128,26 +213,28 @@ export class AsanaRequestScheduler {
       didStart = startedFirst || startedSecond;
     }
 
-    if (
-      this.attemptTimestamps.length >= maximumAttempts
-      && (this.readQueue.length > 0 || this.writeQueue.length > 0)
-    ) {
+    if (this.hasPendingItems() && this.mustWaitForRateLimit()) {
       this.scheduleRateLimitTimer();
+    } else if (!this.hasPendingItems()) {
+      this.clearRateLimitTimer();
     } else {
       this.clearRateLimitTimer();
     }
   }
 
-  private removeCancelledItems(queue: QueueItem[]): void {
-    const remainingItems = queue.filter((item) => !item.isCancelled());
-    queue.length = 0;
-    queue.push(...remainingItems);
+  private removeCancelledItems(queues: PriorityQueues): void {
+    for (const priority of priorityOrder) {
+      const queue = queues[priority];
+      const remainingItems = queue.filter((item) => !item.isCancelled());
+      queue.length = 0;
+      queue.push(...remainingItems);
+    }
   }
 
   private tryStart(kind: AsanaRequestKind): boolean {
-    const queue = kind === "read" ? this.readQueue : this.writeQueue;
-    const item = this.takeRunnableItem(queue);
-    if (item == null) {
+    const queues = kind === "read" ? this.readQueues : this.writeQueues;
+    const selection = this.takeRunnableItem(queues);
+    if (selection == null) {
       return false;
     }
     const activeCount = kind === "read"
@@ -157,25 +244,114 @@ export class AsanaRequestScheduler {
       ? maximumReadConcurrency
       : maximumWriteConcurrency;
     if (activeCount >= maximumConcurrency) {
-      queue.unshift(item);
+      queues[selection.priority].unshift(selection.item);
       return false;
     }
-    item.start();
+    selection.item.start();
     this.nextKindToStart = kind === "read" ? "write" : "read";
     return true;
   }
 
-  private takeRunnableItem(queue: QueueItem[]): QueueItem | undefined {
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (item == null) {
-        throw new Error("Asanaリクエストキューの項目を取得できません。");
+  private takeRunnableItem(
+    queues: PriorityQueues,
+  ): QueueSelection | undefined {
+    if (this.shouldForceLowPriority(queues)) {
+      const lowQueue = queues.low;
+      while (lowQueue.length > 0) {
+        const item = lowQueue.shift();
+        if (item == null) {
+          throw new Error("Asanaリクエストキューの項目を取得できません。");
+        }
+        if (!item.isCancelled()) {
+          return { item, priority: "low" };
+        }
       }
-      if (!item.isCancelled()) {
-        return item;
+    }
+    for (const priority of priorityOrder) {
+      if (priority === "low" && !this.canStartLowPriority()) {
+        continue;
+      }
+      const queue = queues[priority];
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (item == null) {
+          throw new Error("Asanaリクエストキューの項目を取得できません。");
+        }
+        if (!item.isCancelled()) {
+          return { item, priority };
+        }
       }
     }
     return undefined;
+  }
+
+  private shouldForceLowPriority(queues: PriorityQueues): boolean {
+    return this.hasPendingPriority(queues, "low")
+      && this.attemptTimestamps.length <= maximumAttempts - lowPriorityRateHeadroom
+      && this.highPriorityStartsWhileLowWaiting
+        >= maximumHighPriorityStartsWhileLowWaiting;
+  }
+
+  private canStartLowPriority(): boolean {
+    if (this.attemptTimestamps.length > maximumAttempts - lowPriorityRateHeadroom) {
+      return false;
+    }
+    const hasHigherPriority =
+      this.hasPendingPriority(this.readQueues, "high")
+      || this.hasPendingPriority(this.readQueues, "normal")
+      || this.hasPendingPriority(this.writeQueues, "high")
+      || this.hasPendingPriority(this.writeQueues, "normal");
+    if (!hasHigherPriority) {
+      return true;
+    }
+    return this.highPriorityStartsWhileLowWaiting
+      >= maximumHighPriorityStartsWhileLowWaiting;
+  }
+
+  private notePriorityStart(priority: AsanaRequestPriority): void {
+    if (priority === "low") {
+      this.highPriorityStartsWhileLowWaiting = 0;
+      return;
+    }
+    if (this.hasPendingLowPriority()) {
+      this.highPriorityStartsWhileLowWaiting += 1;
+    }
+  }
+
+  private mustWaitForRateLimit(): boolean {
+    if (this.attemptTimestamps.length >= maximumAttempts) {
+      return true;
+    }
+    return this.hasPendingLowPriority()
+      && this.attemptTimestamps.length > maximumAttempts - lowPriorityRateHeadroom
+      && !this.hasPendingHigherPriority();
+  }
+
+  private hasPendingHigherPriority(): boolean {
+    return this.hasPendingPriority(this.readQueues, "high")
+      || this.hasPendingPriority(this.readQueues, "normal")
+      || this.hasPendingPriority(this.writeQueues, "high")
+      || this.hasPendingPriority(this.writeQueues, "normal");
+  }
+
+  private hasPendingItems(): boolean {
+    return this.hasPendingQueue(this.readQueues) || this.hasPendingQueue(this.writeQueues);
+  }
+
+  private hasPendingLowPriority(): boolean {
+    return this.hasPendingPriority(this.readQueues, "low")
+      || this.hasPendingPriority(this.writeQueues, "low");
+  }
+
+  private hasPendingQueue(queues: PriorityQueues): boolean {
+    return priorityOrder.some((priority) => this.hasPendingPriority(queues, priority));
+  }
+
+  private hasPendingPriority(
+    queues: PriorityQueues,
+    priority: AsanaRequestPriority,
+  ): boolean {
+    return queues[priority].some((item) => !item.isCancelled());
   }
 
   private removeExpiredAttempts(): void {

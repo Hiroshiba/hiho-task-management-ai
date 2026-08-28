@@ -10,7 +10,7 @@ import {
   type AsanaTaskResponse,
   type JsonObject,
 } from "../../../shared/domain";
-import { AsanaTransport } from "../transport";
+import type { AsanaTransportRequestPort } from "../transport";
 
 const taskOptFields = [
   "gid",
@@ -291,9 +291,9 @@ function buildTaskUpdateBody(update: TaskUpdate): JsonObject {
 
 /** Asanaタスクの作成と許可された書き込み操作を提供します。 */
 export class AsanaTaskWriteClient {
-  private readonly transport: AsanaTransport;
+  private readonly transport: AsanaTransportRequestPort;
 
-  public constructor(transport: AsanaTransport) {
+  public constructor(transport: AsanaTransportRequestPort) {
     this.transport = transport;
   }
 

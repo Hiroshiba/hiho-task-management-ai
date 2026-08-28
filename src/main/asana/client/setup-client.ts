@@ -13,7 +13,7 @@ import {
   setupManifest,
   type SetupManifest,
 } from "../setup";
-import { AsanaTransport } from "../transport";
+import type { AsanaTransportRequestPort } from "../transport";
 
 const listLimit = "100";
 const workspaceOptFields = "gid,name";
@@ -161,9 +161,9 @@ function validateTagName(value: string): SetupTagName {
 
 /** 初期設定で利用するAsana APIを提供します。 */
 export class AsanaSetupClient {
-  private readonly transport: AsanaTransport;
+  private readonly transport: AsanaTransportRequestPort;
 
-  public constructor(transport: AsanaTransport) {
+  public constructor(transport: AsanaTransportRequestPort) {
     this.transport = transport;
   }
 

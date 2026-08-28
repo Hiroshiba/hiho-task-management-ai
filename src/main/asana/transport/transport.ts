@@ -8,6 +8,8 @@ import {
   AsanaRequestAbortedError,
   AsanaRequestScheduler,
   type AsanaRequestKind,
+  type AsanaRequestPriority,
+  type AsanaRequestPriorityScope,
 } from "../scheduler";
 import {
   AsanaAuthenticationError,
@@ -20,6 +22,7 @@ import {
 } from "./errors";
 import type {
   AsanaRequest,
+  AsanaTransportRequestPort,
   TokenProvider,
 } from "./types";
 
@@ -273,6 +276,31 @@ export class AsanaTransport {
     request: AsanaRequest<T>,
     signal: AbortSignal,
   ): Promise<T> {
+    return this.requestAtPriority(
+      request,
+      signal,
+      this.scheduler.withPriority("normal"),
+    );
+  }
+
+  /** 指定優先度でAsana APIリクエストを実行する範囲を作成します。 */
+  public withPriority(
+    priority: AsanaRequestPriority,
+  ): AsanaTransportRequestPort {
+    const priorityScope = this.scheduler.withPriority(priority);
+    return {
+      request: <T>(
+        request: AsanaRequest<T>,
+        signal: AbortSignal,
+      ): Promise<T> => this.requestAtPriority(request, signal, priorityScope),
+    };
+  }
+
+  private async requestAtPriority<T>(
+    request: AsanaRequest<T>,
+    signal: AbortSignal,
+    priorityScope: AsanaRequestPriorityScope,
+  ): Promise<T> {
     validateRequest(request);
     if (signal.aborted) {
       throw new AsanaRequestAbortedError();
@@ -296,6 +324,7 @@ export class AsanaTransport {
           body,
           accessToken,
           signal,
+          priorityScope,
         );
       } catch (error) {
         if (!(error instanceof AsanaTransportError)) {
@@ -366,6 +395,7 @@ export class AsanaTransport {
     body: string | undefined,
     accessToken: string,
     signal: AbortSignal,
+    priorityScope: AsanaRequestPriorityScope,
   ): Promise<Response> {
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -381,7 +411,7 @@ export class AsanaTransport {
     if (body != null) {
       init.body = body;
     }
-    return this.scheduler.schedule(
+    return priorityScope.schedule(
       requestKind(request),
       signal,
       () => this.fetchWithTimeout(url, init, signal),

@@ -13,5 +13,6 @@ export type {
   AsanaPostRequest,
   AsanaPutRequest,
   AsanaRequest,
+  AsanaTransportRequestPort,
   TokenProvider,
 } from "./types";

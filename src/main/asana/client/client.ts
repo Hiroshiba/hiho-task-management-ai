@@ -11,7 +11,7 @@ import {
 } from "../../../shared/domain";
 import {
   AsanaEventsResetError,
-  AsanaTransport,
+  type AsanaTransportRequestPort,
 } from "../transport";
 
 const listLimit = "100";
@@ -169,9 +169,9 @@ function validateSyncToken(value: string | undefined): string | undefined {
 
 /** Asanaの読み取りAPIを提供します。 */
 export class AsanaReadClient {
-  private readonly transport: AsanaTransport;
+  private readonly transport: AsanaTransportRequestPort;
 
-  public constructor(transport: AsanaTransport) {
+  public constructor(transport: AsanaTransportRequestPort) {
     this.transport = transport;
   }
 
