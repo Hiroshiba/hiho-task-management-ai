@@ -1,12 +1,16 @@
 <script setup lang="ts">
+import { ref, watch } from "vue";
 import { isoDateTimeSchema } from "../../shared/domain";
 import type { RendererCodexState, RendererSyncState } from "./state";
 
-defineProps<{
+const props = defineProps<{
   syncState: RendererSyncState;
   lastSyncAt: string | undefined;
   online: boolean;
+  configured: boolean;
   canManualSync: boolean;
+  canFullSync: boolean;
+  fullSyncRunning: boolean;
   canWrite: boolean;
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
@@ -16,9 +20,37 @@ defineProps<{
 
 const emit = defineEmits<{
   (event: "sync"): void;
+  (event: "full-sync"): void;
   (event: "new-ai-session"): void;
   (event: "complete-codex-authentication"): void;
 }>();
+
+const fullSyncConfirmationOpen = ref(false);
+
+watch(() => props.configured && props.canFullSync, (available) => {
+  if (!available) {
+    fullSyncConfirmationOpen.value = false;
+  }
+});
+
+function requestFullSyncConfirmation(): void {
+  if (!props.canFullSync) {
+    return;
+  }
+  fullSyncConfirmationOpen.value = true;
+}
+
+function cancelFullSync(): void {
+  fullSyncConfirmationOpen.value = false;
+}
+
+function confirmFullSync(): void {
+  if (!props.canFullSync) {
+    return;
+  }
+  fullSyncConfirmationOpen.value = false;
+  emit("full-sync");
+}
 
 function syncLabel(state: RendererSyncState): string {
   switch (state.kind) {
@@ -97,6 +129,7 @@ function jstDateTimeLabel(value: string | undefined): string {
       </div>
       <div class="flex items-center gap-2">
         <button
+          v-if="configured"
           type="button"
           class="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="!canManualSync"
@@ -105,6 +138,40 @@ function jstDateTimeLabel(value: string | undefined): string {
         >
           手動同期
         </button>
+        <button
+          v-if="configured && !fullSyncConfirmationOpen"
+          type="button"
+          class="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="!canFullSync"
+          aria-label="キャッシュを再構築する完全同期を確認"
+          title="Asanaから全件を取得してローカルキャッシュを再構築します"
+          @click="requestFullSyncConfirmation"
+        >
+          {{ fullSyncRunning ? "再構築中" : "キャッシュを再構築" }}
+        </button>
+        <div
+          v-else-if="configured"
+          class="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950"
+          role="group"
+          aria-label="完全同期の確認"
+        >
+          <span>Asanaから全件を取得します。</span>
+          <button
+            type="button"
+            class="rounded-md bg-amber-700 px-3 py-1.5 font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!canFullSync"
+            @click="confirmFullSync"
+          >
+            完全同期を実行
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+            @click="cancelFullSync"
+          >
+            やめる
+          </button>
+        </div>
         <button
           v-if="codexState.kind === 'authentication_required'"
           type="button"
