@@ -141,6 +141,23 @@ export class CodexSetupAdapter {
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
     try {
+      const sessionState = this.session.getState();
+      if (sessionState === "created") {
+        const started = await this.ensureStarted(signal);
+        if (isReady(started)) {
+          this.loginOpened = false;
+          return parseAvailability({ kind: "available" });
+        }
+      } else if (sessionState === "ready") {
+        const result = this.startResult;
+        if (result == null || !isReady(result)) {
+          throw new CodexSessionCapabilityError(
+            "Codex認証済みセッションの起動結果が確定していません。",
+          );
+        }
+        this.loginOpened = false;
+        return parseAvailability({ kind: "available" });
+      }
       const result = await this.session.completeAuthentication(signal);
       this.startResult = result;
       this.structuredOutputVerified = false;

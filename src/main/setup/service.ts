@@ -394,6 +394,9 @@ function sameTagGids(
 function stateCodexAvailability(
   state: SetupState,
 ): SetupCodexAvailability | undefined {
+  if ("context" in state) {
+    return setupCodexAvailabilitySchema.parse(state.context.codex);
+  }
   if ("codex" in state) {
     return setupCodexAvailabilitySchema.parse(state.codex);
   }
@@ -401,6 +404,59 @@ function stateCodexAvailability(
     return undefined;
   }
   throw new Error("保存済みCodex状態がありません。");
+}
+
+function updateStateCodexAvailability(
+  state: SetupState,
+  availability: SetupCodexAvailability,
+): SetupState {
+  const validatedAvailability = setupCodexAvailabilitySchema.parse(availability);
+  switch (state.kind) {
+    case "created":
+    case "codex_cli_ready":
+      throw new Error("現在の初回設定状態ではCodex認証を完了できません。");
+    case "codex_authentication_required":
+      return parseState({
+        kind: "credentials_required",
+        step: "credentials",
+        redirect_uri: state.redirect_uri,
+        codex: validatedAvailability,
+      });
+    case "credentials_required":
+    case "workspace_listing_required":
+    case "workspace_selection_required":
+    case "project_selection_required":
+    case "project_requires_action":
+    case "resources_requires_action":
+      return parseState({
+        ...state,
+        codex: validatedAvailability,
+      });
+    case "resources_ready":
+    case "asana_capability_failed":
+      return parseState({
+        ...state,
+        context: {
+          ...state.context,
+          codex: validatedAvailability,
+        },
+      });
+    case "vault_choice_required":
+    case "vault_skipped":
+    case "vault_configured":
+    case "external_tool_skipped":
+    case "external_tool_configured":
+    case "full_sync_required":
+    case "codex_capability_required":
+    case "ready":
+      return parseState({
+        ...state,
+        context: {
+          ...state.context,
+          codex: validatedAvailability,
+        },
+      });
+  }
 }
 
 function requireCodexAvailability(
@@ -632,20 +688,17 @@ export class SetupOrchestrator {
     return this.getState();
   }
 
-  /** ChatGPTログイン後のCodex確認を完了します。 */
+  /** 初回設定中または設定済み状態のChatGPT再認証を完了します。 */
   public async completeCodexAuthentication(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);
-    assertStateKindTyped(this.state, ["codex_authentication_required"]);
+    if (this.state.kind === "created" || this.state.kind === "codex_cli_ready") {
+      throw new Error("現在の初回設定状態ではCodex認証を完了できません。");
+    }
     const availability = setupCodexAvailabilitySchema.parse(
       await this.codex.completeAuthentication(signal),
     );
     this.codexAvailability = availability;
-    this.state = parseState({
-      kind: "credentials_required",
-      step: "credentials",
-      redirect_uri: this.redirectUri,
-      codex: availability,
-    });
+    this.state = updateStateCodexAvailability(this.state, availability);
     return this.getState();
   }
 
