@@ -110,6 +110,11 @@ type TaskDataRefreshRequest = {
 
 type TaskObsidianLink = ViewModelTaskDetail["obsidian_links"][number];
 
+type PendingAiProposal = {
+  readonly message: string;
+  readonly proposal: AiWorkflowProposalView;
+};
+
 const screen = ref<RendererScreenState>(rendererScreenStateSchema.parse({ kind: "loading" }));
 const setupState = ref<SetupState | undefined>();
 const setupBusy = ref(false);
@@ -919,18 +924,40 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
 }
 
 async function startAiSession(): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
+  const pendingProposal = pendingAiProposal(aiState.value);
+  aiBusy.value = true;
   try {
     const result = await window.taskHub.ai.startNewSession();
     if (isFailure(result)) {
       showFailure(result);
       return;
     }
-    if (aiState.value.kind !== "proposal") {
-      aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    }
+    aiState.value = rendererAiStateSchema.parse({
+      kind: "idle",
+      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+    });
     feedback.value = "新しいAIセッションを開始しました。";
   } catch {
     showUnexpectedFailure();
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefined {
+  switch (state.kind) {
+    case "proposal":
+      return { message: state.message, proposal: state.proposal };
+    case "idle":
+    case "streaming":
+    case "questions":
+    case "unavailable":
+      return state.pending_proposal;
+    case "applied":
+      return undefined;
   }
 }
 
@@ -942,8 +969,12 @@ function appendDelta(delta: { readonly delta: string }): void {
     aiState.value = rendererAiStateSchema.parse({
       kind: "streaming",
       text: `${aiState.value.text}${delta.delta}`,
+      ...(aiState.value.pending_proposal == null
+        ? {}
+        : { pending_proposal: aiState.value.pending_proposal }),
     });
   } catch {
+    const pendingProposal = pendingAiProposal(aiState.value);
     aiState.value = rendererAiStateSchema.parse({
       kind: "unavailable",
       failure: rendererFailureSchema.parse({
@@ -951,23 +982,36 @@ function appendDelta(delta: { readonly delta: string }): void {
         code: "invalid_response",
         message: failureText("invalid_response"),
       }),
+      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
   }
 }
 
 async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
   if (!canWrite.value) {
     feedback.value = "オフライン中はAIを利用できません。";
     return;
   }
+  const pendingProposal = pendingAiProposal(aiState.value);
   aiBusy.value = true;
-  aiState.value = rendererAiStateSchema.parse({ kind: "streaming", text: "" });
   try {
     const request = aiWorkflowTurnRequestSchema.parse(input);
+    aiState.value = rendererAiStateSchema.parse({
+      kind: "streaming",
+      text: "",
+      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+    });
     const result = await window.taskHub.ai.startTurn(request);
     if (isFailure(result)) {
       showFailure(result);
-      aiState.value = rendererAiStateSchema.parse({ kind: "unavailable", failure: displayFailure(result) });
+      aiState.value = rendererAiStateSchema.parse({
+        kind: "unavailable",
+        failure: displayFailure(result),
+        ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+      });
       return;
     }
     if (result.value.kind === "proposal") {
@@ -975,6 +1019,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
       aiState.value = rendererAiStateSchema.parse({
         kind: "proposal",
         message: result.value.message,
+        questions: result.value.questions,
         proposal,
       });
       return;
@@ -983,6 +1028,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
       kind: "questions",
       message: result.value.message,
       questions: result.value.questions,
+      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
   } catch {
     aiState.value = rendererAiStateSchema.parse({
@@ -992,6 +1038,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
         code: "invalid_response",
         message: failureText("invalid_response"),
       }),
+      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
   } finally {
     aiBusy.value = false;
@@ -999,11 +1046,35 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
 }
 
 function proposalState(proposal: AiWorkflowProposalView): void {
-  const message = aiState.value.kind === "proposal" ? aiState.value.message : "変更案を更新しました。";
-  aiState.value = rendererAiStateSchema.parse({ kind: "proposal", message, proposal });
+  const currentState = aiState.value;
+  if (currentState.kind === "proposal") {
+    aiState.value = rendererAiStateSchema.parse({
+      kind: "proposal",
+      message: currentState.message,
+      questions: currentState.questions,
+      proposal,
+    });
+    return;
+  }
+  const pendingProposal = pendingAiProposal(currentState);
+  const message = pendingProposal?.message ?? "変更案を更新しました。";
+  if (currentState.kind === "questions") {
+    aiState.value = rendererAiStateSchema.parse({
+      kind: "questions",
+      message: currentState.message,
+      questions: currentState.questions,
+      pending_proposal: { message, proposal },
+    });
+    return;
+  }
+  aiState.value = rendererAiStateSchema.parse({ kind: "proposal", message, questions: [], proposal });
 }
 
 async function selectAiProposal(input: AiWorkflowSelectionRequest): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
+  aiBusy.value = true;
   try {
     const request = aiWorkflowSelectionRequestSchema.parse(input);
     const result = await window.taskHub.ai.select(request);
@@ -1014,10 +1085,16 @@ async function selectAiProposal(input: AiWorkflowSelectionRequest): Promise<void
     proposalState(aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
     showUnexpectedFailure();
+  } finally {
+    aiBusy.value = false;
   }
 }
 
 async function editAiOperation(input: AiWorkflowOperationEdit): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
+  aiBusy.value = true;
   try {
     const request = aiWorkflowOperationEditSchema.parse(input);
     const result = await window.taskHub.ai.editOperation(request);
@@ -1028,14 +1105,20 @@ async function editAiOperation(input: AiWorkflowOperationEdit): Promise<void> {
     proposalState(aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
     showUnexpectedFailure();
+  } finally {
+    aiBusy.value = false;
   }
 }
 
 async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
   if (!canWrite.value) {
     feedback.value = "オフライン中は変更案を適用できません。";
     return;
   }
+  aiBusy.value = true;
   try {
     const request = aiWorkflowApprovalRequestSchema.parse(input);
     const result = await window.taskHub.ai.approve(request);
@@ -1051,10 +1134,16 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
     await manualSync();
   } catch {
     showUnexpectedFailure();
+  } finally {
+    aiBusy.value = false;
   }
 }
 
 async function rejectAiProposal(proposalId: string): Promise<void> {
+  if (aiBusy.value) {
+    return;
+  }
+  aiBusy.value = true;
   try {
     const result = await window.taskHub.ai.reject(proposalId);
     if (isFailure(result)) {
@@ -1065,6 +1154,8 @@ async function rejectAiProposal(proposalId: string): Promise<void> {
     feedback.value = "変更案を却下しました。";
   } catch {
     showUnexpectedFailure();
+  } finally {
+    aiBusy.value = false;
   }
 }
 

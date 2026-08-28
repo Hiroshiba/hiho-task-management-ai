@@ -212,12 +212,25 @@ const rendererQuestionSchema = z
   })
   .strict();
 
+const rendererPendingProposalSchema = z
+  .object({
+    message: rendererMessageSchema,
+    proposal: aiWorkflowProposalViewSchema,
+  })
+  .strict();
+
 export const rendererAiStateSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("idle") }).strict(),
+  z
+    .object({
+      kind: z.literal("idle"),
+      pending_proposal: rendererPendingProposalSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("streaming"),
       text: createUtf8ByteLimitedStringSchema(256 * 1024),
+      pending_proposal: rendererPendingProposalSchema.optional(),
     })
     .strict(),
   z
@@ -225,12 +238,14 @@ export const rendererAiStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("questions"),
       message: rendererMessageSchema,
       questions: z.array(rendererQuestionSchema).max(8),
+      pending_proposal: rendererPendingProposalSchema.optional(),
     })
     .strict(),
   z
     .object({
       kind: z.literal("proposal"),
       message: rendererMessageSchema,
+      questions: z.array(rendererQuestionSchema).max(8),
       proposal: aiWorkflowProposalViewSchema,
     })
     .strict(),
@@ -245,6 +260,7 @@ export const rendererAiStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("unavailable"),
       failure: rendererFailureSchema,
+      pending_proposal: rendererPendingProposalSchema.optional(),
     })
     .strict(),
 ]);

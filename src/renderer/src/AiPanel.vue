@@ -38,10 +38,48 @@ const editEvidence = ref("");
 const localError = ref("");
 
 const proposal = computed(() => {
-  if (props.state.kind !== "proposal") {
-    return undefined;
+  switch (props.state.kind) {
+    case "proposal":
+      return props.state.proposal;
+    case "idle":
+    case "streaming":
+    case "questions":
+    case "unavailable":
+      return props.state.pending_proposal?.proposal;
+    case "applied":
+      return undefined;
   }
-  return props.state.proposal;
+});
+
+const proposalMessage = computed(() => {
+  switch (props.state.kind) {
+    case "proposal":
+      return props.state.message;
+    case "idle":
+    case "streaming":
+    case "questions":
+    case "unavailable":
+      return props.state.pending_proposal?.message;
+    case "applied":
+      return undefined;
+  }
+});
+
+const responseQuestions = computed(() => {
+  if (props.state.kind === "proposal" || props.state.kind === "questions") {
+    return props.state.questions;
+  }
+  return [];
+});
+
+const questionResponseMessage = computed(() => {
+  if (props.state.kind === "questions") {
+    return props.state.message;
+  }
+  if (props.state.kind === "proposal" && props.state.questions.length > 0) {
+    return props.state.message;
+  }
+  return undefined;
 });
 
 function requireProposal(): AiWorkflowProposalView {
@@ -69,7 +107,7 @@ function saveCurrentEdit(operation: ProposalOperation): void {
 }
 
 watch(
-  () => props.state.kind === "proposal" ? props.state.proposal.proposal_id : undefined,
+  () => proposal.value?.proposal_id,
   () => {
     selectionMode.value = "all";
     selectedGroupIds.value = [];
@@ -323,7 +361,7 @@ function applicationReasonLabel(reason: string): string {
         {{ localError }}
       </p>
       <div
-        v-if="props.state.kind === 'idle' || props.state.kind === 'questions'"
+        v-if="props.state.kind === 'idle' || props.state.kind === 'questions' || props.state.kind === 'proposal'"
         class="space-y-3"
       >
         <form @submit.prevent="sendMessage">
@@ -353,6 +391,12 @@ function applicationReasonLabel(reason: string): string {
             AIへ送信
           </button>
         </form>
+        <p
+          v-if="proposal != null"
+          class="text-xs text-slate-600"
+        >
+          表示中の変更案を保持したまま追質問や再提案を依頼できます。
+        </p>
       </div>
 
       <div
@@ -366,15 +410,15 @@ function applicationReasonLabel(reason: string): string {
       </div>
 
       <div
-        v-if="props.state.kind === 'questions'"
+        v-if="questionResponseMessage != null"
         class="space-y-3"
         aria-live="polite"
       >
         <p class="text-sm text-slate-700">
-          {{ props.state.message }}
+          {{ questionResponseMessage }}
         </p><ul class="space-y-3">
           <li
-            v-for="question in props.state.questions"
+            v-for="question in responseQuestions"
             :key="question.question_id"
             class="rounded-md border border-slate-200 p-3"
           >
@@ -402,7 +446,7 @@ function applicationReasonLabel(reason: string): string {
       <template v-if="proposal != null">
         <div class="rounded-md bg-slate-50 p-4">
           <p class="text-sm font-medium text-slate-900">
-            {{ props.state.kind === 'proposal' ? props.state.message : '' }}
+            {{ proposalMessage }}
           </p><p class="mt-1 text-xs text-slate-600">
             基準スナップショット: {{ requireProposal().baseline_snapshot_hash }}
           </p><p class="mt-1 text-xs text-slate-600">
