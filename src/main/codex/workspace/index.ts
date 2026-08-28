@@ -10,3 +10,10 @@ export {
   type CodexWorkspaceInitializationInput,
   type CodexWorkspaceInitializationResult,
 } from "./schemas";
+export {
+  contextctlInstallationInputSchema,
+  contextctlInstallationResultSchema,
+  installContextctlClientScript,
+  type ContextctlInstallationInput,
+  type ContextctlInstallationResult,
+} from "./integrations";
