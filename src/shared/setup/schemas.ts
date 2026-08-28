@@ -321,18 +321,11 @@ const setupVaultChoiceInputSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const setupExternalToolChoiceInputSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("skip"),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("configure"),
-    })
-  .strict(),
-]);
+const setupExternalToolChoiceInputSchema = z
+  .object({
+    kind: z.literal("skip"),
+  })
+  .strict();
 
 function hasControlCharacter(value: string): boolean {
   for (const character of value) {

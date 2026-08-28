@@ -8,7 +8,6 @@ export type {
   SetupCheckpointPort,
   SetupCodexPort,
   SetupDatabasePort,
-  SetupExternalToolPort,
   SetupFullSyncInput,
   SetupFullSyncPort,
   SetupOAuthPort,

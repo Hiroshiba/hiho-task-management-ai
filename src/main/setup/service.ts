@@ -131,8 +131,6 @@ export const setupFullSyncInputSchema = z
   })
   .strict();
 
-export type SetupExternalToolPort = (signal: AbortSignal) => Promise<void>;
-
 export type SetupOrchestratorOptions = {
   readonly redirect_uri: string;
   readonly device_id: string;
@@ -144,7 +142,6 @@ export type SetupOrchestratorOptions = {
   readonly database: SetupDatabasePort;
   readonly checkpoint: SetupCheckpointPort;
   readonly fullSync: SetupFullSyncPort;
-  readonly configureExternalTool: SetupExternalToolPort;
 };
 
 const setupOrchestratorOptionsSchema = z
@@ -159,7 +156,6 @@ const setupOrchestratorOptionsSchema = z
     database: z.unknown(),
     checkpoint: z.unknown(),
     fullSync: z.unknown(),
-    configureExternalTool: z.unknown(),
   })
   .strict();
 
@@ -490,7 +486,6 @@ export class SetupOrchestrator {
   private readonly database: SetupDatabasePort;
   private readonly checkpoint: SetupCheckpointPort;
   private readonly fullSync: SetupFullSyncPort;
-  private readonly configureExternalTool: SetupExternalToolPort;
   private state: SetupState;
   private resumeRequired: boolean;
   private codexAvailability: SetupCodexAvailability | undefined;
@@ -517,7 +512,6 @@ export class SetupOrchestrator {
     validateFunction(options.checkpoint.load, "初回設定チェックポイント取得関数が必要です。");
     validateFunction(options.checkpoint.save, "初回設定チェックポイント保存関数が必要です。");
     validateFunction(options.fullSync, "フル同期関数が必要です。");
-    validateFunction(options.configureExternalTool, "外部読み取りツール設定関数が必要です。");
     this.codex = options.codex;
     this.oauth = options.oauth;
     this.asana = options.asana;
@@ -526,7 +520,6 @@ export class SetupOrchestrator {
     this.database = options.database;
     this.checkpoint = options.checkpoint;
     this.fullSync = options.fullSync;
-    this.configureExternalTool = options.configureExternalTool;
     const initialState = parseState({
       kind: "created",
       step: "codex_cli",
@@ -956,31 +949,22 @@ export class SetupOrchestrator {
     return this.getState();
   }
 
-  /** 外部読み取りツールを設定するか明示的にスキップします。 */
-  public async chooseExternalTool(
+  /** 利用できない外部読み取りツールを明示的にスキップします。 */
+  public chooseExternalTool(
     input: SetupExternalToolChoiceInput,
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
     this.assertResumeCompleted();
-    const validatedInput = setupExternalToolChoiceInputSchema.parse(input);
+    setupExternalToolChoiceInputSchema.parse(input);
     assertStateKindTyped(this.state, ["vault_skipped", "vault_configured"]);
     const state = this.state;
-    if (validatedInput.kind === "configure") {
-      await this.configureExternalTool(signal);
-      this.state = parseState({
-        kind: "external_tool_configured",
-        step: "full_sync",
-        context: state.context,
-      });
-      return this.getState();
-    }
     this.state = parseState({
       kind: "external_tool_skipped",
       step: "full_sync",
       context: state.context,
     });
-    return this.getState();
+    return Promise.resolve(this.getState());
   }
 
   /** 初回設定用のフル同期を完了します。 */

@@ -1,9 +1,4 @@
 import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  mkdirSync,
-} from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import {
   AsanaRequestAbortedError,
@@ -60,7 +55,7 @@ import {
 import { SecretStorage } from "../auth/secret-storage";
 import {
   initializeCodexWorkspace,
-  installContextctlClientScript,
+  installDisabledExternalToolsSkill,
   type CodexWorkspaceInitializationResult,
 } from "../codex/workspace";
 import {
@@ -109,11 +104,7 @@ import {
 import { ReadModelService } from "../read-model";
 import { ObsidianReadService } from "../obsidian";
 import {
-  ExternalToolBroker,
-  ExternalToolError,
-  ExternalToolRegistry,
   ExternalToolStatusEvidenceCollector,
-  type ExternalToolDefinition,
 } from "../external-tools";
 import {
   SetupCheckpointStore,
@@ -200,7 +191,6 @@ import {
 } from "../../shared/storage";
 import {
   StorageDatabase,
-  type ExternalToolDefinitionRecord,
 } from "../storage";
 
 type OperationalContext = {
@@ -220,13 +210,6 @@ type MutableTokenProviderPort = TokenProvider & {
   setProvider(provider: TokenProvider): void;
 };
 
-type MutableExternalToolRegistryPort = Pick<
-  ExternalToolRegistry,
-  "get" | "list"
-> & {
-  replace(records: readonly ExternalToolDefinitionRecord[]): void;
-};
-
 type BaselineExternalData = AsanaProposalApplicationInput["baseline_external_data"];
 
 const codexAuthenticationStateSchema = z.union([
@@ -239,14 +222,6 @@ const codexAuthenticationStateSchema = z.union([
 ]);
 
 type CodexAuthenticationState = z.infer<typeof codexAuthenticationStateSchema>;
-
-type ExternalIntegrationState =
-  | { readonly kind: "not_started" }
-  | { readonly kind: "disabled" }
-  | {
-      readonly kind: "ready";
-      readonly broker: ExternalToolBroker;
-    };
 
 type SyncDiagnosticState =
   | { readonly kind: "idle" }
@@ -279,37 +254,6 @@ function diagnosticCodeForChannel(
     default:
       return "app.error";
   }
-}
-
-function externalToolDefinitionFromRecord(
-  record: ExternalToolDefinitionRecord,
-): ExternalToolDefinition {
-  const { credential_reference_names: _credentialReferenceNames, ...definition } = record;
-  void _credentialReferenceNames;
-  return definition;
-}
-
-function createMutableExternalToolRegistry(
-  records: readonly ExternalToolDefinitionRecord[],
-): MutableExternalToolRegistryPort {
-  let registry = new ExternalToolRegistry();
-  const replace = (nextRecords: readonly ExternalToolDefinitionRecord[]): void => {
-    const nextRegistry = new ExternalToolRegistry();
-    for (const record of nextRecords) {
-      nextRegistry.register(externalToolDefinitionFromRecord(record));
-    }
-    registry = nextRegistry;
-  };
-  replace(records);
-  return {
-    get(toolId: string): ExternalToolDefinition {
-      return registry.get(toolId);
-    },
-    list(): readonly ExternalToolDefinition[] {
-      return registry.list();
-    },
-    replace,
-  };
 }
 
 function compareStrings(left: string, right: string): number {
@@ -676,10 +620,7 @@ export class TaskHubApplication {
   private readonly readModel: ReadModelService;
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
-  private readonly externalWorkRoot: string;
-  private readonly externalRegistry: MutableExternalToolRegistryPort;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
-  private externalIntegrationState: ExternalIntegrationState = { kind: "not_started" };
   private context: OperationalContext | undefined;
   private settings: DeviceSettings | undefined;
   private runtime: AsanaSyncRuntime | undefined;
@@ -758,6 +699,8 @@ export class TaskHubApplication {
     this.codexWorkspace = initializeCodexWorkspace({
       userDataPath: options.user_data_path,
     });
+    installDisabledExternalToolsSkill(this.codexWorkspace.workspacePath);
+    this.recordDiagnostic("external_tools.status", "warning");
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
       environment: createCodexProcessEnvironment(),
@@ -788,12 +731,6 @@ export class TaskHubApplication {
     this.cleanupAggregation = new CleanupAggregationService(
       this.database,
       this.obsidian,
-    );
-    this.externalWorkRoot = join(options.user_data_path, "external-tool-work");
-    mkdirSync(this.externalWorkRoot, { recursive: true, mode: 0o700 });
-    chmodSync(this.externalWorkRoot, 0o700);
-    this.externalRegistry = createMutableExternalToolRegistry(
-      this.database.getExternalToolDefinitions(),
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
     this.setup = new SetupOrchestrator({
@@ -834,7 +771,6 @@ export class TaskHubApplication {
         save: (value) => this.checkpoint.save(value),
       },
       fullSync: (input, signal) => this.runSetupFullSync(input, signal),
-      configureExternalTool: (signal) => this.startExternalTools(signal),
     });
     this.settings = this.database.getDeviceSettings();
     this.journalRecoveryPending = this.database.getIncompleteApplicationJournals().length > 0;
@@ -918,9 +854,6 @@ export class TaskHubApplication {
     }
     await this.stopAsyncService(this.displayOrder, errors);
     await this.stopAsyncService(this.runtime, errors);
-    if (this.externalIntegrationState.kind === "ready") {
-      await this.stopAsyncService(this.externalIntegrationState.broker, errors);
-    }
     await this.stopAsyncService(this.codexSession, errors);
     try {
       this.recordDiagnostic("app.stop", "info");
@@ -1260,7 +1193,6 @@ export class TaskHubApplication {
       signal.aborted
       || this.options.lifecycle_signal.aborted
       || error instanceof CodexSessionAbortedError
-      || (error instanceof ExternalToolError && error.code === "aborted")
     ) {
       throw error;
     }
@@ -1581,7 +1513,6 @@ export class TaskHubApplication {
         synchronizationDeferred = true;
       }
     }
-    await this.startExternalTools(signal);
     if (!startedOffline) {
       await this.startCodexForConfigured(signal);
     }
@@ -1983,112 +1914,6 @@ export class TaskHubApplication {
       current_order: currentOrder,
       ranking,
     });
-  }
-
-  private async startExternalTools(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    if (this.externalIntegrationState.kind !== "not_started") {
-      return;
-    }
-    const records = this.database.getExternalToolDefinitions();
-    const hasCredentialReferences = records.some(
-      (record) => record.credential_reference_names.length > 0,
-    );
-    const definitionsEnabled = !hasCredentialReferences && records.length > 0;
-    let connectionInfoPath = join(
-      this.codexWorkspace.tmpDirectoryPath,
-      "contextctl-connection.json",
-    );
-    let socketPaths: readonly string[] = [];
-    let toolDefinitions: readonly ExternalToolDefinition[] = [];
-    if (definitionsEnabled) {
-      let startupFailure: {
-        readonly error: unknown;
-        readonly message: string;
-      } | undefined;
-      try {
-        const broker = new ExternalToolBroker({
-          tmp_directory_path: this.codexWorkspace.tmpDirectoryPath,
-          child_work_root_path: this.externalWorkRoot,
-          registry: this.externalRegistry,
-          status_evidence_collector: this.externalStatusEvidenceCollector,
-        });
-        const result = await broker.start(this.options.lifecycle_signal);
-        throwIfAborted(signal);
-        if (result.kind === "ready") {
-          connectionInfoPath = result.connection_info_path;
-          socketPaths = [result.endpoint];
-          toolDefinitions = this.externalRegistry.list();
-          this.externalIntegrationState = {
-            kind: "ready",
-            broker,
-          };
-        } else {
-          this.externalIntegrationState = { kind: "disabled" };
-          startupFailure = {
-            error: result,
-            message: "外部ツールIPCを安全に開始できないため外部連携を無効にしました。",
-          };
-        }
-      } catch (error: unknown) {
-        this.rethrowFeatureAbort(error, signal);
-        this.externalIntegrationState = { kind: "disabled" };
-        startupFailure = {
-          error,
-          message: "外部ツールブローカーの起動に失敗したため外部連携を無効にしました。",
-        };
-      }
-      if (startupFailure != null) {
-        this.recordFeatureFailure(
-          startupFailure.error,
-          "external_tools",
-          startupFailure.message,
-        );
-      }
-    } else if (hasCredentialReferences) {
-      this.externalIntegrationState = { kind: "disabled" };
-      this.recordFeatureFailure(
-        new Error("外部ツール定義に資格情報参照が含まれています。"),
-        "external_tools",
-        "資格情報を必要とする外部ツールは現在の安全境界では利用できません。",
-      );
-    } else {
-      this.externalIntegrationState = { kind: "disabled" };
-    }
-    try {
-      const sessionState = this.codexSession.getState();
-      if (
-        sessionState === "created"
-        || sessionState === "authentication_required"
-        || sessionState === "ready"
-      ) {
-        this.codexSession.requireThreadConfigurationRefresh();
-        this.codexSession.setAdditionalLocalSocketPaths(socketPaths);
-      }
-      installContextctlClientScript({
-        workspacePath: this.codexWorkspace.workspacePath,
-        connectionInfoPath,
-        toolDefinitions: [...toolDefinitions],
-      });
-      if (sessionState === "ready") {
-        this.aiStartResult = await this.codexSession.startNewSession(signal);
-        this.codexAuthenticationRequired = false;
-      }
-      this.publishAiStatus();
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.codexAvailability = setupCodexAvailabilitySchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-      this.recordFeatureFailure(
-        error,
-        "codex",
-        "外部ツール用Codex構成を安全に更新できないためAI機能を無効にしました。",
-      );
-      this.publishAiStatus();
-    }
   }
 
   private createTaskctlSnapshot(): TaskctlSnapshot {
@@ -2527,11 +2352,9 @@ export class TaskHubApplication {
         return state;
       },
       chooseExternalTool: async (input, signal) => {
-        const state = this.configureAfterSetupTransition(
+        return this.configureAfterSetupTransition(
           await this.setup.chooseExternalTool(input, signal),
         );
-        await this.startExternalTools(signal);
-        return state;
       },
       runFullSync: async (signal) => this.configureAfterSetupTransition(
         await this.setup.runFullSync(signal),
@@ -2801,10 +2624,6 @@ export class TaskHubApplication {
       search: (vaultId, query, signal) => {
         this.assertOperationalReady();
         return this.obsidian.searchNotes(vaultId, query, signal);
-      },
-      readNote: (vaultId, relativePath, signal) => {
-        this.assertOperationalReady();
-        return this.obsidian.readNote(vaultId, relativePath, signal);
       },
       openNote: async (vaultId, relativePath, signal) => {
         this.assertOperationalReady();

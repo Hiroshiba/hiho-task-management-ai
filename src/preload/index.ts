@@ -22,11 +22,6 @@ import {
   ipcAsanaReauthenticateOAuthResponseSchema,
   ipcAppVersionSchema,
   ipcEmptyRequestSchema,
-  ipcExternalToolListResponseSchema,
-  ipcExternalToolRemoveInputSchema,
-  ipcExternalToolRemoveResponseSchema,
-  ipcExternalToolReplaceInputSchema,
-  ipcExternalToolReplaceResponseSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
   ipcObsidianListInputSchema,
@@ -35,7 +30,6 @@ import {
   ipcObsidianListResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
-  ipcObsidianReadResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
   ipcObsidianSearchInputSchema,
@@ -251,21 +245,6 @@ const api: TaskHubApi = {
       ipcAiStartNewSessionResponseSchema,
     ),
   },
-  externalTools: {
-    list: () => invokeEmpty("external-tools:list", ipcExternalToolListResponseSchema),
-    replace: (input) => invoke(
-      "external-tools:replace",
-      ipcExternalToolReplaceInputSchema,
-      ipcExternalToolReplaceResponseSchema,
-      input,
-    ),
-    remove: (toolId) => invoke(
-      "external-tools:remove",
-      ipcExternalToolRemoveInputSchema,
-      ipcExternalToolRemoveResponseSchema,
-      { tool_id: toolId },
-    ),
-  },
   obsidian: {
     listVaults: () => invoke(
       "obsidian:list-vaults",
@@ -301,12 +280,6 @@ const api: TaskHubApi = {
       "obsidian:search",
       ipcObsidianSearchInputSchema,
       ipcObsidianSearchResponseSchema,
-      input,
-    ),
-    readNote: (input) => invoke(
-      "obsidian:read-note",
-      ipcObsidianPathInputSchema,
-      ipcObsidianReadResponseSchema,
       input,
     ),
     openNote: (input) => invoke(

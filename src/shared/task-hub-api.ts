@@ -9,12 +9,9 @@ import type {
   IpcAiTurnInput,
   IpcAiTurnResult,
   IpcCodexDelta,
-  IpcExternalToolReplaceInput,
-  IpcExternalToolSummary,
   IpcFailure,
   IpcGuiEditInput,
   IpcGuiEditResult,
-  IpcObsidianNoteResult,
   IpcObsidianNoteSummary,
   IpcObsidianPathResult,
   IpcObsidianSearchResult,
@@ -86,11 +83,6 @@ export interface TaskHubApi {
     readonly onDelta: IpcSubscription<IpcCodexDelta>;
     readonly onStatus: IpcSubscription<IpcAiStatus>;
   };
-  readonly externalTools: {
-    readonly list: () => IpcResult<{ readonly tools: readonly IpcExternalToolSummary[] }>;
-    readonly replace: (input: IpcExternalToolReplaceInput) => IpcResult<{ readonly completed: true }>;
-    readonly remove: (toolId: string) => IpcResult<{ readonly completed: true }>;
-  };
   readonly obsidian: {
     readonly listVaults: () => IpcResult<IpcObsidianVaultList>;
     readonly validateVault: (vaultId: string) => IpcResult<IpcObsidianVaultResult>;
@@ -98,7 +90,6 @@ export interface TaskHubApi {
     readonly resolvePath: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
     readonly noteExists: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
     readonly search: (input: { readonly vault_id: string; readonly query: string }) => IpcResult<readonly IpcObsidianSearchResult[]>;
-    readonly readNote: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianNoteResult>;
     readonly openNote: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<{ readonly completed: true }>;
   };
 }

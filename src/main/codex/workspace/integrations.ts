@@ -159,7 +159,11 @@ const readyInstallationSchema = installationPathSchema
 const disabledInstallationSchema = installationPathSchema
   .extend({
     kind: z.literal("disabled"),
-    reason: z.enum(["no_registered_tools", "unsupported_platform"]),
+    reason: z.enum([
+      "no_registered_tools",
+      "safe_execution_boundary_unavailable",
+      "unsupported_platform",
+    ]),
   })
   .strict()
   .superRefine((result, context) => {
@@ -454,20 +458,34 @@ function createExternalToolsSkillContent(
   return `${lines.join("\n")}\n`;
 }
 
-function createDisabledExternalToolsSkillContent(reason: "no_registered_tools" | "unsupported_platform"): string {
-  const reasonText = reason === "no_registered_tools"
-    ? "登録済み外部ツールがないためcontextctlは無効です。"
-    : "このOSでは安全なcontextctl権限境界を検証できないため無効です。";
+function createDisabledExternalToolsSkillContent(
+  reason:
+    | "no_registered_tools"
+    | "safe_execution_boundary_unavailable"
+    | "unsupported_platform",
+): string {
+  let reasonText: string;
+  switch (reason) {
+    case "no_registered_tools":
+      reasonText = "登録済み外部ツールがないためcontextctlは無効です。";
+      break;
+    case "safe_execution_boundary_unavailable":
+      reasonText = "安全なOS実行境界を提供できないため外部ツール連携は無効です。";
+      break;
+    case "unsupported_platform":
+      reasonText = "このOSでは安全なcontextctl権限境界を検証できないため無効です。";
+      break;
+  }
   return `${[
     "---",
     "name: external-tools",
-    "description: 登録済み外部ツールを必要時だけ読み取る手順です。",
+    "description: 外部ツール連携が無効であることを示す手順です。",
     "---",
     "",
-    "# 外部ツール読み取り手順",
+    "# 外部ツール無効状態",
     "",
     reasonText,
-    "登録内容がない外部ツールやcontextctlを使用しないでください。",
+    "外部ツールやcontextctlを使用しないでください。",
     "資格情報、実行ファイルのパス、外部本文を取得または保存しないでください。",
     "",
   ].join("\n")}\n`;
@@ -480,6 +498,29 @@ function isContextctlSupportedPlatform(): boolean {
     || process.platform === "openbsd"
     || process.platform === "sunos"
     || process.platform === "aix";
+}
+
+/** 安全なOS実行境界がない外部ツールを固定理由で無効化します。 */
+export function installDisabledExternalToolsSkill(
+  workspacePath: string,
+): void {
+  const validatedWorkspacePath = absolutePathSchema.parse(workspacePath);
+  const paths = verifyWorkspacePaths(validatedWorkspacePath);
+  removeExistingFile(paths.contextctlPath, "contextctl");
+  writeFileAtomically(
+    paths.externalToolsSkillPath,
+    createDisabledExternalToolsSkillContent(
+      "safe_execution_boundary_unavailable",
+    ),
+    fileMode,
+    "外部ツールSkill",
+  );
+  contextctlInstallationResultSchema.parse({
+    kind: "disabled",
+    reason: "safe_execution_boundary_unavailable",
+    workspacePath: resolve(validatedWorkspacePath),
+    externalToolsSkillPath: paths.externalToolsSkillPath,
+  });
 }
 
 /** 外部ツールブローカー接続用contextctlと読み取り専用Skillを導入します。 */

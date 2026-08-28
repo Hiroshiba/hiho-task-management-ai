@@ -5,12 +5,10 @@ import type {
   WebContents,
 } from "electron";
 import { z } from "zod";
-import { externalToolDefinitionSchema } from "../external-tools/schemas";
 import {
   assertTrustedIpcSender,
   isApplicationUrl,
 } from "../security";
-import { externalToolCredentialReferenceNamesSchema } from "../../shared/storage";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -34,11 +32,6 @@ import {
   ipcAsanaReauthenticateOAuthResponseSchema,
   ipcChannelSchema,
   ipcEmptyRequestSchema,
-  ipcExternalToolListResponseSchema,
-  ipcExternalToolRemoveInputSchema,
-  ipcExternalToolRemoveResponseSchema,
-  ipcExternalToolReplaceInputSchema,
-  ipcExternalToolReplaceResponseSchema,
   ipcFailureSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
@@ -48,7 +41,6 @@ import {
   ipcObsidianListResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
-  ipcObsidianReadResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
   ipcObsidianSearchInputSchema,
@@ -93,12 +85,9 @@ import {
   type IpcSetupState,
   type IpcSetupVaultChoiceInput,
   type IpcSetupWorkspaceSelectionInput,
-  type IpcExternalToolReplaceInput,
-  type IpcExternalToolSummary,
   type IpcFailure,
   type IpcGuiEditInput,
   type IpcGuiEditResult,
-  type IpcObsidianNoteResult,
   type IpcObsidianNoteSummary,
   type IpcObsidianPathResult,
   type IpcObsidianSearchResult,
@@ -172,13 +161,6 @@ export interface IpcAiPort {
   onStatus?(listener: (status: IpcAiStatus) => void): () => void;
 }
 
-/** 外部ツール定義をIPCへ提供するポートです。 */
-export interface IpcExternalToolPort {
-  list(): MaybePromise<readonly IpcExternalToolSummary[]>;
-  replace(input: IpcExternalToolReplaceInput): MaybePromise<void>;
-  remove(toolId: string): MaybePromise<void>;
-}
-
 /** Obsidian読み取りをIPCへ提供するポートです。 */
 export interface IpcObsidianPort {
   listVaults(signal: AbortSignal): MaybePromise<readonly string[]>;
@@ -187,7 +169,6 @@ export interface IpcObsidianPort {
   resolvePath(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
   noteExists(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
   search(vaultId: string, query: string, signal: AbortSignal): MaybePromise<readonly IpcObsidianSearchResult[]>;
-  readNote(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianNoteResult>;
   openNote(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<void>;
 }
 
@@ -199,7 +180,6 @@ export interface IpcServicePorts {
   readonly setup?: IpcSetupPort;
   readonly gui?: IpcGuiEditPort;
   readonly ai?: IpcAiPort;
-  readonly externalTools?: IpcExternalToolPort;
   readonly obsidian?: IpcObsidianPort;
 }
 
@@ -219,10 +199,6 @@ class IpcCapabilityUnavailableError extends Error {
 }
 
 type HandlerRemover = () => void;
-
-const externalToolDefinitionRecordSchema = externalToolDefinitionSchema
-  .extend({ credential_reference_names: externalToolCredentialReferenceNamesSchema })
-  .strict();
 
 const failureMessages: Record<IpcFailure["code"], string> = {
   invalid_request: "IPC入力が不正です。",
@@ -681,51 +657,6 @@ export class IpcHandlerRegistry {
     );
     this.registerHandle(
       ipcMain,
-      "external-tools:list",
-      ipcEmptyRequestSchema,
-      ipcExternalToolListResponseSchema,
-      async () => {
-        const port = this.options.ports.externalTools;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return { tools: [...await port.list()] };
-      },
-    );
-    this.registerHandle(
-      ipcMain,
-      "external-tools:replace",
-      ipcExternalToolReplaceInputSchema,
-      ipcExternalToolReplaceResponseSchema,
-      async (input) => {
-        const port = this.options.ports.externalTools;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        const definition = externalToolDefinitionRecordSchema.parse(input.definition);
-        await port.replace({
-          definition,
-          credential_values: input.credential_values,
-        });
-        return createCompletedValue();
-      },
-    );
-    this.registerHandle(
-      ipcMain,
-      "external-tools:remove",
-      ipcExternalToolRemoveInputSchema,
-      ipcExternalToolRemoveResponseSchema,
-      async (input) => {
-        const port = this.options.ports.externalTools;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        await port.remove(input.tool_id);
-        return createCompletedValue();
-      },
-    );
-    this.registerHandle(
-      ipcMain,
       "obsidian:list-vaults",
       ipcObsidianListVaultsInputSchema,
       ipcObsidianListVaultsResponseSchema,
@@ -809,19 +740,6 @@ export class IpcHandlerRegistry {
           throw new IpcCapabilityUnavailableError();
         }
         return [...await port.search(input.vault_id, input.query, signal)];
-      },
-    );
-    this.registerHandle(
-      ipcMain,
-      "obsidian:read-note",
-      ipcObsidianPathInputSchema,
-      ipcObsidianReadResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.readNote(input.vault_id, input.relative_path, signal);
       },
     );
     this.registerHandle(

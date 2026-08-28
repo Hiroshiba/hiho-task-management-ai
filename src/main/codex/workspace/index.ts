@@ -14,6 +14,7 @@ export {
   contextctlInstallationInputSchema,
   contextctlInstallationResultSchema,
   installContextctlClientScript,
+  installDisabledExternalToolsSkill,
   type ContextctlInstallationInput,
   type ContextctlInstallationResult,
 } from "./integrations";
