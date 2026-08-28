@@ -327,6 +327,7 @@ export class AsanaTaskWriteClient {
         path: ["tasks"],
         query: { opt_fields: taskOptFields },
         body,
+        retry_safe: false,
         response_schema: taskResponseSchema,
       },
       signal,
@@ -371,6 +372,7 @@ export class AsanaTaskWriteClient {
     await this.postEmptyAction(
       ["tasks", validatedTaskGid, "addTag"],
       body,
+      true,
       signal,
     );
   }
@@ -389,6 +391,7 @@ export class AsanaTaskWriteClient {
     await this.postEmptyAction(
       ["tasks", validatedTaskGid, "removeTag"],
       body,
+      true,
       signal,
     );
   }
@@ -420,6 +423,7 @@ export class AsanaTaskWriteClient {
     await this.postEmptyAction(
       ["tasks", validatedTaskGid, "addProject"],
       body,
+      true,
       signal,
     );
   }
@@ -448,6 +452,7 @@ export class AsanaTaskWriteClient {
     await this.postEmptyAction(
       ["sections", validatedSectionGid, "addTask"],
       body,
+      true,
       signal,
     );
   }
@@ -466,6 +471,7 @@ export class AsanaTaskWriteClient {
     return this.postParentAction(
       ["tasks", validatedTaskGid, "setParent"],
       body,
+      true,
       signal,
     );
   }
@@ -482,6 +488,7 @@ export class AsanaTaskWriteClient {
     return this.postParentAction(
       ["tasks", validatedTaskGid, "setParent"],
       body,
+      true,
       signal,
     );
   }
@@ -489,6 +496,7 @@ export class AsanaTaskWriteClient {
   private async postEmptyAction(
     path: readonly string[],
     body: JsonObject,
+    retrySafe: boolean,
     signal: AbortSignal,
   ): Promise<void> {
     await this.transport.request(
@@ -496,6 +504,7 @@ export class AsanaTaskWriteClient {
         method: "POST",
         path,
         body,
+        retry_safe: retrySafe,
         response_schema: emptyActionResponseSchema,
       },
       signal,
@@ -505,6 +514,7 @@ export class AsanaTaskWriteClient {
   private async postParentAction(
     path: readonly string[],
     body: JsonObject,
+    retrySafe: boolean,
     signal: AbortSignal,
   ): Promise<AsanaTaskResponse> {
     const response = await this.transport.request(
@@ -513,6 +523,7 @@ export class AsanaTaskWriteClient {
         path,
         query: { opt_fields: taskOptFields },
         body,
+        retry_safe: retrySafe,
         response_schema: taskResponseSchema,
       },
       signal,

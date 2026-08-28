@@ -200,9 +200,6 @@ function isRetrySafe<T>(request: AsanaRequest<T>): boolean {
   if (request.method === "GET") {
     return true;
   }
-  if (request.method === "POST") {
-    return false;
-  }
   return request.retry_safe;
 }
 
@@ -250,8 +247,8 @@ function validateRequest<T>(request: AsanaRequest<T>): void {
       throw new Error("Asana APIのrequest bodyがJSON値ではありません。");
     }
   }
-  if (request.method === "PUT" && typeof request.retry_safe !== "boolean") {
-    throw new Error("Asana APIのPUTにretry_safeがありません。");
+  if (request.method !== "GET" && typeof request.retry_safe !== "boolean") {
+    throw new Error("Asana APIの書き込み要求にretry_safeがありません。");
   }
 }
 

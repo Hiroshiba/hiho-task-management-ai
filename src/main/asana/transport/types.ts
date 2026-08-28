@@ -19,6 +19,7 @@ export type AsanaGetRequest<T> = AsanaRequestCommon<T> & {
 export type AsanaPostRequest<T> = AsanaRequestCommon<T> & {
   readonly method: "POST";
   readonly body: JsonValue;
+  readonly retry_safe: boolean;
 };
 
 export type AsanaPutRequest<T> = AsanaRequestCommon<T> & {
