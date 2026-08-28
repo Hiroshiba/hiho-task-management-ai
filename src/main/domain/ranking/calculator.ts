@@ -325,7 +325,10 @@ function evaluateStagnation(
   const penalty =
     elapsedDays <= 60
       ? 0
-      : Math.min(12, Math.floor((elapsedDays - 31) / 30) * 2);
+      : Math.min(
+          12,
+          Math.max(0, Math.floor((elapsedDays - 60) / 30) + 1) * 2,
+        );
   if (penalty === 0) {
     return { elapsed_days: elapsedDays, penalty };
   }

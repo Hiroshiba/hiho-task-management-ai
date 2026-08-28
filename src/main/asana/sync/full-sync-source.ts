@@ -132,49 +132,6 @@ function mergeTaskResponse(
   return selected;
 }
 
-function assertParentChildReferencesAreAcyclic(
-  tasks: ReadonlyMap<string, AsanaTaskResponse>,
-): void {
-  const childrenByParent = new Map<string, Set<string>>();
-  for (const task of tasks.values()) {
-    childrenByParent.set(task.gid, new Set<string>());
-  }
-  for (const task of tasks.values()) {
-    if (task.parent != null && tasks.has(task.parent.gid)) {
-      const children = childrenByParent.get(task.parent.gid);
-      if (children == null) {
-        throw new Error("Asanaタスクの親子参照を構築できません。");
-      }
-      children.add(task.gid);
-    }
-  }
-
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visitChildren = (taskGid: string): void => {
-    if (visiting.has(taskGid)) {
-      throw new Error("Asanaタスクの親子参照が循環しています。");
-    }
-    if (visited.has(taskGid)) {
-      return;
-    }
-    const children = childrenByParent.get(taskGid);
-    if (children == null) {
-      throw new Error("Asanaタスクの親子参照を構築できません。");
-    }
-    visiting.add(taskGid);
-    for (const childGid of children) {
-      visitChildren(childGid);
-    }
-    visiting.delete(taskGid);
-    visited.add(taskGid);
-  };
-
-  for (const task of tasks.values()) {
-    visitChildren(task.gid);
-  }
-}
-
 function assertSubtasksBelongToTask(
   task: AsanaTaskResponse,
   subtasks: readonly AsanaTaskResponse[],
@@ -275,9 +232,6 @@ export class AsanaFullSyncSource {
       const subtasks = await this.readClient.listSubtasks(task.gid, signal);
       assertSubtasksBelongToTask(task, subtasks);
       for (const subtask of subtasks) {
-        if (subtask.gid === task.gid) {
-          throw new Error("Asanaタスク探索が同じGIDから進みません。");
-        }
         subtaskGids.add(subtask.gid);
         const selectedSubtask = mergeTaskResponse(tasks, subtask);
         if (
@@ -326,7 +280,6 @@ export class AsanaFullSyncSource {
       repairedSubtaskGids.push(task.gid);
     }
 
-    assertParentChildReferencesAreAcyclic(tasks);
     const sortedTasks = [...tasks.values()].sort((left, right) =>
       compareGids(left.gid, right.gid));
     const sortedRepairedSubtaskGids = [...new Set(repairedSubtaskGids)].sort(compareGids);
