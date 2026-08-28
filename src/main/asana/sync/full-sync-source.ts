@@ -6,9 +6,9 @@ import {
   asanaTaskResponseSchema,
   canonicalizeJson,
   gidSchema,
-  sectionGidSchema,
   type AsanaTaskResponse,
 } from "../../../shared/domain";
+import { deviceSectionGidsSchema } from "../../../shared/storage";
 import { AsanaReadClient } from "../client/client";
 import {
   AsanaTaskWriteClient,
@@ -20,7 +20,7 @@ const maximumTaskCount = 10_000;
 const fullSyncInputSchema = z
   .object({
     project_gid: gidSchema,
-    not_started_section_gid: sectionGidSchema,
+    section_gids: deviceSectionGidsSchema,
   })
   .strict();
 
@@ -188,9 +188,12 @@ export class AsanaFullSyncSource {
       validatedInput.project_gid,
       signal,
     );
-    if (!sections.some((section) => section.gid === validatedInput.not_started_section_gid)) {
-      throw new Error("未着手セクションが専用プロジェクトに存在しません。");
-    }
+    const availableSectionGids = new Set(
+      sections.map((section) => section.gid),
+    );
+    const canRepairSubtaskMembership = Object.values(
+      validatedInput.section_gids,
+    ).every((sectionGid) => availableSectionGids.has(sectionGid));
     const workspaceTags = await this.readClient.listWorkspaceTags(
       project.workspace.gid,
       signal,
@@ -265,10 +268,13 @@ export class AsanaFullSyncSource {
       if (!subtaskGids.has(task.gid)) {
         throw new Error("専用プロジェクトに直接所属しないタスクを検出しました。");
       }
+      if (!canRepairSubtaskMembership) {
+        continue;
+      }
       await this.writeClient.addTaskToProject(
         task.gid,
         validatedInput.project_gid,
-        validatedInput.not_started_section_gid,
+        validatedInput.section_gids.not_started,
         insertionPosition,
         signal,
       );

@@ -164,6 +164,27 @@ type EstablishedEventsToken = {
   readonly sync_token: string;
   readonly missing_gids: readonly string[];
 };
+type RequiredSectionInspection = {
+  readonly cleanupItems: readonly CleanupItem[];
+  readonly hasMissingGid: boolean;
+};
+type NormalizationApplicationOutcome =
+  | {
+    readonly kind: "applied";
+    readonly applicationResult: z.infer<
+      typeof asanaNormalizationPlanApplierResultSchema
+    >;
+    readonly rawTasks: readonly AsanaTaskResponse[];
+    readonly normalization: SnapshotNormalizationResult;
+  }
+  | {
+    readonly kind: "skipped_missing_section";
+    readonly applicationResult: z.infer<
+      typeof asanaNormalizationPlanApplierResultSchema
+    >;
+    readonly rawTasks: readonly AsanaTaskResponse[];
+    readonly normalization: SnapshotNormalizationResult;
+  };
 
 type CollectionSnapshot = {
   readonly performed_mode: SynchronizationMode;
@@ -234,11 +255,56 @@ function uniqueCleanupItems(
   );
 }
 
+function inspectRequiredSections(
+  sectionGids: AsanaSyncCoordinatorInput["section_gids"],
+  sections: readonly ProjectMetadataCache["sections"][number][],
+): RequiredSectionInspection {
+  const sectionsByGid = new Map(
+    sections.map((section) => [section.gid, section]),
+  );
+  const cleanupItems: CleanupItem[] = [];
+  let hasMissingGid = false;
+  for (const requiredSection of setupManifest.sections) {
+    const configuredGid = sectionGids[requiredSection.status];
+    const actualSection = sectionsByGid.get(configuredGid);
+    if (actualSection == null) {
+      hasMissingGid = true;
+      cleanupItems.push({
+        kind: "missing_required_section",
+        message: `必須セクション「${requiredSection.name}」の設定済みGID「${configuredGid}」が専用プロジェクトに存在しません。セクションを修復して再設定してください。`,
+      });
+      continue;
+    }
+    if (actualSection.name !== requiredSection.name) {
+      cleanupItems.push({
+        kind: "missing_required_section",
+        message: `必須セクション「${requiredSection.name}」の名前が「${actualSection.name}」へ変更されています。セクション名を「${requiredSection.name}」へ戻してください。`,
+      });
+    }
+  }
+  return {
+    cleanupItems: uniqueCleanupItems(cleanupItems),
+    hasMissingGid,
+  };
+}
+
 function hasGlobalOAuthAppMismatch(
   cleanupItems: readonly CleanupItem[],
 ): boolean {
   return cleanupItems.some(
     (item) => item.kind === "oauth_app_mismatch" && item.task_gid == null,
+  );
+}
+
+function hasAllConfiguredSections(
+  input: AsanaSyncCoordinatorInput,
+  collection: CollectionSnapshot,
+): boolean {
+  const sectionGids = new Set(
+    collection.metadata.sections.map((section) => section.gid),
+  );
+  return Object.values(input.section_gids).every((sectionGid) =>
+    sectionGids.has(sectionGid),
   );
 }
 
@@ -249,12 +315,6 @@ function isOAuthAppMismatchSuspected(
   if (collection.performed_mode !== "full") {
     return false;
   }
-  const sectionGids = new Set(
-    collection.metadata.sections.map((section) => section.gid),
-  );
-  const allConfiguredSectionsExist = Object.values(input.section_gids).every(
-    (sectionGid) => sectionGids.has(sectionGid),
-  );
   const workspaceTagNames = new Set(
     collection.workspace_tags.map((tag) => tag.name),
   );
@@ -262,7 +322,7 @@ function isOAuthAppMismatchSuspected(
     workspaceTagNames.has(tag.name),
   );
   return (
-    allConfiguredSectionsExist
+    hasAllConfiguredSections(input, collection)
     && allConfiguredTagsExist
     && collection.raw_tasks.length >= oauthMismatchManagedTaskThreshold
     && collection.raw_tasks.every(
@@ -277,6 +337,9 @@ function shouldProtectExternalDataWrites(
   existingCleanupItems: readonly CleanupItem[],
 ): boolean {
   if (collection.performed_mode === "full") {
+    if (!hasAllConfiguredSections(input, collection)) {
+      return hasGlobalOAuthAppMismatch(existingCleanupItems);
+    }
     return isOAuthAppMismatchSuspected(input, collection);
   }
   return hasGlobalOAuthAppMismatch(existingCleanupItems);
@@ -341,6 +404,7 @@ function createGlobalOAuthAppMismatchCleanupItem(): CleanupItem {
 function createFinalNormalization(
   normalization: SnapshotNormalizationResult,
   protectionRequired: boolean,
+  requiredSectionCleanupItems: readonly CleanupItem[],
   missingTaskCleanupItems: readonly CleanupItem[],
 ): SnapshotNormalizationResult {
   const protectedNormalization = protectExternalDataWrites(
@@ -355,8 +419,18 @@ function createFinalNormalization(
     cleanup_items: uniqueCleanupItems([
       ...protectedNormalization.cleanup_items,
       ...globalOAuthItems,
+      ...requiredSectionCleanupItems,
       ...missingTaskCleanupItems,
     ]),
+  });
+}
+
+function createEmptyApplicationResult(): z.infer<
+  typeof asanaNormalizationPlanApplierResultSchema
+> {
+  return asanaNormalizationPlanApplierResultSchema.parse({
+    affected_gids: [],
+    operations: [],
   });
 }
 
@@ -785,6 +859,14 @@ export class AsanaSyncCoordinator {
       );
       const syncedAt = isoDateTimeSchema.parse(this.timestampProvider());
       const activityDate = jstDateFromTimestamp(syncedAt);
+      const metadata = createProjectMetadataCache(
+        collection.metadata,
+        syncedAt,
+      );
+      const requiredSectionInspection = inspectRequiredSections(
+        validatedInput.section_gids,
+        metadata.sections,
+      );
       const protectionRequired = shouldProtectExternalDataWrites(
         validatedInput,
         collection,
@@ -801,41 +883,31 @@ export class AsanaSyncCoordinator {
         ),
         protectionRequired,
       );
-      const applicationResult = await this.planApplier.apply(
-        {
-          normalization_result: firstNormalization,
-          asana_tasks: [...collection.raw_tasks],
-          workspace_tags: [...collection.workspace_tags],
-          device_id: validatedInput.device_id,
-        },
-        signal,
-      );
-      const refreshedRawTasks = await refetchAffectedTasks(
-        this.readClient,
-        new Map(collection.raw_tasks.map((task) => [task.gid, task])),
-        applicationResult.affected_gids,
-        signal,
-      );
-      const secondNormalization = normalizeSnapshot(
-        validatedInput,
-        refreshedRawTasks,
-        firstNormalization.tasks,
-        previousTasks,
-        collection.inaccessible_gids,
-        activityDate,
-      );
+      const applicationOutcome: NormalizationApplicationOutcome =
+        requiredSectionInspection.hasMissingGid
+          ? {
+            kind: "skipped_missing_section",
+            applicationResult: createEmptyApplicationResult(),
+            rawTasks: sortedTasks(collection.raw_tasks),
+            normalization: firstNormalization,
+          }
+          : await this.applyNormalizationPlan(
+            validatedInput,
+            collection,
+            firstNormalization,
+            previousTasks,
+            activityDate,
+            signal,
+          );
       const finalNormalization = createFinalNormalization(
-        secondNormalization,
+        applicationOutcome.normalization,
         protectionRequired,
+        requiredSectionInspection.cleanupItems,
         createMissingTaskCleanupItems(
           previousTasks,
-          refreshedRawTasks,
+          applicationOutcome.rawTasks,
           existingCleanupItems,
         ),
-      );
-      const metadata = createProjectMetadataCache(
-        collection.metadata,
-        syncedAt,
       );
       const rankingCache = createRankingCache(
         finalNormalization,
@@ -843,7 +915,7 @@ export class AsanaSyncCoordinator {
         syncedAt,
       );
       const taskCacheEntries = createTaskCacheEntries(
-        refreshedRawTasks,
+        applicationOutcome.rawTasks,
         finalNormalization,
         syncedAt,
       );
@@ -866,7 +938,7 @@ export class AsanaSyncCoordinator {
         requested_mode: validatedInput.mode,
         performed_mode: collection.performed_mode,
         synced_at: syncedAt,
-        application_result: applicationResult,
+        application_result: applicationOutcome.applicationResult,
         remaining_plan: createNormalizationPlanSummary(finalNormalization),
         critical_errors: finalNormalization.critical_errors,
         cleanup_items: finalNormalization.cleanup_items,
@@ -882,6 +954,44 @@ export class AsanaSyncCoordinator {
     } finally {
       this.synchronizationInProgress = false;
     }
+  }
+
+  private async applyNormalizationPlan(
+    input: AsanaSyncCoordinatorInput,
+    collection: CollectionSnapshot,
+    normalization: SnapshotNormalizationResult,
+    previousTasks: readonly Task[],
+    activityDate: string,
+    signal: AbortSignal,
+  ): Promise<NormalizationApplicationOutcome> {
+    const applicationResult = await this.planApplier.apply(
+      {
+        normalization_result: normalization,
+        asana_tasks: [...collection.raw_tasks],
+        workspace_tags: [...collection.workspace_tags],
+        device_id: input.device_id,
+      },
+      signal,
+    );
+    const rawTasks = await refetchAffectedTasks(
+      this.readClient,
+      new Map(collection.raw_tasks.map((task) => [task.gid, task])),
+      applicationResult.affected_gids,
+      signal,
+    );
+    return {
+      kind: "applied",
+      applicationResult,
+      rawTasks,
+      normalization: normalizeSnapshot(
+        input,
+        rawTasks,
+        normalization.tasks,
+        previousTasks,
+        collection.inaccessible_gids,
+        activityDate,
+      ),
+    };
   }
 
   private async collectSnapshot(
@@ -945,6 +1055,10 @@ export class AsanaSyncCoordinator {
         [],
       );
     }
+    const currentSections = await this.readClient.listProjectSections(
+      input.project_gid,
+      signal,
+    );
     return {
       performed_mode: "delta",
       raw_tasks: mergeDeltaTasks(
@@ -954,7 +1068,7 @@ export class AsanaSyncCoordinator {
       workspace_tags: [...existingMetadata.tags],
       metadata: createProjectMetadataSource(
         existingMetadata.project,
-        existingMetadata.sections,
+        currentSections,
         existingMetadata.tags,
       ),
       events_token: deltaResult.sync_token,
@@ -1043,7 +1157,7 @@ export class AsanaSyncCoordinator {
       await this.fullSyncSource.collect(
         {
           project_gid: input.project_gid,
-          not_started_section_gid: input.section_gids.not_started,
+          section_gids: input.section_gids,
         },
         signal,
       ),
