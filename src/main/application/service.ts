@@ -55,6 +55,11 @@ import {
   type CodexSessionStartResult,
 } from "../codex/session";
 import { CodexSetupAdapter } from "./codex-adapter";
+import { CleanupAggregationService } from "./cleanup-aggregation";
+import {
+  DiagnosticLogService,
+  type DiagnosticRecord,
+} from "./diagnostics";
 import {
   AiWorkflowService,
   createBaselineSnapshot,
@@ -219,7 +224,37 @@ type ExternalIntegrationState =
       readonly broker: ExternalToolBroker;
     };
 
+type SyncDiagnosticState =
+  | { readonly kind: "idle" }
+  | {
+      readonly kind: "running";
+      readonly previous_success_at: string | undefined;
+    };
+
 const maximumApprovalTaskCount = 10_000;
+const diagnosticLogRetentionLimit = 1_000;
+
+function diagnosticCodeForChannel(
+  channel: string,
+): DiagnosticRecord["code"] {
+  switch (channel) {
+    case "sync":
+    case "display_order":
+      return "sync.failed";
+    case "codex":
+      return "codex.status";
+    case "external_tools":
+      return "external_tools.status";
+    case "application_journal":
+      return "proposal.application";
+    case "sync_state_listener":
+    case "ai_status_listener":
+    case "ipc":
+      return "ipc.error";
+    default:
+      return "app.error";
+  }
+}
 
 function externalToolDefinitionFromRecord(
   record: ExternalToolDefinitionRecord,
@@ -477,6 +512,7 @@ function rendererCodexVersion(rawVersion: string): string {
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
   private readonly database: StorageDatabase;
+  private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
   private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
@@ -500,6 +536,7 @@ export class TaskHubApplication {
   private readonly setup: SetupOrchestrator;
   private readonly readModel: ReadModelService;
   private readonly obsidian: ObsidianReadService;
+  private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalWorkRoot: string;
   private readonly externalRegistry: MutableExternalToolRegistryPort;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
@@ -521,6 +558,7 @@ export class TaskHubApplication {
   private readonly baselineExternalData = new Map<string, BaselineExternalData>();
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
+  private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
   private journalRecoveryPending: boolean;
   private journalRecoveryRunning = false;
   private readyActivated = false;
@@ -530,6 +568,12 @@ export class TaskHubApplication {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
     this.database = new StorageDatabase(options.database_path);
+    this.diagnostics = new DiagnosticLogService(
+      this.database,
+      options.app_version,
+      options.now_provider,
+      diagnosticLogRetentionLimit,
+    );
     this.secretStorage = new SecretStorage(options.secret_storage_path);
     this.checkpoint = new SetupCheckpointStore(options.checkpoint_path);
     this.scheduler = new AsanaRequestScheduler();
@@ -600,6 +644,10 @@ export class TaskHubApplication {
     });
     this.readModel = new ReadModelService(this.database);
     this.obsidian = new ObsidianReadService(this.database);
+    this.cleanupAggregation = new CleanupAggregationService(
+      this.database,
+      this.obsidian,
+    );
     this.externalWorkRoot = join(options.user_data_path, "external-tool-work");
     mkdirSync(this.externalWorkRoot, { recursive: true, mode: 0o700 });
     chmodSync(this.externalWorkRoot, 0o700);
@@ -672,6 +720,14 @@ export class TaskHubApplication {
     });
   }
 
+  /** 本文を受け取らず固定コードと重要度だけを診断ログへ記録します。 */
+  public recordDiagnostic(
+    code: DiagnosticRecord["code"],
+    severity: DiagnosticRecord["severity"],
+  ): void {
+    this.diagnostics.record({ code, severity });
+  }
+
   /** 起動時の設定再開、復旧、同期を実行します。 */
   public async start(signal: AbortSignal): Promise<ApplicationState> {
     validateAbortSignal(signal);
@@ -679,6 +735,7 @@ export class TaskHubApplication {
     if (this.stopped) {
       throw new Error("アプリケーションは停止済みです。");
     }
+    this.recordDiagnostic("app.start", "info");
     let state = this.setup.getState();
     if (state.kind === "created" || state.kind === "codex_cli_ready") {
       state = await this.setup.start(signal);
@@ -718,6 +775,11 @@ export class TaskHubApplication {
       await this.stopAsyncService(this.externalIntegrationState.broker, errors);
     }
     await this.stopAsyncService(this.codexSession, errors);
+    try {
+      this.recordDiagnostic("app.stop", "info");
+    } catch (error: unknown) {
+      errors.push(error);
+    }
     try {
       this.database.close();
     } catch (error: unknown) {
@@ -954,7 +1016,18 @@ export class TaskHubApplication {
       snapshotProvider: (signal) => this.createAiSnapshot(signal),
       taskctlSnapshotProvider: () => this.createTaskctlSnapshot(),
       externalStatusEvidenceCollector: this.externalStatusEvidenceCollector,
-      applicationCoordinator,
+      applicationCoordinator: {
+        apply: async (input, signal) => {
+          const result = await applicationCoordinator.apply(input, signal);
+          this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
+          this.diagnostics.record({
+            code: "proposal.application",
+            severity: "info",
+            proposal_id: result.proposal_id,
+          });
+          return result;
+        },
+      },
       prepareApprovalInput: (input, signal) =>
         this.prepareApprovalInput(input, signal),
       isOnline: () => this.isOnline(),
@@ -984,24 +1057,18 @@ export class TaskHubApplication {
     channel: string,
     message: string,
   ): void {
+    this.recordDiagnostic(diagnosticCodeForChannel(channel), "warning");
     this.options.diagnostic(new Error(message, { cause: error }), channel);
   }
 
   private async detectCodexSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
+    let availability: SetupCodexAvailability;
     try {
-      const availability = setupCodexAvailabilitySchema.parse(
+      availability = setupCodexAvailabilitySchema.parse(
         await this.codexAdapter.detectCli(signal),
       );
-      if (availability.kind === "unavailable") {
-        this.recordFeatureFailure(
-          availability,
-          "codex",
-          "Codex CLIを利用できないためAI機能を無効にしました。",
-        );
-      }
-      return availability;
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
       this.recordFeatureFailure(
@@ -1014,23 +1081,24 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
+    if (availability.kind === "unavailable") {
+      this.recordFeatureFailure(
+        availability,
+        "codex",
+        "Codex CLIを利用できないためAI機能を無効にしました。",
+      );
+    }
+    return availability;
   }
 
   private async getCodexAuthenticationStateSafely(
     signal: AbortSignal,
   ): Promise<CodexAuthenticationState> {
+    let state: CodexAuthenticationState;
     try {
-      const state = codexAuthenticationStateSchema.parse(
+      state = codexAuthenticationStateSchema.parse(
         await this.codexAdapter.getAuthenticationState(signal),
       );
-      if (state.kind === "unavailable") {
-        this.recordFeatureFailure(
-          state,
-          "codex",
-          "Codex認証状態を利用できないためAI機能を無効にしました。",
-        );
-      }
-      return state;
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
       this.recordFeatureFailure(
@@ -1043,23 +1111,24 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
+    if (state.kind === "unavailable") {
+      this.recordFeatureFailure(
+        state,
+        "codex",
+        "Codex認証状態を利用できないためAI機能を無効にしました。",
+      );
+    }
+    return state;
   }
 
   private async completeCodexAuthenticationSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
+    let availability: SetupCodexAvailability;
     try {
-      const availability = setupCodexAvailabilitySchema.parse(
+      availability = setupCodexAvailabilitySchema.parse(
         await this.codexAdapter.completeAuthentication(signal),
       );
-      if (availability.kind === "unavailable") {
-        this.recordFeatureFailure(
-          availability,
-          "codex",
-          "Codex再認証を完了できないためAI機能を無効にしました。",
-        );
-      }
-      return availability;
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
       this.recordFeatureFailure(
@@ -1072,23 +1141,24 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
+    if (availability.kind === "unavailable") {
+      this.recordFeatureFailure(
+        availability,
+        "codex",
+        "Codex再認証を完了できないためAI機能を無効にしました。",
+      );
+    }
+    return availability;
   }
 
   private async checkCodexCapabilitiesSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
+    let availability: SetupCodexAvailability;
     try {
-      const availability = setupCodexAvailabilitySchema.parse(
+      availability = setupCodexAvailabilitySchema.parse(
         await this.codexAdapter.checkCapabilities(signal),
       );
-      if (availability.kind === "unavailable") {
-        this.recordFeatureFailure(
-          availability,
-          "codex",
-          "Codex能力検査を完了できないためAI機能を無効にしました。",
-        );
-      }
-      return availability;
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
       this.recordFeatureFailure(
@@ -1101,6 +1171,14 @@ export class TaskHubApplication {
         reason_code: "disabled",
       });
     }
+    if (availability.kind === "unavailable") {
+      this.recordFeatureFailure(
+        availability,
+        "codex",
+        "Codex能力検査を完了できないためAI機能を無効にしました。",
+      );
+    }
+    return availability;
   }
 
   private async restorePersistedCodexSession(
@@ -1131,10 +1209,20 @@ export class TaskHubApplication {
   }
 
   private notifyUnexpectedError(error: unknown, channel: string): void {
+    this.recordDiagnostic(diagnosticCodeForChannel(channel), "error");
     try {
-      this.options.notify_unexpected_error(error);
+      this.options.notify_unexpected_error(
+        new Error("予期しないエラーが発生しました。"),
+      );
     } catch (notificationError: unknown) {
-      this.options.diagnostic(notificationError, channel);
+      this.options.diagnostic(
+        new AggregateError(
+          [error, notificationError],
+          "予期しないエラーの通知にも失敗しました。",
+          { cause: error },
+        ),
+        channel,
+      );
     }
   }
 
@@ -1153,20 +1241,29 @@ export class TaskHubApplication {
     validateAbortSignal(signal);
     const validatedInput = setupFullSyncInputSchema.parse(input);
     this.configureContextFromState(this.setup.getState());
-    const result = await this.syncCoordinator.coordinate(
-      {
-        mode: "full",
-        project_gid: validatedInput.project_gid,
-        section_gids: validatedInput.section_gids,
-        device_id: validatedInput.device_id,
-        app_version: this.options.app_version,
-      },
-      signal,
-    );
-    if (result.performed_mode !== "full") {
-      throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
+    this.recordDiagnostic("sync.started", "info");
+    try {
+      const result = await this.syncCoordinator.coordinate(
+        {
+          mode: "full",
+          project_gid: validatedInput.project_gid,
+          section_gids: validatedInput.section_gids,
+          device_id: validatedInput.device_id,
+          app_version: this.options.app_version,
+        },
+        signal,
+      );
+      if (result.performed_mode !== "full") {
+        throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
+      }
+      await this.afterLocalStateRefresh(signal);
+    } catch (error: unknown) {
+      if (!signal.aborted) {
+        this.recordDiagnostic("sync.failed", "error");
+      }
+      throw error;
     }
-    await this.afterLocalStateRefresh(signal);
+    this.recordDiagnostic("sync.completed", "info");
   }
 
   private assertSetupReady(): void {
@@ -1243,6 +1340,7 @@ export class TaskHubApplication {
         "application_journal",
         "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
       );
+      throw error;
     }
     await this.startExternalTools(signal);
     await this.startCodexForConfigured(signal);
@@ -1252,6 +1350,11 @@ export class TaskHubApplication {
       await this.verifyConfiguredCodexCapabilities(signal);
     } else if (runtimeResult.kind === "aborted") {
       throw new Error("設定済みアプリケーションの起動同期が中断されました。");
+    } else if (
+      runtimeResult.kind === "rejected"
+      && runtimeResult.reason === "stopped"
+    ) {
+      throw new Error("停止済みのAsana同期ランタイムは起動できません。");
     }
     this.readyActivated = true;
   }
@@ -1315,21 +1418,20 @@ export class TaskHubApplication {
         signal,
       );
       await this.afterJournalRecovery(result, signal);
-      if (result.unresolved_journals.length > 0) {
-        this.options.diagnostic(
-          new Error("未完了のAI適用ジャーナルを自動復旧できませんでした。"),
-          "application_journal",
+      const remainingJournals = this.database.getIncompleteApplicationJournals();
+      if (remainingJournals.length > 0) {
+        throw new Error(
+          "復旧結果に含まれない未完了のAI適用ジャーナルが残っています。",
         );
-        return;
-      }
-      if (this.database.getIncompleteApplicationJournals().length > 0) {
-        this.options.diagnostic(
-          new Error("復旧結果に含まれない未完了のAI適用ジャーナルが残っています。"),
-          "application_journal",
-        );
-        return;
       }
       this.journalRecoveryPending = false;
+      if (result.unresolved_journals.length > 0) {
+        this.recordFeatureFailure(
+          result.unresolved_journals,
+          "application_journal",
+          "未完了のAI適用ジャーナルを自動復旧できませんでした。",
+        );
+      }
     } finally {
       this.journalRecoveryRunning = false;
     }
@@ -1339,20 +1441,27 @@ export class TaskHubApplication {
     result: AsanaProposalRecoveryResult,
     signal: AbortSignal,
   ): Promise<void> {
-    void result;
     validateAbortSignal(signal);
     throwIfAborted(signal);
+    this.cleanupAggregation.replaceProposalConflictsFromRecovery(result);
     return Promise.resolve();
   }
 
   private async requireSynchronizedResult(
     resultPromise: Promise<AsanaSyncRuntimeResult>,
   ): Promise<Extract<AsanaSyncRuntimeResult, { kind: "synchronized" }>> {
-    const result = await resultPromise;
+    let result: AsanaSyncRuntimeResult;
+    try {
+      result = await resultPromise;
+    } catch (error: unknown) {
+      this.recordDiagnostic("sync.failed", "error");
+      throw error;
+    }
     if (result.kind === "synchronized") {
       return result;
     }
     if (result.kind === "rejected") {
+      this.recordDiagnostic("sync.failed", "warning");
       throw new Error(
         result.reason === "offline"
           ? "オフライン中はAsana同期を実行できません。"
@@ -1401,15 +1510,49 @@ export class TaskHubApplication {
     await this.afterLocalStateRefresh(signal);
   }
 
+  private recordSyncStateDiagnostic(state: AsanaSyncRuntimeState): void {
+    const diagnosticState = this.syncDiagnosticState;
+    if (state.kind === "syncing") {
+      if (diagnosticState.kind === "idle") {
+        this.recordDiagnostic("sync.started", "info");
+        this.syncDiagnosticState = {
+          kind: "running",
+          previous_success_at: state.last_successful_sync_at,
+        };
+      }
+      return;
+    }
+    if (diagnosticState.kind === "idle") {
+      return;
+    }
+    this.syncDiagnosticState = { kind: "idle" };
+    if (
+      state.kind === "online"
+      && state.last_successful_sync_at != null
+      && state.last_successful_sync_at !== diagnosticState.previous_success_at
+    ) {
+      this.recordDiagnostic("sync.completed", "info");
+      return;
+    }
+    if (
+      state.kind === "authentication_required"
+      || (state.kind === "error" && state.error_code !== "unexpected_error")
+    ) {
+      this.recordDiagnostic("sync.failed", "error");
+    }
+  }
+
   private handleRuntimeState(state: AsanaSyncRuntimeState): void {
     const ipcState = toIpcSyncState(state);
     for (const listener of this.syncStateListeners) {
       try {
         listener(ipcState);
       } catch (error: unknown) {
+        this.recordDiagnostic("ipc.error", "error");
         this.options.diagnostic(error, "sync_state_listener");
       }
     }
+    this.recordSyncStateDiagnostic(state);
     if (
       state.last_successful_sync_at == null
       || state.last_successful_sync_at === this.lastDisplaySyncAt
@@ -1424,14 +1567,24 @@ export class TaskHubApplication {
   }
 
   private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
+    const tasks = parseTaskCache(this.database.getTaskCache())
+      .map((entry) => taskSchema.parse(entry.task));
+    await this.cleanupAggregation.replaceBrokenVaultLinksFromTasks(
+      tasks,
+      signal,
+    );
+    signal.throwIfAborted();
     const displayOrder = this.displayOrder;
-    if (displayOrder == null || signal.aborted) {
+    if (displayOrder == null) {
       return;
     }
     let input: AsanaDisplayOrderInput;
     try {
       input = await this.createDisplayOrderInput(signal);
     } catch (error: unknown) {
+      if (signal.aborted) {
+        signal.throwIfAborted();
+      }
       this.notifyUnexpectedError(error, "display_order");
       return;
     }
@@ -1503,6 +1656,10 @@ export class TaskHubApplication {
     let socketPaths: readonly string[] = [];
     let toolDefinitions: readonly ExternalToolDefinition[] = [];
     if (definitionsEnabled) {
+      let startupFailure: {
+        readonly error: unknown;
+        readonly message: string;
+      } | undefined;
       try {
         const broker = new ExternalToolBroker({
           tmp_directory_path: this.codexWorkspace.tmpDirectoryPath,
@@ -1522,19 +1679,24 @@ export class TaskHubApplication {
           };
         } else {
           this.externalIntegrationState = { kind: "disabled" };
-          this.recordFeatureFailure(
-            result,
-            "external_tools",
-            "外部ツールIPCを安全に開始できないため外部連携を無効にしました。",
-          );
+          startupFailure = {
+            error: result,
+            message: "外部ツールIPCを安全に開始できないため外部連携を無効にしました。",
+          };
         }
       } catch (error: unknown) {
         this.rethrowFeatureAbort(error, signal);
         this.externalIntegrationState = { kind: "disabled" };
-        this.recordFeatureFailure(
+        startupFailure = {
           error,
+          message: "外部ツールブローカーの起動に失敗したため外部連携を無効にしました。",
+        };
+      }
+      if (startupFailure != null) {
+        this.recordFeatureFailure(
+          startupFailure.error,
           "external_tools",
-          "外部ツールブローカーの起動に失敗したため外部連携を無効にしました。",
+          startupFailure.message,
         );
       }
     } else if (hasCredentialReferences) {
@@ -1933,7 +2095,6 @@ export class TaskHubApplication {
         return toIpcSyncResult(result.result);
       },
       onState: (listener) => {
-        this.assertOperationalReady();
         if (typeof listener !== "function") {
           throw new TypeError("同期状態の購読関数が必要です。");
         }
@@ -2144,6 +2305,7 @@ export class TaskHubApplication {
       try {
         listener(status);
       } catch (error: unknown) {
+        this.recordDiagnostic("ipc.error", "error");
         this.options.diagnostic(error, "ai_status_listener");
       }
     }
@@ -2211,8 +2373,10 @@ export class TaskHubApplication {
         return result;
       },
       onDelta: (listener) => {
-        this.assertOperationalReady();
-        return this.requireAiWorkflow().onDelta((delta) => {
+        if (typeof listener !== "function") {
+          throw new TypeError("AI差分の購読関数が必要です。");
+        }
+        return this.codexSession.onDelta((delta) => {
           const event: IpcCodexDelta = ipcAiDeltaEventSchema.parse({
             thread_id: delta.threadId,
             turn_id: delta.turnId,
@@ -2223,7 +2387,6 @@ export class TaskHubApplication {
         });
       },
       onStatus: (listener) => {
-        this.assertOperationalReady();
         if (typeof listener !== "function") {
           throw new TypeError("AI状態の購読関数が必要です。");
         }
