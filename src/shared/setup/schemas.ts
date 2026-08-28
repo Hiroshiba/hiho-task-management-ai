@@ -53,6 +53,26 @@ const configuredTagGidsSchema = z
     }
   });
 
+const codexUnavailableReasonSchema = z.enum([
+  "not_installed",
+  "incompatible",
+  "permission_denied",
+  "startup_failed",
+  "disabled",
+]);
+
+const setupCodexAvailabilitySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("available") }).strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason_code: codexUnavailableReasonSchema,
+    })
+    .strict(),
+]);
+
+const setupCodexAvailableSchema = z.object({ kind: z.literal("available") }).strict();
+
 const setupResourceIssueSchema = z
   .object({
     resource: z.enum(["section", "tag"]),
@@ -73,6 +93,7 @@ const setupContextSchema = z
     project_name: setupSafeNameSchema,
     section_gids: deviceSectionGidsSchema,
     tag_gids: configuredTagGidsSchema,
+    codex: setupCodexAvailabilitySchema,
   })
   .strict();
 
@@ -95,6 +116,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("codex_cli_ready"),
       step: z.literal("codex_authentication"),
       redirect_uri: setupRedirectUriSchema,
+      codex: setupCodexAvailableSchema,
     })
     .strict(),
   z
@@ -102,6 +124,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("codex_authentication_required"),
       step: z.literal("codex_authentication"),
       redirect_uri: setupRedirectUriSchema,
+      codex: setupCodexAvailableSchema,
     })
     .strict(),
   z
@@ -109,6 +132,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("credentials_required"),
       step: z.literal("credentials"),
       redirect_uri: setupRedirectUriSchema,
+      codex: setupCodexAvailabilitySchema,
     })
     .strict(),
   z
@@ -117,6 +141,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       step: z.literal("workspace"),
       redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
+      codex: setupCodexAvailabilitySchema,
     })
     .strict(),
   z
@@ -125,6 +150,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       step: z.literal("workspace"),
       redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
+      codex: setupCodexAvailabilitySchema,
       workspaces: z.array(setupWorkspaceSchema).min(1),
     })
     .strict(),
@@ -134,6 +160,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       step: z.literal("project"),
       redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
+      codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
       projects: z.array(setupProjectSchema),
     })
@@ -144,6 +171,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       step: z.literal("project"),
       redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
+      codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
       projects: z.array(setupProjectSchema),
       reason_code: z.literal("duplicate_project_name"),
@@ -155,6 +183,7 @@ const setupStateSchema = z.discriminatedUnion("kind", [
       step: z.literal("resources"),
       redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
+      codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
       project: setupProjectSchema,
       issues: z.array(setupResourceIssueSchema).min(1),
@@ -321,6 +350,8 @@ function hasControlCharacter(value: string): boolean {
 export {
   configuredTagGidsSchema,
   setupCredentialsInputSchema,
+  setupCodexAvailabilitySchema,
+  codexUnavailableReasonSchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
@@ -334,6 +365,8 @@ export {
 };
 
 export type SetupState = z.infer<typeof setupStateSchema>;
+export type SetupCodexAvailability = z.infer<typeof setupCodexAvailabilitySchema>;
+export type SetupCodexUnavailableReason = z.infer<typeof codexUnavailableReasonSchema>;
 export type SetupCredentialsInput = z.infer<typeof setupCredentialsInputSchema>;
 export type SetupExternalToolChoiceInput = z.infer<typeof setupExternalToolChoiceInputSchema>;
 export type SetupProject = z.infer<typeof setupProjectSchema>;

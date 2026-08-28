@@ -1,6 +1,8 @@
 export {
   configuredTagGidsSchema,
   setupCredentialsInputSchema,
+  setupCodexAvailabilitySchema,
+  codexUnavailableReasonSchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
@@ -14,6 +16,8 @@ export {
 } from "./schemas";
 export type {
   SetupCredentialsInput,
+  SetupCodexAvailability,
+  SetupCodexUnavailableReason,
   SetupExternalToolChoiceInput,
   SetupProject,
   SetupProjectSelectionInput,
