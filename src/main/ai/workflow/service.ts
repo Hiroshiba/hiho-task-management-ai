@@ -4,6 +4,7 @@ import {
   baselineSnapshotSchema,
   canonicalizeJson,
   dependenciesSchema,
+  gidSchema,
   identifierSchema,
   obsidianLinksSchema,
   taskSchema,
@@ -53,10 +54,14 @@ import {
   type NormalizationTask,
 } from "../../domain/normalization";
 import {
+  createObsidianEvidenceLocator,
+  createTaskEvidenceLocator,
+  trustedStatusEvidenceReferencesSchema,
   validateProposal,
   validateProposalGraph,
   type GraphValidationResult,
   type ProposalValidationResult,
+  type TrustedStatusEvidenceReference,
 } from "../proposal-validation";
 import {
   asanaProposalApplicationInputSchema,
@@ -121,6 +126,7 @@ type PreparedTurn = {
   readonly baseline: BaselineSnapshot;
   readonly baseline_snapshot_hash: string;
   readonly taskctl_snapshot: TaskctlSnapshot;
+  readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
 type StoredProposal = {
@@ -133,7 +139,13 @@ type StoredProposal = {
   readonly graph_validation: GraphValidationResult;
   readonly selected_operation_ids: readonly string[];
   readonly explicit_split_request_locators: readonly string[];
+  readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
+
+export type TrustedExternalStatusEvidence = Extract<
+  TrustedStatusEvidenceReference,
+  { readonly kind: "external_tool" }
+>;
 
 /** Asana適用前に再取得状態を準備する入力です。 */
 export type ApprovalPreparationInput = {
@@ -152,6 +164,17 @@ export type AiWorkflowSnapshotProvider = (
 export type AiWorkflowTaskctlSnapshotProvider = (
   signal: AbortSignal,
 ) => TaskctlSnapshot | PromiseLike<TaskctlSnapshot>;
+
+/** ターン単位で外部ツールの構造化状態記録を収集する境界です。 */
+export interface AiWorkflowExternalStatusEvidenceCollector {
+  beginTurn(turnId: string, signal: AbortSignal): void | PromiseLike<void>;
+  finishTurn(
+    turnId: string,
+    signal: AbortSignal,
+  ): readonly TrustedExternalStatusEvidence[]
+    | PromiseLike<readonly TrustedExternalStatusEvidence[]>;
+  cancelTurn(turnId: string): void | PromiseLike<void>;
+}
 
 /** AIセッションのターン開始と差分購読を利用する境界です。 */
 export interface AiWorkflowSessionPort {
@@ -178,6 +201,7 @@ export interface AiWorkflowOptions {
   readonly session: AiWorkflowSessionPort;
   readonly snapshotProvider: AiWorkflowSnapshotProvider;
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
+  readonly externalStatusEvidenceCollector: AiWorkflowExternalStatusEvidenceCollector;
   readonly applicationCoordinator: Pick<AsanaProposalApplicationCoordinator, "apply">;
   readonly prepareApprovalInput: AiWorkflowApprovalInputProvider;
   readonly isOnline: AiWorkflowOnlineStateProvider;
@@ -208,6 +232,46 @@ const taskctlSnapshotProviderSchema = z.custom<AiWorkflowTaskctlSnapshotProvider
   "taskctlスナップショット供給関数が必要です。",
 );
 
+const externalStatusEvidenceCollectorSchema = z.custom<
+  AiWorkflowExternalStatusEvidenceCollector
+>(
+  (value) => typeof value === "object"
+    && value != null
+    && ["beginTurn", "finishTurn", "cancelTurn"].every(
+      (name) => typeof Reflect.get(value, name) === "function",
+    ),
+  "外部状態根拠収集境界が必要です。",
+);
+
+const trustedExternalStatusEvidenceSchema = z
+  .array(
+    z
+      .object({
+        kind: z.literal("external_tool"),
+        locator: z.string().refine((value) => value.trim().length > 0, {
+          message: "外部状態根拠locatorを空にできません。",
+        }),
+        target_task_gid: gidSchema,
+        status: z.enum(["closed", "completed", "cancelled"]),
+      })
+      .strict(),
+  )
+  .max(256)
+  .superRefine((references, context) => {
+    const seen = new Set<string>();
+    references.forEach((reference, index) => {
+      if (seen.has(reference.locator)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "locator"],
+          message: "外部状態根拠locatorを重複指定できません。",
+        });
+        return;
+      }
+      seen.add(reference.locator);
+    });
+  });
+
 const applicationCoordinatorSchema = z.custom<
   Pick<AsanaProposalApplicationCoordinator, "apply">
 >(
@@ -232,11 +296,34 @@ const aiWorkflowOptionsSchema = z
     session: sessionPortSchema,
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
+    externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
     applicationCoordinator: applicationCoordinatorSchema,
     prepareApprovalInput: approvalInputProviderSchema,
     isOnline: onlineStateProviderSchema,
   })
   .strict();
+
+async function cancelExternalStatusEvidenceCollection(
+  collector: AiWorkflowExternalStatusEvidenceCollector,
+  turnId: string,
+  turnError: unknown,
+): Promise<void> {
+  try {
+    await collector.cancelTurn(turnId);
+  } catch (cancellationError: unknown) {
+    const cleanupError = new AiWorkflowError(
+      "外部状態根拠のターン記録を破棄できませんでした。",
+      cancellationError,
+    );
+    if (turnError == null) {
+      throw cleanupError;
+    }
+    throw new AiWorkflowError(
+      "AIターンの失敗後に外部状態根拠の記録も破棄できませんでした。",
+      new AggregateError([turnError, cleanupError]),
+    );
+  }
+}
 
 function validateAbortSignal(signal: AbortSignal): void {
   if (
@@ -314,10 +401,43 @@ export function createBaselineSnapshot(
   });
 }
 
+function createTrustedStatusEvidence(
+  snapshot: AiWorkflowSnapshot,
+  userMessageLocator: string,
+  externalEvidence: readonly TrustedExternalStatusEvidence[],
+): readonly TrustedStatusEvidenceReference[] {
+  const references: TrustedStatusEvidenceReference[] = [{
+    kind: "user_message",
+    locator: userMessageLocator,
+  }];
+  const obsidianLocators = new Set<string>();
+  for (const task of snapshot.tasks) {
+    references.push({
+      kind: "task",
+      locator: createTaskEvidenceLocator(task.gid),
+    });
+    for (const link of task.obsidian_links) {
+      obsidianLocators.add(createObsidianEvidenceLocator(link.vault_id, link.path));
+    }
+  }
+  for (const locator of [...obsidianLocators].sort(compareStrings)) {
+    references.push({ kind: "obsidian", locator });
+  }
+  references.push(...externalEvidence);
+  return trustedStatusEvidenceReferencesSchema.parse(references);
+}
+
 function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
 ): string {
+  const userMessageReferences = prepared.trusted_status_evidence.filter(
+    (reference) => reference.kind === "user_message",
+  );
+  const userMessageReference = userMessageReferences[0];
+  if (userMessageReference == null || userMessageReferences.length !== 1) {
+    throw new AiWorkflowError("利用者メッセージの信頼済み根拠を一意に特定できません。");
+  }
   const context = aiWorkflowTurnContextSchema.parse({
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
     app_version: prepared.snapshot.app_version,
@@ -331,6 +451,10 @@ function createTurnPrompt(
     `基準コンテキスト: ${serializedContext}`,
     "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
     "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
+    `利用者要求の信頼済み根拠locator: ${userMessageReference.locator}`,
+    "タスク根拠locatorはtask:<GID>だけを使用してください。対象タスク自身のGIDだけが検証されます。",
+    "Obsidian根拠locatorはobsidian:<vault_id>:<path>だけを使用してください。対象タスクに登録済みのリンクだけが検証されます。",
+    "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
     `明示された分割依頼locator: ${canonicalizeJson(request.explicit_split_request_locators)}`,
     `利用者要求: ${request.message}`,
   ].join("\n");
@@ -1118,6 +1242,7 @@ function revalidateProposal(
     managed_tasks: stored.snapshot.tasks,
     existing_areas: stored.snapshot.areas,
     explicit_split_request_locators: [...stored.explicit_split_request_locators],
+    trusted_status_evidence: [...stored.trusted_status_evidence],
   });
   const graph = validateProposalGraph({
     proposal,
@@ -1139,6 +1264,7 @@ function createStoredProposal(
     managed_tasks: prepared.snapshot.tasks,
     existing_areas: prepared.snapshot.areas,
     explicit_split_request_locators: [...explicitSplitRequestLocators],
+    trusted_status_evidence: [...prepared.trusted_status_evidence],
   });
   const graph = validateProposalGraph({
     proposal,
@@ -1155,6 +1281,7 @@ function createStoredProposal(
     graph_validation: graph,
     selected_operation_ids: eligibleOperationIds(proposal, graph),
     explicit_split_request_locators: [...explicitSplitRequestLocators],
+    trusted_status_evidence: [...prepared.trusted_status_evidence],
   };
 }
 
@@ -1289,7 +1416,13 @@ export class AiWorkflowService {
     while (retryCount <= 1) {
       let prepared: PreparedTurn | undefined;
       let snapshotFrozen = false;
+      const turnId = identifierSchema.parse(randomUUID());
+      const userMessageLocator = `user-message:${turnId}`;
+      let evidenceCollectionActive = false;
+      let turnError: unknown;
       try {
+        await this.options.externalStatusEvidenceCollector.beginTurn(turnId, signal);
+        evidenceCollectionActive = true;
         const turnResult = await this.options.session.startTurnWithPreparation(
           async (turnSignal): Promise<CodexSessionTurnInput> => {
             try {
@@ -1305,6 +1438,11 @@ export class AiWorkflowService {
                 baseline,
                 baseline_snapshot_hash: baselineSnapshotHash,
                 taskctl_snapshot: taskctlSnapshot,
+                trusted_status_evidence: createTrustedStatusEvidence(
+                  snapshot,
+                  userMessageLocator,
+                  [],
+                ),
               };
               this.options.session.freezeTaskctlSnapshot(taskctlSnapshot);
               snapshotFrozen = true;
@@ -1324,6 +1462,21 @@ export class AiWorkflowService {
         if (prepared == null) {
           throw new AiWorkflowSyncError(new Error("同期後の基準値が作成されませんでした。"));
         }
+        const externalEvidence = trustedExternalStatusEvidenceSchema.parse(
+          await this.options.externalStatusEvidenceCollector.finishTurn(
+            turnId,
+            signal,
+          ),
+        );
+        evidenceCollectionActive = false;
+        prepared = {
+          ...prepared,
+          trusted_status_evidence: createTrustedStatusEvidence(
+            prepared.snapshot,
+            userMessageLocator,
+            externalEvidence,
+          ),
+        };
         const response = codexResponseSchema.parse(turnResult.response);
         if (response.kind === "no_proposal") {
           return aiWorkflowTurnResultSchema.parse({
@@ -1350,6 +1503,7 @@ export class AiWorkflowService {
           retry_count: retryCount,
         });
       } catch (error: unknown) {
+        turnError = error;
         if (error instanceof CodexSessionOutputValidationError && retryCount === 0) {
           retryCount += 1;
           continue;
@@ -1359,6 +1513,13 @@ export class AiWorkflowService {
         }
         throw error;
       } finally {
+        if (evidenceCollectionActive) {
+          await cancelExternalStatusEvidenceCollection(
+            this.options.externalStatusEvidenceCollector,
+            turnId,
+            turnError,
+          );
+        }
         if (snapshotFrozen) {
           this.options.session.releaseTaskctlSnapshot();
         }

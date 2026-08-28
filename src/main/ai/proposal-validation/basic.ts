@@ -1,9 +1,12 @@
 import { z } from "zod";
 import {
   areaSchema,
+  gidSchema,
   identifierSchema,
+  relativePathSchema,
   snapshotHashSchema,
   taskSchema,
+  vaultIdSchema,
   type Importance,
   type ObsidianLink,
   type ParentWorkMode,
@@ -25,6 +28,70 @@ const nonBlankLocatorSchema = z.string().refine((value) => value.trim().length >
 const maximumManagedTasks = 10000;
 const maximumExistingAreas = 256;
 const maximumSplitRequestLocators = 256;
+const maximumTrustedStatusEvidenceReferences = 110_257;
+
+/** タスク根拠の正規locatorを作成します。 */
+export function createTaskEvidenceLocator(taskGid: string): string {
+  return `task:${gidSchema.parse(taskGid)}`;
+}
+
+/** Obsidian根拠の正規locatorを作成します。 */
+export function createObsidianEvidenceLocator(
+  vaultId: string,
+  path: string,
+): string {
+  return `obsidian:${vaultIdSchema.parse(vaultId)}:${relativePathSchema.parse(path)}`;
+}
+
+/** 当該ターンへ提供された完了・取り下げ根拠を検証するスキーマです。 */
+export const trustedStatusEvidenceReferenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("user_message"),
+      locator: nonBlankLocatorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("task"),
+      locator: nonBlankLocatorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("obsidian"),
+      locator: nonBlankLocatorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("external_tool"),
+      locator: nonBlankLocatorSchema,
+      target_task_gid: gidSchema,
+      status: z.enum(["closed", "completed", "cancelled"]),
+    })
+    .strict(),
+]);
+
+/** 当該ターンへ提供された完了・取り下げ根拠集合を検証するスキーマです。 */
+export const trustedStatusEvidenceReferencesSchema = z
+  .array(trustedStatusEvidenceReferenceSchema)
+  .max(maximumTrustedStatusEvidenceReferences)
+  .superRefine((references, context) => {
+    const seen = new Set<string>();
+    references.forEach((reference, index) => {
+      const key = `${reference.kind}\u0000${reference.locator}`;
+      if (seen.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: `信頼済み根拠locator ${reference.locator} が重複しています。`,
+        });
+        return;
+      }
+      seen.add(key);
+    });
+  });
 
 const managedTasksSchema = z
   .array(taskSchema)
@@ -88,6 +155,7 @@ export const proposalValidationInputSchema = z
     managed_tasks: managedTasksSchema,
     existing_areas: existingAreasSchema,
     explicit_split_request_locators: explicitSplitRequestLocatorsSchema,
+    trusted_status_evidence: trustedStatusEvidenceReferencesSchema,
   })
   .strict();
 
@@ -273,6 +341,9 @@ export type ProposalValidationGroupResult = z.infer<
 >;
 export type ProposalValidationResult = z.infer<
   typeof proposalValidationResultSchema
+>;
+export type TrustedStatusEvidenceReference = z.infer<
+  typeof trustedStatusEvidenceReferenceSchema
 >;
 
 type ProposalTarget = Extract<
@@ -670,10 +741,69 @@ function validateStatusEvidence(
   operation: Extract<ProposalOperation, { readonly operation: "complete" | "withdraw" }>,
   task: TaskState,
   managedTasks: ReadonlyMap<string, Task>,
+  trustedEvidence: ReadonlyMap<string, TrustedStatusEvidenceReference>,
   errorsByOperation: Map<string, ProposalValidationError[]>,
 ): void {
   const evidence = operation.status_evidence;
+  const trustedReference = trustedEvidence.get(
+    `${evidence.reference.kind}\u0000${evidence.reference.locator}`,
+  );
+  if (evidence.kind === "user_explicit") {
+    if (trustedReference?.kind !== "user_message") {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "利用者の明示根拠locatorは当該ターンへ提供された利用者メッセージにありません。",
+      );
+    }
+    return;
+  }
+  if (evidence.kind === "task_or_note_explicit") {
+    if (operation.target.kind !== "existing") {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "作成前の一時タスクを完了・取り下げ根拠に指定できません。",
+      );
+      return;
+    }
+    const expectedTaskLocator = createTaskEvidenceLocator(operation.target.gid);
+    const expectedObsidianLocators = new Set(
+      task.obsidian_links.map((link) =>
+        createObsidianEvidenceLocator(link.vault_id, link.path)),
+    );
+    const isTargetTask = trustedReference?.kind === "task"
+      && evidence.reference.kind === "task"
+      && evidence.reference.locator === expectedTaskLocator;
+    const isRegisteredNote = trustedReference?.kind === "obsidian"
+      && evidence.reference.kind === "obsidian"
+      && expectedObsidianLocators.has(evidence.reference.locator);
+    if (!isTargetTask && !isRegisteredNote) {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "タスクまたはノートの明示根拠locatorは対象タスクの信頼済み根拠にありません。",
+      );
+    }
+    return;
+  }
   if (evidence.kind === "external_structured_status") {
+    if (
+      trustedReference?.kind !== "external_tool"
+      || trustedReference.status !== evidence.status
+      || operation.target.kind !== "existing"
+      || trustedReference.target_task_gid !== operation.target.gid
+    ) {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "外部状態の種類、locator、状態、対象タスクが当該ターンの構造化取得記録と一致しません。",
+      );
+    }
     const validStatus = operation.operation === "complete"
       ? evidence.status === "closed" || evidence.status === "completed"
       : evidence.status === "cancelled";
@@ -688,6 +818,21 @@ function validateStatusEvidence(
     return;
   }
   if (evidence.kind === "children_only_all_completed") {
+    const targetTaskLocator = operation.target.kind === "existing"
+      ? createTaskEvidenceLocator(operation.target.gid)
+      : undefined;
+    if (
+      trustedReference?.kind !== "task"
+      || targetTaskLocator == null
+      || evidence.reference.locator !== targetTaskLocator
+    ) {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "全子タスク完了根拠は対象タスク自身の信頼済みlocatorでなければなりません。",
+      );
+    }
     if (operation.operation !== "complete") {
       addError(
         errorsByOperation,
@@ -926,6 +1071,7 @@ function validateOperation(
   managedTasks: ReadonlyMap<string, Task>,
   existingAreas: ReadonlySet<string>,
   explicitSplitRequestLocators: ReadonlySet<string>,
+  trustedStatusEvidence: ReadonlyMap<string, TrustedStatusEvidenceReference>,
   createdTemporaryRefs: ReadonlySet<string>,
   temporaryTaskStates: ReadonlyMap<string, TaskState>,
   errorsByOperation: Map<string, ProposalValidationError[]>,
@@ -982,7 +1128,13 @@ function validateOperation(
     validateArea(operation.after, existingAreas, operation.operation_id, errorsByOperation);
   }
   if (operation.operation === "complete" || operation.operation === "withdraw") {
-    validateStatusEvidence(operation, task, managedTasks, errorsByOperation);
+    validateStatusEvidence(
+      operation,
+      task,
+      managedTasks,
+      trustedStatusEvidence,
+      errorsByOperation,
+    );
   }
 }
 
@@ -1049,6 +1201,10 @@ export function validateProposal(
   const explicitSplitRequestLocators = new Set(
     parsedInput.explicit_split_request_locators,
   );
+  const trustedStatusEvidence = new Map<string, TrustedStatusEvidenceReference>();
+  for (const reference of parsedInput.trusted_status_evidence) {
+    trustedStatusEvidence.set(`${reference.kind}\u0000${reference.locator}`, reference);
+  }
   const contexts = collectOperationContexts(parsedInput.proposal);
   const createdTemporaryRefs = collectCreatedTemporaryRefs(parsedInput.proposal);
   const temporaryTaskStates = collectTemporaryTaskStates(parsedInput.proposal);
@@ -1063,6 +1219,7 @@ export function validateProposal(
       managedTasks,
       existingAreas,
       explicitSplitRequestLocators,
+      trustedStatusEvidence,
       createdTemporaryRefs,
       temporaryTaskStates,
       errorsByOperation,

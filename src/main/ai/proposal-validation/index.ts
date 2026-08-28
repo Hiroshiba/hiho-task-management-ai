@@ -11,6 +11,10 @@ export {
 export {
   proposalValidationInputSchema,
   proposalValidationResultSchema,
+  createObsidianEvidenceLocator,
+  createTaskEvidenceLocator,
+  trustedStatusEvidenceReferenceSchema,
+  trustedStatusEvidenceReferencesSchema,
   validateProposal,
   type ProposalValidationError,
   type ProposalValidationErrorCode,
@@ -18,4 +22,5 @@ export {
   type ProposalValidationInput,
   type ProposalValidationOperationResult,
   type ProposalValidationResult,
+  type TrustedStatusEvidenceReference,
 } from "./basic";

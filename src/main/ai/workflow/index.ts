@@ -8,7 +8,9 @@ export {
   type AiWorkflowOptions,
   type AiWorkflowSessionPort,
   type AiWorkflowSnapshotProvider,
+  type AiWorkflowExternalStatusEvidenceCollector,
   type AiWorkflowTaskctlSnapshotProvider,
+  type TrustedExternalStatusEvidence,
 } from "./service";
 export {
   AiWorkflowEditError,
