@@ -147,11 +147,14 @@ const writerInputSchema = z
           message: "create_task以外に既存作成タスクを指定できません。",
         });
       }
-      if (input.baseline_external_data == null) {
+      const externalOptional =
+        input.operation.operation === "complete"
+        || input.operation.operation === "withdraw";
+      if (!externalOptional && input.baseline_external_data == null) {
         context.addIssue({
           code: "custom",
           path: ["baseline_external_data"],
-          message: "create_task以外にはbaseline外部データが必要です。",
+          message: "この操作にはbaseline外部データが必要です。",
         });
       }
     }

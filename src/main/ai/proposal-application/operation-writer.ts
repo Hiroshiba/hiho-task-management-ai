@@ -1432,12 +1432,17 @@ export class AsanaProposalOperationWriter {
       );
     }
     const baselineExternalInput = input.baseline_external_data;
-    if (baselineExternalInput == null) {
-      throw new Error("create_task以外にはbaseline外部データが必要です。");
+    const baselineExternal = baselineExternalInput == null
+      ? undefined
+      : parseBaselineExternal(baselineExternalInput);
+    if (operationUsesExternalData(operation) && baselineExternal == null) {
+      throw new Error("この操作にはbaseline外部データが必要です。");
     }
-    const baselineExternal = parseBaselineExternal(baselineExternalInput);
     let currentExternal: CurrentExternal | undefined;
     if (operationUsesExternalData(operation)) {
+      if (baselineExternal == null) {
+        throw new Error("この操作にはbaseline外部データが必要です。");
+      }
       const currentExternalResult = validateCurrentExternal(
         readCurrentExternal(task),
         baselineExternal,
@@ -1472,12 +1477,14 @@ export class AsanaProposalOperationWriter {
       return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
     }
 
-    const externalOperations = externalOperationsForOperation(
-      operation,
-      baselineExternal.data,
-      mappings,
-      input.activity_date,
-    );
+    const externalOperations = baselineExternal == null
+      ? []
+      : externalOperationsForOperation(
+          operation,
+          baselineExternal.data,
+          mappings,
+          input.activity_date,
+        );
     let mergeCurrent = currentExternal;
     let externalPlan: ExternalMergePlan = {
       kind: "none",
@@ -1487,6 +1494,9 @@ export class AsanaProposalOperationWriter {
     if (externalOperations.length > 0) {
       if (mergeCurrent == null) {
         throw new Error("Custom external dataのcurrentがありません。");
+      }
+      if (baselineExternal == null) {
+        throw new Error("Custom external dataのbaselineがありません。");
       }
       externalPlan = mergeExternalPlan(
         baselineExternal,
@@ -1526,6 +1536,9 @@ export class AsanaProposalOperationWriter {
           await this.readClient.getTask(taskGid, signal),
           taskGid,
         );
+        if (baselineExternal == null) {
+          throw new Error("Custom external dataのbaselineがありません。");
+        }
         const latestExternalResult = validateCurrentExternal(
           readCurrentExternal(latestTask),
           baselineExternal,
