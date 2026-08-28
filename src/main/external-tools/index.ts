@@ -30,7 +30,6 @@ export {
   externalToolStatusEvidenceSchema,
   type ExternalToolBrokerOptions,
   type ExternalToolBrokerStartResult,
-  type ExternalToolCredentialProvider,
   type ExternalToolDefinition,
   type ExternalToolDiagnostic,
   type ExternalToolDiagnosticCode,

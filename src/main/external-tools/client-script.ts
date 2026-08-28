@@ -19,6 +19,9 @@ const connectionInfoPathSchema = z
 
 /** 外部ツールブローカーへ接続する依存なしcontextctlスクリプトを生成します。 */
 export function createContextctlClientScript(connectionInfoPath: string): string {
+  if (process.platform === "win32") {
+    throw new Error("Windowsでは安全なcontextctl権限境界を検証できません。");
+  }
   const validatedPath = connectionInfoPathSchema.parse(connectionInfoPath);
   const serializedPath = JSON.stringify(validatedPath);
   if (serializedPath == null) {
@@ -54,7 +57,6 @@ const errorCodes = new Set([
   "output_too_large",
   "invalid_output",
   "invalid_utf8",
-  "credential_unavailable",
   "broker_unavailable",
   "broker_stopped",
   "broker_start_failed",
@@ -420,19 +422,24 @@ function validateInvocationArguments(args) {
 
 function isEndpoint(value) {
   return (
-    typeof value === "string"
+    process.platform !== "win32"
+    && typeof value === "string"
     && !hasControlCharacter(value)
-    && (process.platform === "win32"
-      ? /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(value)
-      : path.isAbsolute(value))
+    && path.isAbsolute(value)
   );
 }
 
 function isCurrentUser(stats) {
   if (process.platform === "win32") {
-    return true;
+    return false;
   }
   return typeof process.getuid === "function" && stats.uid === process.getuid();
+}
+
+function assertSupportedPlatform() {
+  if (process.platform === "win32") {
+    throw invalid("Windowsでは安全なcontextctl権限境界を検証できません。");
+  }
 }
 
 function verifyNoSymlinkPath(targetPath) {
@@ -463,10 +470,7 @@ function verifyConnectionInfoFile() {
 
 function verifyEndpoint(endpoint) {
   if (process.platform === "win32") {
-    if (!/^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(endpoint)) {
-      throw invalid("contextctl IPC接続先が不正です。");
-    }
-    return;
+    throw invalid("Windowsではcontextctl IPCを利用できません。");
   }
   verifyNoSymlinkPath(endpoint);
   const stats = fs.lstatSync(endpoint);
@@ -684,6 +688,7 @@ function printFailure(error) {
 
 async function main() {
   try {
+    assertSupportedPlatform();
     const command = parseArguments(process.argv.slice(2));
     const connectionInfo = readConnectionInfo();
     const response = await request(connectionInfo, command);

@@ -25,7 +25,6 @@ import {
   type Server,
   type Socket,
 } from "node:net";
-import { z } from "zod";
 import type { JsonValue } from "../../shared/domain";
 import {
   externalToolBrokerOptionsSchema,
@@ -50,7 +49,6 @@ import {
   externalToolStatusEvidenceAttemptSchema,
   type ExternalToolBrokerOptions,
   type ExternalToolBrokerStartResult,
-  type ExternalToolCredentialProvider,
   type ExternalToolDefinition,
   type ExternalToolDiagnostic,
   type ExternalToolDiagnosticCode,
@@ -65,8 +63,6 @@ import { ExternalToolError } from "./errors";
 const directoryMode = 0o700;
 const connectionInfoMode = 0o600;
 const unixSocketMode = 0o600;
-const credentialKeyPattern = /^[A-Z][A-Z0-9_]{0,63}$/u;
-const maximumCredentialValueBytes = 4_096;
 const maximumRequestMilliseconds = 35_000;
 const processTerminationGraceMilliseconds = 250;
 const childWorkingDirectoryMode = 0o500;
@@ -84,67 +80,6 @@ const safeParentEnvironmentNames = new Set([
   "SYSTEMROOT",
   "WINDIR",
 ]);
-const forbiddenCredentialEnvironmentNames = new Set([
-  "ALL_PROXY",
-  "APPDATA",
-  "BASH_ENV",
-  "CDPATH",
-  "CLASSPATH",
-  "CARGO_HOME",
-  "COMSPEC",
-  "ELECTRON_RUN_AS_NODE",
-  "DYLD_INSERT_LIBRARIES",
-  "DYLD_LIBRARY_PATH",
-  "ENV",
-  "HOME",
-  "HTTPS_PROXY",
-  "HTTP_PROXY",
-  "GIT_CONFIG_GLOBAL",
-  "GIT_CONFIG_SYSTEM",
-  "GIT_SSH_COMMAND",
-  "IFS",
-  "JAVA_TOOL_OPTIONS",
-  "LD_AUDIT",
-  "LD_LIBRARY_PATH",
-  "LD_PRELOAD",
-  "NODE_EXTRA_CA_CERTS",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "PERL5LIB",
-  "PERL5OPT",
-  "PROMPT_COMMAND",
-  "PS4",
-  "PYTHONHOME",
-  "PYTHONINSPECT",
-  "PYTHONPATH",
-  "PYTHONSTARTUP",
-  "RUBYOPT",
-  "SHELL",
-  "SSL_CERT_DIR",
-  "SSL_CERT_FILE",
-  "TEMP",
-  "TMP",
-  "TMPDIR",
-  "USERPROFILE",
-  "_JAVA_OPTIONS",
-]);
-const forbiddenCredentialEnvironmentPrefixes = [
-  "BASH_",
-  "CARGO_",
-  "DYLD_",
-  "ELECTRON_",
-  "GIT_",
-  "GIT_CONFIG",
-  "JAVA_",
-  "LD_",
-  "NODE_",
-  "NPM_",
-  "PERL",
-  "PIP_",
-  "PYTHON",
-  "RUBY",
-  "XDG_",
-];
 const forbiddenArgumentNamePrefixes = [
   "auth",
   "base",
@@ -239,8 +174,6 @@ type InternalDiagnostic = {
   readonly cause: unknown;
 };
 
-type CredentialEnvironment = Readonly<Record<string, string>>;
-
 type ProcessOutcome =
   | { readonly kind: "succeeded"; readonly output: Buffer }
   | { readonly kind: "failed"; readonly error: Error };
@@ -262,42 +195,9 @@ type ActiveRun = {
   readonly completion: Promise<ExternalToolExecutionResult>;
 };
 
-const credentialEnvironmentSchema = z.record(
-  z.string()
-    .regex(credentialKeyPattern, "資格情報の環境変数名が不正です。")
-    .refine(isSafeCredentialEnvironmentName, "危険な資格情報の環境変数名は使用できません。"),
-  z.string()
-    .min(1, "資格情報を空にできません。")
-    .refine(
-      (value) => new TextEncoder().encode(value).byteLength <= maximumCredentialValueBytes,
-      "資格情報が長すぎます。",
-    )
-    .refine(
-      (value) => !hasControlCharacter(value),
-      "資格情報に制御文字を指定できません。",
-    ),
-);
-
-function hasControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0);
-    return codePoint != null && (
-      codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
-    );
-  });
-}
-
-function isSafeCredentialEnvironmentName(value: string): boolean {
-  const normalized = value.toUpperCase();
-  if (safeParentEnvironmentNames.has(normalized) || forbiddenCredentialEnvironmentNames.has(normalized)) {
-    return false;
-  }
-  return !forbiddenCredentialEnvironmentPrefixes.some((prefix) => normalized.startsWith(prefix));
-}
-
 function isCurrentUser(stats: Stats): boolean {
   if (process.platform === "win32") {
-    return true;
+    return false;
   }
   if (typeof process.getuid !== "function") {
     return false;
@@ -431,9 +331,6 @@ function createCapability(): string {
 
 function createEndpoint(tmpDirectoryPath: string): string {
   const suffix = randomBytes(12).toString("hex");
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\taskhub-contextctl-${suffix}`;
-  }
   return join(tmpDirectoryPath, `contextctl-${suffix}.sock`);
 }
 
@@ -457,10 +354,6 @@ function lstatWithoutSymlink(directoryPath: string): Stats {
     }
   }
   return currentStats;
-}
-
-function isWindowsPipe(endpoint: string): boolean {
-  return /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(endpoint);
 }
 
 function ensureIpcDirectory(directoryPath: string): void {
@@ -745,9 +638,6 @@ function ensureConnectionInfoAbsent(connectionInfoPath: string): void {
 }
 
 function secureUnixSocket(endpoint: string): void {
-  if (process.platform === "win32") {
-    return;
-  }
   let stats: Stats;
   try {
     stats = lstatWithoutSymlink(endpoint);
@@ -948,7 +838,7 @@ function removeConnectionInfo(
 }
 
 function removeUnixSocket(endpoint: string | undefined): void {
-  if (endpoint == null || process.platform === "win32") {
+  if (endpoint == null) {
     return;
   }
   let stats: Stats;
@@ -1220,21 +1110,15 @@ function sanitizeControlCharacters(value: string, preserveLineFeed: boolean): st
     .join("");
 }
 
-function sanitizeString(value: string, secrets: readonly string[]): string {
-  let sanitized = sanitizeControlCharacters(value, false);
-  for (const secret of secrets) {
-    if (secret.length > 0) {
-      sanitized = sanitized.split(secret).join("[REDACTED]");
-    }
-  }
-  return sanitized;
+function sanitizeString(value: string): string {
+  return sanitizeControlCharacters(value, false);
 }
 
 function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
   return Array.isArray(value);
 }
 
-function sanitizeJsonValue(value: JsonValue, secrets: readonly string[]): JsonValue {
+function sanitizeJsonValue(value: JsonValue): JsonValue {
   type Frame =
     | { readonly kind: "enter"; readonly value: JsonValue }
     | { readonly kind: "exit"; readonly value: JsonValue };
@@ -1254,7 +1138,7 @@ function sanitizeJsonValue(value: JsonValue, secrets: readonly string[]): JsonVa
       return transformedValue;
     }
     if (typeof item === "string") {
-      return sanitizeString(item, secrets);
+      return sanitizeString(item);
     }
     return item;
   };
@@ -1303,7 +1187,7 @@ function sanitizeJsonValue(value: JsonValue, secrets: readonly string[]): JsonVa
     const keys = new Set<string>();
     const entries: Array<[string, JsonValue]> = [];
     for (const [key, item] of Object.entries(frame.value)) {
-      const sanitizedKey = sanitizeString(key, secrets);
+      const sanitizedKey = sanitizeString(key);
       if (keys.has(sanitizedKey)) {
         throw new ExternalToolError(
           "invalid_output",
@@ -1351,10 +1235,7 @@ function parseJsonValue(raw: string): JsonValue {
   return parsed;
 }
 
-function parseToolOutput(
-  output: Buffer,
-  secrets: readonly string[],
-): ExternalToolOutput {
+function parseToolOutput(output: Buffer): ExternalToolOutput {
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(output);
@@ -1377,7 +1258,7 @@ function parseToolOutput(
   }
   try {
     const parsed = parseJsonValue(trimmed);
-    const sanitized = sanitizeJsonValue(parsed, secrets);
+    const sanitized = sanitizeJsonValue(parsed);
     return {
       format: "json",
       value: sanitized,
@@ -1398,10 +1279,7 @@ function parseToolOutput(
         error,
       );
     }
-    const values = lines.map((line) => sanitizeJsonValue(
-      parseJsonValue(line),
-      secrets,
-    ));
+    const values = lines.map((line) => sanitizeJsonValue(parseJsonValue(line)));
     return {
       format: "jsonl",
       values,
@@ -1442,7 +1320,6 @@ function errorMessage(code: import("./schemas").ExternalToolErrorCode): string {
     output_too_large: "外部ツール出力がサイズ上限を超えました。",
     invalid_output: "外部ツール出力が不正です。",
     invalid_utf8: "外部ツール出力の文字コードが不正です。",
-    credential_unavailable: "外部ツール資格情報を利用できません。",
     broker_unavailable: "外部ツールブローカーを利用できません。",
     broker_stopped: "外部ツールブローカーは停止しています。",
     broker_start_failed: "外部ツールブローカーを起動できません。",
@@ -1506,7 +1383,6 @@ function classifyProcessError(error: unknown): ExternalToolError {
 function runChildProcess(
   tool: ExternalToolDefinition,
   invocation: ExternalToolInvocation,
-  credentials: CredentialEnvironment,
   tmpDirectoryPath: string,
   signal: AbortSignal,
 ): Promise<Buffer> {
@@ -1517,9 +1393,6 @@ function runChildProcess(
     if (value != null) {
       environment[name] = value;
     }
-  }
-  for (const [key, value] of Object.entries(credentials)) {
-    environment[key] = value;
   }
   const argv = [invocation.subcommand, ...invocation.args];
   const workingDirectory = createChildWorkingDirectory(
@@ -1726,7 +1599,6 @@ function isRetryableExternalToolError(error: unknown): error is ExternalToolErro
 async function runWithRetries(
   tool: ExternalToolDefinition,
   invocation: ExternalToolInvocation,
-  credentials: CredentialEnvironment,
   childWorkingRootPath: string,
   signal: AbortSignal,
 ): Promise<Buffer> {
@@ -1737,7 +1609,6 @@ async function runWithRetries(
       return await runChildProcess(
         tool,
         invocation,
-        credentials,
         childWorkingRootPath,
         signal,
       );
@@ -1748,10 +1619,6 @@ async function runWithRetries(
       retryCount += 1;
     }
   }
-}
-
-function validateCredentials(value: Readonly<Record<string, string>>): CredentialEnvironment {
-  return credentialEnvironmentSchema.parse(value);
 }
 
 function isCapabilityFailure(error: unknown): boolean {
@@ -1782,8 +1649,7 @@ function createBrokerStoppedError(): ExternalToolError {
 }
 
 function isBrokerSupportedPlatform(): boolean {
-  return process.platform === "win32"
-    || process.platform === "linux"
+  return process.platform === "linux"
     || process.platform === "darwin"
     || process.platform === "freebsd"
     || process.platform === "openbsd"
@@ -1796,7 +1662,6 @@ export class ExternalToolBroker {
   private readonly tmpDirectoryPath: string;
   private readonly childWorkingRootPath: string;
   private readonly registry: ExternalToolBrokerOptions["registry"];
-  private readonly credentialProvider: ExternalToolCredentialProvider | undefined;
   private readonly statusEvidenceCollector: ExternalToolBrokerOptions["status_evidence_collector"];
   private readonly connectionInfoPath: string;
   private state: BrokerState = "created";
@@ -1819,7 +1684,6 @@ export class ExternalToolBroker {
     this.tmpDirectoryPath = validatedOptions.tmp_directory_path;
     this.childWorkingRootPath = validatedOptions.child_work_root_path;
     this.registry = validatedOptions.registry;
-    this.credentialProvider = validatedOptions.credential_provider;
     this.statusEvidenceCollector = validatedOptions.status_evidence_collector;
     this.connectionInfoPath = join(this.tmpDirectoryPath, "contextctl-connection.json");
     if (isBrokerSupportedPlatform()) {
@@ -1861,14 +1725,7 @@ export class ExternalToolBroker {
       const endpoint = externalToolConnectionInfoSchema.shape.endpoint.parse(
         createEndpoint(this.tmpDirectoryPath),
       );
-      if (process.platform === "win32" && !isWindowsPipe(endpoint)) {
-        throw new ExternalToolError(
-          "ipc_unavailable",
-          "外部ツールIPC接続先が不正です。",
-          false,
-        );
-      }
-      if (!isWindowsPipe(endpoint) && Buffer.byteLength(endpoint, "utf8") >= 108) {
+      if (Buffer.byteLength(endpoint, "utf8") >= 108) {
         throw new ExternalToolError(
           "ipc_unavailable",
           "外部ツールIPC接続先が長すぎます。",
@@ -2173,37 +2030,14 @@ export class ExternalToolBroker {
     runSignal: AbortSignal,
   ): Promise<ExternalToolExecutionResult> {
     try {
-      let credentials: CredentialEnvironment = {};
-      if (this.credentialProvider != null) {
-        try {
-          credentials = validateCredentials(
-            await this.credentialProvider(tool, runSignal),
-          );
-        } catch (error) {
-          if (runSignal.aborted) {
-            throw createAbortError(runSignal);
-          }
-          if (error instanceof ExternalToolError) {
-            throw error;
-          }
-          throw new ExternalToolError(
-            "credential_unavailable",
-            "外部ツール資格情報を利用できません。",
-            false,
-            error,
-          );
-        }
-      }
       const rawOutput = await runWithRetries(
         tool,
         validatedInvocation,
-        credentials,
         this.childWorkingRootPath,
         runSignal,
       );
-      const secrets = Object.values(credentials);
       const output = externalToolOutputSchema.parse(
-        parseToolOutput(rawOutput, secrets),
+        parseToolOutput(rawOutput),
       );
       const evidence = this.statusEvidenceCollector.record(
         statusEvidenceAttempt,

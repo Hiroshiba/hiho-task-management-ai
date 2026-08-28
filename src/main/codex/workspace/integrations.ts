@@ -474,8 +474,7 @@ function createDisabledExternalToolsSkillContent(reason: "no_registered_tools" |
 }
 
 function isContextctlSupportedPlatform(): boolean {
-  return process.platform === "win32"
-    || process.platform === "linux"
+  return process.platform === "linux"
     || process.platform === "darwin"
     || process.platform === "freebsd"
     || process.platform === "openbsd"

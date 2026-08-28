@@ -25,7 +25,6 @@ export const externalToolMaxStatusEvidence = 256;
 const maximumIdentifierCharacters = 64;
 const maximumExecutableCharacters = 4_096;
 const maximumDomainCharacters = 253;
-const maximumCredentialValueBytes = 4_096;
 const maximumArgumentNameCharacters = 66;
 const maximumStatusEvidenceLocatorBytes = 4_096;
 const maximumStatusEvidenceTargetTaskGidBytes = 200;
@@ -323,7 +322,7 @@ const argumentSchema = z
   .refine((value) => value.length <= maximumExecutableCharacters, "外部ツール引数が長すぎます。")
   .refine((value) => !hasControlCharacter(value), "外部ツール引数に制御文字を指定できません。")
   .refine(
-    (value) => new TextEncoder().encode(value).byteLength <= maximumCredentialValueBytes,
+    (value) => new TextEncoder().encode(value).byteLength <= externalToolMaxArgumentBytes,
     "外部ツール引数が長すぎます。",
   );
 
@@ -346,7 +345,6 @@ const capabilitySchema = z
   .string()
   .regex(/^[0-9a-f]{64}$/u, "外部ツールの能力値が不正です。");
 
-const windowsPipeEndpointPattern = /^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u;
 const windowsPipePrefix = "\\\\.\\pipe\\";
 
 const absolutePathSchema = z
@@ -361,16 +359,10 @@ const absolutePathSchema = z
     "名前付きパイプは専用形式で指定してください。",
   );
 
-const windowsPipeEndpointSchema = z
-  .string()
-  .min(1)
-  .max(maximumExecutableCharacters)
-  .refine((value) => !hasControlCharacter(value), "IPC接続先に制御文字を指定できません。")
-  .refine((value) => windowsPipeEndpointPattern.test(value), "IPC接続先が不正です。");
-
-const endpointSchema = process.platform === "win32"
-  ? windowsPipeEndpointSchema
-  : absolutePathSchema;
+const endpointSchema = absolutePathSchema.refine(
+  () => process.platform !== "win32",
+  "Windowsでは安全なIPC権限境界を検証できません。",
+);
 
 const jsonValueSchema = z.custom<JsonValue>(isSafeJsonValue, {
   message: "外部ツール出力は制御文字のないJSON値でなければなりません。",
@@ -460,7 +452,6 @@ export const externalToolErrorCodeSchema = z.enum([
   "output_too_large",
   "invalid_output",
   "invalid_utf8",
-  "credential_unavailable",
   "broker_unavailable",
   "broker_stopped",
   "broker_start_failed",
@@ -664,12 +655,6 @@ export const externalToolBrokerOptionsSchema = z
         && typeof Reflect.get(value, "list") === "function",
       "外部ツールレジストリが必要です。",
     ),
-    credential_provider: z
-      .custom<ExternalToolCredentialProvider>(
-        (value) => typeof value === "function",
-        "資格情報プロバイダーが不正です。",
-      )
-      .optional(),
     status_evidence_collector: z.custom<ExternalToolStatusEvidenceCollectorPort>(
       (value) => typeof value === "object"
         && value != null
@@ -711,11 +696,6 @@ export type ExternalToolBrokerOptions = z.infer<typeof externalToolBrokerOptions
 export type ExternalToolErrorCode = z.infer<typeof externalToolErrorCodeSchema>;
 export type ExternalToolDisabledReason = z.infer<typeof disabledReasonSchema>;
 export type ExternalToolDiagnosticCode = z.infer<typeof diagnosticCodeSchema>;
-
-export type ExternalToolCredentialProvider = (
-  tool: ExternalToolDefinition,
-  signal: AbortSignal,
-) => Readonly<Record<string, string>> | PromiseLike<Readonly<Record<string, string>>>;
 
 export type ExternalToolRegistryLike = {
   readonly get: (toolId: string) => ExternalToolDefinition;
