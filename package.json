@@ -16,7 +16,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron .",
-    "lint": "eslint .",
+    "lint": "eslint . --cache --cache-strategy content --cache-location node_modules/.cache/eslint/.eslintcache",
     "typecheck": "pnpm run typecheck:node && pnpm run typecheck:web",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json",
