@@ -70,6 +70,11 @@ const syncBeforeTurnSchema = z.custom<CodexSessionSyncFunction>(
   "AIターン前同期関数が必要です。",
 );
 
+const turnInputFactorySchema = z.custom<CodexSessionTurnInputFactory>(
+  (value) => typeof value === "function",
+  "同期後ターン入力関数が必要です。",
+);
+
 const snapshotProviderSchema = z.custom<TaskctlSnapshotProvider>(
   (value) => typeof value === "function",
   "taskctlスナップショット供給関数が必要です。",
@@ -113,6 +118,14 @@ export type CodexSessionConnectionFactory =
 
 /** セッションがターン開始直前に同期を実行する関数の型です。 */
 export type CodexSessionSyncFunction = (signal: AbortSignal) => void | PromiseLike<void>;
+
+/** 同期完了後にCodexターン入力を作成する関数の型です。 */
+export type CodexSessionTurnInputFactory = (
+  signal: AbortSignal,
+) => CodexSessionTurnInput | PromiseLike<CodexSessionTurnInput>;
+
+/** 同期完了後ターン入力関数を検証するスキーマです。 */
+export const codexSessionTurnInputFactorySchema = turnInputFactorySchema;
 
 /** Codexセッション初期化の入力を検証するスキーマです。 */
 export const codexSessionOptionsSchema = z

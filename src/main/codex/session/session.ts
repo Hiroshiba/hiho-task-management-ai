@@ -37,7 +37,9 @@ import {
 } from "../app-server";
 import {
   TaskctlBroker,
+  taskctlSnapshotSchema,
   type TaskctlBrokerStartResult,
+  type TaskctlSnapshot,
 } from "../taskctl";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
 import { codexResponseSchema } from "../../../shared/ai";
@@ -58,6 +60,7 @@ import {
   codexSessionOptionsSchema,
   codexSessionStartResultSchema,
   codexSessionStateSchema,
+  codexSessionTurnInputFactorySchema,
   codexSessionTurnInputSchema,
   codexSessionTurnResultSchema,
   type CodexSessionConnection,
@@ -69,6 +72,7 @@ import {
   type CodexSessionStartResult,
   type CodexSessionState,
   type CodexSessionTurnInput,
+  type CodexSessionTurnInputFactory,
   type CodexSessionTurnResult,
 } from "./schemas";
 
@@ -354,6 +358,7 @@ export class CodexSessionService {
   private removeNotificationListener: (() => void) | undefined;
   private removeDiagnosticListener: (() => void) | undefined;
   private taskctlStartResult: TaskctlBrokerStartResult | undefined;
+  private frozenTaskctlSnapshot: TaskctlSnapshot | undefined;
   private threadId: string | undefined;
   private permissionProfileNotification: PermissionProfileNotification | undefined;
   private permissionProfileWaiter: PermissionProfileWaiter | undefined;
@@ -376,7 +381,12 @@ export class CodexSessionService {
     this.options = codexSessionOptionsSchema.parse(options);
     this.broker = new TaskctlBroker({
       tmpDirectoryPath: this.options.tmpDirectoryPath,
-      snapshotProvider: this.options.snapshotProvider,
+      snapshotProvider: () => {
+        if (this.frozenTaskctlSnapshot != null) {
+          return this.frozenTaskctlSnapshot;
+        }
+        return this.options.snapshotProvider();
+      },
     });
     this.outputSchema = createOutputSchema();
   }
@@ -527,6 +537,16 @@ export class CodexSessionService {
     validateAbortSignal(signal);
     const validatedInput = codexSessionTurnInputSchema.parse(input);
     validateTurnSkills(validatedInput, this.options.workspacePath);
+    return this.startTurnWithPreparation(() => validatedInput, signal);
+  }
+
+  /** 同期完了後にターン入力を作成して構造化出力を指定したCodexターンを開始します。 */
+  public async startTurnWithPreparation(
+    prepareInput: CodexSessionTurnInputFactory,
+    signal: AbortSignal,
+  ): Promise<CodexSessionTurnResult> {
+    validateAbortSignal(signal);
+    const validatedPrepareInput = codexSessionTurnInputFactorySchema.parse(prepareInput);
     if (this.state !== "ready" || this.activeTurn != null) {
       if (this.state === "disabled") {
         throw new CodexSessionDisabledError();
@@ -592,6 +612,21 @@ export class CodexSessionService {
       return turnPromise;
     }
     if (this.activeTurn !== createdActiveTurn) {
+      return turnPromise;
+    }
+
+    let validatedInput: CodexSessionTurnInput;
+    try {
+      validatedInput = codexSessionTurnInputSchema.parse(
+        await Promise.resolve(validatedPrepareInput(signal)),
+      );
+      validateTurnSkills(validatedInput, this.options.workspacePath);
+    } catch (error: unknown) {
+      if (createdActiveTurn.abortRequested || signal.aborted) {
+        this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
+      } else {
+        this.finishTurn(createdActiveTurn, error);
+      }
       return turnPromise;
     }
 
@@ -773,6 +808,19 @@ export class CodexSessionService {
   /** セッションの状態を取得します。 */
   public getState(): CodexSessionState {
     return codexSessionStateSchema.parse(this.state);
+  }
+
+  /** ターン中にtaskctlへ返すスナップショットを固定します。 */
+  public freezeTaskctlSnapshot(snapshot: TaskctlSnapshot): void {
+    if (this.activeTurn == null) {
+      throw new CodexSessionStateError();
+    }
+    this.frozenTaskctlSnapshot = taskctlSnapshotSchema.parse(snapshot);
+  }
+
+  /** ターン中に固定したtaskctlスナップショットを解放します。 */
+  public releaseTaskctlSnapshot(): void {
+    this.frozenTaskctlSnapshot = undefined;
   }
 
   /** 本文を含まないセッション診断を取得します。 */
@@ -1727,6 +1775,7 @@ export class CodexSessionService {
     this.mcpServerNames = undefined;
     this.skillConfiguration = [];
     this.skillsChanged = false;
+    this.frozenTaskctlSnapshot = undefined;
     if (connection != null) {
       try {
         await connection.stop();

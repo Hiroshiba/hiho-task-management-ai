@@ -21,6 +21,7 @@ export {
   codexSessionStartResultSchema,
   codexSessionStateSchema,
   codexSessionTurnInputSchema,
+  codexSessionTurnInputFactorySchema,
   codexSessionTurnResultSchema,
   type CodexSessionConnection,
   type CodexSessionConnectionFactory,
@@ -31,6 +32,7 @@ export {
   type CodexSessionStartResult,
   type CodexSessionState,
   type CodexSessionSyncFunction,
+  type CodexSessionTurnInputFactory,
   type CodexSessionTurnInput,
   type CodexSessionTurnResult,
 } from "./schemas";
