@@ -230,6 +230,14 @@ type SyncDiagnosticState =
       readonly previous_success_at: string | undefined;
     };
 
+type ConfiguredCodexLaunchState =
+  | { readonly kind: "pending" }
+  | {
+      readonly kind: "running";
+      readonly operation: Promise<void>;
+    }
+  | { readonly kind: "settled" };
+
 const maximumApprovalTaskCount = 10_000;
 const diagnosticLogRetentionLimit = 1_000;
 const asanaOAuthReauthenticationTimeoutMilliseconds = 120_000;
@@ -375,9 +383,27 @@ function requiresAsanaReauthentication(error: unknown): boolean {
     || error.code === "unauthorized_client";
 }
 
+class AsanaOAuthRefreshHttpError extends AsanaHttpError {
+  public readonly cause: AsanaOAuthHttpError;
+
+  public constructor(error: AsanaOAuthHttpError) {
+    super(error.status, error.requestId);
+    this.cause = error;
+  }
+}
+
 function throwTokenProviderError(error: unknown): never {
   if (requiresAsanaReauthentication(error)) {
     throw new AsanaAuthenticationError(error);
+  }
+  if (error instanceof AsanaOAuthTransportError) {
+    throw new AsanaTransportError(error);
+  }
+  if (error instanceof AsanaOAuthResponseError) {
+    throw new AsanaResponseError(error);
+  }
+  if (error instanceof AsanaOAuthHttpError) {
+    throw new AsanaOAuthRefreshHttpError(error);
   }
   throw error;
 }
@@ -426,6 +452,13 @@ function classifyPostWriteSynchronizationError(
     return { kind: "recovery_required", error_code: "sync_in_progress" };
   }
   return { kind: "unexpected" };
+}
+
+function canResumeReadyStateAfterRevalidationFailure(error: unknown): boolean {
+  if (error instanceof AsanaRequestAbortedError) {
+    return false;
+  }
+  return classifyPostWriteSynchronizationError(error).kind === "recovery_required";
 }
 
 function postWriteRecoveryRequired(
@@ -642,6 +675,10 @@ export class TaskHubApplication {
   private journalRecoveryPending: boolean;
   private journalRecoveryRunning = false;
   private journalRecoveryPromise: Promise<void> | undefined;
+  private configuredCodexLaunchState: ConfiguredCodexLaunchState = {
+    kind: "pending",
+  };
+  private configuredCodexSynchronizationPromise: Promise<void> | undefined;
   private aiApplicationState: "idle" | "applying" | "synchronizing" = "idle";
   private readyActivated = false;
   private stopped = false;
@@ -825,7 +862,7 @@ export class TaskHubApplication {
     } else if (!readyCheckpointOffline) {
       await this.restorePersistedCodexSession(state, signal);
       if (state.kind === "resources_requires_action" || isContextState(state)) {
-        state = await this.setup.resume(signal);
+        state = await this.resumeSetupAtStartup(state, signal);
       }
     }
     this.configureAsanaFromSettings(this.database.getDeviceSettings());
@@ -890,7 +927,6 @@ export class TaskHubApplication {
     const runtime = this.requireRuntime();
     const result = await this.requireSynchronizedResult(runtime.onForeground(signal));
     await this.afterSynchronizedState(result, signal);
-    await this.verifyConfiguredCodexCapabilities(signal);
   }
 
   /** Electronのオンライン復帰を同期へ渡します。 */
@@ -906,7 +942,6 @@ export class TaskHubApplication {
     }
     if (result.kind === "synchronized") {
       await this.afterSynchronizedState(result, this.options.lifecycle_signal);
-      await this.verifyConfiguredCodexCapabilities(this.options.lifecycle_signal);
       return;
     }
     if (result.kind === "failed") {
@@ -968,7 +1003,6 @@ export class TaskHubApplication {
       this.requireRuntime().onOnline(signal),
     );
     await this.afterSynchronizedState(synchronized, signal);
-    await this.verifyConfiguredCodexCapabilities(signal);
     return toIpcSyncResult(synchronized.result);
   }
 
@@ -1327,31 +1361,47 @@ export class TaskHubApplication {
     return availability;
   }
 
+  private async resumeSetupAtStartup(
+    state: SetupState,
+    signal: AbortSignal,
+  ): Promise<SetupState> {
+    const validatedState = setupStateSchema.parse(state);
+    try {
+      return setupStateSchema.parse(await this.setup.resume(signal));
+    } catch (error: unknown) {
+      this.rethrowFeatureAbort(error, signal);
+      if (
+        validatedState.kind !== "ready"
+        || !canResumeReadyStateAfterRevalidationFailure(error)
+      ) {
+        throw error;
+      }
+      this.recordFeatureFailure(
+        error,
+        "sync",
+        "保存済み初回設定をAsanaと再照合できないためキャッシュ表示で起動します。",
+      );
+      return validatedState;
+    }
+  }
+
   private async restorePersistedCodexSession(
     state: SetupState,
     signal: AbortSignal,
   ): Promise<void> {
-    const availability = codexAvailabilityFromState(setupStateSchema.parse(state));
+    const validatedState = setupStateSchema.parse(state);
+    const availability = codexAvailabilityFromState(validatedState);
     this.codexAvailability = availability;
-    if (availability == null || availability.kind === "unavailable") {
+    if (availability == null) {
       return;
     }
-    const detected = await this.detectCodexSafely(signal);
-    this.codexAvailability = detected;
-    if (detected.kind === "unavailable") {
-      this.aiStartResult = undefined;
-      this.codexAuthenticationRequired = false;
+    if (
+      validatedState.kind !== "ready"
+      && availability.kind === "unavailable"
+    ) {
       return;
     }
-    const authentication = await this.getCodexAuthenticationStateSafely(signal);
-    if (authentication.kind === "unavailable") {
-      this.codexAvailability = authentication;
-      this.aiStartResult = undefined;
-      this.codexAuthenticationRequired = false;
-      return;
-    }
-    this.aiStartResult = this.codexAdapter.getStartResult();
-    this.codexAuthenticationRequired = authentication.kind === "required";
+    await this.ensureConfiguredCodexLaunchAttempt(signal);
   }
 
   private notifyUnexpectedError(error: unknown, channel: string): void {
@@ -1514,13 +1564,12 @@ export class TaskHubApplication {
       }
     }
     if (!startedOffline) {
-      await this.startCodexForConfigured(signal);
+      await this.ensureConfiguredCodexLaunchAttempt(signal);
     }
     if (!synchronizationDeferred) {
       const runtimeResult = await runtime.start(signal);
       if (runtimeResult.kind === "synchronized") {
         await this.afterSynchronizedState(runtimeResult, signal);
-        await this.verifyConfiguredCodexCapabilities(signal);
       } else if (runtimeResult.kind === "aborted") {
         throw new Error("設定済みアプリケーションの起動同期が中断されました。");
       } else if (
@@ -1534,14 +1583,6 @@ export class TaskHubApplication {
   }
 
   private async startCodexForConfigured(signal: AbortSignal): Promise<void> {
-    const configuredAvailability = this.requireContext().codex;
-    if (configuredAvailability.kind === "unavailable") {
-      this.codexAvailability = configuredAvailability;
-      this.aiStartResult = undefined;
-      this.codexAuthenticationRequired = false;
-      this.publishAiStatus();
-      return;
-    }
     this.publishAiStatus();
     const detected = await this.detectCodexSafely(signal);
     this.codexAvailability = detected;
@@ -1562,6 +1603,89 @@ export class TaskHubApplication {
     this.codexAuthenticationRequired = authentication.kind === "required";
     this.aiStartResult = this.codexAdapter.getStartResult();
     this.publishAiStatus();
+  }
+
+  private async startUnstartedConfiguredCodexSafely(signal: AbortSignal): Promise<void> {
+    if (this.codexSession.getState() !== "created") {
+      return;
+    }
+    if (this.aiStartResult != null) {
+      throw new Error("未開始のCodexセッションに起動済み結果が設定されています。");
+    }
+    try {
+      await this.startCodexForConfigured(signal);
+    } catch (error: unknown) {
+      this.rethrowFeatureAbort(error, signal);
+      this.recordFeatureFailure(
+        error,
+        "codex",
+        "オンライン復帰後にCodexを開始できないためAI機能を無効にしました。",
+      );
+      this.codexAvailability = setupCodexAvailabilitySchema.parse({
+        kind: "unavailable",
+        reason_code: "startup_failed",
+      });
+      this.aiStartResult = undefined;
+      this.codexAuthenticationRequired = false;
+      this.publishAiStatus();
+    }
+  }
+
+  private async ensureConfiguredCodexLaunchAttempt(
+    signal: AbortSignal,
+  ): Promise<void> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const launchState = this.configuredCodexLaunchState;
+    if (launchState.kind === "settled") {
+      return;
+    }
+    if (launchState.kind === "running") {
+      await launchState.operation;
+      throwIfAborted(signal);
+      return;
+    }
+    const operation = this.startUnstartedConfiguredCodexSafely(signal);
+    this.configuredCodexLaunchState = { kind: "running", operation };
+    try {
+      await operation;
+    } finally {
+      const currentState = this.configuredCodexLaunchState;
+      if (
+        currentState.kind === "running"
+        && currentState.operation === operation
+      ) {
+        this.configuredCodexLaunchState = { kind: "settled" };
+      }
+    }
+  }
+
+  private async synchronizeConfiguredCodexAfterAsana(
+    signal: AbortSignal,
+  ): Promise<void> {
+    validateAbortSignal(signal);
+    const runningSynchronization = this.configuredCodexSynchronizationPromise;
+    if (runningSynchronization != null) {
+      await runningSynchronization;
+      throwIfAborted(signal);
+      return;
+    }
+    const synchronization = this.performConfiguredCodexSynchronization(signal);
+    this.configuredCodexSynchronizationPromise = synchronization;
+    try {
+      await synchronization;
+    } finally {
+      if (this.configuredCodexSynchronizationPromise === synchronization) {
+        this.configuredCodexSynchronizationPromise = undefined;
+      }
+    }
+  }
+
+  private async performConfiguredCodexSynchronization(
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.ensureConfiguredCodexLaunchAttempt(signal);
+    await this.verifyConfiguredCodexCapabilities(signal);
   }
 
   private async verifyConfiguredCodexCapabilities(signal: AbortSignal): Promise<void> {
@@ -1674,6 +1798,7 @@ export class TaskHubApplication {
     void result;
     await this.recoverApplicationJournal(signal);
     await this.afterLocalStateRefresh(signal);
+    await this.synchronizeConfiguredCodexAfterAsana(signal);
   }
 
   private afterGuiEdit(
@@ -1842,6 +1967,11 @@ export class TaskHubApplication {
     void this.afterLocalStateRefresh(this.options.lifecycle_signal).catch(
       (error: unknown) => this.notifyUnexpectedError(error, "display_order"),
     );
+    if (this.readyActivated) {
+      void this.synchronizeConfiguredCodexAfterAsana(this.options.lifecycle_signal).catch(
+        (error: unknown) => this.notifyUnexpectedError(error, "codex"),
+      );
+    }
   }
 
   private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
@@ -2211,6 +2341,13 @@ export class TaskHubApplication {
 
   private assertWritesAllowed(): void {
     this.assertOperationalReady();
+    const synchronizationState = this.requireRuntime().getState();
+    if (
+      synchronizationState.kind !== "online"
+      || synchronizationState.last_error_code != null
+    ) {
+      throw new Error("Asana同期が正常なオンライン状態になるまで書き込みを開始できません。");
+    }
     if (
       this.journalRecoveryPending
       || this.database.getIncompleteApplicationJournals().length > 0
@@ -2269,7 +2406,6 @@ export class TaskHubApplication {
             : runtime.manualSync(signal),
         );
         await this.afterSynchronizedState(result, signal);
-        await this.verifyConfiguredCodexCapabilities(signal);
         return toIpcSyncResult(result.result);
       },
       onState: (listener) => {
