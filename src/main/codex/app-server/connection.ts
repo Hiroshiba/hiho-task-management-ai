@@ -126,6 +126,17 @@ type RpcResponseError = z.infer<typeof rpcResponseErrorSchema>;
 type RpcNotificationEnvelope = z.infer<typeof rpcNotificationEnvelopeSchema>;
 type RpcServerRequestEnvelope = z.infer<typeof rpcServerRequestEnvelopeSchema>;
 
+type ProcessTerminationTarget =
+  | { readonly kind: "direct_child" }
+  | {
+      readonly kind: "posix_process_group";
+      readonly process_group_id: number;
+    };
+
+type ProcessSignalResult =
+  | { readonly kind: "sent" }
+  | { readonly kind: "not_running" };
+
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: unknown) => void;
@@ -157,6 +168,35 @@ function validateAbortSignal(signal: AbortSignal): void {
   ) {
     throw new TypeError("AbortSignalが必要です。");
   }
+}
+
+function validateDetachedProcessGroupId(pid: number | undefined): number {
+  if (
+    pid == null
+    || !Number.isSafeInteger(pid)
+    || pid <= 1
+    || pid === process.pid
+    || pid === process.ppid
+  ) {
+    throw new Error("Codex app-serverの専用プロセスグループIDが不正です。");
+  }
+  return pid;
+}
+
+function isNoSuchProcessError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && error.code === "ESRCH";
+}
+
+function createProcessSignalError(
+  signal: NodeJS.Signals,
+  cause: unknown,
+): Error {
+  return new Error(
+    `Codex app-serverへ${signal}を送信できませんでした。`,
+    { cause },
+  );
 }
 
 function compareNumericRequestId(id: CodexRpcId, nextId: number): boolean {
@@ -233,6 +273,7 @@ export class CodexAppServerConnection {
   private codexHome: string | undefined;
   private state: ConnectionState = "created";
   private child: ChildProcess | undefined;
+  private processTerminationTarget: ProcessTerminationTarget | undefined;
   private stdoutReader: Interface | undefined;
   private stderrReader: Interface | undefined;
   private nextRequestId = 1;
@@ -522,7 +563,7 @@ export class CodexAppServerConnection {
         if (child.stdin != null && !child.stdin.destroyed) {
           child.stdin.end();
         }
-        if (child.exitCode != null || child.signalCode != null) {
+        if (!this.isProcessTreeRunning(child)) {
           this.finishStop();
           return;
         }
@@ -539,6 +580,88 @@ export class CodexAppServerConnection {
     return this.stopPromise;
   }
 
+  private validatedProcessGroupId(
+    child: ChildProcess,
+    target: Extract<ProcessTerminationTarget, {
+      readonly kind: "posix_process_group";
+    }>,
+  ): number {
+    const processGroupId = validateDetachedProcessGroupId(child.pid);
+    if (processGroupId !== target.process_group_id) {
+      throw new Error("Codex app-serverの専用プロセスグループIDが変化しました。");
+    }
+    return processGroupId;
+  }
+
+  private isProcessTreeRunning(child: ChildProcess): boolean {
+    const target = this.processTerminationTarget;
+    if (target == null || target.kind === "direct_child") {
+      return child.exitCode == null && child.signalCode == null;
+    }
+    const processGroupId = this.validatedProcessGroupId(child, target);
+    try {
+      process.kill(-processGroupId, 0);
+      return true;
+    } catch (error: unknown) {
+      if (isNoSuchProcessError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private signalProcessTree(
+    child: ChildProcess,
+    signal: NodeJS.Signals,
+  ): ProcessSignalResult {
+    const target = this.processTerminationTarget;
+    if (target == null || target.kind === "direct_child") {
+      if (child.exitCode != null || child.signalCode != null) {
+        return { kind: "not_running" };
+      }
+      let sent: boolean;
+      try {
+        sent = child.kill(signal);
+      } catch (error: unknown) {
+        throw createProcessSignalError(signal, error);
+      }
+      if (sent) {
+        return { kind: "sent" };
+      }
+      if (child.exitCode != null || child.signalCode != null) {
+        return { kind: "not_running" };
+      }
+      throw createProcessSignalError(
+        signal,
+        new Error("子プロセス停止APIがシグナル送信を拒否しました。"),
+      );
+    }
+    const processGroupId = this.validatedProcessGroupId(child, target);
+    let sent: boolean;
+    try {
+      sent = process.kill(-processGroupId, signal);
+    } catch (error: unknown) {
+      if (isNoSuchProcessError(error)) {
+        return { kind: "not_running" };
+      }
+      throw createProcessSignalError(signal, error);
+    }
+    if (sent) {
+      return { kind: "sent" };
+    }
+    try {
+      if (!this.isProcessTreeRunning(child)) {
+        return { kind: "not_running" };
+      }
+    } catch (error: unknown) {
+      throw createProcessSignalError(signal, error);
+    }
+    throw createProcessSignalError(
+      signal,
+      new Error("プロセスグループ停止APIがシグナル送信を拒否しました。"),
+    );
+  }
+
   private forceStopChild(): void {
     if (this.state !== "stopping") {
       return;
@@ -549,32 +672,65 @@ export class CodexAppServerConnection {
       this.finishStop();
       return;
     }
-    if (child.exitCode != null || child.signalCode != null) {
-      this.finishStop();
-      return;
-    }
-
     try {
-      if (!child.killed) {
-        child.kill("SIGKILL");
+      if (!this.isProcessTreeRunning(child)) {
+        this.finishStop();
+        return;
+      }
+      const signalResult = this.signalProcessTree(child, "SIGKILL");
+      if (signalResult.kind === "not_running") {
+        this.finishStop();
+        return;
       }
     } catch (error: unknown) {
       this.finishStop(error);
       return;
     }
     this.forcedStopTimer = setTimeout(() => {
-      this.finishStop(new CodexStopTimeoutError());
+      this.finishForcedStop();
     }, forcedStopTimeoutMs);
   }
 
+  private finishForcedStop(): void {
+    this.forcedStopTimer = undefined;
+    if (this.state !== "stopping") {
+      return;
+    }
+    const child = this.child;
+    if (child == null) {
+      this.finishStop();
+      return;
+    }
+    try {
+      if (this.isProcessTreeRunning(child)) {
+        this.finishStop(new CodexStopTimeoutError());
+        return;
+      }
+      this.finishStop();
+    } catch (error: unknown) {
+      this.finishStop(error);
+    }
+  }
+
   private startProcess(): void {
+    const usePosixProcessGroup = process.platform !== "win32";
     const child = spawn(this.executable, ["app-server"], {
+      detached: usePosixProcessGroup,
       env: this.environment,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     this.child = child;
+    child.on("error", (error: Error) => {
+      this.handleChildError(error);
+    });
+    this.processTerminationTarget = usePosixProcessGroup
+      ? {
+        kind: "posix_process_group",
+        process_group_id: validateDetachedProcessGroupId(child.pid),
+      }
+      : { kind: "direct_child" };
     if (child.stdin == null || child.stdout == null || child.stderr == null) {
       throw new CodexStdioError();
     }
@@ -591,9 +747,6 @@ export class CodexAppServerConnection {
     });
     this.stderrReader.on("line", () => {
       this.handleStderrLine();
-    });
-    child.on("error", (error: Error) => {
-      this.handleChildError(error);
     });
     child.on("exit", (exitCode: number | null, signal: NodeJS.Signals | null) => {
       this.handleChildExit(exitCode, signal);
@@ -1000,7 +1153,18 @@ export class CodexAppServerConnection {
 
   private handleChildExit(exitCode: number | null, signal: NodeJS.Signals | null): void {
     if (this.state === "stopping") {
-      this.finishStop();
+      const child = this.child;
+      if (child == null) {
+        this.finishStop();
+        return;
+      }
+      try {
+        if (!this.isProcessTreeRunning(child)) {
+          this.finishStop();
+        }
+      } catch (error: unknown) {
+        this.finishStop(error);
+      }
       return;
     }
     if (this.state === "stopped") {
@@ -1139,8 +1303,8 @@ export class CodexAppServerConnection {
       this.emitDiagnostic({ kind: "stop_error", code: "stop_error" });
     }
     try {
-      if (child.exitCode == null && child.signalCode == null && !child.killed) {
-        child.kill();
+      if (this.isProcessTreeRunning(child)) {
+        this.signalProcessTree(child, "SIGTERM");
       }
     } catch {
       this.emitDiagnostic({ kind: "stop_error", code: "stop_error" });
