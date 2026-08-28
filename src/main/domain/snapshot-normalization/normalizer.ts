@@ -364,6 +364,7 @@ function createBaseTask(
   task: AsanaTaskResponse,
   status: StatusProjection,
   external: ExternalProjection,
+  childGids: readonly string[],
 ): Task {
   const optionalValues: {
     readonly due_on?: string;
@@ -388,9 +389,7 @@ function createBaseTask(
     tags: task.tags.map(
       (tag): TaskTag => ({ gid: tag.gid, name: tag.name }),
     ),
-    child_gids: [...task.subtasks.map((subtask) => subtask.gid)].sort(
-      compareStrings,
-    ),
+    child_gids: [...childGids],
     dependencies: [...external.dependencies],
     obsidian_links: [...external.obsidian_links],
     activity_anchor_on: external.activity_anchor_on,
@@ -399,6 +398,29 @@ function createBaseTask(
     ...optionalValues,
   };
   return taskSchema.parse(base);
+}
+
+function createChildGidsByParent(
+  tasks: readonly AsanaTaskResponse[],
+): ReadonlyMap<string, readonly string[]> {
+  const childGidsByParent = new Map<string, string[]>();
+  for (const task of tasks) {
+    childGidsByParent.set(task.gid, []);
+  }
+  for (const task of tasks) {
+    if (task.parent == null) {
+      continue;
+    }
+    const childGids = childGidsByParent.get(task.parent.gid);
+    if (childGids == null) {
+      continue;
+    }
+    childGids.push(task.gid);
+  }
+  for (const childGids of childGidsByParent.values()) {
+    childGids.sort(compareStrings);
+  }
+  return childGidsByParent;
 }
 
 function findGraphTask(
@@ -596,6 +618,7 @@ export function normalizeAsanaSnapshot(
   const sortedTasks = [...validatedInput.tasks].sort((left, right) =>
     compareStrings(left.gid, right.gid),
   );
+  const childGidsByParent = createChildGidsByParent(sortedTasks);
   const statusPlans: SnapshotStatusPlan[] = [];
   const lastActiveStatusUpdates: SnapshotExternalDataWritePlan["last_active_status_updates"] = [];
   const initializationRequests: SnapshotExternalDataInitializationRequest[] = [];
@@ -626,7 +649,11 @@ export function normalizeAsanaSnapshot(
       ingestion,
     );
     const membership = membershipState(parsedTask, validatedInput.project_gid);
-    const baseTask = createBaseTask(parsedTask, status, external);
+    const childGids = childGidsByParent.get(parsedTask.gid);
+    if (childGids == null) {
+      throw new Error("Asanaタスクの子タスクGIDを構築できません。");
+    }
+    const baseTask = createBaseTask(parsedTask, status, external, childGids);
     baseTasksByGid.set(baseTask.gid, baseTask);
     graphInputs.push({
       gid: baseTask.gid,

@@ -147,16 +147,6 @@ function assertParentChildReferencesAreAcyclic(
       }
       children.add(task.gid);
     }
-    const children = childrenByParent.get(task.gid);
-    if (children == null) {
-      throw new Error("Asanaタスクの親子参照を構築できません。");
-    }
-    for (const subtask of task.subtasks) {
-      if (!tasks.has(subtask.gid)) {
-        throw new Error("Asanaタスクのsubtasks参照先を取得できません。");
-      }
-      children.add(subtask.gid);
-    }
   }
 
   const visiting = new Set<string>();
@@ -182,6 +172,28 @@ function assertParentChildReferencesAreAcyclic(
 
   for (const task of tasks.values()) {
     visitChildren(task.gid);
+  }
+}
+
+function assertSubtasksBelongToTask(
+  task: AsanaTaskResponse,
+  subtasks: readonly AsanaTaskResponse[],
+): void {
+  if (subtasks.length !== task.num_subtasks) {
+    throw new Error("Asanaサブタスクの取得件数がnum_subtasksと一致しません。");
+  }
+  const seenSubtaskGids = new Set<string>();
+  for (const subtask of subtasks) {
+    if (seenSubtaskGids.has(subtask.gid)) {
+      throw new Error("Asanaサブタスク一覧に同じGIDが重複しています。");
+    }
+    seenSubtaskGids.add(subtask.gid);
+    if (subtask.parent == null) {
+      throw new Error("Asanaサブタスクの親参照を取得できません。");
+    }
+    if (subtask.parent.gid !== task.gid) {
+      throw new Error("Asanaサブタスクの親参照が探索対象と一致しません。");
+    }
   }
 }
 
@@ -257,10 +269,11 @@ export class AsanaFullSyncSource {
       if (expandedTaskGids.size > maximumTaskCount) {
         throw new Error("フル同期の探索件数が上限を超えました。");
       }
-      if (task.subtasks.length === 0) {
+      if (task.num_subtasks === 0) {
         continue;
       }
       const subtasks = await this.readClient.listSubtasks(task.gid, signal);
+      assertSubtasksBelongToTask(task, subtasks);
       for (const subtask of subtasks) {
         if (subtask.gid === task.gid) {
           throw new Error("Asanaタスク探索が同じGIDから進みません。");
@@ -269,7 +282,7 @@ export class AsanaFullSyncSource {
         const selectedSubtask = mergeTaskResponse(tasks, subtask);
         if (
           selectedSubtask === subtask
-          && selectedSubtask.subtasks.length > 0
+          && selectedSubtask.num_subtasks > 0
           && expandedTaskGids.delete(subtask.gid)
         ) {
           pendingTaskGids.push(subtask.gid);

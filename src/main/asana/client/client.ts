@@ -36,8 +36,7 @@ const taskOptFields = [
   "tags.name",
   "parent.gid",
   "parent.name",
-  "subtasks.gid",
-  "subtasks.name",
+  "num_subtasks",
   "projects.gid",
   "projects.name",
 ].join(",");

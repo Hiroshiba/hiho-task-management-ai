@@ -505,7 +505,7 @@ export const asanaTaskResponseSchema = z
     memberships: z.array(asanaMembershipResponseSchema),
     tags: z.array(asanaTagResponseSchema),
     parent: asanaTaskReferenceResponseSchema.nullable(),
-    subtasks: z.array(asanaTaskReferenceResponseSchema),
+    num_subtasks: z.number().int().nonnegative(),
     projects: z.array(asanaProjectReferenceResponseSchema),
   })
   .strip();
