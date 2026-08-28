@@ -11,7 +11,7 @@ export {
 export {
   proposalValidationInputSchema,
   proposalValidationResultSchema,
-  createObsidianEvidenceLocator,
+  createChildrenOnlyEvidenceLocator,
   createTaskEvidenceLocator,
   trustedStatusEvidenceReferenceSchema,
   trustedStatusEvidenceReferencesSchema,

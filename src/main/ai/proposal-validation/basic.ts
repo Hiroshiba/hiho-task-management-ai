@@ -3,10 +3,8 @@ import {
   areaSchema,
   gidSchema,
   identifierSchema,
-  relativePathSchema,
   snapshotHashSchema,
   taskSchema,
-  vaultIdSchema,
   type Importance,
   type ObsidianLink,
   type ParentWorkMode,
@@ -35,12 +33,9 @@ export function createTaskEvidenceLocator(taskGid: string): string {
   return `task:${gidSchema.parse(taskGid)}`;
 }
 
-/** Obsidian根拠の正規locatorを作成します。 */
-export function createObsidianEvidenceLocator(
-  vaultId: string,
-  path: string,
-): string {
-  return `obsidian:${vaultIdSchema.parse(vaultId)}:${relativePathSchema.parse(path)}`;
+/** 全子タスク完了根拠の正規locatorを作成します。 */
+export function createChildrenOnlyEvidenceLocator(taskGid: string): string {
+  return `${createTaskEvidenceLocator(taskGid)}#children-only-all-completed`;
 }
 
 /** 当該ターンへ提供された完了・取り下げ根拠を検証するスキーマです。 */
@@ -49,20 +44,34 @@ export const trustedStatusEvidenceReferenceSchema = z.discriminatedUnion("kind",
     .object({
       kind: z.literal("user_message"),
       locator: nonBlankLocatorSchema,
+      target_task_gid: gidSchema,
+      allowed_operation: z.enum(["complete", "withdraw"]),
     })
     .strict(),
   z
     .object({
       kind: z.literal("task"),
       locator: nonBlankLocatorSchema,
+      target_task_gid: gidSchema,
+      allowed_operation: z.enum(["complete", "withdraw"]),
+      validation_kind: z.enum([
+        "explicit_text",
+        "children_only_all_completed",
+      ]),
     })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("obsidian"),
-      locator: nonBlankLocatorSchema,
-    })
-    .strict(),
+    .strict()
+    .superRefine((reference, context) => {
+      if (
+        reference.validation_kind === "children_only_all_completed"
+        && reference.allowed_operation !== "complete"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["allowed_operation"],
+          message: "全子タスク完了根拠は完了操作だけに利用できます。",
+        });
+      }
+    }),
   z
     .object({
       kind: z.literal("external_tool"),
@@ -749,12 +758,17 @@ function validateStatusEvidence(
     `${evidence.reference.kind}\u0000${evidence.reference.locator}`,
   );
   if (evidence.kind === "user_explicit") {
-    if (trustedReference?.kind !== "user_message") {
+    if (
+      operation.target.kind !== "existing"
+      || trustedReference?.kind !== "user_message"
+      || trustedReference.target_task_gid !== operation.target.gid
+      || trustedReference.allowed_operation !== operation.operation
+    ) {
       addError(
         errorsByOperation,
         operation.operation_id,
         "status_evidence_invalid",
-        "利用者の明示根拠locatorは当該ターンへ提供された利用者メッセージにありません。",
+        "利用者の明示根拠は対象タスクと操作種別が固定検証済みの当該ターン記録に一致しません。",
       );
     }
     return;
@@ -769,23 +783,18 @@ function validateStatusEvidence(
       );
       return;
     }
-    const expectedTaskLocator = createTaskEvidenceLocator(operation.target.gid);
-    const expectedObsidianLocators = new Set(
-      task.obsidian_links.map((link) =>
-        createObsidianEvidenceLocator(link.vault_id, link.path)),
-    );
-    const isTargetTask = trustedReference?.kind === "task"
-      && evidence.reference.kind === "task"
-      && evidence.reference.locator === expectedTaskLocator;
-    const isRegisteredNote = trustedReference?.kind === "obsidian"
-      && evidence.reference.kind === "obsidian"
-      && expectedObsidianLocators.has(evidence.reference.locator);
-    if (!isTargetTask && !isRegisteredNote) {
+    if (
+      evidence.reference.kind !== "task"
+      || trustedReference?.kind !== "task"
+      || trustedReference.validation_kind !== "explicit_text"
+      || trustedReference.target_task_gid !== operation.target.gid
+      || trustedReference.allowed_operation !== operation.operation
+    ) {
       addError(
         errorsByOperation,
         operation.operation_id,
         "status_evidence_invalid",
-        "タスクまたはノートの明示根拠locatorは対象タスクの信頼済み根拠にありません。",
+        "タスク本文の明示根拠は対象タスクと操作種別が固定検証済みの当該ターン記録に一致しません。Obsidian本文はこの検証境界では根拠にできません。",
       );
     }
     return;
@@ -819,12 +828,16 @@ function validateStatusEvidence(
   }
   if (evidence.kind === "children_only_all_completed") {
     const targetTaskLocator = operation.target.kind === "existing"
-      ? createTaskEvidenceLocator(operation.target.gid)
+      ? createChildrenOnlyEvidenceLocator(operation.target.gid)
       : undefined;
     if (
       trustedReference?.kind !== "task"
       || targetTaskLocator == null
       || evidence.reference.locator !== targetTaskLocator
+      || trustedReference.validation_kind !== "children_only_all_completed"
+      || operation.target.kind !== "existing"
+      || trustedReference.target_task_gid !== operation.target.gid
+      || trustedReference.allowed_operation !== operation.operation
     ) {
       addError(
         errorsByOperation,

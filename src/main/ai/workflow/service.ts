@@ -54,7 +54,7 @@ import {
   type NormalizationTask,
 } from "../../domain/normalization";
 import {
-  createObsidianEvidenceLocator,
+  createChildrenOnlyEvidenceLocator,
   createTaskEvidenceLocator,
   trustedStatusEvidenceReferencesSchema,
   validateProposal,
@@ -91,6 +91,77 @@ import {
 } from "./errors";
 
 const maximumWorkflowProposals = 32;
+const maximumPromptStatusEvidenceReferences = 256;
+
+type TrustedStatusOperation = "complete" | "withdraw";
+
+type ExplicitStatusClaim = {
+  readonly target_task_gid: string;
+  readonly allowed_operation: TrustedStatusOperation;
+};
+
+type AllowedStatusPhrase = {
+  readonly phrase: string;
+  readonly operation: TrustedStatusOperation;
+};
+
+const allowedStatusPhrases: readonly AllowedStatusPhrase[] = [
+  { phrase: "完了しました", operation: "complete" },
+  { phrase: "終わりました", operation: "complete" },
+  { phrase: "完了した", operation: "complete" },
+  { phrase: "終わった", operation: "complete" },
+  { phrase: "不要になりました", operation: "withdraw" },
+  { phrase: "取り下げました", operation: "withdraw" },
+  { phrase: "中止しました", operation: "withdraw" },
+  { phrase: "不要になった", operation: "withdraw" },
+  { phrase: "取り下げた", operation: "withdraw" },
+  { phrase: "中止した", operation: "withdraw" },
+];
+
+const ambiguousStatusMarkers: readonly string[] = [
+  "未完了",
+  "完了していない",
+  "終わっていない",
+  "不要ではない",
+  "中止していない",
+  "取り下げていない",
+  "ではない",
+  "じゃない",
+  "ません",
+  "なかった",
+  "まだ",
+  "かもしれ",
+  "かも",
+  "おそらく",
+  "たぶん",
+  "と思",
+  "らしい",
+  "ようだ",
+  "ようです",
+  "はず",
+  "つもり",
+  "でしょう",
+  "未確認",
+  "不明",
+  "誤り",
+  "訂正",
+  "撤回",
+  "と書いて",
+  "と入力",
+  "と表示",
+  "と聞",
+  "と言われ",
+  "と仮定",
+  "という文",
+  "例文",
+  "引用",
+  "間違",
+  "実際は違",
+  "?",
+  "？",
+];
+
+const targetTerminalParticles = new Set(["は", "を", "が", ":", "："]);
 
 type WorkflowValidation = {
   readonly operations: readonly {
@@ -126,6 +197,7 @@ type PreparedTurn = {
   readonly baseline: BaselineSnapshot;
   readonly baseline_snapshot_hash: string;
   readonly taskctl_snapshot: TaskctlSnapshot;
+  readonly user_message_locator: string;
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
@@ -401,29 +473,205 @@ export function createBaselineSnapshot(
   });
 }
 
+function addTaskReferenceToken(
+  index: Map<string, Set<string>>,
+  token: string,
+  taskGid: string,
+): void {
+  const existing = index.get(token);
+  if (existing == null) {
+    index.set(token, new Set([taskGid]));
+    return;
+  }
+  existing.add(taskGid);
+}
+
+function createTaskReferenceIndex(
+  tasks: readonly Task[],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const index = new Map<string, Set<string>>();
+  for (const task of tasks) {
+    addTaskReferenceToken(index, task.gid, task.gid);
+    addTaskReferenceToken(index, `task:${task.gid}`, task.gid);
+    addTaskReferenceToken(index, `GID:${task.gid}`, task.gid);
+    addTaskReferenceToken(index, `GID：${task.gid}`, task.gid);
+    const titleTokens = [
+      task.title,
+      `「${task.title}」`,
+      `『${task.title}』`,
+      `【${task.title}】`,
+      `"${task.title}"`,
+      `'${task.title}'`,
+      `タスク:${task.title}`,
+      `タスク：${task.title}`,
+      `対象:${task.title}`,
+      `対象：${task.title}`,
+    ];
+    for (const token of titleTokens) {
+      addTaskReferenceToken(index, token, task.gid);
+    }
+  }
+  return index;
+}
+
+function resolveTaskReference(
+  rawReference: string,
+  index: ReadonlyMap<string, ReadonlySet<string>>,
+): string | undefined {
+  const trimmed = rawReference.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  const candidates = new Set([trimmed]);
+  const finalCharacter = trimmed.at(-1);
+  if (finalCharacter != null && targetTerminalParticles.has(finalCharacter)) {
+    const withoutParticle = trimmed.slice(0, -1).trim();
+    if (withoutParticle.length > 0) {
+      candidates.add(withoutParticle);
+    }
+  }
+  let resolved: string | undefined;
+  for (const candidate of candidates) {
+    const matchedTaskGids = index.get(candidate);
+    if (matchedTaskGids == null) {
+      continue;
+    }
+    for (const taskGid of matchedTaskGids) {
+      if (resolved != null && resolved !== taskGid) {
+        return undefined;
+      }
+      resolved = taskGid;
+    }
+  }
+  return resolved;
+}
+
+function parseExplicitStatusStatement(
+  statement: string,
+  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
+): ExplicitStatusClaim | undefined {
+  const trimmed = statement.trim();
+  let matchedPhrase: AllowedStatusPhrase | undefined;
+  for (const allowedPhrase of allowedStatusPhrases) {
+    if (!trimmed.endsWith(allowedPhrase.phrase)) {
+      continue;
+    }
+    if (matchedPhrase != null) {
+      return undefined;
+    }
+    matchedPhrase = allowedPhrase;
+  }
+  if (matchedPhrase == null) {
+    return undefined;
+  }
+  const rawReference = trimmed.slice(0, -matchedPhrase.phrase.length);
+  const targetTaskGid = resolveTaskReference(rawReference, taskReferenceIndex);
+  if (targetTaskGid == null) {
+    return undefined;
+  }
+  return {
+    target_task_gid: targetTaskGid,
+    allowed_operation: matchedPhrase.operation,
+  };
+}
+
+function detectExplicitStatusClaims(
+  text: string,
+  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
+): readonly ExplicitStatusClaim[] {
+  if (ambiguousStatusMarkers.some((marker) => text.includes(marker))) {
+    return [];
+  }
+  const operationsByTask = new Map<string, Set<TrustedStatusOperation>>();
+  for (const statement of text.split(/[。\n\r！？!?；;]+/u)) {
+    const claim = parseExplicitStatusStatement(statement, taskReferenceIndex);
+    if (claim == null) {
+      continue;
+    }
+    const operations = operationsByTask.get(claim.target_task_gid);
+    if (operations == null) {
+      operationsByTask.set(
+        claim.target_task_gid,
+        new Set([claim.allowed_operation]),
+      );
+      continue;
+    }
+    operations.add(claim.allowed_operation);
+  }
+  const claims: ExplicitStatusClaim[] = [];
+  for (const [taskGid, operations] of operationsByTask) {
+    if (operations.size !== 1) {
+      continue;
+    }
+    for (const operation of operations) {
+      claims.push({
+        target_task_gid: taskGid,
+        allowed_operation: operation,
+      });
+    }
+  }
+  return claims.sort((left, right) =>
+    compareStrings(left.target_task_gid, right.target_task_gid));
+}
+
+function allChildrenAreCompleted(
+  task: Task,
+  tasksByGid: ReadonlyMap<string, Task>,
+): boolean {
+  if (task.parent_work_mode !== "children_only" || task.child_gids.length === 0) {
+    return false;
+  }
+  return task.child_gids.every((childGid) => {
+    const child = tasksByGid.get(childGid);
+    return child != null && child.status === "completed";
+  });
+}
+
 function createTrustedStatusEvidence(
   snapshot: AiWorkflowSnapshot,
+  userMessage: string,
   userMessageLocator: string,
   externalEvidence: readonly TrustedExternalStatusEvidence[],
 ): readonly TrustedStatusEvidenceReference[] {
-  const references: TrustedStatusEvidenceReference[] = [{
-    kind: "user_message",
-    locator: userMessageLocator,
-  }];
-  const obsidianLocators = new Set<string>();
-  for (const task of snapshot.tasks) {
-    references.push({
-      kind: "task",
-      locator: createTaskEvidenceLocator(task.gid),
+  const taskReferenceIndex = createTaskReferenceIndex(snapshot.tasks);
+  const tasksByGid = new Map(snapshot.tasks.map((task) => [task.gid, task]));
+  const promptReferences: TrustedStatusEvidenceReference[] = [];
+  for (const claim of detectExplicitStatusClaims(userMessage, taskReferenceIndex)) {
+    promptReferences.push({
+      kind: "user_message",
+      locator: `${userMessageLocator}#${claim.allowed_operation}:${claim.target_task_gid}`,
+      target_task_gid: claim.target_task_gid,
+      allowed_operation: claim.allowed_operation,
     });
-    for (const link of task.obsidian_links) {
-      obsidianLocators.add(createObsidianEvidenceLocator(link.vault_id, link.path));
+  }
+  const sortedTasks = [...snapshot.tasks].sort((left, right) =>
+    compareStrings(left.gid, right.gid));
+  for (const task of sortedTasks) {
+    const taskClaims = detectExplicitStatusClaims(task.notes, taskReferenceIndex)
+      .filter((claim) => claim.target_task_gid === task.gid);
+    for (const claim of taskClaims) {
+      promptReferences.push({
+        kind: "task",
+        locator: `${createTaskEvidenceLocator(task.gid)}#notes-${claim.allowed_operation}`,
+        target_task_gid: task.gid,
+        allowed_operation: claim.allowed_operation,
+        validation_kind: "explicit_text",
+      });
+    }
+    if (allChildrenAreCompleted(task, tasksByGid)) {
+      promptReferences.push({
+        kind: "task",
+        locator: createChildrenOnlyEvidenceLocator(task.gid),
+        target_task_gid: task.gid,
+        allowed_operation: "complete",
+        validation_kind: "children_only_all_completed",
+      });
     }
   }
-  for (const locator of [...obsidianLocators].sort(compareStrings)) {
-    references.push({ kind: "obsidian", locator });
-  }
-  references.push(...externalEvidence);
+  const references = [
+    ...promptReferences.slice(0, maximumPromptStatusEvidenceReferences),
+    ...externalEvidence,
+  ];
   return trustedStatusEvidenceReferencesSchema.parse(references);
 }
 
@@ -431,13 +679,6 @@ function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
 ): string {
-  const userMessageReferences = prepared.trusted_status_evidence.filter(
-    (reference) => reference.kind === "user_message",
-  );
-  const userMessageReference = userMessageReferences[0];
-  if (userMessageReference == null || userMessageReferences.length !== 1) {
-    throw new AiWorkflowError("利用者メッセージの信頼済み根拠を一意に特定できません。");
-  }
   const context = aiWorkflowTurnContextSchema.parse({
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
     app_version: prepared.snapshot.app_version,
@@ -451,9 +692,13 @@ function createTurnPrompt(
     `基準コンテキスト: ${serializedContext}`,
     "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
     "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
-    `利用者要求の信頼済み根拠locator: ${userMessageReference.locator}`,
-    "タスク根拠locatorはtask:<GID>だけを使用してください。対象タスク自身のGIDだけが検証されます。",
-    "Obsidian根拠locatorはobsidian:<vault_id>:<path>だけを使用してください。対象タスクに登録済みのリンクだけが検証されます。",
+    `利用者要求の一般根拠locator: ${prepared.user_message_locator}`,
+    "一般根拠locatorは完了・取り下げの根拠ではありません。",
+    `固定検証済みの完了・取り下げ根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,
+    "完了・取り下げ案には一覧中の対象GID、許可操作、検証種別に一致するkindとlocatorだけを使用してください。",
+    "user_messageはuser_explicitとして使用してください。",
+    "explicit_textはtask_or_note_explicit、children_only_all_completedは同名の構造的根拠として使用してください。",
+    "Obsidian本文はこのターンで固定検証されていないため、登録リンクやexcerptを完了・取り下げ根拠に使用しないでください。",
     "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
     `明示された分割依頼locator: ${canonicalizeJson(request.explicit_split_request_locators)}`,
     `利用者要求: ${request.message}`,
@@ -1438,8 +1683,10 @@ export class AiWorkflowService {
                 baseline,
                 baseline_snapshot_hash: baselineSnapshotHash,
                 taskctl_snapshot: taskctlSnapshot,
+                user_message_locator: userMessageLocator,
                 trusted_status_evidence: createTrustedStatusEvidence(
                   snapshot,
+                  request.message,
                   userMessageLocator,
                   [],
                 ),
@@ -1473,6 +1720,7 @@ export class AiWorkflowService {
           ...prepared,
           trusted_status_evidence: createTrustedStatusEvidence(
             prepared.snapshot,
+            request.message,
             userMessageLocator,
             externalEvidence,
           ),
