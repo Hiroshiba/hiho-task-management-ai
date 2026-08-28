@@ -8,6 +8,7 @@ import {
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
+  taskStatusSchema,
   type AsanaTaskResponse,
   type CleanupItem,
   type Task,
@@ -104,6 +105,35 @@ const normalizationPlanSummarySchema = z
   })
   .strict();
 
+const normalizationNotificationSchema = z
+  .object({
+    kind: z.literal("status_reconciled"),
+    task_gid: gidSchema,
+    status: taskStatusSchema,
+    message: z.string().min(1).max(160),
+  })
+  .strict();
+
+const normalizationNotificationsSchema = z
+  .array(normalizationNotificationSchema)
+  .max(10_000)
+  .superRefine((notifications, context) => {
+    let previousTaskGid: string | undefined;
+    for (const [index, notification] of notifications.entries()) {
+      if (
+        previousTaskGid != null
+        && previousTaskGid >= notification.task_gid
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "task_gid"],
+          message: "正規化通知は重複させずタスクGID順に指定してください。",
+        });
+      }
+      previousTaskGid = notification.task_gid;
+    }
+  });
+
 const coordinatorInputSchema = z
   .object({
     mode: synchronizationModeSchema,
@@ -122,6 +152,7 @@ const coordinatorResultSchema = z
     synced_at: isoDateTimeSchema,
     events_token: identifierSchema.optional(),
     application_result: asanaNormalizationPlanApplierResultSchema,
+    normalization_notifications: normalizationNotificationsSchema,
     remaining_plan: normalizationPlanSummarySchema,
     critical_errors: z.array(
       z
@@ -156,10 +187,18 @@ export const asanaSyncCoordinatorInputSchema = coordinatorInputSchema;
 /** Asana同期コーディネーターの結果を検証するスキーマです。 */
 export const asanaSyncCoordinatorResultSchema = coordinatorResultSchema;
 
+/** Asana同期で利用者へ伝える正規化通知を検証するスキーマです。 */
+export const asanaSyncNormalizationNotificationsSchema =
+  normalizationNotificationsSchema;
+
 type SynchronizationMode = z.infer<typeof synchronizationModeSchema>;
 type FallbackReason = z.infer<typeof fallbackReasonSchema>;
 type AsanaTagResponse = z.infer<typeof asanaTagResponseSchema>;
 type CriticalError = z.infer<typeof criticalErrorCodeSchema>;
+type NormalizationNotification = z.infer<typeof normalizationNotificationSchema>;
+type NormalizationOperation = z.infer<
+  typeof asanaNormalizationPlanApplierResultSchema
+>["operations"][number];
 type ProjectMetadataSource = Omit<ProjectMetadataCache, "cached_at">;
 type EstablishedEventsToken = {
   readonly sync_token: string;
@@ -211,6 +250,78 @@ function compareStrings(left: string, right: string): number {
     return 1;
   }
   return 0;
+}
+
+function isStatusReconciliationOperation(
+  operation: NormalizationOperation,
+): boolean {
+  switch (operation.operation) {
+    case "move_section":
+    case "set_completed":
+    case "initialize_external_data":
+    case "update_last_active_status":
+      return true;
+    case "update_activity_anchor_on":
+    case "add_tag":
+    case "remove_tag":
+      return false;
+  }
+}
+
+function createNormalizationNotifications(
+  initialNormalization: SnapshotNormalizationResult,
+  finalNormalization: SnapshotNormalizationResult,
+  applicationOutcome: NormalizationApplicationOutcome,
+): readonly NormalizationNotification[] {
+  if (applicationOutcome.kind === "skipped_missing_section") {
+    return normalizationNotificationsSchema.parse([]);
+  }
+  const finalTasks = new Map(
+    finalNormalization.tasks.map((task) => [task.gid, task]),
+  );
+  const finalStatusPlans = new Map(
+    finalNormalization.status_plans.map((plan) => [plan.task_gid, plan]),
+  );
+  const notifications: NormalizationNotification[] = [];
+  for (const plan of initialNormalization.status_plans) {
+    if (plan.kind !== "reconciled" || plan.notification == null) {
+      continue;
+    }
+    const operations = applicationOutcome.applicationResult.operations.filter(
+      (operation) =>
+        operation.task_gid === plan.task_gid
+        && isStatusReconciliationOperation(operation),
+    );
+    if (
+      operations.length === 0
+      || operations.some((operation) => operation.outcome === "conflict")
+    ) {
+      continue;
+    }
+    const finalTask = finalTasks.get(plan.task_gid);
+    const finalStatusPlan = finalStatusPlans.get(plan.task_gid);
+    if (finalTask == null || finalStatusPlan == null) {
+      throw new Error("正規化通知対象の最終タスク状態を取得できません。");
+    }
+    if (
+      finalTask.status !== plan.notification.status
+      || finalStatusPlan.kind !== "reconciled"
+      || finalStatusPlan.notification != null
+    ) {
+      continue;
+    }
+    notifications.push({
+      kind: plan.notification.kind,
+      task_gid: plan.task_gid,
+      status: plan.notification.status,
+      message: plan.notification.message,
+    });
+  }
+  return normalizationNotificationsSchema.parse(
+    notifications.sort((left, right) =>
+      compareStrings(left.task_gid, right.task_gid),
+    ),
+  );
 }
 
 function validateAbortSignal(signal: AbortSignal): void {
@@ -948,6 +1059,11 @@ export class AsanaSyncCoordinator {
         performed_mode: collection.performed_mode,
         synced_at: syncedAt,
         application_result: applicationOutcome.applicationResult,
+        normalization_notifications: createNormalizationNotifications(
+          firstNormalization,
+          finalNormalization,
+          applicationOutcome,
+        ),
         remaining_plan: createNormalizationPlanSummary(finalNormalization),
         critical_errors: finalNormalization.critical_errors,
         cleanup_items: finalNormalization.cleanup_items,

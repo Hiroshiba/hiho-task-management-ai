@@ -122,6 +122,13 @@ type SyncRuntimeErrorCode = Extract<
   { readonly kind: "error" }
 >["error_code"];
 
+type SyncNormalizationNotification =
+  IpcSyncResult["normalization_notifications"][number];
+
+type NormalizationNotificationDisplayState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "displayed"; readonly synced_at: string };
+
 type SyncStateReadResult =
   | { readonly kind: "received"; readonly value: IpcSyncStateEvent }
   | { readonly kind: "unavailable" };
@@ -164,6 +171,9 @@ let obsidianStatusGeneration = 0;
 let guiEditGeneration = 0;
 let lastLoadedSuccessfulSyncAt: string | undefined;
 let activeSyncReload: ActiveSyncReload = { kind: "idle" };
+let normalizationNotificationDisplayState: NormalizationNotificationDisplayState = {
+  kind: "idle",
+};
 
 const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
@@ -284,6 +294,63 @@ function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の�
   }
 }
 
+const normalizationStatusOrder: readonly SyncNormalizationNotification["status"][] = [
+  "not_started",
+  "in_progress",
+  "completed",
+  "withdrawn",
+];
+
+const normalizationStatusLabels: {
+  readonly [status in SyncNormalizationNotification["status"]]: string;
+} = {
+  not_started: "未着手",
+  in_progress: "進行中",
+  completed: "完了",
+  withdrawn: "取り下げ",
+};
+
+function createNormalizationNotificationFeedback(
+  notifications: readonly SyncNormalizationNotification[],
+): string | undefined {
+  if (notifications.length === 0) {
+    return undefined;
+  }
+  if (notifications.length === 1) {
+    const notification = notifications.at(0);
+    if (notification == null) {
+      throw new Error("状態整合化通知を取得できません。");
+    }
+    return notification.message;
+  }
+  const summaries: string[] = [];
+  for (const status of normalizationStatusOrder) {
+    const count = notifications.filter(
+      (notification) => notification.status === status,
+    ).length;
+    if (count > 0) {
+      summaries.push(`${normalizationStatusLabels[status]} ${count}件`);
+    }
+  }
+  if (summaries.length === 0) {
+    throw new Error("状態整合化通知の内訳を作成できません。");
+  }
+  return `タスク状態を整合化しました。対象 ${notifications.length}件。${summaries.join("、")}。`;
+}
+
+function includeNormalizationNotificationFeedback(
+  message: string,
+  notifications: readonly SyncNormalizationNotification[],
+): string {
+  const notificationFeedback = createNormalizationNotificationFeedback(
+    notifications,
+  );
+  if (notificationFeedback == null) {
+    return message;
+  }
+  return `${notificationFeedback} ${message}`;
+}
+
 function createSyncFeedback(result: IpcSyncResult): string {
   let appliedCount = 0;
   let alreadyAppliedCount = 0;
@@ -304,7 +371,7 @@ function createSyncFeedback(result: IpcSyncResult): string {
   const remainingWriteCount = result.remaining_plan.status_write_task_gids.length
     + result.remaining_plan.external_write_task_gids.length
     + result.remaining_plan.tag_write_task_gids.length;
-  return [
+  const synchronizationSummary = [
     `同期しました。対象 ${result.application_result.affected_gids.length}件`,
     `反映 ${appliedCount}件`,
     `反映済み ${alreadyAppliedCount}件`,
@@ -312,6 +379,10 @@ function createSyncFeedback(result: IpcSyncResult): string {
     `残り書き込み ${remainingWriteCount}件`,
     `重大エラー ${result.critical_errors.length}件。`,
   ].join("、");
+  return includeNormalizationNotificationFeedback(
+    synchronizationSummary,
+    result.normalization_notifications,
+  );
 }
 
 function recoveryRequiredFeedback(
@@ -495,11 +566,44 @@ function applySyncStateDisplay(value: IpcSyncStateEvent): void {
   setConnectionState(chromiumConnectionState(), settledSyncState(value));
 }
 
+function showNormalizationNotifications(
+  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+): void {
+  const notifications = value.normalization_notifications;
+  if (notifications == null || notifications.length === 0) {
+    return;
+  }
+  const syncedAt = value.last_successful_sync_at;
+  if (syncedAt == null) {
+    throw new Error("状態整合化通知に同期日時がありません。");
+  }
+  if (
+    normalizationNotificationDisplayState.kind === "displayed"
+    && normalizationNotificationDisplayState.synced_at === syncedAt
+  ) {
+    return;
+  }
+  const notificationFeedback = createNormalizationNotificationFeedback(
+    notifications,
+  );
+  if (notificationFeedback == null) {
+    throw new Error("状態整合化通知を表示できません。");
+  }
+  normalizationNotificationDisplayState = {
+    kind: "displayed",
+    synced_at: syncedAt,
+  };
+  feedback.value = notificationFeedback;
+}
+
 function handleSyncState(value: IpcSyncStateEvent): void {
   if (value.last_successful_sync_at != null && configured.value) {
     void reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
   }
   applySyncStateDisplay(value);
+  if (value.kind === "online") {
+    showNormalizationNotifications(value);
+  }
 }
 
 async function readCurrentSyncState(): Promise<SyncStateReadResult> {
@@ -835,10 +939,16 @@ async function reauthenticateAsana(): Promise<void> {
     }));
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(synchronized.synced_at);
     if (refreshResult.kind === "failed") {
-      feedback.value = "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。";
+      feedback.value = includeNormalizationNotificationFeedback(
+        "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。",
+        synchronized.normalization_notifications,
+      );
       return;
     }
-    feedback.value = "Asanaを再認証し、タスク表示を更新しました。";
+    feedback.value = includeNormalizationNotificationFeedback(
+      "Asanaを再認証し、タスク表示を更新しました。",
+      synchronized.normalization_notifications,
+    );
   } catch {
     await reconcileSyncStateAfterFailure(authenticationRequired);
     feedback.value = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";

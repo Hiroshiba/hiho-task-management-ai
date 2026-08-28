@@ -305,6 +305,33 @@ const syncRemainingPlanSchema = z
     tag_write_task_gids: z.array(gidSchema),
   })
   .strict();
+const syncNormalizationNotificationSchema = z
+  .object({
+    kind: z.literal("status_reconciled"),
+    task_gid: gidSchema,
+    status: taskStatusSchema,
+    message: safeMessageSchema,
+  })
+  .strict();
+const syncNormalizationNotificationsSchema = z
+  .array(syncNormalizationNotificationSchema)
+  .max(10_000)
+  .superRefine((notifications, context) => {
+    let previousTaskGid: string | undefined;
+    for (const [index, notification] of notifications.entries()) {
+      if (
+        previousTaskGid != null
+        && previousTaskGid >= notification.task_gid
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "task_gid"],
+          message: "正規化通知は重複させずタスクGID順に指定してください。",
+        });
+      }
+      previousTaskGid = notification.task_gid;
+    }
+  });
 const syncResultSchema = z
   .object({
     requested_mode: synchronizationModeSchema,
@@ -312,6 +339,7 @@ const syncResultSchema = z
     fallback_reason: syncFallbackReasonSchema.optional(),
     synced_at: isoDateTimeSchema,
     application_result: normalizationApplicationResultSchema,
+    normalization_notifications: syncNormalizationNotificationsSchema,
     remaining_plan: syncRemainingPlanSchema,
     critical_errors: z.array(
       z.object({ task_gid: gidSchema, code: syncCriticalErrorCodeSchema }).strict(),
@@ -400,7 +428,11 @@ const syncStateBaseShape = {
   last_error_code: syncRuntimeErrorCodeSchema.optional(),
 };
 const syncStateEventSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("online"), ...syncStateBaseShape }).strict(),
+  z.object({
+    kind: z.literal("online"),
+    normalization_notifications: syncNormalizationNotificationsSchema.optional(),
+    ...syncStateBaseShape,
+  }).strict(),
   z.object({ kind: z.literal("offline"), ...syncStateBaseShape }).strict(),
   z.object({
     kind: z.literal("syncing"),

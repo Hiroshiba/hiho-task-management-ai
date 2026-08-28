@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { deviceSectionGidsSchema } from "../../../shared/storage";
 import { gidSchema, identifierSchema, isoDateTimeSchema } from "../../../shared/domain";
-import { asanaSyncCoordinatorResultSchema } from "../sync";
+import {
+  asanaSyncCoordinatorResultSchema,
+  asanaSyncNormalizationNotificationsSchema,
+} from "../sync";
 
 const synchronizationModeSchema = z.enum(["full", "delta"]);
 const runtimeErrorCodeSchema = z.enum([
@@ -34,7 +37,11 @@ const stateBaseShape = {
 };
 
 const onlineStateSchema = z
-  .object({ kind: z.literal("online"), ...stateBaseShape })
+  .object({
+    kind: z.literal("online"),
+    normalization_notifications: asanaSyncNormalizationNotificationsSchema.optional(),
+    ...stateBaseShape,
+  })
   .strict();
 const offlineStateSchema = z
   .object({ kind: z.literal("offline"), ...stateBaseShape })

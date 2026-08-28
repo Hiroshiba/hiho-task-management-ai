@@ -245,7 +245,7 @@ export class AsanaSyncRuntime {
     this.stopped = lifecycleSignal.aborted;
     this.state = asanaSyncRuntimeStateSchema.parse(
       this.connectionState.kind === "online"
-        ? this.createOnlineState()
+        ? this.createOnlineState(undefined)
         : this.createOfflineState(),
     );
     lifecycleSignal.addEventListener("abort", this.lifecycleAbortListener, {
@@ -454,7 +454,7 @@ export class AsanaSyncRuntime {
     if (currentConnectionState.kind === "recovery_pending") {
       this.connectionState = { kind: "online" };
       this.lastErrorCode = undefined;
-      this.publishState(this.createOnlineState());
+      this.publishState(this.createOnlineState(undefined));
     }
     return { kind: "ready" };
   }
@@ -680,12 +680,14 @@ export class AsanaSyncRuntime {
       const result = asanaSyncCoordinatorResultSchema.parse(coordinated);
       this.lastSuccessfulSyncAt = result.synced_at;
       this.lastErrorCode = undefined;
-      this.publishState(this.createOnlineState());
+      this.publishState(
+        this.createOnlineState(result.normalization_notifications),
+      );
       return createSynchronizedResult(mode, result);
     } catch (error: unknown) {
       if (signal.aborted || error instanceof AsanaRequestAbortedError) {
         if (this.connectionState.kind === "online" && !this.stopped) {
-          this.publishState(this.createOnlineState());
+          this.publishState(this.createOnlineState(undefined));
         }
         return createAbortResult();
       }
@@ -705,9 +707,15 @@ export class AsanaSyncRuntime {
     }
   }
 
-  private createOnlineState(): AsanaSyncRuntimeState {
+  private createOnlineState(
+    normalizationNotifications:
+      AsanaSyncCoordinatorResult["normalization_notifications"] | undefined,
+  ): AsanaSyncRuntimeState {
     return asanaSyncRuntimeStateSchema.parse({
       kind: "online",
+      ...(normalizationNotifications == null
+        ? {}
+        : { normalization_notifications: normalizationNotifications }),
       ...(this.lastSuccessfulSyncAt == null
         ? {}
         : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
