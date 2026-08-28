@@ -1,5 +1,12 @@
-import { lstat, open, readdir, realpath } from "node:fs/promises";
-import type { Stats } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
+import {
+  lstat,
+  open,
+  readdir,
+  realpath,
+  stat,
+  type FileHandle,
+} from "node:fs/promises";
 import {
   basename,
   extname,
@@ -249,7 +256,7 @@ type RegisteredVault = {
 
 type ExistingPath = {
   readonly kind: "existing";
-  readonly stats: Stats;
+  readonly stats: BigIntStats;
 };
 
 type MissingPathInspection = {
@@ -267,7 +274,8 @@ type ResolvedNotePath = {
   readonly kind: "resolved";
   readonly relative_path: string;
   readonly absolute_path: string;
-  readonly size: number;
+  readonly read_path: string;
+  readonly pre_open_stats: BigIntStats;
 };
 
 type ResolvedNotePathResult = ResolvedNotePath | MissingPath;
@@ -292,6 +300,66 @@ type ReadAttempt =
 type CloseAttempt =
   | { readonly kind: "succeeded" }
   | { readonly kind: "failed"; readonly error: unknown };
+
+function getSecureFileOpenFlags(): number {
+  let flags = constants.O_RDONLY;
+  if (
+    process.platform !== "win32"
+    && Number.isSafeInteger(constants.O_NOFOLLOW)
+    && constants.O_NOFOLLOW > 0
+  ) {
+    flags |= constants.O_NOFOLLOW;
+  }
+  if (
+    process.platform !== "win32"
+    && Number.isSafeInteger(constants.O_NONBLOCK)
+    && constants.O_NONBLOCK > 0
+  ) {
+    flags |= constants.O_NONBLOCK;
+  }
+  return flags;
+}
+
+function assertUsableFileIdentity(stats: BigIntStats): void {
+  if (stats.dev < 0n || stats.ino <= 0n) {
+    throw new ObsidianReadError(
+      "path_security",
+      "Markdownファイルの一意な識別子を確認できません。",
+    );
+  }
+}
+
+function assertSameFileIdentity(
+  expected: BigIntStats,
+  actual: BigIntStats,
+): void {
+  assertUsableFileIdentity(expected);
+  assertUsableFileIdentity(actual);
+  if (expected.dev !== actual.dev || expected.ino !== actual.ino) {
+    throw new ObsidianReadError(
+      "path_changed",
+      "Markdownファイルの実体が読み取り中に変化しました。",
+    );
+  }
+}
+
+function assertFileStateUnchanged(
+  before: BigIntStats,
+  after: BigIntStats,
+): void {
+  assertSameFileIdentity(before, after);
+  if (
+    before.size !== after.size
+    || before.mode !== after.mode
+    || before.mtimeNs !== after.mtimeNs
+    || before.ctimeNs !== after.ctimeNs
+  ) {
+    throw new ObsidianReadError(
+      "path_changed",
+      "Markdownファイルが読み取り中に変更されました。",
+    );
+  }
+}
 
 function errorCode(error: unknown): string | undefined {
   if (!(error instanceof Error) || !("code" in error)) {
@@ -360,9 +428,9 @@ async function inspectExistingPath(
   const pathRoot = parsePath(normalizedPath).root;
   const segments = normalizedPath.slice(pathRoot.length).split(sep);
   throwIfAborted(signal);
-  let rootStats: Stats;
+  let rootStats: BigIntStats;
   try {
-    rootStats = await lstat(pathRoot);
+    rootStats = await lstat(pathRoot, { bigint: true });
     throwIfAborted(signal);
   } catch (error) {
     if (isMissingFileSystemError(error)) {
@@ -386,10 +454,10 @@ async function inspectExistingPath(
       continue;
     }
     currentPath = join(currentPath, segment);
-    let stats: Stats;
+    let stats: BigIntStats;
     try {
       throwIfAborted(signal);
-      stats = await lstat(currentPath);
+      stats = await lstat(currentPath, { bigint: true });
       throwIfAborted(signal);
     } catch (error) {
       if (isMissingFileSystemError(error)) {
@@ -512,18 +580,39 @@ async function resolveNotePathWithinVault(
       "指定されたMarkdownパスは通常ファイルではありません。",
     );
   }
+  let preOpenStats: BigIntStats;
+  try {
+    throwIfAborted(signal);
+    preOpenStats = await stat(candidatePath, { bigint: true });
+    throwIfAborted(signal);
+  } catch (error) {
+    if (isMissingFileSystemError(error)) {
+      return { kind: "missing" };
+    }
+    throw error;
+  }
+  if (!preOpenStats.isFile()) {
+    throw new ObsidianReadError(
+      "note_not_file",
+      "指定されたMarkdownパスは通常ファイルではありません。",
+    );
+  }
+  assertSameFileIdentity(inspection.stats, preOpenStats);
+  throwIfAborted(signal);
   const realCandidatePath = await realpath(candidatePath);
+  throwIfAborted(signal);
   assertWithinRoot(vault.real_path, realCandidatePath);
   return {
     kind: "resolved",
     relative_path: validatedPath,
     absolute_path: realCandidatePath,
-    size: inspection.stats.size,
+    read_path: candidatePath,
+    pre_open_stats: preOpenStats,
   };
 }
 
-function validateFileSize(size: number): void {
-  if (!Number.isSafeInteger(size) || size < 0 || size > maximumFileBytes) {
+function validateFileSize(size: bigint): void {
+  if (size < 0n || size > BigInt(maximumFileBytes)) {
     throw new ObsidianReadError(
       "limit_exceeded",
       "Markdownファイルが一ファイルの読取上限を超えています。",
@@ -532,7 +621,12 @@ function validateFileSize(size: number): void {
 }
 
 function reserveReadBytes(budget: ReadBudget, size: number): void {
-  validateFileSize(size);
+  if (!Number.isSafeInteger(size) || size < 0 || size > maximumFileBytes) {
+    throw new ObsidianReadError(
+      "limit_exceeded",
+      "Markdownファイルが一ファイルの読取上限を超えています。",
+    );
+  }
   if (budget.total_bytes + size > maximumTotalReadBytes) {
     throw new ObsidianReadError(
       "limit_exceeded",
@@ -543,15 +637,61 @@ function reserveReadBytes(budget: ReadBudget, size: number): void {
 }
 
 async function readFileWithLimit(
-  absolutePath: string,
+  resolvedPath: ResolvedNotePath,
   signal: AbortSignal,
 ): Promise<Buffer> {
-  const file = await open(absolutePath, "r");
+  let file: FileHandle;
+  try {
+    throwIfAborted(signal);
+    file = await open(resolvedPath.read_path, getSecureFileOpenFlags());
+  } catch (error) {
+    if (signal.aborted) {
+      signal.throwIfAborted();
+    }
+    const code = errorCode(error);
+    if (code === "ELOOP") {
+      throw new ObsidianReadError(
+        "symlink_rejected",
+        "シンボリックリンクのMarkdownファイルは読み取れません。",
+        error,
+      );
+    }
+    if (isMissingFileSystemError(error)) {
+      throw new ObsidianReadError(
+        "path_changed",
+        "Markdownファイルがオープン前に消失しました。",
+        error,
+      );
+    }
+    if (
+      code === "EINVAL"
+      || code === "ENOTSUP"
+      || code === "EOPNOTSUPP"
+    ) {
+      throw new ObsidianReadError(
+        "path_security",
+        "Markdownファイルの安全なオープンを保証できません。",
+        error,
+      );
+    }
+    throw error;
+  }
   let readResult: ReadAttempt | undefined;
   try {
+    throwIfAborted(signal);
+    const openedStats = await file.stat({ bigint: true });
+    if (!openedStats.isFile()) {
+      throw new ObsidianReadError(
+        "note_not_file",
+        "指定されたMarkdownパスは通常ファイルではありません。",
+      );
+    }
+    assertSameFileIdentity(resolvedPath.pre_open_stats, openedStats);
+    validateFileSize(openedStats.size);
     const chunks: Buffer[] = [];
     let totalBytes = 0;
-    while (readResult == null && totalBytes <= maximumFileBytes) {
+    let readCompleted = false;
+    while (!readCompleted && totalBytes <= maximumFileBytes) {
       throwIfAborted(signal);
       const remainingBytes = maximumFileBytes + 1 - totalBytes;
       const chunk = Buffer.allocUnsafe(
@@ -559,10 +699,7 @@ async function readFileWithLimit(
       );
       const fileReadResult = await file.read(chunk, 0, chunk.byteLength, null);
       if (fileReadResult.bytesRead === 0) {
-        readResult = {
-          kind: "succeeded",
-          buffer: Buffer.concat(chunks, totalBytes),
-        };
+        readCompleted = true;
         continue;
       }
       chunks.push(chunk.subarray(0, fileReadResult.bytesRead));
@@ -574,12 +711,31 @@ async function readFileWithLimit(
         );
       }
     }
-    if (readResult == null) {
+    if (!readCompleted) {
       throw new ObsidianReadError(
         "limit_exceeded",
         "Markdownファイルが一ファイルの読取上限を超えています。",
       );
     }
+    if (BigInt(totalBytes) !== openedStats.size) {
+      throw new ObsidianReadError(
+        "path_changed",
+        "Markdownファイルが読み取り中に変更されました。",
+      );
+    }
+    throwIfAborted(signal);
+    const afterReadStats = await file.stat({ bigint: true });
+    if (!afterReadStats.isFile()) {
+      throw new ObsidianReadError(
+        "note_not_file",
+        "指定されたMarkdownパスは通常ファイルではありません。",
+      );
+    }
+    assertFileStateUnchanged(openedStats, afterReadStats);
+    readResult = {
+      kind: "succeeded",
+      buffer: Buffer.concat(chunks, totalBytes),
+    };
   } catch (error) {
     readResult = { kind: "failed", error };
   }
@@ -687,10 +843,9 @@ async function readMarkdownNote(
   if (resolved.kind === "missing") {
     return resolved;
   }
-  validateFileSize(resolved.size);
   let buffer: Buffer;
   try {
-    buffer = await readFileWithLimit(resolved.absolute_path, signal);
+    buffer = await readFileWithLimit(resolved, signal);
   } catch (error) {
     if (signal.aborted) {
       throw error;
@@ -706,20 +861,6 @@ async function readMarkdownNote(
   }
   reserveReadBytes(budget, buffer.byteLength);
   throwIfAborted(signal);
-  const currentPath = await resolveNotePathWithinVault(
-    vault,
-    relativePath,
-    signal,
-  );
-  if (
-    currentPath.kind !== "resolved"
-    || currentPath.absolute_path !== resolved.absolute_path
-  ) {
-    throw new ObsidianReadError(
-      "path_changed",
-      "読み取り中にMarkdownファイルのパスが変化しました。",
-    );
-  }
   const note = parseMarkdown(relativePath, decodeUtf8(buffer));
   assertOutputBudget([
     note.relative_path,
