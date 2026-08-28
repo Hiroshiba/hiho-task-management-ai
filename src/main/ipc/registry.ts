@@ -41,6 +41,8 @@ import {
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
   ipcObsidianListInputSchema,
+  ipcObsidianListVaultsInputSchema,
+  ipcObsidianListVaultsResponseSchema,
   ipcObsidianListResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
@@ -172,6 +174,7 @@ export interface IpcExternalToolPort {
 
 /** Obsidian読み取りをIPCへ提供するポートです。 */
 export interface IpcObsidianPort {
+  listVaults(signal: AbortSignal): MaybePromise<readonly string[]>;
   validateVault(vaultId: string, signal: AbortSignal): MaybePromise<IpcObsidianVaultResult>;
   listNotes(vaultId: string, signal: AbortSignal): MaybePromise<readonly IpcObsidianNoteSummary[]>;
   resolvePath(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
@@ -240,6 +243,16 @@ function validateOptions(options: IpcHandlerRegistryOptions): void {
 
 function createCompletedValue(): { readonly completed: true } {
   return { completed: true };
+}
+
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
 }
 
 function validateEventSender(
@@ -694,6 +707,20 @@ export class IpcHandlerRegistry {
         }
         await port.remove(input.tool_id);
         return createCompletedValue();
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "obsidian:list-vaults",
+      ipcObsidianListVaultsInputSchema,
+      ipcObsidianListVaultsResponseSchema,
+      async () => {
+        const port = this.options.ports.obsidian;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        const vaultIds = [...await port.listVaults(this.createAbortSignal())].sort(compareStrings);
+        return { vault_ids: vaultIds };
       },
     );
     this.registerHandle(

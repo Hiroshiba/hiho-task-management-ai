@@ -362,6 +362,18 @@ const relativeMarkdownPathSchema = z
   )
   .refine((value) => value.endsWith(".md"), "Markdownノートだけを指定できます。");
 const obsidianVaultResultSchema = z.object({ vault_id: vaultIdSchema, kind: z.literal("valid") }).strict();
+const obsidianVaultListResultSchema = z
+  .object({
+    vault_ids: z.array(vaultIdSchema).max(1_000).superRefine((vaultIds, context) => {
+      if (new Set(vaultIds).size !== vaultIds.length) {
+        context.addIssue({
+          code: "custom",
+          message: "Vault IDを重複して返せません。",
+        });
+      }
+    }),
+  })
+  .strict();
 const obsidianPathResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("resolved"), vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict(),
   z.object({ kind: z.literal("missing"), vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict(),
@@ -487,6 +499,7 @@ export const ipcChannelSchema = z.enum([
   "external-tools:replace",
   "external-tools:remove",
   "obsidian:validate-vault",
+  "obsidian:list-vaults",
   "obsidian:list-notes",
   "obsidian:resolve-path",
   "obsidian:note-exists",
@@ -548,6 +561,8 @@ export const ipcExternalToolRemoveInputSchema = z.object({ tool_id: identifierSc
 export const ipcExternalToolRemoveResponseSchema = responseSchema(completedResultSchema);
 export const ipcObsidianValidateInputSchema = z.object({ vault_id: vaultIdSchema }).strict();
 export const ipcObsidianValidateResponseSchema = responseSchema(obsidianVaultResultSchema);
+export const ipcObsidianListVaultsInputSchema = emptyRequestSchema;
+export const ipcObsidianListVaultsResponseSchema = responseSchema(obsidianVaultListResultSchema);
 export const ipcObsidianListInputSchema = ipcObsidianValidateInputSchema;
 export const ipcObsidianListResponseSchema = responseSchema(z.array(obsidianNoteSummarySchema).max(1_000));
 export const ipcObsidianPathInputSchema = z.object({ vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict();
@@ -583,6 +598,7 @@ export type IpcAiApprovalResult = z.infer<typeof aiWorkflowApprovalResultSchema>
 export type IpcExternalToolReplaceInput = z.infer<typeof externalToolReplaceRequestSchema>;
 export type IpcExternalToolSummary = z.infer<typeof externalToolSummarySchema>;
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;
+export type IpcObsidianVaultList = z.infer<typeof obsidianVaultListResultSchema>;
 export type IpcObsidianPathResult = z.infer<typeof obsidianPathResultSchema>;
 export type IpcObsidianNoteSummary = z.infer<typeof obsidianNoteSummarySchema>;
 export type IpcObsidianSearchResult = z.infer<typeof obsidianSearchResultSchema>;

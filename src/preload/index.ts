@@ -28,6 +28,8 @@ import {
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
   ipcObsidianListInputSchema,
+  ipcObsidianListVaultsInputSchema,
+  ipcObsidianListVaultsResponseSchema,
   ipcObsidianListResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
@@ -255,6 +257,12 @@ const api: TaskHubApi = {
     ),
   },
   obsidian: {
+    listVaults: () => invoke(
+      "obsidian:list-vaults",
+      ipcObsidianListVaultsInputSchema,
+      ipcObsidianListVaultsResponseSchema,
+      undefined,
+    ),
     validateVault: (vaultId) => invoke(
       "obsidian:validate-vault",
       ipcObsidianValidateInputSchema,

@@ -18,6 +18,7 @@ import type {
   IpcObsidianNoteSummary,
   IpcObsidianPathResult,
   IpcObsidianSearchResult,
+  IpcObsidianVaultList,
   IpcObsidianVaultResult,
   IpcReadModelOverview,
   IpcReadModelTaskDetail,
@@ -88,6 +89,7 @@ export interface TaskHubApi {
     readonly remove: (toolId: string) => IpcResult<{ readonly completed: true }>;
   };
   readonly obsidian: {
+    readonly listVaults: () => IpcResult<IpcObsidianVaultList>;
     readonly validateVault: (vaultId: string) => IpcResult<IpcObsidianVaultResult>;
     readonly listNotes: (vaultId: string) => IpcResult<readonly IpcObsidianNoteSummary[]>;
     readonly resolvePath: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
