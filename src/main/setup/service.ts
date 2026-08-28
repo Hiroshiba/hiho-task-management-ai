@@ -21,7 +21,9 @@ import type { StorageDatabase } from "../storage";
 import type { DeviceSettings, VaultMapping } from "../../shared/storage";
 import {
   configuredTagGidsSchema,
+  codexUnavailableReasonSchema,
   setupCredentialsInputSchema,
+  setupCodexAvailabilitySchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
@@ -31,6 +33,7 @@ import {
   setupWorkspaceSchema,
   setupWorkspaceSelectionInputSchema,
   type SetupCredentialsInput,
+  type SetupCodexAvailability,
   type SetupExternalToolChoiceInput,
   type SetupProject,
   type SetupProjectSelectionInput,
@@ -47,16 +50,32 @@ import {
 } from "../../shared/storage";
 import { gidSchema, identifierSchema } from "../../shared/domain";
 
-type SetupCodexAuthenticationState = "authenticated" | "required";
-const setupCodexAuthenticationStateSchema = z.enum(["authenticated", "required"]);
+type SetupCodexAuthenticationState =
+  | { readonly kind: "authenticated" }
+  | { readonly kind: "required" }
+  | Extract<SetupCodexAvailability, { kind: "unavailable" }>;
+const setupCodexAuthenticationStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("authenticated") }).strict(),
+  z.object({ kind: z.literal("required") }).strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason_code: codexUnavailableReasonSchema,
+    })
+    .strict(),
+]);
 
 export type SetupCodexPort = {
-  readonly detectCli: (signal: AbortSignal) => Promise<void>;
+  readonly detectCli: (signal: AbortSignal) => Promise<SetupCodexAvailability>;
   readonly getAuthenticationState: (
     signal: AbortSignal,
   ) => Promise<SetupCodexAuthenticationState>;
-  readonly completeAuthentication: (signal: AbortSignal) => Promise<void>;
-  readonly checkCapabilities: (signal: AbortSignal) => Promise<void>;
+  readonly completeAuthentication: (
+    signal: AbortSignal,
+  ) => Promise<SetupCodexAvailability>;
+  readonly checkCapabilities: (
+    signal: AbortSignal,
+  ) => Promise<SetupCodexAvailability>;
 };
 
 export type SetupOAuthPort = Pick<AsanaOAuthCoordinator, "authenticate">;
@@ -370,6 +389,37 @@ function sameTagGids(
   );
 }
 
+function stateCodexAvailability(
+  state: SetupState,
+): SetupCodexAvailability | undefined {
+  if ("codex" in state) {
+    return setupCodexAvailabilitySchema.parse(state.codex);
+  }
+  if (state.kind === "created") {
+    return undefined;
+  }
+  throw new Error("保存済みCodex状態がありません。");
+}
+
+function requireCodexAvailability(
+  availability: SetupCodexAvailability | undefined,
+): SetupCodexAvailability {
+  if (availability == null) {
+    throw new Error("Codex状態が確定していません。");
+  }
+  return setupCodexAvailabilitySchema.parse(availability);
+}
+
+function requireCodexAvailable(
+  availability: SetupCodexAvailability | undefined,
+): Extract<SetupCodexAvailability, { kind: "available" }> {
+  const parsed = requireCodexAvailability(availability);
+  if (parsed.kind !== "available") {
+    throw new Error("Codex CLIの利用可能状態が確定していません。");
+  }
+  return parsed;
+}
+
 /** 初回設定の順序付き状態機械を調整します。 */
 export class SetupOrchestrator {
   private readonly redirectUri: string;
@@ -385,6 +435,7 @@ export class SetupOrchestrator {
   private readonly configureExternalTool: SetupExternalToolPort;
   private state: SetupState;
   private resumeRequired: boolean;
+  private codexAvailability: SetupCodexAvailability | undefined;
 
   public constructor(options: SetupOrchestratorOptions) {
     setupOrchestratorOptionsSchema.parse(options);
@@ -424,6 +475,7 @@ export class SetupOrchestrator {
       redirect_uri: this.redirectUri,
     });
     this.resumeRequired = false;
+    this.codexAvailability = undefined;
     const savedState = this.checkpoint.load();
     if (savedState == null) {
       this.state = initialState;
@@ -434,6 +486,7 @@ export class SetupOrchestrator {
         throw new Error("保存済み初回設定のリダイレクトURIが一致しません。");
       }
       this.state = restoredState;
+      this.codexAvailability = stateCodexAvailability(restoredState);
       this.resumeRequired = requiresContextRevalidation(restoredState);
     }
   }
@@ -476,6 +529,7 @@ export class SetupOrchestrator {
         step: "resources",
         redirect_uri: state.context.redirect_uri,
         client_id: state.context.client_id,
+        codex: state.context.codex,
         workspace: {
           gid: state.context.workspace_gid,
           name: state.context.workspace_name,
@@ -521,32 +575,57 @@ export class SetupOrchestrator {
     validateAbortSignal(signal);
     assertStateKindTyped(this.state, ["created", "codex_cli_ready"]);
     if (this.state.kind === "created") {
-      await this.codex.detectCli(signal);
+      const availability = setupCodexAvailabilitySchema.parse(
+        await this.codex.detectCli(signal),
+      );
+      this.codexAvailability = availability;
+      if (availability.kind === "unavailable") {
+        this.state = parseState({
+          kind: "credentials_required",
+          step: "credentials",
+          redirect_uri: this.redirectUri,
+          codex: availability,
+        });
+        return this.getState();
+      }
       this.state = parseState({
         kind: "codex_cli_ready",
         step: "codex_authentication",
         redirect_uri: this.redirectUri,
+        codex: availability,
       });
       this.checkpoint.save(this.state);
     }
     const authenticationState = setupCodexAuthenticationStateSchema.parse(
       await this.codex.getAuthenticationState(signal),
     );
-    if (authenticationState === "required") {
+    if (authenticationState.kind === "unavailable") {
+      this.codexAvailability = authenticationState;
+      this.state = parseState({
+        kind: "credentials_required",
+        step: "credentials",
+        redirect_uri: this.redirectUri,
+        codex: authenticationState,
+      });
+      return this.getState();
+    }
+    if (authenticationState.kind === "required") {
       this.state = parseState({
         kind: "codex_authentication_required",
         step: "codex_authentication",
         redirect_uri: this.redirectUri,
+        codex: requireCodexAvailable(this.codexAvailability),
       });
       return this.getState();
     }
-    if (authenticationState !== "authenticated") {
+    if (authenticationState.kind !== "authenticated") {
       throw new Error("Codexの認証状態が不正です。");
     }
     this.state = parseState({
       kind: "credentials_required",
       step: "credentials",
       redirect_uri: this.redirectUri,
+      codex: requireCodexAvailability(this.codexAvailability),
     });
     return this.getState();
   }
@@ -555,11 +634,15 @@ export class SetupOrchestrator {
   public async completeCodexAuthentication(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);
     assertStateKindTyped(this.state, ["codex_authentication_required"]);
-    await this.codex.completeAuthentication(signal);
+    const availability = setupCodexAvailabilitySchema.parse(
+      await this.codex.completeAuthentication(signal),
+    );
+    this.codexAvailability = availability;
     this.state = parseState({
       kind: "credentials_required",
       step: "credentials",
       redirect_uri: this.redirectUri,
+      codex: availability,
     });
     return this.getState();
   }
@@ -591,6 +674,7 @@ export class SetupOrchestrator {
       step: "workspace",
       redirect_uri: this.redirectUri,
       client_id: result.client_id,
+      codex: requireCodexAvailability(this.codexAvailability),
     });
     return this.getState();
   }
@@ -608,6 +692,7 @@ export class SetupOrchestrator {
       step: "workspace",
       redirect_uri: this.redirectUri,
       client_id: state.client_id,
+      codex: requireCodexAvailability(this.codexAvailability),
       workspaces,
     });
     return this.getState();
@@ -636,6 +721,7 @@ export class SetupOrchestrator {
       step: "project",
       redirect_uri: this.redirectUri,
       client_id: state.client_id,
+      codex: state.codex,
       workspace,
       projects,
     });
@@ -660,6 +746,7 @@ export class SetupOrchestrator {
         step: "project",
         redirect_uri: projectState.redirect_uri,
         client_id: projectState.client_id,
+        codex: projectState.codex,
         workspace: projectState.workspace,
         projects: projectState.projects,
         reason_code: "duplicate_project_name",
@@ -856,7 +943,11 @@ export class SetupOrchestrator {
     this.assertResumeCompleted();
     assertStateKindTyped(this.state, ["codex_capability_required"]);
     const state = this.state;
-    await this.codex.checkCapabilities(signal);
+    const availability = state.context.codex.kind === "unavailable"
+      ? state.context.codex
+      : setupCodexAvailabilitySchema.parse(
+        await this.codex.checkCapabilities(signal),
+      );
     const settings: DeviceSettings = {
       device_id: state.context.device_id,
       client_id: state.context.client_id,
@@ -868,7 +959,10 @@ export class SetupOrchestrator {
     this.state = parseState({
       kind: "ready",
       step: "ready",
-      context: state.context,
+      context: {
+        ...state.context,
+        codex: availability,
+      },
     });
     return this.getState();
   }
@@ -923,6 +1017,7 @@ export class SetupOrchestrator {
         step: "resources",
         redirect_uri: input.redirect_uri,
         client_id: input.client_id,
+        codex: requireCodexAvailability(this.codexAvailability),
         workspace: input.workspace,
         project: input.project,
         issues: mapResourceIssues(parsedResult.reconciliation),
@@ -942,6 +1037,7 @@ export class SetupOrchestrator {
         project_name: input.project.name,
         section_gids: parsedResult.section_gids,
         tag_gids: parsedResult.tag_gids,
+        codex: requireCodexAvailability(this.codexAvailability),
       },
     });
     return this.getState();
