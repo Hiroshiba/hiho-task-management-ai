@@ -1,5 +1,10 @@
 import BetterSqlite3 from "better-sqlite3";
-import { isAbsolute } from "node:path";
+import {
+  assertSecurePersistentFileSnapshot,
+  captureSecurePersistentFile,
+  ensureSecurePersistentFile,
+  normalizeSecurePersistentFilePath,
+} from "../local-storage-path";
 import {
   aggregateCleanupItems,
   CleanupItemsCacheStore,
@@ -46,6 +51,13 @@ import type { SqliteDatabase } from "./types";
 
 export const storageSchemaVersion = 3;
 export const storageBusyTimeoutMilliseconds = 5_000;
+
+const databaseFileLabel = "SQLiteデータベース";
+const sqliteAuxiliaryFileSuffixes: readonly string[] = [
+  "-journal",
+  "-shm",
+  "-wal",
+];
 
 const storageTableNames = [
   "task_cache",
@@ -153,10 +165,29 @@ interface TableNameRow {
   readonly name: string;
 }
 
-function validateDatabasePath(dbPath: string): void {
-  if (typeof dbPath !== "string" || !isAbsolute(dbPath)) {
-    throw new Error("SQLiteデータベースのパスは絶対パスで指定してください。");
+function validateSqliteAuxiliaryFiles(dbPath: string): void {
+  sqliteAuxiliaryFileSuffixes.forEach((suffix) => {
+    captureSecurePersistentFile(
+      `${dbPath}${suffix}`,
+      `${databaseFileLabel}${suffix}`,
+    );
+  });
+}
+
+function closeDatabaseAfterInitializationFailure(
+  database: SqliteDatabase,
+  error: unknown,
+): never {
+  try {
+    database.close();
+  } catch (closeError) {
+    throw new AggregateError(
+      [error, closeError],
+      "SQLiteの初期化と接続終了に失敗しました。",
+      { cause: error },
+    );
   }
+  throw error;
 }
 
 function readTableNames(database: SqliteDatabase): readonly string[] {
@@ -241,14 +272,43 @@ export class StorageDatabase {
   private readonly externalToolDefinitionStore: ExternalToolDefinitionStore;
 
   public constructor(dbPath: string) {
-    validateDatabasePath(dbPath);
-    const database = new BetterSqlite3(dbPath);
+    const normalizedDbPath = normalizeSecurePersistentFilePath(dbPath);
+    captureSecurePersistentFile(normalizedDbPath, databaseFileLabel);
+    validateSqliteAuxiliaryFiles(normalizedDbPath);
+    const databaseSnapshot = ensureSecurePersistentFile(
+      normalizedDbPath,
+      databaseFileLabel,
+    );
+    validateSqliteAuxiliaryFiles(normalizedDbPath);
+    assertSecurePersistentFileSnapshot(
+      normalizedDbPath,
+      databaseSnapshot,
+      databaseFileLabel,
+    );
+    const database = new BetterSqlite3(normalizedDbPath, { fileMustExist: true });
     try {
+      assertSecurePersistentFileSnapshot(
+        normalizedDbPath,
+        databaseSnapshot,
+        databaseFileLabel,
+      );
+      validateSqliteAuxiliaryFiles(normalizedDbPath);
       assertPragmas(database);
+      assertSecurePersistentFileSnapshot(
+        normalizedDbPath,
+        databaseSnapshot,
+        databaseFileLabel,
+      );
+      validateSqliteAuxiliaryFiles(normalizedDbPath);
       initializeSchema(database);
+      assertSecurePersistentFileSnapshot(
+        normalizedDbPath,
+        databaseSnapshot,
+        databaseFileLabel,
+      );
+      validateSqliteAuxiliaryFiles(normalizedDbPath);
     } catch (error) {
-      database.close();
-      throw error;
+      closeDatabaseAfterInitializationFailure(database, error);
     }
 
     this.database = database;

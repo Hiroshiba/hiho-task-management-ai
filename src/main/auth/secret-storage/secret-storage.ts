@@ -1,16 +1,12 @@
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, isAbsolute } from "node:path";
-import { randomUUID } from "node:crypto";
 import { safeStorage } from "electron";
 import { z } from "zod";
+import {
+  captureSecurePersistentFile,
+  normalizeSecurePersistentFilePath,
+  readSecurePersistentTextFile,
+  removeSecurePersistentFile,
+  writeSecurePersistentTextFileAtomically,
+} from "../../local-storage-path";
 import {
   encryptedSecretStorageSchema,
   secretStorageSchema,
@@ -22,22 +18,6 @@ import {
 } from "./errors";
 
 const encryptedFileVersion = 1;
-const secretFileMode = 0o600;
-const secretDirectoryMode = 0o700;
-
-type SaveResult =
-  | { readonly kind: "succeeded" }
-  | { readonly kind: "failed"; readonly error: unknown };
-
-type CleanupResult =
-  | { readonly kind: "succeeded" }
-  | { readonly kind: "failed"; readonly error: unknown };
-
-function validateFilePath(filePath: string): void {
-  if (!isAbsolute(filePath)) {
-    throw new Error("秘密情報ファイルのパスは絶対パスで指定してください。");
-  }
-}
 
 function assertLinuxStorageBackend(): void {
   let backend: string;
@@ -91,62 +71,13 @@ function parseJson<T>(raw: string, schema: z.ZodType<T>): T {
   }
 }
 
-function isNodeErrorWithCode(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    error.code === code
-  );
-}
-
-function readSecretFile(filePath: string): string | undefined {
-  try {
-    return readFileSync(filePath, "utf8");
-  } catch (error) {
-    if (isNodeErrorWithCode(error, "ENOENT")) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function removeTemporaryFile(filePath: string): CleanupResult {
-  try {
-    unlinkSync(filePath);
-    return { kind: "succeeded" };
-  } catch (error) {
-    if (isNodeErrorWithCode(error, "ENOENT")) {
-      return { kind: "succeeded" };
-    }
-    return { kind: "failed", error };
-  }
-}
-
-function finishSave(
-  temporaryFilePath: string,
-  saveResult: SaveResult,
-): void {
-  const cleanupResult = removeTemporaryFile(temporaryFilePath);
-
-  if (saveResult.kind === "failed") {
-    if (cleanupResult.kind === "failed") {
-      throw new AggregateError(
-        [saveResult.error, cleanupResult.error],
-        "秘密情報の保存と一時ファイル削除に失敗しました。",
-        { cause: saveResult.error },
-      );
-    }
-    throw saveResult.error;
-  }
-  if (cleanupResult.kind === "failed") {
-    throw cleanupResult.error;
-  }
-}
-
 /** ElectronのOS保護ストレージを使って秘密情報を保存します。 */
 export class SecretStorage {
-  public constructor(private readonly filePath: string) {
-    validateFilePath(filePath);
+  private readonly filePath: string;
+
+  public constructor(filePath: string) {
+    this.filePath = normalizeSecurePersistentFilePath(filePath);
+    captureSecurePersistentFile(this.filePath, "秘密情報ファイル");
   }
 
   /** 秘密情報を暗号化して原子的に保存します。 */
@@ -162,28 +93,19 @@ export class SecretStorage {
       ciphertext,
     });
     const serializedFileData = JSON.stringify(fileData);
-    const directoryPath = dirname(this.filePath);
-    mkdirSync(directoryPath, { recursive: true, mode: secretDirectoryMode });
-    const temporaryFilePath = `${this.filePath}.${randomUUID()}.tmp`;
-    let saveResult: SaveResult;
-    try {
-      writeFileSync(temporaryFilePath, serializedFileData, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: secretFileMode,
-      });
-      chmodSync(temporaryFilePath, secretFileMode);
-      renameSync(temporaryFilePath, this.filePath);
-      saveResult = { kind: "succeeded" };
-    } catch (error) {
-      saveResult = { kind: "failed", error };
-    }
-    finishSave(temporaryFilePath, saveResult);
+    writeSecurePersistentTextFileAtomically(
+      this.filePath,
+      serializedFileData,
+      "秘密情報ファイル",
+    );
   }
 
   /** 暗号化済み秘密情報を復号して読み出します。 */
   public load(): SecretStorageData | undefined {
-    const serializedFileData = readSecretFile(this.filePath);
+    const serializedFileData = readSecurePersistentTextFile(
+      this.filePath,
+      "秘密情報ファイル",
+    );
     if (serializedFileData == null) {
       return undefined;
     }
@@ -201,6 +123,6 @@ export class SecretStorage {
 
   /** 保存済み秘密情報ファイルを削除します。 */
   public clear(): void {
-    rmSync(this.filePath, { force: true });
+    removeSecurePersistentFile(this.filePath, "秘密情報ファイル");
   }
 }

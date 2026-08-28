@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
 import { IpcHandlerRegistry } from "./ipc";
+import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
@@ -204,7 +205,7 @@ async function openResolvedPath(
 }
 
 function createTaskHubApplication(controller: AbortController): TaskHubApplication {
-  const userDataPath = app.getPath("userData");
+  const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
   return new TaskHubApplication({
     user_data_path: userDataPath,
     database_path: join(userDataPath, "taskhub.sqlite3"),
