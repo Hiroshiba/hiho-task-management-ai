@@ -28,7 +28,6 @@ const emit = defineEmits<{
 }>();
 
 const message = ref("");
-const splitLocators = ref("");
 const selectionMode = ref<"all" | "groups" | "operations">("all");
 const selectedGroupIds = ref<string[]>([]);
 const selectedOperationIds = ref<string[]>([]);
@@ -126,20 +125,14 @@ function sendMessage(): void {
     return;
   }
   try {
-    const locators = splitLocators.value
-      .split(",")
-      .map((locator) => locator.trim())
-      .filter((locator) => locator.length > 0);
     const input = aiWorkflowTurnRequestSchema.parse({
       message: value,
-      explicit_split_request_locators: locators,
     });
     localError.value = "";
     emit("start", input);
     message.value = "";
-    splitLocators.value = "";
   } catch {
-    localError.value = "依頼文と分割依頼locatorを確認してください。";
+    localError.value = "依頼文を確認してください。";
   }
 }
 
@@ -374,16 +367,7 @@ function applicationReasonLabel(reason: string): string {
             class="text-input min-h-24"
             :disabled="!props.canWrite"
             placeholder="例: 今週着手すべきタスクを教えてください"
-          /></label><label
-            class="field-label"
-            for="ai-split-locators"
-          >明示した分割依頼のlocator<input
-            id="ai-split-locators"
-            v-model="splitLocators"
-            class="text-input"
-            :disabled="!props.canWrite"
-            placeholder="任意、カンマ区切り"
-          ></label><button
+          /></label><button
             type="submit"
             class="primary-button"
             :disabled="!props.canWrite"

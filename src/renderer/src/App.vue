@@ -1414,7 +1414,6 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   }
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
-    explicit_split_request_locators: [],
   });
   await startAiTurn(request);
 }

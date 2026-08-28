@@ -86,22 +86,6 @@ export const aiWorkflowSnapshotSchema = z
 export const aiWorkflowTurnRequestSchema = z
   .object({
     message: nonBlankMessageSchema,
-    explicit_split_request_locators: z
-      .array(nonBlankLocatorSchema)
-      .max(maximumWorkflowSelection)
-      .superRefine((locators, context) => {
-        const seen = new Set<string>();
-        for (const [index, locator] of locators.entries()) {
-          if (seen.has(locator)) {
-            context.addIssue({
-              code: "custom",
-              path: [index],
-              message: "分割依頼locatorを重複指定できません。",
-            });
-          }
-          seen.add(locator);
-        }
-      }),
   })
   .strict();
 

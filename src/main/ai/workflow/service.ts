@@ -94,6 +94,144 @@ import {
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
 
+const generatedSplitRequestLocatorsSchema = z
+  .array(identifierSchema)
+  .max(1);
+
+const explicitSplitRequestPhrases: readonly string[] = [
+  "分割して",
+  "サブタスクにして",
+  "作業を細かくして",
+  "実行手順ごとにタスク化して",
+];
+
+const explicitSplitRequestSuffixes: readonly string[] = [
+  "ください",
+  "下さい",
+  "ほしいです",
+  "欲しいです",
+  "ほしい",
+  "欲しい",
+  "もらいたいです",
+  "もらいたい",
+  "いただきたいです",
+  "いただきたい",
+];
+
+const conflictingSplitRequestMarkers: readonly string[] = [
+  "前言撤回",
+  "分割しない",
+  "分割はしない",
+  "分割をしない",
+  "分割しなく",
+  "分割するな",
+  "サブタスクにしない",
+  "サブタスクにはしない",
+  "サブタスク化しない",
+  "細かくしない",
+  "細かくはしない",
+  "タスク化しない",
+  "タスク化はしない",
+  "分割の指示を取り消",
+  "分割指示を取り消",
+  "分割の依頼を取り消",
+  "分割依頼を取り消",
+  "分割の指示を撤回",
+  "分割指示を撤回",
+  "分割の依頼を撤回",
+  "分割依頼を撤回",
+  "分割するのをやめ",
+  "サブタスク化するのをやめ",
+  "細かくするのをやめ",
+  "タスク化するのをやめ",
+];
+
+const rejectedSplitRequestClausePrefixes: readonly string[] = [
+  "必要なら",
+  "必要であれば",
+  "必要に応じ",
+  "できれば",
+  "可能なら",
+  "可能であれば",
+  "可能性として",
+  "例えば",
+  "例として",
+  "例文",
+  "という例",
+  "一例",
+  "引用",
+  "という文",
+  "という表現",
+  "という案",
+  "以下の文",
+  "次の文",
+  "文言",
+  "仮に",
+  "もし",
+  "と仮定",
+  "かもしれ",
+];
+
+const rejectedSplitRequestClauseTails: readonly string[] = [
+  "と書いて",
+  "と入力",
+  "と表示",
+  "と発言",
+  "と言って",
+  "と言う",
+  "という例",
+  "という文",
+  "という表現",
+  "という案",
+  "と仮定",
+  "かもしれ",
+  "ますか",
+  "でしょうか",
+  "ですか",
+  "かな",
+  "かどうか",
+  "はいけない",
+  "はだめ",
+  "ほしくない",
+  "?",
+  "？",
+];
+
+const splitRequestTailDelimiters = new Set([
+  "。",
+  "、",
+  ",",
+  "！",
+  "!",
+  "；",
+  ";",
+  "\n",
+  "\r",
+]);
+
+const splitRequestClauseDelimiters = new Set([
+  "。",
+  "！",
+  "!",
+  "？",
+  "?",
+  "；",
+  ";",
+  "\n",
+  "\r",
+]);
+
+const splitRequestQuotePairs: readonly {
+  readonly open: string;
+  readonly close: string;
+}[] = [
+  { open: "「", close: "」" },
+  { open: "『", close: "』" },
+  { open: "“", close: "”" },
+  { open: "\"", close: "\"" },
+  { open: "`", close: "`" },
+];
+
 type TrustedStatusOperation = "complete" | "withdraw";
 
 type ExplicitStatusClaim = {
@@ -199,6 +337,7 @@ type PreparedTurn = {
   readonly baseline_snapshot_hash: string;
   readonly taskctl_snapshot: TaskctlSnapshot;
   readonly user_message_locator: string;
+  readonly explicit_split_request_locators: readonly string[];
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
@@ -424,6 +563,141 @@ function compareStrings(left: string, right: string): number {
     return 1;
   }
   return 0;
+}
+
+function hasRejectedSplitRequestClauseTail(tail: string): boolean {
+  let clauseEnd = tail.length;
+  for (let index = 0; index < tail.length; index += 1) {
+    const character = tail.at(index);
+    if (character != null && splitRequestClauseDelimiters.has(character)) {
+      clauseEnd = index;
+      break;
+    }
+  }
+  const clauseTail = tail.slice(0, clauseEnd);
+  return rejectedSplitRequestClauseTails.some((marker) =>
+    clauseTail.includes(marker));
+}
+
+function hasSplitRequestTailBoundary(tail: string): boolean {
+  const trimmed = tail.trimStart();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  const firstCharacter = trimmed.at(0);
+  if (firstCharacter == null || !splitRequestTailDelimiters.has(firstCharacter)) {
+    return false;
+  }
+  if (splitRequestClauseDelimiters.has(firstCharacter)) {
+    return true;
+  }
+  return !hasRejectedSplitRequestClauseTail(
+    trimmed.slice(firstCharacter.length).trimStart(),
+  );
+}
+
+function splitRequestClausePrefix(message: string, startIndex: number): string {
+  let clauseStart = 0;
+  for (let index = startIndex - 1; index >= 0; index -= 1) {
+    const character = message.at(index);
+    if (character != null && splitRequestClauseDelimiters.has(character)) {
+      clauseStart = index + character.length;
+      break;
+    }
+  }
+  return message.slice(clauseStart, startIndex);
+}
+
+function isInsideSplitRequestQuote(message: string, startIndex: number): boolean {
+  const prefix = message.slice(0, startIndex);
+  for (const pair of splitRequestQuotePairs) {
+    if (pair.open !== pair.close) {
+      if (prefix.lastIndexOf(pair.open) > prefix.lastIndexOf(pair.close)) {
+        return true;
+      }
+      continue;
+    }
+    let quoteCount = 0;
+    let quoteIndex = prefix.indexOf(pair.open);
+    while (quoteIndex >= 0) {
+      quoteCount += 1;
+      quoteIndex = prefix.indexOf(pair.open, quoteIndex + pair.open.length);
+    }
+    if (quoteCount % 2 !== 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isExistingTaskReorganization(
+  clausePrefix: string,
+  phrase: string,
+): boolean {
+  if (phrase !== "サブタスクにして" || !clausePrefix.includes("既存")) {
+    return false;
+  }
+  return clausePrefix.includes("複数")
+    || clausePrefix.includes("親の下")
+    || clausePrefix.includes("配下")
+    || clausePrefix.includes("親タスク");
+}
+
+function hasRejectedSplitRequestContext(
+  message: string,
+  phrase: string,
+  startIndex: number,
+): boolean {
+  if (isInsideSplitRequestQuote(message, startIndex)) {
+    return true;
+  }
+  const clausePrefix = splitRequestClausePrefix(message, startIndex);
+  if (
+    rejectedSplitRequestClausePrefixes.some((marker) =>
+      clausePrefix.includes(marker))
+  ) {
+    return true;
+  }
+  return isExistingTaskReorganization(clausePrefix, phrase);
+}
+
+function hasExplicitSplitRequestPhrase(message: string): boolean {
+  for (const phrase of explicitSplitRequestPhrases) {
+    let startIndex = message.indexOf(phrase);
+    while (startIndex >= 0) {
+      if (!hasRejectedSplitRequestContext(message, phrase, startIndex)) {
+        const tail = message.slice(startIndex + phrase.length);
+        if (hasSplitRequestTailBoundary(tail)) {
+          return true;
+        }
+        const trimmedTail = tail.trimStart();
+        for (const suffix of explicitSplitRequestSuffixes) {
+          if (
+            trimmedTail.startsWith(suffix)
+            && hasSplitRequestTailBoundary(trimmedTail.slice(suffix.length))
+          ) {
+            return true;
+          }
+        }
+      }
+      startIndex = message.indexOf(phrase, startIndex + phrase.length);
+    }
+  }
+  return false;
+}
+
+function createExplicitSplitRequestLocators(
+  message: string,
+  userMessageLocator: string,
+): readonly string[] {
+  const rejected = conflictingSplitRequestMarkers.some((marker) =>
+    message.includes(marker));
+  if (rejected || !hasExplicitSplitRequestPhrase(message)) {
+    return generatedSplitRequestLocatorsSchema.parse([]);
+  }
+  return generatedSplitRequestLocatorsSchema.parse([
+    `${userMessageLocator}#explicit-split-request`,
+  ]);
 }
 
 function createTaskSnapshot(task: Task): TaskSnapshot {
@@ -701,7 +975,8 @@ function createTurnPrompt(
     "explicit_textはtask_or_note_explicit、children_only_all_completedは同名の構造的根拠として使用してください。",
     "Obsidian本文はこのターンで固定検証されていないため、登録リンクやexcerptを完了・取り下げ根拠に使用しないでください。",
     "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
-    `明示された分割依頼locator: ${canonicalizeJson(request.explicit_split_request_locators)}`,
+    `固定検証済みの分割依頼locator: ${canonicalizeJson(prepared.explicit_split_request_locators)}`,
+    "split_childのinstruction_referenceには固定検証済み一覧のlocatorだけを使用し、一覧が空ならsplit_childを提案しないでください。",
     `利用者要求: ${request.message}`,
   ].join("\n");
 }
@@ -1519,14 +1794,13 @@ function createStoredProposal(
   proposalId: string,
   proposal: Proposal,
   prepared: PreparedTurn,
-  explicitSplitRequestLocators: readonly string[],
 ): StoredProposal {
   const basic = validateProposal({
     proposal,
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
     managed_tasks: prepared.snapshot.tasks,
     existing_areas: prepared.snapshot.areas,
-    explicit_split_request_locators: [...explicitSplitRequestLocators],
+    explicit_split_request_locators: [...prepared.explicit_split_request_locators],
     trusted_status_evidence: [...prepared.trusted_status_evidence],
   });
   const graph = validateProposalGraph({
@@ -1543,7 +1817,7 @@ function createStoredProposal(
     basic_validation: basic,
     graph_validation: graph,
     selected_operation_ids: eligibleOperationIds(proposal, graph),
-    explicit_split_request_locators: [...explicitSplitRequestLocators],
+    explicit_split_request_locators: [...prepared.explicit_split_request_locators],
     trusted_status_evidence: [...prepared.trusted_status_evidence],
   };
 }
@@ -1681,6 +1955,10 @@ export class AiWorkflowService {
       let snapshotFrozen = false;
       const turnId = identifierSchema.parse(randomUUID());
       const userMessageLocator = `user-message:${turnId}`;
+      const explicitSplitRequestLocators = createExplicitSplitRequestLocators(
+        request.message,
+        userMessageLocator,
+      );
       let evidenceCollectionActive = false;
       let turnError: unknown;
       try {
@@ -1702,6 +1980,7 @@ export class AiWorkflowService {
                 baseline_snapshot_hash: baselineSnapshotHash,
                 taskctl_snapshot: taskctlSnapshot,
                 user_message_locator: userMessageLocator,
+                explicit_split_request_locators: explicitSplitRequestLocators,
                 trusted_status_evidence: createTrustedStatusEvidence(
                   snapshot,
                   request.message,
@@ -1757,7 +2036,6 @@ export class AiWorkflowService {
           proposalId,
           proposalSchema.parse(response.proposal),
           prepared,
-          request.explicit_split_request_locators,
         );
         this.storeProposal(stored);
         const view = createProposalView(stored);
@@ -1853,16 +2131,36 @@ export class AiWorkflowService {
       })),
     });
     const validation = revalidateProposal(editedProposal, stored);
+    const selectedOperationIds = preserveSelection(
+      editedProposal,
+      validation.graph,
+      stored.selected_operation_ids,
+    );
+    let selectedGraphSafety: ReturnType<typeof validateSelectedProposalGraph>;
+    try {
+      selectedGraphSafety = validateSelectedProposalGraph({
+        proposal: editedProposal,
+        managed_tasks: stored.snapshot.tasks,
+        selected_operation_ids: [...selectedOperationIds],
+        temporary_ref_mappings: [],
+      });
+    } catch (error: unknown) {
+      throw new AiWorkflowEditError(
+        "編集後の選択操作を依存・親子グラフへ投影できません。",
+        error,
+      );
+    }
+    if (selectedGraphSafety.kind === "unsafe") {
+      throw new AiWorkflowEditError(
+        "編集後の選択操作だけを適用すると依存関係または親子関係に新しい循環が生じます。",
+      );
+    }
     const updated: StoredProposal = {
       ...stored,
       proposal: editedProposal,
       basic_validation: validation.basic,
       graph_validation: validation.graph,
-      selected_operation_ids: preserveSelection(
-        editedProposal,
-        validation.graph,
-        stored.selected_operation_ids,
-      ),
+      selected_operation_ids: [...selectedOperationIds],
     };
     this.proposals.set(updated.proposal_id, updated);
     return createProposalView(updated);
