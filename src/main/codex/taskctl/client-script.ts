@@ -133,6 +133,9 @@ function verifyConnectionInfoFile(filePath) {
 
 function verifyUnixSocket(socketPath) {
   if (process.platform === "win32") {
+    if (!/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u.test(socketPath)) {
+      throw invalid("taskctl名前付きパイプの接続先が不正です。");
+    }
     return;
   }
   const root = path.parse(socketPath).root;
@@ -172,7 +175,9 @@ function readConnectionInfo() {
     || value.version !== 1
     || typeof value.socketPath !== "string"
     || value.socketPath.length === 0
-    || !path.isAbsolute(value.socketPath)
+    || (process.platform === "win32"
+      ? !/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u.test(value.socketPath)
+      : !path.isAbsolute(value.socketPath))
     || value.socketPath.includes("\u0000")
     || typeof value.capability !== "string"
     || !/^[0-9a-f]{64}$/u.test(value.capability)

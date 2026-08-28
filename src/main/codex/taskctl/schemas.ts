@@ -34,7 +34,21 @@ const absolutePathSchema = z
   .min(1)
   .max(maxPathLength)
   .refine(isAbsolute, "パスは絶対パスで指定してください。")
-  .refine((value) => !value.includes("\0"), "パスに使用できない文字が含まれています。");
+  .refine((value) => !value.includes("\0"), "パスに使用できない文字が含まれています。")
+  .refine(
+    (value) => !value.toLowerCase().startsWith("\\\\.\\pipe\\"),
+    "名前付きパイプは専用形式で指定してください。",
+  );
+
+const windowsPipeSocketPathSchema = z
+  .string()
+  .min(1)
+  .max(maxPathLength)
+  .regex(/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u, "名前付きパイプが不正です。");
+
+const socketPathSchema = process.platform === "win32"
+  ? windowsPipeSocketPathSchema
+  : absolutePathSchema;
 
 const syncedStateSchema = z
   .object({
@@ -106,7 +120,7 @@ const capabilitySchema = z.string().regex(/^[0-9a-f]{64}$/u, {
 export const taskctlConnectionInfoSchema = z
   .object({
     version: z.literal(taskctlProtocolVersion),
-    socketPath: absolutePathSchema,
+    socketPath: socketPathSchema,
     capability: capabilitySchema,
   })
   .strict();
@@ -126,7 +140,7 @@ export const taskctlBrokerOptionsSchema = z
 export const taskctlBrokerStartResultSchema = z
   .object({
     version: z.literal(taskctlProtocolVersion),
-    socketPath: absolutePathSchema,
+    socketPath: socketPathSchema,
     connectionInfoPath: absolutePathSchema,
   })
   .strict();

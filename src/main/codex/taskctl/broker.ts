@@ -232,6 +232,16 @@ function createSocketPath(tmpDirectoryPath: string): string {
   return join(tmpDirectoryPath, `taskctl-${suffix}.sock`);
 }
 
+function isWindowsPipe(socketPath: string): boolean {
+  return /^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u.test(socketPath);
+}
+
+function assertWindowsPipe(socketPath: string): void {
+  if (process.platform === "win32" && !isWindowsPipe(socketPath)) {
+    throw new TaskctlBrokerError("taskctl名前付きパイプの接続先が不正です。");
+  }
+}
+
 function ensureTemporaryDirectory(directoryPath: string): void {
   const stats = lstatWithoutSymlink(directoryPath, "taskctl一時ディレクトリ");
   if (stats.isSymbolicLink()) {
@@ -243,7 +253,10 @@ function ensureTemporaryDirectory(directoryPath: string): void {
   assertOwned(stats, "taskctl一時ディレクトリ");
   chmodSync(directoryPath, directoryMode);
   const securedStats = lstatWithoutSymlink(directoryPath, "taskctl一時ディレクトリ");
-  if (!securedStats.isDirectory() || (securedStats.mode & 0o777) !== directoryMode) {
+  if (
+    !securedStats.isDirectory()
+    || (process.platform !== "win32" && (securedStats.mode & 0o777) !== directoryMode)
+  ) {
     throw new TaskctlBrokerError("taskctl一時ディレクトリの権限を固定できません。");
   }
 }
@@ -279,7 +292,7 @@ function verifySecureFile(filePath: string, label: string, mode: number): Stats 
     throw new TaskctlBrokerError(`${label}が想定外のファイルです。`);
   }
   assertOwned(stats, label);
-  if ((stats.mode & 0o777) !== mode) {
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== mode) {
     throw new TaskctlBrokerError(`${label}の権限を固定できません。`);
   }
   return stats;
@@ -416,11 +429,6 @@ export class TaskctlBroker {
   /** taskctlのローカルIPCサーバーを起動します。 */
   public async start(signal: AbortSignal): Promise<TaskctlBrokerStartResult> {
     validateAbortSignal(signal);
-    if (process.platform === "win32") {
-      throw new TaskctlBrokerError(
-        "Windowsではtaskctlの安全な名前付きパイプ境界を検証できないため無効です。",
-      );
-    }
     if (this.state !== "created") {
       throw new TaskctlBrokerError("taskctlブローカーは一度だけ起動できます。");
     }
@@ -439,6 +447,7 @@ export class TaskctlBroker {
     try {
       ensureTemporaryDirectory(this.tmpDirectoryPath);
       const socketPath = createSocketPath(this.tmpDirectoryPath);
+      assertWindowsPipe(socketPath);
       const connectionInfo = taskctlConnectionInfoSchema.parse({
         version: taskctlProtocolVersion,
         socketPath,
@@ -561,7 +570,11 @@ export class TaskctlBroker {
       };
       server.once("error", onError);
       server.once("listening", onListening);
-      server.listen(socketPath);
+      server.listen({
+        path: socketPath,
+        readableAll: false,
+        writableAll: false,
+      });
     });
   }
 
@@ -599,7 +612,7 @@ export class TaskctlBroker {
       throw new TaskctlBrokerError("taskctl接続情報が想定外のファイルです。");
     }
     assertOwned(stats, "taskctl接続情報");
-    if ((stats.mode & 0o777) !== connectionInfoMode) {
+    if (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode) {
       throw new TaskctlBrokerError("taskctl接続情報の権限を確認できません。");
     }
     if (stats.size > maxRequestBytes) {
