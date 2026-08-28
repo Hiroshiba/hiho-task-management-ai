@@ -8,7 +8,7 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { join } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 import {
   createServer,
   type Server,
@@ -85,19 +85,86 @@ function hasCapabilityShape(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
-function jsonDepth(value: unknown, depth: number): number {
-  if (typeof value !== "object" || value == null) {
-    return depth;
+function currentUserId(): number | undefined {
+  return typeof process.getuid === "function" ? process.getuid() : undefined;
+}
+
+function assertOwned(stats: Stats, label: string): void {
+  const userId = currentUserId();
+  if (userId != null && stats.uid !== userId) {
+    throw new TaskctlBrokerError(`${label}の所有者を確認できません。`);
   }
-  let deepest = depth;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      deepest = Math.max(deepest, jsonDepth(item, depth + 1));
+}
+
+function lstatWithoutSymlink(filePath: string, label: string): Stats {
+  const normalizedPath = resolve(filePath);
+  const rootPath = parse(normalizedPath).root;
+  let currentPath = rootPath;
+  let stats: Stats;
+  try {
+    stats = lstatSync(currentPath);
+  } catch (error: unknown) {
+    throw new TaskctlBrokerError(`${label}を確認できません。`, { cause: error });
+  }
+  if (stats.isSymbolicLink()) {
+    throw new TaskctlBrokerError(`${label}の親にシンボリックリンクを指定できません。`);
+  }
+  const remainingPath = relative(rootPath, normalizedPath);
+  for (const part of remainingPath.split(sep).filter((segment) => segment.length > 0)) {
+    currentPath = join(currentPath, part);
+    try {
+      stats = lstatSync(currentPath);
+    } catch (error: unknown) {
+      throw new TaskctlBrokerError(`${label}を確認できません。`, { cause: error });
     }
-    return deepest;
+    if (stats.isSymbolicLink()) {
+      throw new TaskctlBrokerError(`${label}の親にシンボリックリンクを指定できません。`);
+    }
   }
-  for (const item of Object.values(value)) {
-    deepest = Math.max(deepest, jsonDepth(item, depth + 1));
+  return stats;
+}
+
+function jsonDepth(value: unknown, depth: number): number {
+  type Frame = {
+    readonly value: unknown;
+    readonly depth: number;
+    readonly exiting: boolean;
+  };
+  const stack: Frame[] = [{ value, depth, exiting: false }];
+  const ancestors = new WeakSet<object>();
+  let deepest = depth;
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame == null) {
+      throw new TaskctlBrokerError("taskctl JSON検証の状態が不正です。");
+    }
+    if (frame.exiting) {
+      if (typeof frame.value !== "object" || frame.value == null) {
+        throw new TaskctlBrokerError("taskctl JSON検証の状態が不正です。");
+      }
+      ancestors.delete(frame.value);
+      continue;
+    }
+    if (frame.value == null || typeof frame.value !== "object") {
+      deepest = Math.max(deepest, frame.depth);
+      continue;
+    }
+    if (ancestors.has(frame.value)) {
+      throw new TaskctlBrokerError("taskctl JSONに循環参照があります。");
+    }
+    ancestors.add(frame.value);
+    deepest = Math.max(deepest, frame.depth);
+    stack.push({ value: frame.value, depth: frame.depth, exiting: true });
+    const childDepth = frame.depth + 1;
+    if (Array.isArray(frame.value)) {
+      for (const item of frame.value) {
+        stack.push({ value: item, depth: childDepth, exiting: false });
+      }
+      continue;
+    }
+    for (const item of Object.values(frame.value)) {
+      stack.push({ value: item, depth: childDepth, exiting: false });
+    }
   }
   return deepest;
 }
@@ -166,14 +233,19 @@ function createSocketPath(tmpDirectoryPath: string): string {
 }
 
 function ensureTemporaryDirectory(directoryPath: string): void {
-  const stats = lstatSync(directoryPath);
+  const stats = lstatWithoutSymlink(directoryPath, "taskctl一時ディレクトリ");
   if (stats.isSymbolicLink()) {
     throw new TaskctlBrokerError("taskctl一時ディレクトリにシンボリックリンクを指定できません。");
   }
   if (!stats.isDirectory()) {
     throw new TaskctlBrokerError("taskctl一時ディレクトリはディレクトリでなければなりません。");
   }
+  assertOwned(stats, "taskctl一時ディレクトリ");
   chmodSync(directoryPath, directoryMode);
+  const securedStats = lstatWithoutSymlink(directoryPath, "taskctl一時ディレクトリ");
+  if (!securedStats.isDirectory() || (securedStats.mode & 0o777) !== directoryMode) {
+    throw new TaskctlBrokerError("taskctl一時ディレクトリの権限を固定できません。");
+  }
 }
 
 function secureUnixSocket(socketPath: string): void {
@@ -182,7 +254,7 @@ function secureUnixSocket(socketPath: string): void {
   }
   let stats: Stats;
   try {
-    stats = lstatSync(socketPath);
+    stats = lstatWithoutSymlink(socketPath, "taskctlソケット");
   } catch (error: unknown) {
     throw new TaskctlBrokerError(
       "taskctlソケットを確認できません。",
@@ -192,11 +264,25 @@ function secureUnixSocket(socketPath: string): void {
   if (!stats.isSocket()) {
     throw new TaskctlBrokerError("taskctlソケットが想定外のファイルです。");
   }
+  assertOwned(stats, "taskctlソケット");
   chmodSync(socketPath, unixSocketMode);
-  const securedStats = lstatSync(socketPath);
+  const securedStats = lstatWithoutSymlink(socketPath, "taskctlソケット");
   if (!securedStats.isSocket() || (securedStats.mode & 0o777) !== unixSocketMode) {
     throw new TaskctlBrokerError("taskctlソケットの権限を固定できません。");
   }
+  assertOwned(securedStats, "taskctlソケット");
+}
+
+function verifySecureFile(filePath: string, label: string, mode: number): Stats {
+  const stats = lstatWithoutSymlink(filePath, label);
+  if (!stats.isFile()) {
+    throw new TaskctlBrokerError(`${label}が想定外のファイルです。`);
+  }
+  assertOwned(stats, label);
+  if ((stats.mode & 0o777) !== mode) {
+    throw new TaskctlBrokerError(`${label}の権限を固定できません。`);
+  }
+  return stats;
 }
 
 function writeConnectionInfoAtomically(
@@ -206,6 +292,20 @@ function writeConnectionInfoAtomically(
   const temporaryPath = `${connectionInfoPath}.${randomUUID()}.tmp`;
   const serialized = JSON.stringify(taskctlConnectionInfoSchema.parse(connectionInfo));
   try {
+    let existingStats: Stats | undefined;
+    try {
+      existingStats = lstatSync(connectionInfoPath);
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        throw error;
+      }
+    }
+    if (existingStats != null) {
+      if (existingStats.isSymbolicLink() || !existingStats.isFile()) {
+        throw new TaskctlBrokerError("既存のtaskctl接続情報が想定外のファイルです。");
+      }
+      assertOwned(existingStats, "既存のtaskctl接続情報");
+    }
     writeFileSync(temporaryPath, serialized, {
       encoding: "utf8",
       flag: "wx",
@@ -213,6 +313,7 @@ function writeConnectionInfoAtomically(
     });
     chmodSync(temporaryPath, connectionInfoMode);
     renameSync(temporaryPath, connectionInfoPath);
+    verifySecureFile(connectionInfoPath, "taskctl接続情報", connectionInfoMode);
   } catch (error: unknown) {
     try {
       unlinkSync(temporaryPath);
@@ -315,6 +416,11 @@ export class TaskctlBroker {
   /** taskctlのローカルIPCサーバーを起動します。 */
   public async start(signal: AbortSignal): Promise<TaskctlBrokerStartResult> {
     validateAbortSignal(signal);
+    if (process.platform === "win32") {
+      throw new TaskctlBrokerError(
+        "Windowsではtaskctlの安全な名前付きパイプ境界を検証できないため無効です。",
+      );
+    }
     if (this.state !== "created") {
       throw new TaskctlBrokerError("taskctlブローカーは一度だけ起動できます。");
     }
@@ -492,6 +598,13 @@ export class TaskctlBroker {
     if (stats.isSymbolicLink() || !stats.isFile()) {
       throw new TaskctlBrokerError("taskctl接続情報が想定外のファイルです。");
     }
+    assertOwned(stats, "taskctl接続情報");
+    if ((stats.mode & 0o777) !== connectionInfoMode) {
+      throw new TaskctlBrokerError("taskctl接続情報の権限を確認できません。");
+    }
+    if (stats.size > maxRequestBytes) {
+      throw new TaskctlBrokerError("taskctl接続情報がサイズ上限を超えています。");
+    }
     const raw = readFileSync(this.connectionInfoPath, "utf8");
     let parsed: unknown;
     try {
@@ -526,6 +639,7 @@ export class TaskctlBroker {
     if (!stats.isSocket()) {
       throw new TaskctlBrokerError("taskctlソケットが想定外のファイルです。");
     }
+    assertOwned(stats, "taskctlソケット");
     unlinkSync(socketPath);
   }
 

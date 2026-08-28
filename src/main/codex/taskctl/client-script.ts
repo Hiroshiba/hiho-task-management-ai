@@ -38,18 +38,28 @@ function isPlainObject(value) {
 }
 
 function jsonDepth(value, depth) {
-  if (typeof value !== "object" || value === null) {
-    return depth;
-  }
+  const stack = [{ value, depth }];
   let deepest = depth;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      deepest = Math.max(deepest, jsonDepth(item, depth + 1));
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) {
+      throw invalid("taskctl JSON検証の状態が不正です。");
     }
-    return deepest;
-  }
-  for (const item of Object.values(value)) {
-    deepest = Math.max(deepest, jsonDepth(item, depth + 1));
+    if (frame.value === null || typeof frame.value !== "object") {
+      deepest = Math.max(deepest, frame.depth);
+      continue;
+    }
+    deepest = Math.max(deepest, frame.depth);
+    const childDepth = frame.depth + 1;
+    if (Array.isArray(frame.value)) {
+      for (const item of frame.value) {
+        stack.push({ value: item, depth: childDepth });
+      }
+      continue;
+    }
+    for (const item of Object.values(frame.value)) {
+      stack.push({ value: item, depth: childDepth });
+    }
   }
   return deepest;
 }
@@ -104,8 +114,48 @@ function parseCommand(args) {
   throw invalid("taskctlで許可されていない引数です。");
 }
 
+function assertOwned(stats, label) {
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw invalid(label + "の所有者を確認できません。");
+  }
+}
+
+function verifyConnectionInfoFile(filePath) {
+  const stats = fs.lstatSync(filePath);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw invalid("taskctl接続情報が想定外のファイルです。");
+  }
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== 0o600) {
+    throw invalid("taskctl接続情報の権限が不正です。");
+  }
+  assertOwned(stats, "taskctl接続情報");
+}
+
+function verifyUnixSocket(socketPath) {
+  if (process.platform === "win32") {
+    return;
+  }
+  const root = path.parse(socketPath).root;
+  let current = root;
+  const parts = path.relative(root, socketPath).split(path.sep).filter((part) => part.length > 0);
+  for (const part of parts) {
+    current = path.join(current, part);
+    const stats = fs.lstatSync(current);
+    if (stats.isSymbolicLink()) {
+      throw invalid("taskctlソケットの親にシンボリックリンクを指定できません。");
+    }
+    if (current === socketPath) {
+      if (!stats.isSocket() || (stats.mode & 0o777) !== 0o600) {
+        throw invalid("taskctlソケットが不正です。");
+      }
+      assertOwned(stats, "taskctlソケット");
+    }
+  }
+}
+
 function readConnectionInfo() {
   const filePath = path.join(__dirname, "..", "tmp", "taskctl-connection.json");
+  verifyConnectionInfoFile(filePath);
   const raw = fs.readFileSync(filePath, "utf8");
   if (Buffer.byteLength(raw, "utf8") > maxRequestBytes) {
     throw invalid("taskctl接続情報がサイズ上限を超えています。");
@@ -129,6 +179,7 @@ function readConnectionInfo() {
   ) {
     throw invalid("taskctl接続情報が不正です。");
   }
+  verifyUnixSocket(value.socketPath);
   return value;
 }
 
