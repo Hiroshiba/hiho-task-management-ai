@@ -170,7 +170,6 @@ export const codexSessionOptionsSchema = z
         });
       })
       .optional(),
-    model: modelSchema,
     connectionFactory: connectionFactorySchema,
     snapshotProvider: snapshotProviderSchema,
     syncBeforeTurn: syncBeforeTurnSchema,
@@ -265,7 +264,6 @@ const authenticationRequiredCapabilitiesSchema = z
   .strict();
 
 const startResultPathShape = {
-  model: modelSchema,
   workspacePath: absolutePathSchema,
   agentsFilePath: absolutePathSchema,
   taskctlConnectionInfoPath: absolutePathSchema,
@@ -278,6 +276,7 @@ export const codexSessionStartResultSchema = z
       .object({
         state: z.literal("ready"),
         threadId: z.string().min(1).max(200),
+        model: modelSchema,
         ...startResultPathShape,
         capabilities: readySessionCapabilitiesSchema,
       })

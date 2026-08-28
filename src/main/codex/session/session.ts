@@ -31,6 +31,7 @@ import {
   type CodexNotification,
   type ExperimentalFeatureListResult,
   type McpServerStatusListResult,
+  type ModelListResult,
   type PermissionProfileListResult,
   type ChatGptLoginStartResult,
   type ThreadStartResult,
@@ -79,6 +80,7 @@ import {
 const maximumBufferedNotifications = 128;
 const maximumStoredDiagnostics = 256;
 const maximumFinalMessageBytes = 256 * 1024;
+const maximumModelRecords = 10_000;
 const requiredSkillNames = new Set(["taskctl", "obsidian", "external-tools"]);
 const permissionProfileId = "taskhub";
 const permissionProfileWaitTimeoutMs = 5_000;
@@ -360,6 +362,7 @@ export class CodexSessionService {
   private taskctlStartResult: TaskctlBrokerStartResult | undefined;
   private frozenTaskctlSnapshot: TaskctlSnapshot | undefined;
   private threadId: string | undefined;
+  private selectedModel: string | undefined;
   private permissionProfileNotification: PermissionProfileNotification | undefined;
   private permissionProfileWaiter: PermissionProfileWaiter | undefined;
   private mcpServerNames: string[] | undefined;
@@ -499,6 +502,7 @@ export class CodexSessionService {
     this.state = "starting";
     try {
       await this.inspectPermissionProfile(connection, signal);
+      await this.inspectModel(connection, signal);
       await this.inspectMcpServers(connection, signal);
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
@@ -637,7 +641,7 @@ export class CodexSessionService {
         input: validatedInput,
         cwd: this.options.workspacePath,
         approvalPolicy: "never",
-        model: this.options.model,
+        model: this.requireSelectedModel(),
         outputSchema: this.outputSchema,
       });
     } catch (error: unknown) {
@@ -965,11 +969,51 @@ export class CodexSessionService {
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<void> {
-    const params = modelListParamsSchema.parse({});
-    const result = modelListResultSchema.parse(await connection.listModels(params, signal));
-    if (!result.data.some((model) => model.id === this.options.model)) {
-      throw new CodexSessionCapabilityError("指定したCodexモデルを利用できません。");
+    this.selectedModel = undefined;
+    const models: ModelListResult["data"] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const params = modelListParamsSchema.parse(
+        cursor == null
+          ? { limit: 1_000, includeHidden: false }
+          : { limit: 1_000, includeHidden: false, cursor },
+      );
+      const result = modelListResultSchema.parse(
+        await connection.listModels(params, signal),
+      );
+      models.push(...result.data);
+      if (models.length > maximumModelRecords) {
+        throw new CodexSessionCapabilityError("Codexモデル一覧が上限を超えています。");
+      }
+      const nextCursor = result.nextCursor;
+      if (nextCursor == null) {
+        break;
+      }
+      if (seenCursors.has(nextCursor)) {
+        throw new CodexSessionCapabilityError("Codexモデル一覧のページングが進みません。");
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
+    const modelIds = new Set<string>();
+    for (const model of models) {
+      if (modelIds.has(model.id)) {
+        throw new CodexSessionCapabilityError("Codexモデル一覧に重複したモデルがあります。");
+      }
+      modelIds.add(model.id);
+    }
+    const defaults = models.filter(
+      (model) => model.hidden !== true && model.isDefault === true,
+    );
+    if (defaults.length !== 1) {
+      throw new CodexSessionCapabilityError("利用可能な既定Codexモデルを一つに確定できません。");
+    }
+    const selected = defaults[0];
+    if (selected == null) {
+      throw new CodexSessionCapabilityError("利用可能な既定Codexモデルを取得できません。");
+    }
+    this.selectedModel = selected.id;
   }
 
   private async inspectSkills(
@@ -1218,7 +1262,7 @@ export class CodexSessionService {
     const codexHome = codexHomePathSchema.parse(connection.getCodexHome());
     const config = this.createThreadConfiguration(codexHome, taskctlStartResult.socketPath);
     const params = {
-      model: this.options.model,
+      model: this.requireSelectedModel(),
       cwd: this.options.workspacePath,
       approvalPolicy: "never",
       permissions: permissionProfileId,
@@ -1234,7 +1278,7 @@ export class CodexSessionService {
         && source !== this.options.agentsFilePath,
     );
     if (
-      result.model !== this.options.model
+      result.model !== this.requireSelectedModel()
       || result.cwd !== this.options.workspacePath
       || result.approvalPolicy !== "never"
       || !result.instructionSources.includes(this.options.agentsFilePath)
@@ -1330,7 +1374,7 @@ export class CodexSessionService {
     return codexSessionStartResultSchema.parse({
       state: "ready",
       threadId,
-      model: this.options.model,
+      model: this.requireSelectedModel(),
       workspacePath: this.options.workspacePath,
       agentsFilePath: this.options.agentsFilePath,
       taskctlConnectionInfoPath: taskctlStartResult.connectionInfoPath,
@@ -1343,6 +1387,14 @@ export class CodexSessionService {
     });
   }
 
+  private requireSelectedModel(): string {
+    const model = this.selectedModel;
+    if (model == null) {
+      throw new CodexSessionStateError();
+    }
+    return model;
+  }
+
   private createAuthenticationRequiredResult(): CodexSessionStartResult {
     this.assertSafetyIntact();
     const taskctlStartResult = this.taskctlStartResult;
@@ -1351,7 +1403,6 @@ export class CodexSessionService {
     }
     return codexSessionStartResultSchema.parse({
       state: "authentication_required",
-      model: this.options.model,
       workspacePath: this.options.workspacePath,
       agentsFilePath: this.options.agentsFilePath,
       taskctlConnectionInfoPath: taskctlStartResult.connectionInfoPath,
