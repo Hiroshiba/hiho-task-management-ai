@@ -20,7 +20,6 @@ import {
 } from "../../shared/ipc";
 import {
   setupStateSchema,
-  type SetupCredentialsInput,
   type SetupExternalToolChoiceInput,
   type SetupProjectSelectionInput,
   type SetupState,
@@ -73,7 +72,10 @@ import {
 type SetupAction =
   | { readonly kind: "start" }
   | { readonly kind: "complete_codex_authentication" }
-  | { readonly kind: "authenticate_asana"; readonly input: SetupCredentialsInput }
+  | {
+      readonly kind: "authenticate_asana";
+      readonly request: Promise<SetupResult>;
+    }
   | { readonly kind: "list_workspaces" }
   | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
   | { readonly kind: "select_project"; readonly input: SetupProjectSelectionInput }
@@ -966,7 +968,7 @@ function handleSetupAction(action: SetupAction): void {
       void runSetupRequest(window.taskHub.setup.completeCodexAuthentication());
       return;
     case "authenticate_asana":
-      void runSetupRequest(window.taskHub.setup.authenticateAsana(action.input));
+      void runSetupRequest(action.request);
       return;
     case "list_workspaces":
       void runSetupRequest(window.taskHub.setup.listWorkspaces());

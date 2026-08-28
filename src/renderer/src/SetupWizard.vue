@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
   setupCredentialsInputSchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSelectionInputSchema,
   setupVaultChoiceInputSchema,
   setupWorkspaceSelectionInputSchema,
-  type SetupCredentialsInput,
   type SetupExternalToolChoiceInput,
   type SetupProjectSelectionInput,
   type SetupState,
@@ -18,7 +17,10 @@ import { vaultMappingSchema } from "../../shared/storage";
 type SetupAction =
   | { readonly kind: "start" }
   | { readonly kind: "complete_codex_authentication" }
-  | { readonly kind: "authenticate_asana"; readonly input: SetupCredentialsInput }
+  | {
+      readonly kind: "authenticate_asana";
+      readonly request: ReturnType<Window["taskHub"]["setup"]["authenticateAsana"]>;
+    }
   | { readonly kind: "list_workspaces" }
   | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
   | { readonly kind: "select_project"; readonly input: SetupProjectSelectionInput }
@@ -39,7 +41,7 @@ const emit = defineEmits<{
 }>();
 
 const clientId = ref("");
-const clientSecret = ref("");
+const clientSecretInput = ref<HTMLInputElement | null>(null);
 const timeoutMilliseconds = ref("120000");
 const projectName = ref("");
 const vaultId = ref("");
@@ -52,6 +54,15 @@ const resourceIssues = computed(() => {
   }
   return props.state.issues;
 });
+
+function clearClientSecret(): void {
+  if (clientSecretInput.value != null) {
+    clientSecretInput.value.value = "";
+  }
+}
+
+watch(() => props.state?.kind, clearClientSecret);
+onBeforeUnmount(clearClientSecret);
 
 function stateTitle(state: SetupState | undefined): string {
   if (state == null) {
@@ -165,16 +176,28 @@ function capabilityReasonLabel(reason: "task_create_failed" | "task_update_faile
 
 function submitCredentials(): void {
   localError.value = "";
-  try {
-    const input = setupCredentialsInputSchema.parse({
-      client_id: clientId.value,
-      client_secret: clientSecret.value,
-      timeout_milliseconds: Number(timeoutMilliseconds.value),
-    });
-    emit("action", { kind: "authenticate_asana", input });
-    clientSecret.value = "";
-  } catch {
+  const secretInput = clientSecretInput.value;
+  if (secretInput == null) {
+    throw new Error("Client Secret入力欄が見つかりません。");
+  }
+  const parsed = setupCredentialsInputSchema.safeParse({
+    client_id: clientId.value,
+    client_secret: secretInput.value,
+    timeout_milliseconds: Number(timeoutMilliseconds.value),
+  });
+  if (!parsed.success) {
+    clearClientSecret();
     localError.value = "入力値を確認してください。";
+    return;
+  }
+  try {
+    const request = window.taskHub.setup.authenticateAsana(parsed.data);
+    void request.then(clearClientSecret, clearClientSecret);
+    emit("action", { kind: "authenticate_asana", request });
+  } catch {
+    localError.value = "Asana認証を開始できませんでした。";
+  } finally {
+    clearClientSecret();
   }
 }
 
@@ -355,7 +378,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           for="client-secret"
         >Asana Client Secret<input
           id="client-secret"
-          v-model="clientSecret"
+          ref="clientSecretInput"
           class="text-input"
           type="password"
           autocomplete="off"
