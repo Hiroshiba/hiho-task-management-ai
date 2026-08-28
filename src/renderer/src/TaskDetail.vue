@@ -37,6 +37,7 @@ const props = defineProps<{
   obsidianSearchResults: readonly IpcObsidianSearchResult[];
   obsidianStatuses: ReadonlyMap<string, "exists" | "missing" | "unavailable">;
   obsidianBusy: boolean;
+  canReanalyzeObsidianNotes: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +46,7 @@ const emit = defineEmits<{
   (event: "search-obsidian", input: { readonly vaultId: string; readonly query: string }): void;
   (event: "check-obsidian", link: ObsidianLink): void;
   (event: "open-obsidian", link: ObsidianLink): void;
+  (event: "reanalyze-obsidian-notes", taskGid: string): void;
 }>();
 
 const title = ref("");
@@ -762,15 +764,24 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
             </ul>
           </div>
           <div>
-            <h3 class="section-heading">
-              Obsidianリンク
-            </h3><ul class="mt-2 space-y-2 text-sm text-slate-600">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="section-heading">
+                Obsidianリンク
+              </h3><button
+                type="button"
+                class="secondary-button"
+                :disabled="!props.canReanalyzeObsidianNotes"
+                @click="emit('reanalyze-obsidian-notes', props.task.gid)"
+              >
+                関連ノートを再解析
+              </button>
+            </div><ul class="mt-2 space-y-2 text-sm text-slate-600">
               <li
                 v-for="link in props.task.obsidian_links"
                 :key="`${link.vault_id}-${link.path}`"
                 class="flex flex-wrap items-center justify-between gap-2"
               >
-                <span><span>{{ link.title }}</span> <span class="text-xs text-slate-500">{{ link.path }}</span> <span class="ml-1 text-xs text-slate-500">{{ confidenceLabel(link.confidence) }}・{{ confidenceReason(link.confidence) }}・{{ statusForLink(link) }}</span></span><span class="flex flex-wrap gap-2"><button
+                <span><span>{{ link.title }}</span> <span class="text-xs text-slate-500">Vault: {{ link.vault_id }}・{{ link.path }}</span> <span class="ml-1 text-xs text-slate-500">{{ confidenceLabel(link.confidence) }}・{{ confidenceReason(link.confidence) }}・{{ statusForLink(link) }}</span></span><span class="flex flex-wrap gap-2"><button
                   type="button"
                   class="text-button"
                   :disabled="!props.readAvailable || !isRegisteredVault(link)"

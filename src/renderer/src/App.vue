@@ -177,6 +177,10 @@ const canManualSync = computed(() => configured.value
 const canWrite = computed(() => connectionState.value.kind === "online"
   && syncState.value.kind === "synced");
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
+const canReanalyzeObsidianNotes = computed(() => canWrite.value
+  && codexState.value.kind === "ready"
+  && !aiBusy.value
+  && registeredVaultIds.value.length > 0);
 const lastSyncAt = computed(() => {
   const currentOverview = overview.value;
   if (currentOverview != null) {
@@ -1293,6 +1297,18 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
   }
 }
 
+async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
+  if (!canReanalyzeObsidianNotes.value) {
+    feedback.value = "関連ノートの再解析は現在利用できません。";
+    return;
+  }
+  const request = aiWorkflowTurnRequestSchema.parse({
+    message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
+    explicit_split_request_locators: [],
+  });
+  await startAiTurn(request);
+}
+
 function proposalState(proposal: AiWorkflowProposalView): void {
   const currentState = aiState.value;
   if (currentState.kind === "proposal") {
@@ -1641,11 +1657,13 @@ onUnmounted(() => {
               :obsidian-search-results="obsidianSearchResults"
               :obsidian-statuses="obsidianStatuses"
               :obsidian-busy="obsidianBusy"
+              :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
               @edit="applyGuiEdit"
               @list-obsidian="listObsidian"
               @search-obsidian="searchObsidian"
               @check-obsidian="checkObsidianLink"
               @open-obsidian="openObsidianLink"
+              @reanalyze-obsidian-notes="reanalyzeObsidianNotes"
             />
           </div>
           <AiPanel
