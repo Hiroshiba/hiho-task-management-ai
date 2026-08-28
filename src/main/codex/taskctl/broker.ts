@@ -69,6 +69,12 @@ type InternalDiagnostic = {
   readonly cause: unknown;
 };
 
+type LocalIpcListenConfiguration = {
+  readonly boundary: TaskctlBrokerStartResult["localIpcBoundary"];
+  readonly readableAll: false;
+  readonly writableAll: false;
+};
+
 function isNoEntryError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
@@ -240,6 +246,27 @@ function assertWindowsPipe(socketPath: string): void {
   if (process.platform === "win32" && !isWindowsPipe(socketPath)) {
     throw new TaskctlBrokerError("taskctl名前付きパイプの接続先が不正です。");
   }
+}
+
+function createLocalIpcListenConfiguration(): LocalIpcListenConfiguration {
+  if (process.platform === "win32") {
+    return {
+      boundary: {
+        kind: "windows_named_pipe",
+        access: "current_user",
+      },
+      readableAll: false,
+      writableAll: false,
+    };
+  }
+  return {
+    boundary: {
+      kind: "unix_socket",
+      access: "owner_only",
+    },
+    readableAll: false,
+    writableAll: false,
+  };
 }
 
 function ensureTemporaryDirectory(directoryPath: string): void {
@@ -462,7 +489,8 @@ export class TaskctlBroker {
       server.on("error", (error: Error) => {
         this.handleServerError(error);
       });
-      await this.listen(server, socketPath);
+      const listenConfiguration = createLocalIpcListenConfiguration();
+      await this.listen(server, socketPath, listenConfiguration);
       if (this.state !== "starting" || signal.aborted) {
         throw new TaskctlAbortError();
       }
@@ -473,6 +501,7 @@ export class TaskctlBroker {
         version: taskctlProtocolVersion,
         socketPath,
         connectionInfoPath: this.connectionInfoPath,
+        localIpcBoundary: listenConfiguration.boundary,
       });
     } catch (error: unknown) {
       this.recordInternalError(error, "startup_error");
@@ -558,7 +587,11 @@ export class TaskctlBroker {
     this.state = "stopped";
   }
 
-  private listen(server: Server, socketPath: string): Promise<void> {
+  private listen(
+    server: Server,
+    socketPath: string,
+    configuration: LocalIpcListenConfiguration,
+  ): Promise<void> {
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const onError = (error: Error): void => {
         server.removeListener("listening", onListening);
@@ -572,8 +605,8 @@ export class TaskctlBroker {
       server.once("listening", onListening);
       server.listen({
         path: socketPath,
-        readableAll: false,
-        writableAll: false,
+        readableAll: configuration.readableAll,
+        writableAll: configuration.writableAll,
       });
     });
   }

@@ -46,6 +46,21 @@ const windowsPipeSocketPathSchema = z
   .max(maxPathLength)
   .regex(/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u, "名前付きパイプが不正です。");
 
+const localIpcBoundarySchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("windows_named_pipe"),
+      access: z.literal("current_user"),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("unix_socket"),
+      access: z.literal("owner_only"),
+    })
+    .strict(),
+]);
+
 const socketPathSchema = process.platform === "win32"
   ? windowsPipeSocketPathSchema
   : absolutePathSchema;
@@ -142,8 +157,21 @@ export const taskctlBrokerStartResultSchema = z
     version: z.literal(taskctlProtocolVersion),
     socketPath: socketPathSchema,
     connectionInfoPath: absolutePathSchema,
+    localIpcBoundary: localIpcBoundarySchema,
   })
-  .strict();
+  .strict()
+  .superRefine((result, context) => {
+    const expectedBoundaryKind = process.platform === "win32"
+      ? "windows_named_pipe"
+      : "unix_socket";
+    if (result.localIpcBoundary.kind !== expectedBoundaryKind) {
+      context.addIssue({
+        code: "custom",
+        path: ["localIpcBoundary"],
+        message: "taskctlのローカルIPC境界が実行環境と一致しません。",
+      });
+    }
+  });
 
 const searchQuerySchema = z
   .string()

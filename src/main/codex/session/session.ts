@@ -39,6 +39,7 @@ import {
 } from "../app-server";
 import {
   TaskctlBroker,
+  taskctlBrokerStartResultSchema,
   taskctlSnapshotSchema,
   type TaskctlBrokerStartResult,
   type TaskctlSnapshot,
@@ -384,6 +385,75 @@ function validateOwnedUnixSocket(socketPath: string, label: string): void {
   ) {
     throw new CodexSessionCapabilityError(`${label}の実体または権限が不正です。`);
   }
+}
+
+function validateTaskctlConnectionInfoPath(
+  connectionInfoPath: string,
+  tmpDirectoryPath: string,
+): void {
+  const expectedPath = join(tmpDirectoryPath, "taskctl-connection.json");
+  if (resolve(connectionInfoPath) !== expectedPath) {
+    throw new CodexSessionCapabilityError(
+      "taskctl接続情報を専用ワークスペースのtmp直下に限定できません。",
+    );
+  }
+  let stats: Stats;
+  try {
+    stats = lstatSync(connectionInfoPath);
+  } catch (error: unknown) {
+    throw new CodexSessionCapabilityError("taskctl接続情報を確認できません。", error);
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new CodexSessionCapabilityError("taskctl接続情報の実体が不正です。");
+  }
+  if (process.platform === "win32") {
+    return;
+  }
+  if (typeof process.getuid !== "function") {
+    throw new CodexSessionCapabilityError("taskctl接続情報の所有者を確認できません。");
+  }
+  if (stats.uid !== process.getuid() || (stats.mode & 0o777) !== 0o600) {
+    throw new CodexSessionCapabilityError("taskctl接続情報の所有者または権限が不正です。");
+  }
+}
+
+function validateTaskctlLocalIpc(
+  startResult: TaskctlBrokerStartResult,
+  tmpDirectoryPath: string,
+): string {
+  const parsedResult = taskctlBrokerStartResultSchema.safeParse(startResult);
+  if (!parsedResult.success) {
+    throw new CodexSessionCapabilityError(
+      "taskctlローカルIPCの起動結果を検証できません。",
+      parsedResult.error,
+    );
+  }
+  const result = parsedResult.data;
+  validateTaskctlConnectionInfoPath(result.connectionInfoPath, tmpDirectoryPath);
+  if (process.platform === "win32") {
+    if (
+      result.localIpcBoundary.kind !== "windows_named_pipe"
+      || result.localIpcBoundary.access !== "current_user"
+      || !/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u.test(result.socketPath)
+    ) {
+      throw new CodexSessionCapabilityError(
+        "taskctl名前付きパイプを現在の利用者向け境界へ限定できません。",
+      );
+    }
+    return result.socketPath;
+  }
+  if (
+    result.localIpcBoundary.kind !== "unix_socket"
+    || result.localIpcBoundary.access !== "owner_only"
+    || parse(resolve(result.socketPath)).dir !== tmpDirectoryPath
+    || !/^taskctl-[0-9a-f]{24}\.sock$/u.test(parse(result.socketPath).base)
+  ) {
+    throw new CodexSessionCapabilityError(
+      "taskctlソケットを専用ワークスペースのtmp直下に限定できません。",
+    );
+  }
+  validateOwnedUnixSocket(result.socketPath, "taskctlソケット");
+  return result.socketPath;
 }
 
 function validateAdditionalLocalSocketPaths(
@@ -1389,7 +1459,10 @@ export class CodexSessionService {
     }
   }
 
-  private createThreadConfiguration(codexHome: string, socketPath: string): Record<string, unknown> {
+  private createThreadConfiguration(
+    codexHome: string,
+    taskctlStartResult: TaskctlBrokerStartResult,
+  ): Record<string, unknown> {
     const realCodexHome = resolveExistingDirectory(codexHome, "Codex認証領域");
     const realWorkspacePath = resolveVerifiedConfigurationDirectory(
       this.options.workspacePath,
@@ -1405,19 +1478,7 @@ export class CodexSessionService {
     ) {
       throw new CodexSessionCapabilityError("Codex認証領域と専用ワークスペースの範囲が重なっています。");
     }
-    if (process.platform === "win32") {
-      throw new CodexSessionCapabilityError(
-        "Windowsではtaskctl名前付きパイプを現在の利用者だけに限定したと確認できないためAIを開始できません。",
-      );
-    } else {
-      if (
-        parse(resolve(socketPath)).dir !== realTmpDirectoryPath
-        || !/^taskctl-[0-9a-f]{24}\.sock$/u.test(parse(socketPath).base)
-      ) {
-        throw new CodexSessionCapabilityError("taskctlソケットを専用ワークスペースのtmp直下に限定できません。");
-      }
-      validateOwnedUnixSocket(socketPath, "taskctlソケット");
-    }
+    const socketPath = validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
     const verifiedVaultPaths = this.readOnlyVaultPaths.map(resolveVerifiedReadOnlyDirectory);
     if (new Set(verifiedVaultPaths).size !== verifiedVaultPaths.length) {
       throw new CodexSessionCapabilityError("同じVaultの実体パスを重複して指定できません。");
@@ -1500,7 +1561,7 @@ export class CodexSessionService {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
     const codexHome = codexHomePathSchema.parse(connection.getCodexHome());
-    const config = this.createThreadConfiguration(codexHome, taskctlStartResult.socketPath);
+    const config = this.createThreadConfiguration(codexHome, taskctlStartResult);
     const params = {
       model: this.requireSelectedModel(),
       cwd: this.options.workspacePath,
