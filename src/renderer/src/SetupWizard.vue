@@ -14,10 +14,6 @@ import {
   type SetupWorkspaceSelectionInput,
 } from "../../shared/setup";
 import { vaultMappingSchema } from "../../shared/storage";
-import {
-  ipcExternalToolReplaceInputSchema,
-  type IpcExternalToolReplaceInput,
-} from "../../shared/ipc";
 
 type SetupAction =
   | { readonly kind: "start" }
@@ -30,7 +26,6 @@ type SetupAction =
   | { readonly kind: "run_capability" }
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
   | { readonly kind: "choose_external_tool"; readonly input: SetupExternalToolChoiceInput }
-  | { readonly kind: "configure_external_tool"; readonly input: IpcExternalToolReplaceInput }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
 
@@ -49,15 +44,6 @@ const timeoutMilliseconds = ref("120000");
 const projectName = ref("");
 const vaultId = ref("");
 const vaultPath = ref("");
-const externalToolId = ref("");
-const externalExecutable = ref("");
-const externalSubcommands = ref("");
-const externalTimeout = ref("30000");
-const externalMaxOutput = ref("1048576");
-const externalArgumentNames = ref("");
-const externalDomains = ref("");
-const externalMethods = ref("");
-const showExternalToolForm = ref(false);
 const localError = ref("");
 
 const resourceIssues = computed(() => {
@@ -242,49 +228,9 @@ function selectProject(value: string): void {
   }
 }
 
-function chooseExternalTool(kind: "skip" | "configure"): void {
-  if (kind === "configure") {
-    showExternalToolForm.value = true;
-    return;
-  }
-  const input = setupExternalToolChoiceInputSchema.parse({ kind });
+function skipExternalTool(): void {
+  const input = setupExternalToolChoiceInputSchema.parse({ kind: "skip" });
   emit("action", { kind: "choose_external_tool", input });
-}
-
-function splitInput(value: string): string[] {
-  return value.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
-}
-
-function submitExternalTool(): void {
-  localError.value = "";
-  try {
-    const definition: Record<string, unknown> = {
-      tool_id: externalToolId.value,
-      executable: externalExecutable.value,
-      allowed_subcommands: splitInput(externalSubcommands.value),
-      timeout_ms: Number(externalTimeout.value),
-      max_output_bytes: Number(externalMaxOutput.value),
-      read_only: true,
-      allowed_argument_names: splitInput(externalArgumentNames.value),
-      credential_reference_names: [],
-    };
-    const domains = splitInput(externalDomains.value);
-    if (domains.length > 0) {
-      definition.allowed_domains = domains;
-    }
-    const methods = splitInput(externalMethods.value);
-    if (methods.length > 0) {
-      definition.allowed_http_methods = methods;
-    }
-    const input = ipcExternalToolReplaceInputSchema.parse({
-      definition,
-      credential_values: {},
-    });
-    emit("action", { kind: "configure_external_tool", input });
-    showExternalToolForm.value = false;
-  } catch {
-    localError.value = "資格情報不要の外部ツール定義を確認してください。";
-  }
 }
 
 function workspaceOptions(state: SetupState | undefined): readonly { gid: string; name: string }[] {
@@ -607,128 +553,17 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-3"
       >
         <p class="text-sm text-slate-600">
-          外部ツールは資格情報を必要としない読み取り専用定義だけを登録できます。
-          資格情報が必要な連携や安全なIPC権限境界を確認できないOSでは、外部情報取得の能力不足として利用できません。
+          この実装では安全な資格情報境界と実行境界を提供できないため、外部ツール連携は利用できません。
+          外部情報取得の能力不足として初回設定を続行します。
         </p>
-        <div
-          v-if="!showExternalToolForm"
-          class="flex flex-wrap gap-2"
+        <button
+          type="button"
+          class="primary-button"
+          :disabled="props.busy"
+          @click="skipExternalTool"
         >
-          <button
-            type="button"
-            class="primary-button"
-            :disabled="props.busy"
-            @click="chooseExternalTool('configure')"
-          >
-            外部ツールを確認
-          </button>
-          <button
-            type="button"
-            class="secondary-button"
-            :disabled="props.busy"
-            @click="chooseExternalTool('skip')"
-          >
-            外部ツールを使わない
-          </button>
-        </div>
-        <form
-          v-else
-          class="grid gap-3 sm:max-w-2xl"
-          @submit.prevent="submitExternalTool"
-        >
-          <p class="text-xs text-slate-600">
-            資格情報を必要としない信頼済みの読み取り専用コマンドだけを登録してください。
-          </p>
-          <label
-            class="field-label"
-            for="external-tool-id"
-          >tool_id<input
-            id="external-tool-id"
-            v-model="externalToolId"
-            class="text-input"
-            autocomplete="off"
-          ></label>
-          <label
-            class="field-label"
-            for="external-executable"
-          >実行ファイル<input
-            id="external-executable"
-            v-model="externalExecutable"
-            class="text-input"
-            autocomplete="off"
-          ></label>
-          <label
-            class="field-label"
-            for="external-subcommands"
-          >許可サブコマンド<input
-            id="external-subcommands"
-            v-model="externalSubcommands"
-            class="text-input"
-            placeholder="search, get"
-          ></label>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label
-              class="field-label"
-              for="external-timeout"
-            >タイムアウト<input
-              id="external-timeout"
-              v-model="externalTimeout"
-              class="text-input"
-              inputmode="numeric"
-            ></label><label
-              class="field-label"
-              for="external-max-output"
-            >出力上限<input
-              id="external-max-output"
-              v-model="externalMaxOutput"
-              class="text-input"
-              inputmode="numeric"
-            ></label>
-          </div>
-          <label
-            class="field-label"
-            for="external-arguments"
-          >許可引数名<input
-            id="external-arguments"
-            v-model="externalArgumentNames"
-            class="text-input"
-            placeholder="--query, --limit"
-          ></label>
-          <label
-            class="field-label"
-            for="external-domains"
-          >許可ドメイン<input
-            id="external-domains"
-            v-model="externalDomains"
-            class="text-input"
-            placeholder="任意、カンマ区切り"
-          ></label>
-          <label
-            class="field-label"
-            for="external-methods"
-          >許可HTTPメソッド<input
-            id="external-methods"
-            v-model="externalMethods"
-            class="text-input"
-            placeholder="GET, HEAD"
-          ></label>
-          <div class="flex flex-wrap gap-2">
-            <button
-              type="submit"
-              class="primary-button"
-              :disabled="props.busy"
-            >
-              登録して続ける
-            </button><button
-              type="button"
-              class="secondary-button"
-              :disabled="props.busy"
-              @click="showExternalToolForm = false"
-            >
-              戻る
-            </button>
-          </div>
-        </form>
+          外部ツールを使わずに続ける
+        </button>
       </div>
 
       <div

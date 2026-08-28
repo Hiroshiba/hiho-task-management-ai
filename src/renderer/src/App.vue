@@ -10,7 +10,6 @@ import {
   type IpcFailure,
   type IpcObsidianNoteSummary,
   type IpcObsidianSearchResult,
-  type IpcExternalToolReplaceInput,
   type IpcSyncResult,
 } from "../../shared/ipc";
 import {
@@ -74,7 +73,6 @@ type SetupAction =
   | { readonly kind: "run_capability" }
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
   | { readonly kind: "choose_external_tool"; readonly input: SetupExternalToolChoiceInput }
-  | { readonly kind: "configure_external_tool"; readonly input: IpcExternalToolReplaceInput }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
 
@@ -409,28 +407,6 @@ async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
   }
 }
 
-async function configureExternalTool(input: IpcExternalToolReplaceInput): Promise<void> {
-  setupBusy.value = true;
-  feedback.value = "";
-  try {
-    const replaceResult = await window.taskHub.externalTools.replace(input);
-    if (isFailure(replaceResult)) {
-      showFailure(replaceResult);
-      return;
-    }
-    const chooseResult = await window.taskHub.setup.chooseExternalTool({ kind: "configure" });
-    if (isFailure(chooseResult)) {
-      showFailure(chooseResult);
-      return;
-    }
-    applySetupState(chooseResult.value);
-  } catch {
-    showUnexpectedFailure();
-  } finally {
-    setupBusy.value = false;
-  }
-}
-
 function handleSetupAction(action: SetupAction): void {
   switch (action.kind) {
     case "start":
@@ -462,9 +438,6 @@ function handleSetupAction(action: SetupAction): void {
       return;
     case "choose_external_tool":
       void runSetupRequest(window.taskHub.setup.chooseExternalTool(action.input));
-      return;
-    case "configure_external_tool":
-      void configureExternalTool(action.input);
       return;
     case "run_full_sync":
       void runSetupRequest(window.taskHub.setup.runFullSync());
