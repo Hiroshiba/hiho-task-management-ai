@@ -48,6 +48,7 @@ type OperationTarget = NonCreateOperation["target"];
 type TaskStatusValue = "not_started" | "in_progress" | "completed" | "withdrawn";
 type WriterInput = AsanaProposalOperationWriterInput;
 type WriterResult = AsanaProposalOperationWriterResult;
+type WriterConflictReasonCode = Extract<WriterResult, { outcome: "conflict" }>["reason_code"];
 type SectionGids = AsanaProposalWriterSectionGids;
 type TemporaryRefMapping = AsanaProposalWriterTemporaryRefMapping;
 type AsanaTag = z.infer<typeof asanaTagResponseSchema>;
@@ -115,14 +116,29 @@ function validateAbortSignal(signal: AbortSignal): void {
 function createResult(
   operationId: string,
   taskGid: string,
-  outcome: WriterResult["outcome"],
-  reasonCode: WriterResult["reason_code"],
+  outcome: "applied" | "already_applied",
+  reasonCode: "applied" | "already_applied",
 ): WriterResult {
   return asanaProposalOperationWriterResultSchema.parse({
     operation_id: operationId,
     task_gid: taskGid,
     outcome,
     reason_code: reasonCode,
+  });
+}
+
+function createConflictResult(
+  operationId: string,
+  taskGid: string,
+  reasonCode: WriterConflictReasonCode,
+  sideEffect: "none" | "possible",
+): WriterResult {
+  return asanaProposalOperationWriterResultSchema.parse({
+    operation_id: operationId,
+    task_gid: taskGid,
+    outcome: "conflict",
+    reason_code: reasonCode,
+    side_effect: sideEffect,
   });
 }
 
@@ -1224,8 +1240,9 @@ function externalConflictResult(
   operationId: string,
   taskGid: string,
   reasonCode: "external_unreadable" | "external_identity_mismatch" | "merge_conflict" | "external_capacity_exceeded",
+  sideEffect: "none" | "possible",
 ): WriterResult {
-  return createResult(operationId, taskGid, "conflict", reasonCode);
+  return createConflictResult(operationId, taskGid, reasonCode, sideEffect);
 }
 
 /** 承認済みAI変更操作をAsanaへ適用します。 */
@@ -1274,6 +1291,7 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           existing.gid,
           currentExternal.reason_code,
+          "none",
         );
       }
       if (currentExternal.value.response.gid !== expectedExternal.gid) {
@@ -1281,12 +1299,18 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           existing.gid,
           "external_identity_mismatch",
+          "none",
         );
       }
       if (taskMatchesCreate(existing, input, operation, expectedExternal, tags)) {
         return createResult(operation.operation_id, existing.gid, "already_applied", "already_applied");
       }
-      return createResult(operation.operation_id, existing.gid, "conflict", "read_back_mismatch");
+      return createConflictResult(
+        operation.operation_id,
+        existing.gid,
+        "read_back_mismatch",
+        "none",
+      );
     }
 
     const creationInput: AsanaTaskCreationInput = {
@@ -1315,6 +1339,7 @@ export class AsanaProposalOperationWriter {
         operation.operation_id,
         created.gid,
         createdExternal.reason_code,
+        "possible",
       );
     }
     if (createdExternal.value.response.gid !== expectedExternal.gid) {
@@ -1322,6 +1347,7 @@ export class AsanaProposalOperationWriter {
         operation.operation_id,
         created.gid,
         "external_identity_mismatch",
+        "possible",
       );
     }
 
@@ -1371,7 +1397,12 @@ export class AsanaProposalOperationWriter {
       created.gid,
     );
     if (!taskMatchesCreate(readBack, input, operation, expectedExternal, tags)) {
-      return createResult(operation.operation_id, created.gid, "conflict", "read_back_mismatch");
+      return createConflictResult(
+        operation.operation_id,
+        created.gid,
+        "read_back_mismatch",
+        "possible",
+      );
     }
     return createResult(
       operation.operation_id,
@@ -1393,7 +1424,12 @@ export class AsanaProposalOperationWriter {
     const taskGid = resolveTargetGid(operationTarget(operation), mappings);
     const task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
     if (!taskHasProject(task, input.project_gid)) {
-      return createResult(operation.operation_id, taskGid, "conflict", "baseline_changed");
+      return createConflictResult(
+        operation.operation_id,
+        taskGid,
+        "baseline_changed",
+        "none",
+      );
     }
     const baselineExternalInput = input.baseline_external_data;
     if (baselineExternalInput == null) {
@@ -1411,6 +1447,7 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           taskGid,
           currentExternalResult.reason_code,
+          "none",
         );
       }
       currentExternal = currentExternalResult.value;
@@ -1424,7 +1461,12 @@ export class AsanaProposalOperationWriter {
       mappings,
     );
     if (classification === "conflict") {
-      return createResult(operation.operation_id, taskGid, "conflict", "baseline_changed");
+      return createConflictResult(
+        operation.operation_id,
+        taskGid,
+        "baseline_changed",
+        "none",
+      );
     }
     if (classification === "after" && !operationUsesExternalData(operation)) {
       return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
@@ -1457,6 +1499,7 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           taskGid,
           externalPlan.reason_code,
+          "none",
         );
       }
       if (externalPlan.kind === "none") {
@@ -1492,6 +1535,7 @@ export class AsanaProposalOperationWriter {
             operation.operation_id,
             taskGid,
             latestExternalResult.reason_code,
+            asanaChanged ? "possible" : "none",
           );
         }
         mergeCurrent = latestExternalResult.value;
@@ -1506,6 +1550,7 @@ export class AsanaProposalOperationWriter {
             operation.operation_id,
             taskGid,
             externalPlan.reason_code,
+            asanaChanged ? "possible" : "none",
           );
         }
         if (externalPlan.kind === "none") {
@@ -1541,7 +1586,12 @@ export class AsanaProposalOperationWriter {
       taskGid,
     );
     if (!verifyOperationAfter(readBack, operation, input, mappings, expectedExternal, tags)) {
-      return createResult(operation.operation_id, taskGid, "conflict", "read_back_mismatch");
+      return createConflictResult(
+        operation.operation_id,
+        taskGid,
+        "read_back_mismatch",
+        "possible",
+      );
     }
     return createResult(operation.operation_id, taskGid, "applied", "applied");
   }
