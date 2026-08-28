@@ -7,10 +7,13 @@ import {
   ipcObsidianSearchInputSchema,
   ipcObsidianValidateInputSchema,
   ipcGuiEditInputSchema,
+  ipcSyncStateEventSchema,
+  type IpcAiStatus,
   type IpcFailure,
   type IpcObsidianNoteSummary,
   type IpcObsidianSearchResult,
   type IpcSyncResult,
+  type IpcSyncStateEvent,
 } from "../../shared/ipc";
 import {
   setupStateSchema,
@@ -50,11 +53,13 @@ import {
   filterTaskRows,
   rendererAiStateSchema,
   rendererCodexStateSchema,
+  rendererConnectionStateSchema,
   rendererFailureSchema,
   rendererScreenStateSchema,
   rendererSyncStateSchema,
   type RendererAiState,
   type RendererCodexState,
+  type RendererConnectionState,
   type RendererFailure,
   type RendererFilter,
   type RendererGuiEdit,
@@ -79,12 +84,6 @@ type SetupAction =
 type SetupResult =
   | { readonly kind: "ok"; readonly value: SetupState }
   | IpcFailure;
-
-type CodexStatusValue =
-  | { readonly kind: "ready"; readonly codex_version: string; readonly model: string }
-  | { readonly kind: "authentication_required"; readonly codex_version: string }
-  | { readonly kind: "starting" }
-  | { readonly kind: "unavailable"; readonly reason_code: string };
 
 type ObsidianLinkStatus = "exists" | "missing" | "unavailable";
 
@@ -115,6 +114,15 @@ type PendingAiProposal = {
   readonly proposal: AiWorkflowProposalView;
 };
 
+type SyncRuntimeErrorCode = Extract<
+  IpcSyncStateEvent,
+  { readonly kind: "error" }
+>["error_code"];
+
+type SyncStateReadResult =
+  | { readonly kind: "received"; readonly value: IpcSyncStateEvent }
+  | { readonly kind: "unavailable" };
+
 const screen = ref<RendererScreenState>(rendererScreenStateSchema.parse({ kind: "loading" }));
 const setupState = ref<SetupState | undefined>();
 const setupBusy = ref(false);
@@ -122,7 +130,10 @@ const overview = ref<ViewModelOverview | undefined>();
 const selectedTask = ref<ViewModelTaskDetail | undefined>();
 const selectedTaskGid = ref<string | undefined>();
 const filter = ref<RendererFilter>({ kind: "normal" });
-const syncState = ref<RendererSyncState>(rendererSyncStateSchema.parse({ kind: "offline" }));
+const connectionState = ref<RendererConnectionState>(rendererConnectionStateSchema.parse({
+  kind: "checking",
+  sync: { kind: "waiting" },
+}));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
 const appVersion = ref("取得中");
@@ -145,13 +156,14 @@ let obsidianStatusGeneration = 0;
 let lastLoadedSuccessfulSyncAt: string | undefined;
 let activeSyncReload: ActiveSyncReload = { kind: "idle" };
 
-const online = computed(() => syncState.value.kind === "synced" || syncState.value.kind === "syncing");
+const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
 const canManualSync = computed(() => configured.value
   && activeSyncMode.value === "idle"
-  && syncState.value.kind !== "offline"
+  && connectionState.value.kind === "online"
   && syncState.value.kind !== "syncing");
-const canWrite = computed(() => syncState.value.kind === "synced");
+const canWrite = computed(() => connectionState.value.kind === "online"
+  && syncState.value.kind === "synced");
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
 const lastSyncAt = computed(() => {
   const currentOverview = overview.value;
@@ -216,12 +228,44 @@ function displayFailure(value: IpcFailure): RendererFailure {
   });
 }
 
+function syncFailureStateFromIpc(value: IpcFailure): RendererSyncState {
+  if (value.code === "authentication_required") {
+    return rendererSyncStateSchema.parse({ kind: "authentication_required" });
+  }
+  if (value.code === "aborted") {
+    return rendererSyncStateSchema.parse({ kind: "error", error_code: "request_aborted" });
+  }
+  return rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" });
+}
+
 function showFailure(value: IpcFailure): void {
   feedback.value = displayFailure(value).message;
 }
 
 function showUnexpectedFailure(): void {
   feedback.value = "予期しないエラーが発生しました。もう一度お試しください。";
+}
+
+function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の適用"): string {
+  if (connectionState.value.kind === "offline") {
+    return `${operation}はオフライン中に利用できません。`;
+  }
+  if (connectionState.value.kind === "checking") {
+    return `${operation}はネットワーク状態の確認後に利用できます。`;
+  }
+  switch (syncState.value.kind) {
+    case "authentication_required":
+      return `${operation}はAsana認証を更新するまで利用できません。`;
+    case "recovery_pending":
+      return `${operation}は復旧が完了するまで利用できません。`;
+    case "waiting":
+    case "syncing":
+      return `${operation}は同期が完了するまで利用できません。`;
+    case "error":
+      return `${operation}は同期失敗を解消するまで利用できません。`;
+    case "synced":
+      throw new Error("書き込み可能状態で利用不可メッセージを要求できません。");
+  }
 }
 
 function createSyncFeedback(result: IpcSyncResult): string {
@@ -306,51 +350,121 @@ function setScreenError(value: IpcFailure): void {
   screen.value = createErrorScreenState(value.code, failureText(value.code));
 }
 
-function handleSyncState(value: {
-  readonly kind: "online" | "offline" | "syncing" | "authentication_required" | "error";
-  readonly last_successful_sync_at?: string | undefined;
-}): void {
+function setConnectionState(kind: RendererConnectionState["kind"], sync: RendererSyncState): void {
+  connectionState.value = rendererConnectionStateSchema.parse({ kind, sync });
+}
+
+function setSyncState(sync: RendererSyncState): void {
+  setConnectionState(connectionState.value.kind, sync);
+}
+
+function chromiumConnectionState(): RendererConnectionState["kind"] {
+  if (window.navigator.onLine) {
+    return "online";
+  }
+  return "offline";
+}
+
+function connectionStateForSyncFailure(
+  errorCode: SyncRuntimeErrorCode,
+): RendererConnectionState["kind"] {
+  const current = chromiumConnectionState();
+  if (errorCode === "transport_error" && current === "online") {
+    return "checking";
+  }
+  return current;
+}
+
+function syncFailureState(errorCode: SyncRuntimeErrorCode): RendererSyncState {
+  if (errorCode === "authentication_required") {
+    return rendererSyncStateSchema.parse({ kind: "authentication_required" });
+  }
+  if (errorCode === "events_reset") {
+    return rendererSyncStateSchema.parse({ kind: "recovery_pending" });
+  }
+  return rendererSyncStateSchema.parse({ kind: "error", error_code: errorCode });
+}
+
+function settledSyncState(
+  value: Extract<IpcSyncStateEvent, { readonly kind: "online" | "offline" }>,
+): RendererSyncState {
+  if (value.last_error_code != null) {
+    return syncFailureState(value.last_error_code);
+  }
+  if (value.last_successful_sync_at != null) {
+    return rendererSyncStateSchema.parse({
+      kind: "synced",
+      synced_at: value.last_successful_sync_at,
+    });
+  }
+  return rendererSyncStateSchema.parse({ kind: "waiting" });
+}
+
+function handleSyncState(value: IpcSyncStateEvent): void {
   if (value.last_successful_sync_at != null && configured.value) {
     void reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
   }
   if (value.kind === "syncing") {
-    syncState.value = rendererSyncStateSchema.parse({ kind: "syncing" });
+    setConnectionState(
+      chromiumConnectionState(),
+      rendererSyncStateSchema.parse({ kind: "syncing" }),
+    );
     return;
   }
   if (value.kind === "offline") {
-    syncState.value = rendererSyncStateSchema.parse({ kind: "offline" });
+    const current = chromiumConnectionState();
+    if (value.last_error_code != null) {
+      setConnectionState(
+        connectionStateForSyncFailure(value.last_error_code),
+        settledSyncState(value),
+      );
+      return;
+    }
+    if (current === "online") {
+      setConnectionState("online", rendererSyncStateSchema.parse({ kind: "recovery_pending" }));
+      return;
+    }
+    setConnectionState("offline", settledSyncState(value));
     return;
   }
   if (value.kind === "authentication_required") {
-    syncState.value = rendererSyncStateSchema.parse({
-      kind: "error",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "authentication_required",
-        message: failureText("authentication_required"),
-      }),
-    });
+    setConnectionState(
+      chromiumConnectionState(),
+      rendererSyncStateSchema.parse({ kind: "authentication_required" }),
+    );
     return;
   }
   if (value.kind === "error") {
-    syncState.value = rendererSyncStateSchema.parse({
-      kind: "error",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "operation_failed",
-        message: failureText("operation_failed"),
-      }),
-    });
+    setConnectionState(
+      connectionStateForSyncFailure(value.error_code),
+      syncFailureState(value.error_code),
+    );
     return;
   }
-  if (value.last_successful_sync_at == null) {
-    syncState.value = rendererSyncStateSchema.parse({ kind: "syncing" });
-    return;
+  setConnectionState(chromiumConnectionState(), settledSyncState(value));
+}
+
+async function readCurrentSyncState(): Promise<SyncStateReadResult> {
+  try {
+    const result = await window.taskHub.sync.getState();
+    if (isFailure(result)) {
+      return { kind: "unavailable" };
+    }
+    return {
+      kind: "received",
+      value: ipcSyncStateEventSchema.parse(result.value),
+    };
+  } catch {
+    return { kind: "unavailable" };
   }
-  syncState.value = rendererSyncStateSchema.parse({
-    kind: "synced",
-    synced_at: value.last_successful_sync_at,
-  });
+}
+
+async function reconcileSyncStateAfterFailure(fallback: RendererSyncState): Promise<void> {
+  setSyncState(fallback);
+  const result = await readCurrentSyncState();
+  if (result.kind === "received") {
+    handleSyncState(result.value);
+  }
 }
 
 function setCodexFromSetup(state: SetupState): void {
@@ -361,27 +475,19 @@ function setCodexFromSetup(state: SetupState): void {
   if ("codex" in state && state.codex.kind === "unavailable") {
     codexState.value = rendererCodexStateSchema.parse({
       kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "unavailable",
-        message: failureText("unavailable"),
-      }),
+      reason_code: state.codex.reason_code,
     });
     return;
   }
-  if (state.kind === "ready" && state.context.codex.kind === "unavailable") {
+  if ("context" in state && state.context.codex.kind === "unavailable") {
     codexState.value = rendererCodexStateSchema.parse({
       kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "unavailable",
-        message: failureText("unavailable"),
-      }),
+      reason_code: state.context.codex.reason_code,
     });
   }
 }
 
-function handleCodexStatus(value: CodexStatusValue): void {
+function handleCodexStatus(value: IpcAiStatus): void {
   if (value.kind === "ready") {
     codexState.value = rendererCodexStateSchema.parse({
       kind: "ready",
@@ -399,11 +505,7 @@ function handleCodexStatus(value: CodexStatusValue): void {
   }
   codexState.value = rendererCodexStateSchema.parse({
     kind: "unavailable",
-    failure: rendererFailureSchema.parse({
-      kind: "error",
-      code: "unavailable",
-      message: failureText("unavailable"),
-    }),
+    reason_code: value.reason_code,
   });
 }
 
@@ -696,15 +798,18 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     return;
   }
   activeSyncMode.value = mode;
-  syncState.value = rendererSyncStateSchema.parse({ kind: "syncing" });
+  setSyncState(rendererSyncStateSchema.parse({ kind: "syncing" }));
   try {
     const result = await window.taskHub.sync.run({ mode });
     if (isFailure(result)) {
       showFailure(result);
-      syncState.value = rendererSyncStateSchema.parse({ kind: "error", failure: displayFailure(result) });
+      await reconcileSyncStateAfterFailure(syncFailureStateFromIpc(result));
       return;
     }
-    syncState.value = rendererSyncStateSchema.parse({ kind: "synced", synced_at: result.value.synced_at });
+    setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
+      kind: "synced",
+      synced_at: result.value.synced_at,
+    }));
     const syncFeedback = createSyncFeedback(result.value);
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
     if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
@@ -712,14 +817,10 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     }
   } catch {
     showUnexpectedFailure();
-    syncState.value = rendererSyncStateSchema.parse({
+    await reconcileSyncStateAfterFailure(rendererSyncStateSchema.parse({
       kind: "error",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "operation_failed",
-        message: failureText("operation_failed"),
-      }),
-    });
+      error_code: "unexpected_error",
+    }));
   } finally {
     activeSyncMode.value = "idle";
   }
@@ -901,8 +1002,12 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
 
 async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
   const currentOverview = overview.value;
-  if (!canWrite.value || currentOverview == null) {
-    feedback.value = "オフライン中は編集できません。";
+  if (currentOverview == null) {
+    feedback.value = "タスク状態を読み込むまで編集できません。";
+    return;
+  }
+  if (!canWrite.value) {
+    feedback.value = writeUnavailableText("編集");
     return;
   }
   try {
@@ -992,7 +1097,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
     return;
   }
   if (!canWrite.value) {
-    feedback.value = "オフライン中はAIを利用できません。";
+    feedback.value = writeUnavailableText("AI利用");
     return;
   }
   const pendingProposal = pendingAiProposal(aiState.value);
@@ -1115,7 +1220,7 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
     return;
   }
   if (!canWrite.value) {
-    feedback.value = "オフライン中は変更案を適用できません。";
+    feedback.value = writeUnavailableText("変更案の適用");
     return;
   }
   aiBusy.value = true;
@@ -1178,7 +1283,7 @@ async function loadInitialCodexStatus(): Promise<void> {
     if (isFailure(result)) {
       codexState.value = rendererCodexStateSchema.parse({
         kind: "unavailable",
-        failure: displayFailure(result),
+        reason_code: "startup_failed",
       });
       return;
     }
@@ -1186,11 +1291,7 @@ async function loadInitialCodexStatus(): Promise<void> {
   } catch {
     codexState.value = rendererCodexStateSchema.parse({
       kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "unavailable",
-        message: failureText("unavailable"),
-      }),
+      reason_code: "startup_failed",
     });
   }
 }
@@ -1210,28 +1311,17 @@ async function initialize(): Promise<void> {
       }
     });
   } catch {
-    syncState.value = rendererSyncStateSchema.parse({
-      kind: "error",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "unavailable",
-        message: failureText("unavailable"),
-      }),
-    });
+    setSyncState(rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" }));
   }
   try {
     removeAiSubscription = window.taskHub.ai.onDelta((delta) => {
       appendDelta(delta);
     });
   } catch {
-    codexState.value = {
+    codexState.value = rendererCodexStateSchema.parse({
       kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "unavailable",
-        message: failureText("unavailable"),
-      }),
-    };
+      reason_code: "startup_failed",
+    });
   }
   try {
     removeAiStatusSubscription = window.taskHub.ai.onStatus((value) => {
@@ -1240,15 +1330,15 @@ async function initialize(): Promise<void> {
       } catch {
         codexState.value = rendererCodexStateSchema.parse({
           kind: "unavailable",
-          failure: rendererFailureSchema.parse({
-            kind: "error",
-            code: "invalid_response",
-            message: failureText("invalid_response"),
-          }),
+          reason_code: "startup_failed",
         });
       }
     });
   } catch {
+    codexState.value = rendererCodexStateSchema.parse({
+      kind: "unavailable",
+      reason_code: "startup_failed",
+    });
     feedback.value = "Codex状態を購読できませんでした。";
   }
   try {
@@ -1294,9 +1384,8 @@ onUnmounted(() => {
 <template>
   <div class="min-h-screen bg-slate-100 text-slate-900">
     <AppHeader
-      :sync-state="syncState"
+      :connection-state="connectionState"
       :last-sync-at="lastSyncAt"
-      :online="online"
       :configured="configured"
       :can-manual-sync="canManualSync"
       :can-full-sync="canManualSync"

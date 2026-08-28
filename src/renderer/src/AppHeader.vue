@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { isoDateTimeSchema } from "../../shared/domain";
-import type { RendererCodexState, RendererSyncState } from "./state";
+import type {
+  RendererCodexState,
+  RendererConnectionState,
+  RendererSyncState,
+} from "./state";
 
 const props = defineProps<{
-  syncState: RendererSyncState;
+  connectionState: RendererConnectionState;
   lastSyncAt: string | undefined;
-  online: boolean;
   configured: boolean;
   canManualSync: boolean;
   canFullSync: boolean;
@@ -54,14 +57,82 @@ function confirmFullSync(): void {
 
 function syncLabel(state: RendererSyncState): string {
   switch (state.kind) {
+    case "waiting":
+      return "待機中";
     case "syncing":
       return "同期中";
     case "synced":
       return "同期済み";
+    case "authentication_required":
+      return "Asana認証が必要";
+    case "recovery_pending":
+      return "復旧待ち";
+    case "error":
+      return syncErrorLabel(state.error_code);
+  }
+}
+
+function syncErrorLabel(
+  errorCode: Extract<RendererSyncState, { readonly kind: "error" }>["error_code"],
+): string {
+  switch (errorCode) {
+    case "payment_required":
+      return "Asanaプラン要確認";
+    case "rate_limited":
+      return "再試行待ち";
+    case "http_error":
+      return "Asana応答エラー";
+    case "transport_error":
+      return "通信失敗";
+    case "response_error":
+      return "Asana応答不正";
+    case "request_aborted":
+      return "同期中断";
+    case "sync_in_progress":
+      return "別の同期を実行中";
+    case "unexpected_error":
+      return "同期失敗";
+  }
+}
+
+function networkLabel(state: RendererConnectionState): string {
+  switch (state.kind) {
+    case "checking":
+      return "確認中";
+    case "online":
+      return "オンライン";
     case "offline":
       return "オフライン";
-    case "error":
-      return "同期エラー";
+  }
+}
+
+function networkClass(state: RendererConnectionState): string {
+  switch (state.kind) {
+    case "checking":
+      return "bg-slate-100 text-slate-700";
+    case "online":
+      return "bg-emerald-100 text-emerald-800";
+    case "offline":
+      return "bg-amber-100 text-amber-900";
+  }
+}
+
+function codexUnavailableLabel(
+  reasonCode: Extract<RendererCodexState, { readonly kind: "unavailable" }>["reason_code"],
+): string {
+  switch (reasonCode) {
+    case "not_installed":
+      return "未インストール";
+    case "incompatible":
+      return "非対応バージョン";
+    case "permission_denied":
+      return "権限不足";
+    case "startup_failed":
+      return "起動失敗";
+    case "disabled":
+      return "安全要件により無効";
+    case "stopped":
+      return "停止済み";
   }
 }
 
@@ -74,7 +145,7 @@ function codexLabel(state: RendererCodexState): string {
     case "authentication_required":
       return "認証が必要です";
     case "unavailable":
-      return "利用できません";
+      return `利用不可・${codexUnavailableLabel(state.reason_code)}`;
   }
 }
 
@@ -113,15 +184,15 @@ function jstDateTimeLabel(value: string | undefined): string {
         class="flex flex-wrap items-center gap-2 text-sm text-slate-700"
         aria-live="polite"
       >
-        <span class="rounded-full bg-slate-100 px-3 py-1">同期: {{ syncLabel(syncState) }}</span>
+        <span class="rounded-full bg-slate-100 px-3 py-1">同期: {{ syncLabel(connectionState.sync) }}</span>
         <span class="rounded-full bg-slate-100 px-3 py-1">
           最終同期: {{ jstDateTimeLabel(lastSyncAt) }}
         </span>
         <span
           class="rounded-full px-3 py-1"
-          :class="online ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'"
+          :class="networkClass(connectionState)"
         >
-          {{ online ? "オンライン" : "オフライン" }}
+          ネットワーク: {{ networkLabel(connectionState) }}
         </span>
         <span class="rounded-full bg-slate-100 px-3 py-1">Codex: {{ codexLabel(codexState) }}</span>
         <span class="rounded-full bg-slate-100 px-3 py-1">編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>

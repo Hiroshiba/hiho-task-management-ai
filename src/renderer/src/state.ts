@@ -65,7 +65,19 @@ export const rendererFailureSchema = z
 /** Rendererが表示する失敗コードを表す型です。 */
 export type RendererFailure = z.infer<typeof rendererFailureSchema>;
 
+const rendererSyncErrorCodeSchema = z.enum([
+  "payment_required",
+  "rate_limited",
+  "http_error",
+  "transport_error",
+  "response_error",
+  "request_aborted",
+  "sync_in_progress",
+  "unexpected_error",
+]);
+
 export const rendererSyncStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("waiting") }).strict(),
   z.object({ kind: z.literal("syncing") }).strict(),
   z
     .object({
@@ -73,17 +85,36 @@ export const rendererSyncStateSchema = z.discriminatedUnion("kind", [
       synced_at: isoDateTimeSchema,
     })
     .strict(),
-  z.object({ kind: z.literal("offline") }).strict(),
+  z.object({ kind: z.literal("authentication_required") }).strict(),
+  z.object({ kind: z.literal("recovery_pending") }).strict(),
   z
     .object({
       kind: z.literal("error"),
-      failure: rendererFailureSchema,
+      error_code: rendererSyncErrorCodeSchema,
     })
     .strict(),
 ]);
 
 /** Rendererが表示する同期状態の型です。 */
 export type RendererSyncState = z.infer<typeof rendererSyncStateSchema>;
+
+export const rendererConnectionStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("checking"), sync: rendererSyncStateSchema }).strict(),
+  z.object({ kind: z.literal("online"), sync: rendererSyncStateSchema }).strict(),
+  z.object({ kind: z.literal("offline"), sync: rendererSyncStateSchema }).strict(),
+]);
+
+/** Rendererが表示するネットワーク到達性と同期状態を表す型です。 */
+export type RendererConnectionState = z.infer<typeof rendererConnectionStateSchema>;
+
+const rendererCodexUnavailableReasonSchema = z.enum([
+  "not_installed",
+  "incompatible",
+  "permission_denied",
+  "startup_failed",
+  "disabled",
+  "stopped",
+]);
 
 export const rendererCodexStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("connecting") }).strict(),
@@ -97,7 +128,7 @@ export const rendererCodexStateSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("unavailable"),
-      failure: rendererFailureSchema,
+      reason_code: rendererCodexUnavailableReasonSchema,
     })
     .strict(),
 ]);
