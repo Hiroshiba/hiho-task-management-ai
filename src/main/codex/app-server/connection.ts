@@ -10,10 +10,16 @@ import {
   codexDiagnosticSchema,
   codexNotificationSchema,
   codexRpcIdSchema,
+  experimentalFeatureListParamsSchema,
+  experimentalFeatureListResultSchema,
   initializeParamsSchema,
   initializeResultSchema,
   modelListParamsSchema,
   modelListResultSchema,
+  mcpServerStatusListParamsSchema,
+  mcpServerStatusListResultSchema,
+  permissionProfileListParamsSchema,
+  permissionProfileListResultSchema,
   skillsListParamsSchema,
   skillsListResultSchema,
   threadStartParamsSchema,
@@ -30,9 +36,15 @@ import {
   type CodexDiagnostic,
   type CodexNotification,
   type CodexRpcId,
+  type ExperimentalFeatureListParams,
+  type ExperimentalFeatureListResult,
   type InitializeParams,
   type ModelListParams,
   type ModelListResult,
+  type McpServerStatusListParams,
+  type McpServerStatusListResult,
+  type PermissionProfileListParams,
+  type PermissionProfileListResult,
   type SkillsListParams,
   type SkillsListResult,
   type ThreadStartParams,
@@ -157,25 +169,41 @@ function compareNumericRequestId(id: CodexRpcId, nextId: number): boolean {
 }
 
 function jsonDepth(value: unknown, depth: number): number {
-  if (typeof value !== "object" || value == null) {
-    return depth;
-  }
-
   let deepest = depth;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const itemDepth = jsonDepth(item, depth + 1);
-      if (itemDepth > deepest) {
-        deepest = itemDepth;
-      }
+  const path = new WeakSet<object>();
+  const pending: Array<
+    | { kind: "enter"; value: unknown; depth: number }
+    | { kind: "leave"; value: object }
+  > = [{ kind: "enter", value, depth }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current == null) {
+      continue;
     }
-    return deepest;
-  }
-
-  for (const item of Object.values(value)) {
-    const itemDepth = jsonDepth(item, depth + 1);
-    if (itemDepth > deepest) {
-      deepest = itemDepth;
+    if (current.kind === "leave") {
+      path.delete(current.value);
+      continue;
+    }
+    if (typeof current.value !== "object" || current.value == null) {
+      continue;
+    }
+    if (path.has(current.value)) {
+      continue;
+    }
+    path.add(current.value);
+    if (current.depth > deepest) {
+      deepest = current.depth;
+    }
+    pending.push({ kind: "leave", value: current.value });
+    const childDepth = current.depth + 1;
+    if (Array.isArray(current.value)) {
+      for (const item of current.value) {
+        pending.push({ kind: "enter", value: item, depth: childDepth });
+      }
+      continue;
+    }
+    for (const item of Object.values(current.value)) {
+      pending.push({ kind: "enter", value: item, depth: childDepth });
     }
   }
   return deepest;
@@ -187,6 +215,7 @@ function knownNotificationMethod(method: string): boolean {
     "turn/started",
     "turn/completed",
     "item/completed",
+    "thread/settings/updated",
     "account/updated",
     "account/login/completed",
     "skills/changed",
@@ -201,6 +230,7 @@ export class CodexAppServerConnection {
   private readonly clientInfo: InitializeParams["clientInfo"];
   private readonly capabilities: InitializeParams["capabilities"];
   private readonly requestTimeoutMs: number;
+  private codexHome: string | undefined;
   private state: ConnectionState = "created";
   private child: ChildProcess | undefined;
   private stdoutReader: Interface | undefined;
@@ -254,12 +284,13 @@ export class CodexAppServerConnection {
         clientInfo: this.clientInfo,
         ...(this.capabilities == null ? {} : { capabilities: this.capabilities }),
       });
-      await this.requestInternal(
+      const initializeResult = await this.requestInternal(
         "initialize",
         initializeParams,
         initializeResultSchema,
         signal,
       );
+      this.codexHome = initializeResult.codexHome;
       if (signal.aborted) {
         throw new CodexRequestAbortedError("initialize");
       }
@@ -341,6 +372,62 @@ export class CodexAppServerConnection {
       skillsListResultSchema,
       signal,
     );
+  }
+
+  /** 利用可能な権限プロファイルを取得します。 */
+  public async listPermissionProfiles(
+    params: PermissionProfileListParams,
+    signal: AbortSignal,
+  ): Promise<PermissionProfileListResult> {
+    const validatedParams = permissionProfileListParamsSchema.parse(params);
+    validateAbortSignal(signal);
+    this.ensureReady();
+    return this.requestInternal(
+      "permissionProfile/list",
+      validatedParams,
+      permissionProfileListResultSchema,
+      signal,
+    );
+  }
+
+  /** 接続中のMCPサーバー状態を取得します。 */
+  public async listMcpServerStatuses(
+    params: McpServerStatusListParams,
+    signal: AbortSignal,
+  ): Promise<McpServerStatusListResult> {
+    const validatedParams = mcpServerStatusListParamsSchema.parse(params);
+    validateAbortSignal(signal);
+    this.ensureReady();
+    return this.requestInternal(
+      "mcpServerStatus/list",
+      validatedParams,
+      mcpServerStatusListResultSchema,
+      signal,
+    );
+  }
+
+  /** 実効化されたCodex機能一覧を取得します。 */
+  public async listExperimentalFeatures(
+    params: ExperimentalFeatureListParams,
+    signal: AbortSignal,
+  ): Promise<ExperimentalFeatureListResult> {
+    const validatedParams = experimentalFeatureListParamsSchema.parse(params);
+    validateAbortSignal(signal);
+    this.ensureReady();
+    return this.requestInternal(
+      "experimentalFeature/list",
+      validatedParams,
+      experimentalFeatureListResultSchema,
+      signal,
+    );
+  }
+
+  /** 初期化応答で得たCodexホームのパスを取得します。 */
+  public getCodexHome(): string {
+    if (this.codexHome == null) {
+      throw new CodexConnectionStateError();
+    }
+    return this.codexHome;
   }
 
   /** 新しいCodexスレッドを開始します。 */
@@ -835,7 +922,10 @@ export class CodexAppServerConnection {
       });
       return;
     }
-    const known = codexNotificationSchema.safeParse(notification);
+    const known = codexNotificationSchema.safeParse({
+      method: notification.method,
+      ...(notification.params === undefined ? {} : { params: notification.params }),
+    });
     if (!known.success) {
       throw new CodexProtocolError(
         "invalid_message",

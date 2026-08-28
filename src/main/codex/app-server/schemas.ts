@@ -1,8 +1,13 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 const nonEmptyTextSchema = z.string().min(1);
 const boundedTextSchema = nonEmptyTextSchema.max(200_000);
 const pathSchema = nonEmptyTextSchema.max(4_096);
+const absolutePathSchema = pathSchema.refine(
+  isAbsolute,
+  "パスは絶対パスでなければなりません。",
+);
 const modelIdSchema = nonEmptyTextSchema.max(200);
 const threadIdSchema = nonEmptyTextSchema.max(200);
 const turnIdSchema = nonEmptyTextSchema.max(200);
@@ -27,40 +32,59 @@ function validateJsonValue(
   ancestors: WeakSet<object>,
   context: { addIssue: (issue: { code: "custom"; message: string }) => void },
 ): void {
-  if (depth > maxJsonValueDepth) {
-    addJsonValueIssue(context, "JSON値の深度が上限を超えています。");
-    return;
-  }
-  if (value == null || typeof value === "string" || typeof value === "boolean") {
-    return;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      addJsonValueIssue(context, "JSON値の数値は有限でなければなりません。");
+  type Frame = {
+    readonly value: unknown;
+    readonly depth: number;
+    readonly exiting: boolean;
+  };
+  const pending: Frame[] = [{ value, depth, exiting: false }];
+  while (pending.length > 0) {
+    const frame = pending.pop();
+    if (frame == null) {
+      throw new Error("JSON検証のスタックが不正です。");
     }
-    return;
-  }
-  if (typeof value !== "object") {
-    addJsonValueIssue(context, "JSON値に対応しない型です。");
-    return;
-  }
-  if (ancestors.has(value)) {
-    addJsonValueIssue(context, "JSON値に循環参照があります。");
-    return;
-  }
-  ancestors.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      validateJsonValue(item, depth + 1, ancestors, context);
+    if (frame.exiting) {
+      if (typeof frame.value !== "object" || frame.value == null) {
+        throw new Error("JSON検証の状態が不正です。");
+      }
+      ancestors.delete(frame.value);
+      continue;
     }
-  } else if (isJsonObject(value)) {
-    for (const item of Object.values(value)) {
-      validateJsonValue(item, depth + 1, ancestors, context);
+    if (frame.depth > maxJsonValueDepth) {
+      addJsonValueIssue(context, "JSON値の深度が上限を超えています。");
+      continue;
     }
-  } else {
-    addJsonValueIssue(context, "JSON値はプレーンなオブジェクトでなければなりません。");
+    if (frame.value == null || typeof frame.value === "string" || typeof frame.value === "boolean") {
+      continue;
+    }
+    if (typeof frame.value === "number") {
+      if (!Number.isFinite(frame.value)) {
+        addJsonValueIssue(context, "JSON値の数値は有限でなければなりません。");
+      }
+      continue;
+    }
+    if (typeof frame.value !== "object") {
+      addJsonValueIssue(context, "JSON値に対応しない型です。");
+      continue;
+    }
+    if (ancestors.has(frame.value)) {
+      addJsonValueIssue(context, "JSON値に循環参照があります。");
+      continue;
+    }
+    ancestors.add(frame.value);
+    pending.push({ value: frame.value, depth: frame.depth, exiting: true });
+    if (Array.isArray(frame.value)) {
+      for (const item of frame.value) {
+        pending.push({ value: item, depth: frame.depth + 1, exiting: false });
+      }
+    } else if (isJsonObject(frame.value)) {
+      for (const item of Object.values(frame.value)) {
+        pending.push({ value: item, depth: frame.depth + 1, exiting: false });
+      }
+    } else {
+      addJsonValueIssue(context, "JSON値はプレーンなオブジェクトでなければなりません。");
+    }
   }
-  ancestors.delete(value);
 }
 
 const jsonValueSchema = z.unknown().superRefine((value, context) => {
@@ -134,7 +158,7 @@ export const initializeParamsSchema = z
 export const initializeResultSchema = z
   .object({
     userAgent: nonEmptyTextSchema.max(500),
-    codexHome: pathSchema,
+    codexHome: absolutePathSchema,
     platformFamily: nonEmptyTextSchema.max(100),
     platformOs: nonEmptyTextSchema.max(100),
   })
@@ -265,6 +289,7 @@ const skillInfoSchema = z
   .object({
     name: nonEmptyTextSchema.max(200),
     description: nonEmptyTextSchema.max(2_000),
+    path: pathSchema,
     enabled: z.boolean(),
     interface: skillInterfaceSchema.optional(),
     dependencies: z
@@ -291,6 +316,45 @@ export const skillsListResultSchema = z
   })
   .strip();
 
+const permissionProfileIdSchema = nonEmptyTextSchema.max(200);
+
+const permissionProfileSummarySchema = z
+  .object({
+    id: permissionProfileIdSchema,
+    description: z.string().max(2_000).nullable(),
+    allowed: z.boolean(),
+  })
+  .strip();
+
+/** 権限プロファイル一覧要求を表すスキーマです。 */
+export const permissionProfileListParamsSchema = z
+  .object({
+    cursor: nonEmptyTextSchema.max(500).optional(),
+    limit: z.number().int().positive().max(1_000).optional(),
+    cwd: pathSchema.optional(),
+  })
+  .strict();
+
+/** 権限プロファイル一覧応答を表すスキーマです。 */
+export const permissionProfileListResultSchema = z
+  .object({
+    data: z.array(permissionProfileSummarySchema).max(1_000),
+    nextCursor: nonEmptyTextSchema.max(500).nullable(),
+  })
+  .strip();
+
+const permissionProfileConfigValueSchema = jsonValueSchema;
+const permissionProfileConfigSchema = z
+  .record(z.string().min(1).max(200), permissionProfileConfigValueSchema)
+  .superRefine((value, context) => {
+    if (Object.keys(value).length > 1_000) {
+      context.addIssue({
+        code: "custom",
+        message: "Codex権限プロファイル設定の項目数が上限を超えています。",
+      });
+    }
+  });
+
 /** thread/start要求を表すスキーマです。 */
 export const threadStartParamsSchema = z
   .object({
@@ -298,11 +362,22 @@ export const threadStartParamsSchema = z
     cwd: pathSchema.optional(),
     approvalPolicy: z.literal("never").optional(),
     sandbox: z.enum(["read-only", "workspace-write"]).optional(),
+    permissions: nonEmptyTextSchema.max(200).optional(),
+    config: permissionProfileConfigSchema.optional(),
     personality: nonEmptyTextSchema.max(100).optional(),
     serviceName: nonEmptyTextSchema.max(200).optional(),
     ephemeral: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((params, context) => {
+    if (params.sandbox !== undefined && params.permissions !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["sandbox"],
+        message: "sandboxとpermissionsを同時に指定できません。",
+      });
+    }
+  });
 
 const threadSummarySchema = z
   .object({
@@ -586,6 +661,102 @@ const itemCompletedParamsSchema = z
   })
   .strict();
 
+const threadSettingsUpdatedParamsSchema = z
+  .object({
+    threadId: threadIdSchema,
+    threadSettings: z
+      .object({
+        sandboxPolicy: responseSandboxPolicySchema,
+        activePermissionProfile: z
+          .object({
+            id: permissionProfileIdSchema,
+            extends: permissionProfileIdSchema.nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strip(),
+  })
+  .strict();
+
+const mcpServerConnectionStatusSchema = z.enum([
+  "notStarted",
+  "starting",
+  "connected",
+  "authenticationRequired",
+  "failed",
+  "cancelled",
+  "disabled",
+]);
+
+const mcpServerAuthStatusSchema = z.enum([
+  "unknown",
+  "unsupported",
+  "notLoggedIn",
+  "bearerToken",
+  "oAuth",
+]);
+
+const mcpServerStatusSchema = z
+  .object({
+    name: nonEmptyTextSchema.max(200),
+    runtimeStatus: mcpServerConnectionStatusSchema.nullable(),
+    pluginId: nonEmptyTextSchema.max(200).nullable(),
+    serverInfo: jsonValueSchema.nullable(),
+    tools: z.record(z.string().min(1).max(300), jsonValueSchema),
+    resources: z.array(jsonValueSchema).max(10_000),
+    resourceTemplates: z.array(jsonValueSchema).max(10_000),
+    authStatus: mcpServerAuthStatusSchema,
+  })
+  .strip();
+
+/** MCPサーバー状態一覧要求を表すスキーマです。 */
+export const mcpServerStatusListParamsSchema = z
+  .object({
+    cursor: nonEmptyTextSchema.max(500).optional(),
+    limit: z.number().int().positive().max(1_000).optional(),
+    detail: z.literal("toolsAndAuthOnly").optional(),
+    threadId: threadIdSchema.optional(),
+  })
+  .strict();
+
+/** MCPサーバー状態一覧応答を表すスキーマです。 */
+export const mcpServerStatusListResultSchema = z
+  .object({
+    data: z.array(mcpServerStatusSchema).max(1_000),
+    nextCursor: nonEmptyTextSchema.max(500).nullable(),
+  })
+  .strip();
+
+const experimentalFeatureSchema = z
+  .object({
+    name: nonEmptyTextSchema.max(200),
+    stage: z.enum(["beta", "underDevelopment", "stable", "deprecated", "removed"]),
+    displayName: z.string().max(500).nullable(),
+    description: z.string().max(2_000).nullable(),
+    announcement: z.string().max(2_000).nullable(),
+    enabled: z.boolean(),
+    defaultEnabled: z.boolean(),
+  })
+  .strip();
+
+/** 実効機能一覧要求を表すスキーマです。 */
+export const experimentalFeatureListParamsSchema = z
+  .object({
+    cursor: nonEmptyTextSchema.max(500).optional(),
+    limit: z.number().int().positive().max(1_000).optional(),
+    threadId: threadIdSchema.optional(),
+  })
+  .strict();
+
+/** 実効機能一覧応答を表すスキーマです。 */
+export const experimentalFeatureListResultSchema = z
+  .object({
+    data: z.array(experimentalFeatureSchema).max(1_000),
+    nextCursor: nonEmptyTextSchema.max(500).nullable(),
+  })
+  .strip();
+
 const accountUpdatedParamsSchema = z
   .object({
     authMode: z
@@ -648,6 +819,12 @@ export const codexNotificationSchema = z.discriminatedUnion("method", [
     .object({
       method: z.literal("item/completed"),
       params: itemCompletedParamsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("thread/settings/updated"),
+      params: threadSettingsUpdatedParamsSchema,
     })
     .strict(),
   z
@@ -753,8 +930,14 @@ export type ModelListParams = z.infer<typeof modelListParamsSchema>;
 export type ModelListResult = z.infer<typeof modelListResultSchema>;
 export type SkillsListParams = z.infer<typeof skillsListParamsSchema>;
 export type SkillsListResult = z.infer<typeof skillsListResultSchema>;
+export type PermissionProfileListParams = z.infer<typeof permissionProfileListParamsSchema>;
+export type PermissionProfileListResult = z.infer<typeof permissionProfileListResultSchema>;
+export type ExperimentalFeatureListParams = z.infer<typeof experimentalFeatureListParamsSchema>;
+export type ExperimentalFeatureListResult = z.infer<typeof experimentalFeatureListResultSchema>;
 export type ThreadStartParams = z.infer<typeof threadStartParamsSchema>;
 export type ThreadStartResult = z.infer<typeof threadStartResultSchema>;
+export type McpServerStatusListParams = z.infer<typeof mcpServerStatusListParamsSchema>;
+export type McpServerStatusListResult = z.infer<typeof mcpServerStatusListResultSchema>;
 export type TurnStartParams = z.infer<typeof turnStartParamsSchema>;
 export type TurnStartResult = z.infer<typeof turnStartResultSchema>;
 export type TurnInterruptParams = z.infer<typeof turnInterruptParamsSchema>;
