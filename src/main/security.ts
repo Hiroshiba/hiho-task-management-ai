@@ -1,9 +1,18 @@
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 
-const allowedExternalHosts = new Set(["app.asana.com", "asana.com"]);
+const allowedAsanaExternalHosts = new Set(["app.asana.com", "asana.com"]);
+const allowedAsanaAuthorizationHosts = new Set(["app.asana.com"]);
+const allowedCodexAuthorizationHosts = new Set([
+  "auth.openai.com",
+  "chatgpt.com",
+  "www.chatgpt.com",
+]);
 
-/** 外部URLが許可されたHTTPS URLであることを検証します。 */
-export function assertAllowedExternalUrl(rawUrl: string): URL {
+function assertAllowedHttpsUrl(
+  rawUrl: string,
+  allowedHosts: ReadonlySet<string>,
+  failureMessage: string,
+): URL {
   let parsedUrl: URL;
 
   try {
@@ -13,16 +22,43 @@ export function assertAllowedExternalUrl(rawUrl: string): URL {
   }
 
   if (
-    parsedUrl.protocol !== "https:" ||
-    (parsedUrl.port !== "" && parsedUrl.port !== "443") ||
-    parsedUrl.username !== "" ||
-    parsedUrl.password !== "" ||
-    !allowedExternalHosts.has(parsedUrl.hostname)
+    parsedUrl.protocol !== "https:"
+    || (parsedUrl.port !== "" && parsedUrl.port !== "443")
+    || parsedUrl.username !== ""
+    || parsedUrl.password !== ""
+    || !allowedHosts.has(parsedUrl.hostname)
   ) {
-    throw new Error("外部URLは許可されたAsanaのHTTPS URLだけを指定できます。");
+    throw new Error(failureMessage);
   }
 
   return parsedUrl;
+}
+
+/** 外部URLが許可されたHTTPS URLであることを検証します。 */
+export function assertAllowedExternalUrl(rawUrl: string): URL {
+  return assertAllowedHttpsUrl(
+    rawUrl,
+    allowedAsanaExternalHosts,
+    "外部URLは許可されたAsanaのHTTPS URLだけを指定できます。",
+  );
+}
+
+/** Asana認可URLが許可されたHTTPS URLであることを検証します。 */
+export function assertAllowedAsanaAuthorizationUrl(rawUrl: string): URL {
+  return assertAllowedHttpsUrl(
+    rawUrl,
+    allowedAsanaAuthorizationHosts,
+    "Asana認可URLは許可されたHTTPSホストだけを指定できます。",
+  );
+}
+
+/** Codex認可URLが許可されたHTTPS URLであることを検証します。 */
+export function assertAllowedCodexAuthorizationUrl(rawUrl: string): URL {
+  return assertAllowedHttpsUrl(
+    rawUrl,
+    allowedCodexAuthorizationHosts,
+    "Codex認可URLは許可されたHTTPSホストだけを指定できます。",
+  );
 }
 
 /** RendererのURLがアプリ自身のURLであることを検証します。 */
