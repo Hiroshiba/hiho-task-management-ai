@@ -9,7 +9,6 @@ import {
   type AsanaOAuthCoordinator,
   type OAuthOutOfBandState,
 } from "../auth/asana-oauth";
-import { asanaOAuthLoopbackRedirectUriSchema } from "../auth/asana-oauth/loopback-callback";
 import {
   AsanaCapabilityCheckError,
   type AsanaCapabilityCheckInput,
@@ -38,7 +37,6 @@ import {
   setupExternalToolUnavailableReasonSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
-  setupRedirectUriSchema,
   setupStateSchema,
   setupVaultChoiceInputSchema,
   setupWorkspaceSchema,
@@ -208,7 +206,6 @@ export const setupFullSyncInputSchema = z
   .strict();
 
 export type SetupOrchestratorOptions = {
-  readonly redirect_uri: string;
   readonly device_id: string;
   readonly codex: SetupCodexPort;
   readonly oauth: SetupOAuthPort;
@@ -223,7 +220,6 @@ export type SetupOrchestratorOptions = {
 
 const setupOrchestratorOptionsSchema = z
   .object({
-    redirect_uri: setupRedirectUriSchema,
     device_id: identifierSchema,
     codex: z.unknown(),
     oauth: z.unknown(),
@@ -436,26 +432,17 @@ function isActiveOutOfBandState(
 }
 
 function credentialsRequiredState(
-  redirectUri: string,
   codex: SetupCodexAvailability,
 ): Extract<SetupState, { kind: "credentials_required" }> {
   const state = setupStateSchema.parse({
     kind: "credentials_required",
     step: "credentials",
-    redirect_uri: redirectUri,
     codex,
   });
   if (state.kind !== "credentials_required") {
     throw new Error("Client ID入力状態を生成できません。");
   }
   return state;
-}
-
-function stateRedirectUri(state: SetupState): string {
-  if ("redirect_uri" in state) {
-    return state.redirect_uri;
-  }
-  return state.context.redirect_uri;
 }
 
 function requiresContextRevalidation(state: SetupState): boolean {
@@ -567,7 +554,6 @@ function updateStateCodexAvailability(
       return parseState({
         kind: "credentials_required",
         step: "credentials",
-        redirect_uri: state.redirect_uri,
         codex: validatedAvailability,
       });
     case "credentials_required":
@@ -630,7 +616,6 @@ function requireCodexAvailable(
 
 /** 初回設定の順序付き状態機械を調整します。 */
 export class SetupOrchestrator {
-  private readonly redirectUri: string;
   private readonly deviceId: string;
   private readonly codex: SetupCodexPort;
   private readonly oauth: SetupOAuthPort;
@@ -650,9 +635,6 @@ export class SetupOrchestrator {
 
   public constructor(options: SetupOrchestratorOptions) {
     setupOrchestratorOptionsSchema.parse(options);
-    this.redirectUri = asanaOAuthLoopbackRedirectUriSchema.parse(
-      options.redirect_uri,
-    );
     this.deviceId = identifierSchema.parse(options.device_id);
     validateFunction(options.codex.detectCli, "Codex CLI検出関数が必要です。");
     validateFunction(options.codex.getAuthenticationState, "Codex認証状態関数が必要です。");
@@ -699,7 +681,6 @@ export class SetupOrchestrator {
     const initialState = parseState({
       kind: "created",
       step: "codex_cli",
-      redirect_uri: this.redirectUri,
     });
     this.resumeRequired = false;
     this.codexAvailability = undefined;
@@ -709,9 +690,6 @@ export class SetupOrchestrator {
       this.checkpoint.save(initialState);
     } else {
       const restoredState = parseState(savedState);
-      if (stateRedirectUri(restoredState) !== this.redirectUri) {
-        throw new Error("保存済み初回設定のリダイレクトURIが一致しません。");
-      }
       this.state = restoredState;
       this.codexAvailability = stateCodexAvailability(restoredState);
       this.resumeRequired = requiresContextRevalidation(restoredState);
@@ -746,7 +724,7 @@ export class SetupOrchestrator {
   private resetAsanaAuthorizationPendingState(
     state: AsanaAuthorizationPendingState,
   ): Extract<SetupState, { kind: "credentials_required" }> {
-    const nextState = credentialsRequiredState(state.redirect_uri, state.codex);
+    const nextState = credentialsRequiredState(state.codex);
     this.state = nextState;
     this.checkpoint.save(nextState);
     return nextState;
@@ -834,7 +812,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "resources_requires_action",
         step: "resources",
-        redirect_uri: state.context.redirect_uri,
         client_id: state.context.client_id,
         codex: state.context.codex,
         workspace: {
@@ -877,7 +854,6 @@ export class SetupOrchestrator {
         this.state = parseState({
           kind: "credentials_required",
           step: "credentials",
-          redirect_uri: this.redirectUri,
           codex: availability,
         });
         return this.getState();
@@ -885,7 +861,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "codex_cli_ready",
         step: "codex_authentication",
-        redirect_uri: this.redirectUri,
         codex: availability,
       });
       this.checkpoint.save(this.state);
@@ -898,7 +873,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "credentials_required",
         step: "credentials",
-        redirect_uri: this.redirectUri,
         codex: authenticationState,
       });
       return this.getState();
@@ -907,7 +881,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "codex_authentication_required",
         step: "codex_authentication",
-        redirect_uri: this.redirectUri,
         codex: requireCodexAvailable(this.codexAvailability),
       });
       return this.getState();
@@ -918,7 +891,6 @@ export class SetupOrchestrator {
     this.state = parseState({
       kind: "credentials_required",
       step: "credentials",
-      redirect_uri: this.redirectUri,
       codex: requireCodexAvailability(this.codexAvailability),
     });
     return this.getState();
@@ -963,7 +935,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "asana_authorization_pending",
         step: "credentials",
-        redirect_uri: this.redirectUri,
         client_id: validatedInput.client_id,
         authorization_id: result.authorization_id,
         expires_at: result.expires_at,
@@ -1021,7 +992,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "workspace_listing_required",
         step: "workspace",
-        redirect_uri: this.redirectUri,
         client_id: result.client_id,
         codex: state.codex,
       });
@@ -1074,7 +1044,6 @@ export class SetupOrchestrator {
     this.state = parseState({
       kind: "workspace_selection_required",
       step: "workspace",
-      redirect_uri: this.redirectUri,
       client_id: state.client_id,
       codex: requireCodexAvailability(this.codexAvailability),
       workspaces,
@@ -1103,7 +1072,6 @@ export class SetupOrchestrator {
     this.state = parseState({
       kind: "project_selection_required",
       step: "project",
-      redirect_uri: this.redirectUri,
       client_id: state.client_id,
       codex: state.codex,
       workspace,
@@ -1128,7 +1096,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "project_requires_action",
         step: "project",
-        redirect_uri: projectState.redirect_uri,
         client_id: projectState.client_id,
         codex: projectState.codex,
         workspace: projectState.workspace,
@@ -1145,7 +1112,6 @@ export class SetupOrchestrator {
     return this.coordinateResources(
       {
         client_id: projectState.client_id,
-        redirect_uri: projectState.redirect_uri,
         workspace: projectState.workspace,
         project,
         configured_section_gids: configuredSectionGids,
@@ -1162,7 +1128,6 @@ export class SetupOrchestrator {
     return this.coordinateResources(
       {
         client_id: state.client_id,
-        redirect_uri: state.redirect_uri,
         workspace: state.workspace,
         project: state.project,
         configured_section_gids: this.configuredSectionGidsFor(
@@ -1517,7 +1482,6 @@ export class SetupOrchestrator {
   private async coordinateResources(
     input: {
       readonly client_id: string;
-      readonly redirect_uri: string;
       readonly workspace: SetupWorkspace;
       readonly project: SetupProject;
       readonly configured_section_gids: z.infer<typeof deviceSectionGidsSchema> | undefined;
@@ -1539,7 +1503,6 @@ export class SetupOrchestrator {
       this.state = parseState({
         kind: "resources_requires_action",
         step: "resources",
-        redirect_uri: input.redirect_uri,
         client_id: input.client_id,
         codex: requireCodexAvailability(this.codexAvailability),
         workspace: input.workspace,
@@ -1552,7 +1515,6 @@ export class SetupOrchestrator {
       kind: "resources_ready",
       step: "asana_capability",
       context: {
-        redirect_uri: input.redirect_uri,
         device_id: this.deviceId,
         client_id: input.client_id,
         workspace_gid: input.workspace.gid,

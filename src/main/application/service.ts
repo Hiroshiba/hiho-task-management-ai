@@ -227,7 +227,6 @@ import {
 } from "../storage";
 
 type OperationalContext = {
-  readonly redirect_uri: string;
   readonly device_id: string;
   readonly client_id: string;
   readonly workspace_gid: string;
@@ -531,7 +530,6 @@ function contextFromState(state: SetupState): OperationalContext | undefined {
     case "codex_capability_required":
     case "ready":
       return {
-        redirect_uri: state.context.redirect_uri,
         device_id: state.context.device_id,
         client_id: state.context.client_id,
         workspace_gid: state.context.workspace_gid,
@@ -1071,7 +1069,6 @@ export class TaskHubApplication {
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
     this.setup = new SetupOrchestrator({
-      redirect_uri: options.redirect_uri,
       device_id: this.resolveDeviceId(),
       codex: {
         detectCli: (signal) => this.detectCodexSafely(signal),
@@ -1444,7 +1441,7 @@ export class TaskHubApplication {
     this.tokenProvider.setProvider(
       new AsanaOAuthClient(
         validatedSettings.client_id,
-        this.options.redirect_uri,
+        asanaOAuthOutOfBandRedirectUri,
         this.secretStorage,
       ),
     );

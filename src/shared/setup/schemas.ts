@@ -20,12 +20,6 @@ const asanaClientSecretSchema = createUtf8ByteLimitedStringSchema(
   .refine((value) => value.trim().length > 0, "Asana Client Secretは空白だけにできません。")
   .refine((value) => !hasControlCharacter(value), "Asana Client Secretに制御文字を含めることはできません。");
 
-const setupRedirectUriSchema = z
-  .string()
-  .url()
-  .max(2048)
-  .refine((value) => !hasControlCharacter(value), "リダイレクトURIに制御文字を含めることはできません。");
-
 const setupAuthorizationIdSchema = z
   .string()
   .length(43)
@@ -121,7 +115,6 @@ const setupResourceIssueSchema = z
 
 const setupContextSchema = z
   .object({
-    redirect_uri: setupRedirectUriSchema,
     device_id: identifierSchema,
     client_id: identifierSchema,
     workspace_gid: gidSchema,
@@ -185,14 +178,12 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("created"),
       step: z.literal("codex_cli"),
-      redirect_uri: setupRedirectUriSchema,
     })
     .strict(),
   z
     .object({
       kind: z.literal("codex_cli_ready"),
       step: z.literal("codex_authentication"),
-      redirect_uri: setupRedirectUriSchema,
       codex: setupCodexAvailableSchema,
     })
     .strict(),
@@ -200,7 +191,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("codex_authentication_required"),
       step: z.literal("codex_authentication"),
-      redirect_uri: setupRedirectUriSchema,
       codex: setupCodexAvailableSchema,
     })
     .strict(),
@@ -208,7 +198,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("credentials_required"),
       step: z.literal("credentials"),
-      redirect_uri: setupRedirectUriSchema,
       codex: setupCodexAvailabilitySchema,
     })
     .strict(),
@@ -216,7 +205,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("asana_authorization_pending"),
       step: z.literal("credentials"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       authorization_id: setupAuthorizationIdSchema,
       expires_at: isoDateTimeSchema,
@@ -227,7 +215,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("workspace_listing_required"),
       step: z.literal("workspace"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       codex: setupCodexAvailabilitySchema,
     })
@@ -236,7 +223,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("workspace_selection_required"),
       step: z.literal("workspace"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       codex: setupCodexAvailabilitySchema,
       workspaces: z.array(setupWorkspaceSchema).min(1),
@@ -246,7 +232,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("project_selection_required"),
       step: z.literal("project"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
@@ -257,7 +242,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("project_requires_action"),
       step: z.literal("project"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
@@ -269,7 +253,6 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("resources_requires_action"),
       step: z.literal("resources"),
-      redirect_uri: setupRedirectUriSchema,
       client_id: identifierSchema,
       codex: setupCodexAvailabilitySchema,
       workspace: setupWorkspaceSchema,
@@ -481,7 +464,6 @@ export {
   setupExternalToolUnavailableReasonSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
-  setupRedirectUriSchema,
   setupResourceIssueSchema,
   setupSafeNameSchema,
   setupStateSchema,

@@ -11,7 +11,6 @@ export {
   setupExternalToolUnavailableReasonSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
-  setupRedirectUriSchema,
   setupResourceIssueSchema,
   setupSafeNameSchema,
   setupStateSchema,

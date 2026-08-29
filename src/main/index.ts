@@ -23,7 +23,6 @@ import {
 } from "./security";
 
 const appGetVersionChannel = "app:get-version";
-const asanaRedirectUri = "http://127.0.0.1:53682/oauth/asana/callback";
 const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
 const singleInstanceLockAcquired = app.requestSingleInstanceLock();
@@ -211,7 +210,6 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
     database_path: join(userDataPath, "taskhub.sqlite3"),
     secret_storage_path: join(userDataPath, "secret-storage.json"),
     checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
-    redirect_uri: asanaRedirectUri,
     app_version: app.getVersion(),
     codex_executable: "codex",
     read_only_vault_paths: [],

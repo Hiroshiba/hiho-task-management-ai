@@ -72,7 +72,6 @@ const applicationOptionsSchema = z
     database_path: applicationPathSchema,
     secret_storage_path: applicationPathSchema,
     checkpoint_path: applicationPathSchema,
-    redirect_uri: z.string().url().max(2_048),
     app_version: identifierSchema,
     codex_executable: z.string().min(1).max(4_096),
     read_only_vault_paths: z.array(applicationPathSchema).max(32),
