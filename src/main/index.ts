@@ -459,7 +459,7 @@ async function createMainWindow(
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: join(__dirname, "../preload/index.cjs"),
     },
   });
   const registry = new IpcHandlerRegistry({
