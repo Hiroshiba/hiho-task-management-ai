@@ -97,7 +97,7 @@ export class AsanaOAuthAuthorizationUrlOpenError extends AsanaOAuthError {
   public readonly kind: "error" | "unknown";
 
   public constructor(error: unknown) {
-    super("OAuth認可URLの起動に失敗しました。");
+    super("OAuth認可URLの起動に失敗しました。", { cause: error });
     this.name = "AsanaOAuthAuthorizationUrlOpenError";
     this.kind = error instanceof Error ? "error" : "unknown";
   }
@@ -108,6 +108,62 @@ export class AsanaOAuthAuthenticationInProgressError extends AsanaOAuthError {
   public constructor() {
     super("OAuth認証処理が既に実行中です。");
     this.name = "AsanaOAuthAuthenticationInProgressError";
+  }
+}
+
+/** OAuth Out-of-Band認証が既に実行中であることを表すエラーです。 */
+export class AsanaOAuthOutOfBandAuthenticationInProgressError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証処理が既に実行中です。");
+    this.name = "AsanaOAuthOutOfBandAuthenticationInProgressError";
+  }
+}
+
+/** OAuth Out-of-Band取引が待機状態でないことを表すエラーです。 */
+export class AsanaOAuthOutOfBandNotPendingError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証処理は待機状態ではありません。");
+    this.name = "AsanaOAuthOutOfBandNotPendingError";
+  }
+}
+
+/** OAuth Out-of-Bandの認可識別子が一致しないことを表すエラーです。 */
+export class AsanaOAuthOutOfBandAuthorizationIdMismatchError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認可識別子が一致しません。");
+    this.name = "AsanaOAuthOutOfBandAuthorizationIdMismatchError";
+  }
+}
+
+/** OAuth Out-of-Band認証の期限切れを表すエラーです。 */
+export class AsanaOAuthOutOfBandExpiredError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証の有効期限が切れています。");
+    this.name = "AsanaOAuthOutOfBandExpiredError";
+  }
+}
+
+/** OAuth Out-of-Band認証が取り消されたことを表すエラーです。 */
+export class AsanaOAuthOutOfBandCancelledError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証が取り消されました。");
+    this.name = "AsanaOAuthOutOfBandCancelledError";
+  }
+}
+
+/** OAuth Out-of-Band認証が中断されたことを表すエラーです。 */
+export class AsanaOAuthOutOfBandAbortedError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証が中断されました。");
+    this.name = "AsanaOAuthOutOfBandAbortedError";
+  }
+}
+
+/** OAuth Out-of-Band認証が停止されたことを表すエラーです。 */
+export class AsanaOAuthOutOfBandStoppedError extends AsanaOAuthError {
+  public constructor() {
+    super("OAuth Out-of-Band認証が停止されました。");
+    this.name = "AsanaOAuthOutOfBandStoppedError";
   }
 }
 

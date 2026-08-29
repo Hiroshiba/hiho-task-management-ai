@@ -8,8 +8,11 @@ import {
 } from "../secret-storage";
 import {
   authorizationCodeSchema,
+  asanaOAuthOutOfBandRedirectUri,
   codeVerifierSchema,
   oauthAuthorizationRequestSchema,
+  oauthOutOfBandAuthorizationCodeSchema,
+  oauthOutOfBandRedirectUriSchema,
   oauthStateSchema,
   oauthTokenErrorResponseSchema,
   oauthTokenResponseSchema,
@@ -194,7 +197,9 @@ export class AsanaOAuthClient implements TokenProvider {
     private readonly secretStorage: SecretStorage,
   ) {
     this.clientId = identifierSchema.parse(clientId);
-    this.redirectUri = redirectUriSchema.parse(redirectUri);
+    this.redirectUri = redirectUriSchema
+      .or(oauthOutOfBandRedirectUriSchema)
+      .parse(redirectUri);
   }
 
   /** PKCE認可URLと照合用stateを生成します。 */
@@ -215,6 +220,14 @@ export class AsanaOAuthClient implements TokenProvider {
       authorization_url: url.href,
       state,
     });
+  }
+
+  /** OAuth Out-of-Band用のPKCE認可要求を生成します。 */
+  public createOutOfBandAuthorizationRequest(): OAuthAuthorizationRequest {
+    if (this.redirectUri !== asanaOAuthOutOfBandRedirectUri) {
+      throw new AsanaOAuthStateError();
+    }
+    return this.createAuthorizationRequest();
   }
 
   /** 初回認証の認可コードを新しいClient Secretで交換して秘密情報を保存します。 */
@@ -276,12 +289,82 @@ export class AsanaOAuthClient implements TokenProvider {
     });
   }
 
+  /** OAuth Out-of-Bandの初回認可コードを交換して秘密情報を保存します。 */
+  public async exchangeInitialOutOfBandAuthorizationCode(
+    code: string,
+    clientSecret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const validatedClientSecret = asanaClientSecretSchema.parse(clientSecret);
+    const validatedCode = oauthOutOfBandAuthorizationCodeSchema.parse(code);
+    const pendingAuthorization = this.takePendingAuthorizationWithoutState();
+    const response = await this.requestAuthorizationCodeToken(
+      validatedCode,
+      pendingAuthorization,
+      validatedClientSecret,
+      signal,
+    );
+    const refreshToken = requireRefreshToken(response);
+    signal.throwIfAborted();
+    const latest = this.secretStorage.load();
+    this.secretStorage.save(
+      createInitialSecretData(
+        validatedClientSecret,
+        response.access_token,
+        refreshToken,
+        latest,
+      ),
+    );
+  }
+
+  /** OAuth Out-of-Bandの再認可コードを交換してトークンを保存します。 */
+  public async exchangeOutOfBandAuthorizationCode(
+    code: string,
+    clientSecret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const validatedClientSecret = asanaClientSecretSchema.parse(clientSecret);
+    const validatedCode = oauthOutOfBandAuthorizationCodeSchema.parse(code);
+    const pendingAuthorization = this.takePendingAuthorizationWithoutState();
+    const response = await this.requestAuthorizationCodeToken(
+      validatedCode,
+      pendingAuthorization,
+      validatedClientSecret,
+      signal,
+    );
+    const refreshToken = requireRefreshToken(response);
+    const latest = readLatestSecrets(this.secretStorage);
+    assertClientSecretUnchanged(latest, validatedClientSecret);
+    signal.throwIfAborted();
+    this.secretStorage.save({
+      ...latest,
+      access_token: response.access_token,
+      refresh_token: refreshToken,
+    });
+  }
+
+  /** OAuth認可要求のPKCE秘密情報を破棄します。 */
+  public discardPendingAuthorization(): void {
+    this.pendingAuthorization = undefined;
+  }
+
   private takePendingAuthorization(validatedState: string): PendingAuthorization {
     const pendingAuthorization = this.pendingAuthorization;
     if (
       pendingAuthorization == null
       || !isSameValue(pendingAuthorization.state, validatedState)
     ) {
+      throw new AsanaOAuthStateError();
+    }
+    this.pendingAuthorization = undefined;
+    return pendingAuthorization;
+  }
+
+  private takePendingAuthorizationWithoutState(): PendingAuthorization {
+    const pendingAuthorization = this.pendingAuthorization;
+    if (pendingAuthorization == null) {
       throw new AsanaOAuthStateError();
     }
     this.pendingAuthorization = undefined;
