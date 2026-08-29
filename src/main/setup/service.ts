@@ -1,8 +1,13 @@
 import { z } from "zod";
 
 import {
+  AsanaOAuthOutOfBandAuthenticationInProgressError,
+  AsanaOAuthOutOfBandAuthorizationIdMismatchError,
   asanaOAuthCoordinatorResultSchema,
+  oauthOutOfBandBeginResultSchema,
+  oauthOutOfBandStateSchema,
   type AsanaOAuthCoordinator,
+  type OAuthOutOfBandState,
 } from "../auth/asana-oauth";
 import { asanaOAuthLoopbackRedirectUriSchema } from "../auth/asana-oauth/loopback-callback";
 import {
@@ -23,7 +28,9 @@ import type { DeviceSettings, VaultMapping } from "../../shared/storage";
 import {
   configuredTagGidsSchema,
   codexUnavailableReasonSchema,
-  setupCredentialsInputSchema,
+  setupAsanaAuthorizationBeginInputSchema,
+  setupAsanaAuthorizationCancelInputSchema,
+  setupAsanaAuthorizationCompleteInputSchema,
   setupCodexAvailabilitySchema,
   setupDiscordExternalToolConfigurationInputSchema,
   setupExternalToolChoiceInputSchema,
@@ -36,7 +43,9 @@ import {
   setupVaultChoiceInputSchema,
   setupWorkspaceSchema,
   setupWorkspaceSelectionInputSchema,
-  type SetupCredentialsInput,
+  type SetupAsanaAuthorizationBeginInput,
+  type SetupAsanaAuthorizationCancelInput,
+  type SetupAsanaAuthorizationCompleteInput,
   type SetupCodexAvailability,
   type SetupDiscordExternalToolConfigurationInput,
   type SetupExternalToolChoiceInput,
@@ -85,7 +94,13 @@ export type SetupCodexPort = {
   ) => Promise<SetupCodexAvailability>;
 };
 
-export type SetupOAuthPort = Pick<AsanaOAuthCoordinator, "authenticate">;
+export type SetupOAuthPort = Pick<
+  AsanaOAuthCoordinator,
+  | "beginInitialOutOfBandAuthorization"
+  | "completeOutOfBandAuthorization"
+  | "cancelOutOfBandAuthorization"
+  | "getOutOfBandState"
+>;
 
 export type SetupAsanaPort = Pick<
   AsanaSetupClient,
@@ -398,6 +413,44 @@ function parseState(state: SetupState): SetupState {
   return setupStateSchema.parse(state);
 }
 
+type AsanaAuthorizationPendingState = Extract<
+  SetupState,
+  { kind: "asana_authorization_pending" }
+>;
+
+type ActiveOutOfBandState = Extract<
+  OAuthOutOfBandState,
+  { kind: "opening" | "authorization_pending" | "completing" }
+>;
+
+type AuthorizationCompletionOperation =
+  | { readonly kind: "idle" }
+  | { readonly kind: "completing"; readonly authorizationId: string };
+
+function isActiveOutOfBandState(
+  state: OAuthOutOfBandState,
+): state is ActiveOutOfBandState {
+  return state.kind === "opening"
+    || state.kind === "authorization_pending"
+    || state.kind === "completing";
+}
+
+function credentialsRequiredState(
+  redirectUri: string,
+  codex: SetupCodexAvailability,
+): Extract<SetupState, { kind: "credentials_required" }> {
+  const state = setupStateSchema.parse({
+    kind: "credentials_required",
+    step: "credentials",
+    redirect_uri: redirectUri,
+    codex,
+  });
+  if (state.kind !== "credentials_required") {
+    throw new Error("Client ID入力状態を生成できません。");
+  }
+  return state;
+}
+
 function stateRedirectUri(state: SetupState): string {
   if ("redirect_uri" in state) {
     return state.redirect_uri;
@@ -518,6 +571,7 @@ function updateStateCodexAvailability(
         codex: validatedAvailability,
       });
     case "credentials_required":
+    case "asana_authorization_pending":
     case "workspace_listing_required":
     case "workspace_selection_required":
     case "project_selection_required":
@@ -590,6 +644,9 @@ export class SetupOrchestrator {
   private state: SetupState;
   private resumeRequired: boolean;
   private codexAvailability: SetupCodexAvailability | undefined;
+  private authorizationCompletionOperation: AuthorizationCompletionOperation = {
+    kind: "idle",
+  };
 
   public constructor(options: SetupOrchestratorOptions) {
     setupOrchestratorOptionsSchema.parse(options);
@@ -601,7 +658,22 @@ export class SetupOrchestrator {
     validateFunction(options.codex.getAuthenticationState, "Codex認証状態関数が必要です。");
     validateFunction(options.codex.completeAuthentication, "Codex認証完了関数が必要です。");
     validateFunction(options.codex.checkCapabilities, "Codex能力検査関数が必要です。");
-    validateFunction(options.oauth.authenticate, "Asana OAuth関数が必要です。");
+    validateFunction(
+      options.oauth.beginInitialOutOfBandAuthorization,
+      "Asana OAuth開始関数が必要です。",
+    );
+    validateFunction(
+      options.oauth.completeOutOfBandAuthorization,
+      "Asana OAuth完了関数が必要です。",
+    );
+    validateFunction(
+      options.oauth.cancelOutOfBandAuthorization,
+      "Asana OAuth取消関数が必要です。",
+    );
+    validateFunction(
+      options.oauth.getOutOfBandState,
+      "Asana OAuth状態取得関数が必要です。",
+    );
     validateFunction(options.asana.listCurrentUserWorkspaces, "ワークスペース取得関数が必要です。");
     validateFunction(options.asana.listWorkspaceProjects, "プロジェクト取得関数が必要です。");
     validateFunction(options.asana.createProject, "プロジェクト作成関数が必要です。");
@@ -649,8 +721,59 @@ export class SetupOrchestrator {
   /** 現在の初回設定状態を取得します。 */
   public getState(): SetupState {
     const state = parseState(this.state);
+    if (state.kind === "asana_authorization_pending") {
+      if (
+        this.authorizationCompletionOperation.kind === "completing"
+        && this.authorizationCompletionOperation.authorizationId === state.authorization_id
+      ) {
+        return state;
+      }
+      const outOfBandState = oauthOutOfBandStateSchema.parse(
+        this.oauth.getOutOfBandState(),
+      );
+      if (isActiveOutOfBandState(outOfBandState)) {
+        if (outOfBandState.authorization_id !== state.authorization_id) {
+          throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+        }
+        return state;
+      }
+      return this.resetAsanaAuthorizationPendingState(state);
+    }
     this.checkpoint.save(state);
     return state;
+  }
+
+  private resetAsanaAuthorizationPendingState(
+    state: AsanaAuthorizationPendingState,
+  ): Extract<SetupState, { kind: "credentials_required" }> {
+    const nextState = credentialsRequiredState(state.redirect_uri, state.codex);
+    this.state = nextState;
+    this.checkpoint.save(nextState);
+    return nextState;
+  }
+
+  private rethrowAfterInitialAuthorizationBeginFailure(
+    authorizationId: string,
+    error: unknown,
+  ): never {
+    try {
+      const outOfBandState = oauthOutOfBandStateSchema.parse(
+        this.oauth.getOutOfBandState(),
+      );
+      if (
+        isActiveOutOfBandState(outOfBandState)
+        && outOfBandState.authorization_id === authorizationId
+      ) {
+        this.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId });
+      }
+    } catch (cleanupError: unknown) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Asana OAuth認可開始後の後処理に失敗しました。",
+        { cause: error },
+      );
+    }
+    throw error;
   }
 
   /** readyチェックポイントから非秘密の端末設定を復元します。 */
@@ -815,36 +938,129 @@ export class SetupOrchestrator {
     return this.getState();
   }
 
-  /** Asana Client IDとSecretを受け取りOAuthを完了します。 */
-  public async authenticateAsana(
-    input: SetupCredentialsInput,
+  /** Asana OAuth認可を開始して認可コード入力を待機します。 */
+  public async beginAsanaAuthorization(
+    input: SetupAsanaAuthorizationBeginInput,
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
-    const validatedInput = setupCredentialsInputSchema.parse(input);
+    const validatedInput = setupAsanaAuthorizationBeginInputSchema.parse(input);
     assertStateKindTyped(this.state, ["credentials_required"]);
-    const result = asanaOAuthCoordinatorResultSchema.parse(
-      await this.oauth.authenticate(
-        {
-          client_id: validatedInput.client_id,
-          client_secret: validatedInput.client_secret,
-          redirect_uri: this.redirectUri,
-          timeout_milliseconds: validatedInput.timeout_milliseconds,
-        },
-        signal,
-      ),
+    const result = oauthOutOfBandBeginResultSchema.parse(
+      await this.oauth.beginInitialOutOfBandAuthorization(validatedInput, signal),
     );
-    if (result.kind !== "authenticated" || result.client_id !== validatedInput.client_id) {
-      throw new Error("Asana OAuthの認証結果が入力と一致しません。");
+    try {
+      const outOfBandState = oauthOutOfBandStateSchema.parse(
+        this.oauth.getOutOfBandState(),
+      );
+      if (
+        outOfBandState.kind !== "authorization_pending"
+        || outOfBandState.authorization_id !== result.authorization_id
+        || outOfBandState.expires_at !== result.expires_at
+      ) {
+        throw new Error("Asana OAuth認可の待機状態が一致しません。");
+      }
+      this.state = parseState({
+        kind: "asana_authorization_pending",
+        step: "credentials",
+        redirect_uri: this.redirectUri,
+        client_id: validatedInput.client_id,
+        authorization_id: result.authorization_id,
+        expires_at: result.expires_at,
+        codex: requireCodexAvailability(this.codexAvailability),
+      });
+      return this.getState();
+    } catch (error: unknown) {
+      return this.rethrowAfterInitialAuthorizationBeginFailure(
+        result.authorization_id,
+        error,
+      );
     }
-    this.state = parseState({
-      kind: "workspace_listing_required",
-      step: "workspace",
-      redirect_uri: this.redirectUri,
-      client_id: result.client_id,
-      codex: requireCodexAvailability(this.codexAvailability),
-    });
-    return this.getState();
+  }
+
+  /** Asana OAuth認可コードを完了してワークスペース取得へ進みます。 */
+  public async completeAsanaAuthorization(
+    input: SetupAsanaAuthorizationCompleteInput,
+    signal: AbortSignal,
+  ): Promise<SetupState> {
+    validateAbortSignal(signal);
+    const validatedInput = setupAsanaAuthorizationCompleteInputSchema.parse(input);
+    assertStateKindTyped(this.state, ["asana_authorization_pending"]);
+    const state = this.state;
+    if (this.authorizationCompletionOperation.kind === "completing") {
+      if (
+        this.authorizationCompletionOperation.authorizationId === validatedInput.authorization_id
+      ) {
+        throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+      }
+      throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+    }
+    if (validatedInput.authorization_id !== state.authorization_id) {
+      throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+    }
+    this.authorizationCompletionOperation = {
+      kind: "completing",
+      authorizationId: state.authorization_id,
+    };
+    try {
+      const outOfBandState = oauthOutOfBandStateSchema.parse(
+        this.oauth.getOutOfBandState(),
+      );
+      if (
+        isActiveOutOfBandState(outOfBandState)
+        && outOfBandState.authorization_id !== state.authorization_id
+      ) {
+        throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+      }
+      const result = asanaOAuthCoordinatorResultSchema.parse(
+        await this.oauth.completeOutOfBandAuthorization(validatedInput, signal),
+      );
+      if (result.kind !== "authenticated" || result.client_id !== state.client_id) {
+        throw new Error("Asana OAuthの認証結果が入力と一致しません。");
+      }
+      this.state = parseState({
+        kind: "workspace_listing_required",
+        step: "workspace",
+        redirect_uri: this.redirectUri,
+        client_id: result.client_id,
+        codex: state.codex,
+      });
+      return this.getState();
+    } catch (error: unknown) {
+      this.resetAsanaAuthorizationPendingState(state);
+      throw error;
+    } finally {
+      this.authorizationCompletionOperation = { kind: "idle" };
+    }
+  }
+
+  /** Asana OAuth認可を取り消してClient ID入力へ戻ります。 */
+  public cancelAsanaAuthorization(
+    input: SetupAsanaAuthorizationCancelInput,
+    signal: AbortSignal,
+  ): SetupState {
+    validateAbortSignal(signal);
+    signal.throwIfAborted();
+    const validatedInput = setupAsanaAuthorizationCancelInputSchema.parse(input);
+    assertStateKindTyped(this.state, ["asana_authorization_pending"]);
+    if (this.authorizationCompletionOperation.kind !== "idle") {
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+    }
+    const state = this.state;
+    if (validatedInput.authorization_id !== state.authorization_id) {
+      throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+    }
+    const outOfBandState = oauthOutOfBandStateSchema.parse(
+      this.oauth.getOutOfBandState(),
+    );
+    if (!isActiveOutOfBandState(outOfBandState)) {
+      return this.resetAsanaAuthorizationPendingState(state);
+    }
+    if (outOfBandState.authorization_id !== state.authorization_id) {
+      throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+    }
+    this.oauth.cancelOutOfBandAuthorization(validatedInput);
+    return this.resetAsanaAuthorizationPendingState(state);
   }
 
   /** Asanaのワークスペース一覧を取得します。 */

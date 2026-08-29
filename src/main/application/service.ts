@@ -50,6 +50,7 @@ import {
   AsanaOAuthResponseError,
   AsanaOAuthTokenEndpointError,
   AsanaOAuthTransportError,
+  asanaOAuthOutOfBandRedirectUri,
   asanaOAuthCoordinatorResultSchema,
 } from "../auth/asana-oauth";
 import {
@@ -1003,17 +1004,22 @@ export class TaskHubApplication {
           this.checkCodexCapabilitiesSafely(signal),
       },
       oauth: {
-        authenticate: async (input, signal) => {
-          const result = await this.oauth.authenticate(input, signal);
+        beginInitialOutOfBandAuthorization: (input, signal) =>
+          this.oauth.beginInitialOutOfBandAuthorization(input, signal),
+        completeOutOfBandAuthorization: async (input, signal) => {
+          const result = await this.oauth.completeOutOfBandAuthorization(input, signal);
           this.tokenProvider.setProvider(
             new AsanaOAuthClient(
               result.client_id,
-              this.options.redirect_uri,
+              asanaOAuthOutOfBandRedirectUri,
               this.secretStorage,
             ),
           );
           return result;
         },
+        cancelOutOfBandAuthorization: (input) =>
+          this.oauth.cancelOutOfBandAuthorization(input),
+        getOutOfBandState: () => this.oauth.getOutOfBandState(),
       },
       asana: this.setupClient,
       resources: this.resources,
@@ -1107,6 +1113,11 @@ export class TaskHubApplication {
     }
     this.stopped = true;
     const errors: unknown[] = [];
+    try {
+      this.oauth.stopOutOfBandAuthorization();
+    } catch (error: unknown) {
+      errors.push(error);
+    }
     await this.stopExternalToolConfiguration(errors);
     this.removeRuntimeSubscription?.();
     this.removeRuntimeSubscription = undefined;
@@ -1303,7 +1314,7 @@ export class TaskHubApplication {
         this.tokenProvider.setProvider(
           new AsanaOAuthClient(
             clientId,
-            this.options.redirect_uri,
+            asanaOAuthOutOfBandRedirectUri,
             this.secretStorage,
           ),
         );
@@ -3491,9 +3502,17 @@ export class TaskHubApplication {
         }
         return state;
       },
-      authenticateAsana: async (input, signal) =>
+      beginAsanaAuthorization: async (input, signal) =>
         this.configureAfterSetupTransition(
-          await this.setup.authenticateAsana(input, signal),
+          await this.setup.beginAsanaAuthorization(input, signal),
+        ),
+      completeAsanaAuthorization: async (input, signal) =>
+        this.configureAfterSetupTransition(
+          await this.setup.completeAsanaAuthorization(input, signal),
+        ),
+      cancelAsanaAuthorization: (input, signal) =>
+        this.configureAfterSetupTransition(
+          this.setup.cancelAsanaAuthorization(input, signal),
         ),
       listWorkspaces: async (signal) => this.configureAfterSetupTransition(
         await this.setup.listWorkspaces(signal),

@@ -8,11 +8,15 @@ import {
 } from "../local-storage-path";
 
 const checkpointVersion = 1;
+const checkpointStateSchema = setupStateSchema.refine(
+  (state) => state.kind !== "asana_authorization_pending",
+  "OAuth認可待機中の初回設定状態は保存できません。",
+);
 
 const checkpointSchema = z
   .object({
     version: z.literal(checkpointVersion),
-    state: setupStateSchema,
+    state: checkpointStateSchema,
   })
   .strict();
 
@@ -49,7 +53,7 @@ export class SetupCheckpointStore {
 
   /** 初回設定状態を一時ファイルから原子的に保存します。 */
   public save(state: SetupState): void {
-    const validatedState = setupStateSchema.parse(state);
+    const validatedState = checkpointStateSchema.parse(state);
     const serialized = JSON.stringify(
       checkpointSchema.parse({ version: checkpointVersion, state: validatedState }),
     );

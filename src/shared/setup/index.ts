@@ -1,6 +1,8 @@
 export {
   configuredTagGidsSchema,
-  setupCredentialsInputSchema,
+  setupAsanaAuthorizationBeginInputSchema,
+  setupAsanaAuthorizationCancelInputSchema,
+  setupAsanaAuthorizationCompleteInputSchema,
   setupCodexAvailabilitySchema,
   codexUnavailableReasonSchema,
   setupDiscordExternalToolConfigurationInputSchema,
@@ -18,7 +20,9 @@ export {
   setupWorkspaceSelectionInputSchema,
 } from "./schemas";
 export type {
-  SetupCredentialsInput,
+  SetupAsanaAuthorizationBeginInput,
+  SetupAsanaAuthorizationCancelInput,
+  SetupAsanaAuthorizationCompleteInput,
   SetupCodexAvailability,
   SetupCodexUnavailableReason,
   SetupDiscordExternalToolConfigurationInput,

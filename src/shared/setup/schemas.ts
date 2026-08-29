@@ -4,10 +4,12 @@ import {
   createUtf8ByteLimitedStringSchema,
   gidSchema,
   identifierSchema,
+  isoDateTimeSchema,
 } from "../domain";
 import { deviceSectionGidsSchema, vaultMappingSchema } from "../storage";
 
 const maximumAsanaClientSecretBytes = 1024;
+const maximumAsanaAuthorizationCodeBytes = 8 * 1024;
 const maximumDiscordBotTokenBytes = 4_096;
 const maximumDiscordChannels = 16;
 
@@ -23,6 +25,19 @@ const setupRedirectUriSchema = z
   .url()
   .max(2048)
   .refine((value) => !hasControlCharacter(value), "リダイレクトURIに制御文字を含めることはできません。");
+
+const setupAuthorizationIdSchema = z
+  .string()
+  .length(43)
+  .regex(/^[A-Za-z0-9_-]+$/u, "OAuth取引の識別子が不正です。");
+
+const setupAuthorizationCodeSchema = createUtf8ByteLimitedStringSchema(
+  maximumAsanaAuthorizationCodeBytes,
+)
+  .min(1)
+  .refine((value) => value.trim().length > 0, "OAuth認可コードを空白だけにできません。")
+  .refine((value) => value.trim() === value, "OAuth認可コードの前後に空白を指定できません。")
+  .refine((value) => !hasControlCharacter(value), "OAuth認可コードに制御文字を指定できません。");
 
 const setupSafeNameSchema = z
   .string()
@@ -199,6 +214,17 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
+      kind: z.literal("asana_authorization_pending"),
+      step: z.literal("credentials"),
+      redirect_uri: setupRedirectUriSchema,
+      client_id: identifierSchema,
+      authorization_id: setupAuthorizationIdSchema,
+      expires_at: isoDateTimeSchema,
+      codex: setupCodexAvailabilitySchema,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("workspace_listing_required"),
       step: z.literal("workspace"),
       redirect_uri: setupRedirectUriSchema,
@@ -348,11 +374,23 @@ const setupStateSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const setupCredentialsInputSchema = z
+const setupAsanaAuthorizationBeginInputSchema = z
   .object({
     client_id: identifierSchema,
     client_secret: asanaClientSecretSchema,
-    timeout_milliseconds: z.number().int().min(1).max(2_147_483_647),
+  })
+  .strict();
+
+const setupAsanaAuthorizationCompleteInputSchema = z
+  .object({
+    authorization_id: setupAuthorizationIdSchema,
+    authorization_code: setupAuthorizationCodeSchema,
+  })
+  .strict();
+
+const setupAsanaAuthorizationCancelInputSchema = z
+  .object({
+    authorization_id: setupAuthorizationIdSchema,
   })
   .strict();
 
@@ -432,7 +470,9 @@ function hasControlCharacter(value: string): boolean {
 export {
   asanaClientSecretSchema,
   configuredTagGidsSchema,
-  setupCredentialsInputSchema,
+  setupAsanaAuthorizationBeginInputSchema,
+  setupAsanaAuthorizationCancelInputSchema,
+  setupAsanaAuthorizationCompleteInputSchema,
   setupCodexAvailabilitySchema,
   codexUnavailableReasonSchema,
   setupDiscordExternalToolConfigurationInputSchema,
@@ -453,7 +493,15 @@ export {
 export type SetupState = z.infer<typeof setupStateSchema>;
 export type SetupCodexAvailability = z.infer<typeof setupCodexAvailabilitySchema>;
 export type SetupCodexUnavailableReason = z.infer<typeof codexUnavailableReasonSchema>;
-export type SetupCredentialsInput = z.infer<typeof setupCredentialsInputSchema>;
+export type SetupAsanaAuthorizationBeginInput = z.infer<
+  typeof setupAsanaAuthorizationBeginInputSchema
+>;
+export type SetupAsanaAuthorizationCompleteInput = z.infer<
+  typeof setupAsanaAuthorizationCompleteInputSchema
+>;
+export type SetupAsanaAuthorizationCancelInput = z.infer<
+  typeof setupAsanaAuthorizationCancelInputSchema
+>;
 export type SetupDiscordExternalToolConfigurationInput = z.infer<
   typeof setupDiscordExternalToolConfigurationInputSchema
 >;

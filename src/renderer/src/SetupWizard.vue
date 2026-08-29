@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
-  setupCredentialsInputSchema,
+  setupAsanaAuthorizationBeginInputSchema,
+  setupAsanaAuthorizationCancelInputSchema,
+  setupAsanaAuthorizationCompleteInputSchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSelectionInputSchema,
   setupVaultChoiceInputSchema,
   setupWorkspaceSelectionInputSchema,
+  type SetupAsanaAuthorizationCancelInput,
   type SetupExternalToolChoiceInput,
   type SetupExternalToolUnavailableReason,
   type SetupProjectSelectionInput,
@@ -19,8 +22,16 @@ type SetupAction =
   | { readonly kind: "start" }
   | { readonly kind: "complete_codex_authentication" }
   | {
-      readonly kind: "authenticate_asana";
-      readonly request: ReturnType<Window["taskHub"]["setup"]["authenticateAsana"]>;
+      readonly kind: "begin_asana_authorization";
+      readonly request: ReturnType<Window["taskHub"]["setup"]["beginAsanaAuthorization"]>;
+    }
+  | {
+      readonly kind: "complete_asana_authorization";
+      readonly request: ReturnType<Window["taskHub"]["setup"]["completeAsanaAuthorization"]>;
+    }
+  | {
+      readonly kind: "cancel_asana_authorization";
+      readonly request: ReturnType<Window["taskHub"]["setup"]["cancelAsanaAuthorization"]>;
     }
   | { readonly kind: "list_workspaces" }
   | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
@@ -46,9 +57,9 @@ const emit = defineEmits<{
 
 const clientId = ref("");
 const clientSecretInput = ref<HTMLInputElement | null>(null);
+const authorizationCodeInput = ref<HTMLInputElement | null>(null);
 const discordBotTokenInput = ref<HTMLInputElement | null>(null);
 const discordChannelIds = ref("");
-const timeoutMilliseconds = ref("120000");
 const projectName = ref("");
 const vaultId = ref("");
 const vaultPath = ref("");
@@ -67,6 +78,12 @@ function clearClientSecret(): void {
   }
 }
 
+function clearAuthorizationCode(): void {
+  if (authorizationCodeInput.value != null) {
+    authorizationCodeInput.value.value = "";
+  }
+}
+
 function clearDiscordBotToken(): void {
   if (discordBotTokenInput.value != null) {
     discordBotTokenInput.value.value = "";
@@ -75,6 +92,7 @@ function clearDiscordBotToken(): void {
 
 function clearSensitiveInputs(): void {
   clearClientSecret();
+  clearAuthorizationCode();
   clearDiscordBotToken();
 }
 
@@ -93,6 +111,8 @@ function stateTitle(state: SetupState | undefined): string {
       return "Codexへログインしてください";
     case "credentials_required":
       return "Asanaを接続します";
+    case "asana_authorization_pending":
+      return "Asana認可コードを入力します";
     case "workspace_listing_required":
     case "workspace_selection_required":
       return "ワークスペースを選びます";
@@ -133,7 +153,7 @@ function stateDescription(state: SetupState | undefined): string {
   }
   if ("codex" in state && state.codex.kind === "unavailable") {
     if (state.kind === "credentials_required") {
-      return `AIは利用できません。${codexReasonLabel(state.codex.reason_code)} Client IDとClient Secretはこの入力欄から送信するだけで、画面には再表示しません。`;
+      return `AIは利用できません。${codexReasonLabel(state.codex.reason_code)} Asana Developer ConsoleのRedirect URLにurn:ietf:wg:oauth:2.0:oobを登録してください。Client IDとClient Secretはこの入力欄から送信するだけで、画面には再表示しません。`;
     }
     return `AIは利用できません。${codexReasonLabel(state.codex.reason_code)} Asanaの初期設定と同期を先に進められます。`;
   }
@@ -141,7 +161,10 @@ function stateDescription(state: SetupState | undefined): string {
     return "ChatGPTログイン画面を開き、完了後にこの画面へ戻ってください。";
   }
   if (state.kind === "credentials_required") {
-    return "Client IDとClient Secretはこの入力欄から送信するだけで、画面には再表示しません。";
+    return "Asana Developer ConsoleのRedirect URLにurn:ietf:wg:oauth:2.0:oobを登録してください。Client IDとClient Secretはこの入力欄から送信するだけで、画面には再表示しません。";
+  }
+  if (state.kind === "asana_authorization_pending") {
+    return "Asanaに表示された認可コードを入力して確定してください。";
   }
   if (state.kind === "resources_requires_action") {
     return "必須セクションやタグの不足、重複、名前変更を確認してから再照合します。";
@@ -216,10 +239,9 @@ function submitCredentials(): void {
   if (secretInput == null) {
     throw new Error("Client Secret入力欄が見つかりません。");
   }
-  const parsed = setupCredentialsInputSchema.safeParse({
+  const parsed = setupAsanaAuthorizationBeginInputSchema.safeParse({
     client_id: clientId.value,
     client_secret: secretInput.value,
-    timeout_milliseconds: Number(timeoutMilliseconds.value),
   });
   if (!parsed.success) {
     clearClientSecret();
@@ -227,13 +249,61 @@ function submitCredentials(): void {
     return;
   }
   try {
-    const request = window.taskHub.setup.authenticateAsana(parsed.data);
+    const request = window.taskHub.setup.beginAsanaAuthorization(parsed.data);
     void request.then(clearClientSecret, clearClientSecret);
-    emit("action", { kind: "authenticate_asana", request });
+    emit("action", { kind: "begin_asana_authorization", request });
   } catch {
     localError.value = "Asana認証を開始できませんでした。";
   } finally {
     clearClientSecret();
+  }
+}
+
+function submitAuthorizationCode(): void {
+  localError.value = "";
+  const codeInput = authorizationCodeInput.value;
+  const state = props.state;
+  if (codeInput == null || state?.kind !== "asana_authorization_pending") {
+    throw new Error("OAuth認可コード入力欄が見つかりません。");
+  }
+  const parsed = setupAsanaAuthorizationCompleteInputSchema.safeParse({
+    authorization_id: state.authorization_id,
+    authorization_code: codeInput.value.trim(),
+  });
+  if (!parsed.success) {
+    clearAuthorizationCode();
+    localError.value = "認可コードを確認してください。";
+    return;
+  }
+  try {
+    const request = window.taskHub.setup.completeAsanaAuthorization(parsed.data);
+    void request.then(clearAuthorizationCode, clearAuthorizationCode);
+    emit("action", { kind: "complete_asana_authorization", request });
+  } catch {
+    localError.value = "Asana認証を完了できませんでした。";
+  } finally {
+    clearAuthorizationCode();
+  }
+}
+
+function cancelAuthorization(): void {
+  localError.value = "";
+  const state = props.state;
+  if (state?.kind !== "asana_authorization_pending") {
+    throw new Error("OAuth認可待機状態が見つかりません。");
+  }
+  const input: SetupAsanaAuthorizationCancelInput =
+    setupAsanaAuthorizationCancelInputSchema.parse({
+      authorization_id: state.authorization_id,
+    });
+  try {
+    const request = window.taskHub.setup.cancelAsanaAuthorization(input);
+    void request.then(clearAuthorizationCode, clearAuthorizationCode);
+    emit("action", { kind: "cancel_asana_authorization", request });
+  } catch {
+    localError.value = "Asana認証を取り消せませんでした。";
+  } finally {
+    clearAuthorizationCode();
   }
 }
 
@@ -458,15 +528,9 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           type="password"
           autocomplete="off"
         ></label>
-        <label
-          class="field-label"
-          for="oauth-timeout"
-        >認証待ち時間ミリ秒<input
-          id="oauth-timeout"
-          v-model="timeoutMilliseconds"
-          class="text-input"
-          inputmode="numeric"
-        ></label>
+        <p class="text-sm leading-6 text-slate-600">
+          Asana Developer ConsoleのRedirect URLに<code>urn:ietf:wg:oauth:2.0:oob</code>を登録してください。
+        </p>
         <button
           type="submit"
           class="primary-button"
@@ -475,6 +539,48 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           Asanaへ接続
         </button>
       </form>
+
+      <div
+        v-else-if="props.state?.kind === 'asana_authorization_pending'"
+        class="space-y-4"
+      >
+        <p class="text-sm leading-6 text-slate-600">
+          Asanaの認可画面に表示された認可コードを入力してください。認可コードの有効期限は{{ props.state.expires_at }}までです。
+        </p>
+        <form
+          class="grid gap-4 sm:max-w-xl"
+          @submit.prevent="submitAuthorizationCode"
+        >
+          <label
+            class="field-label"
+            for="authorization-code"
+          >Asana認可コード<input
+            id="authorization-code"
+            ref="authorizationCodeInput"
+            class="text-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+          ></label>
+          <div class="flex flex-wrap gap-3">
+            <button
+              type="submit"
+              class="primary-button"
+              :disabled="props.busy"
+            >
+              認可コードを確定
+            </button>
+            <button
+              type="button"
+              class="secondary-button"
+              :disabled="props.busy"
+              @click="cancelAuthorization"
+            >
+              認証をキャンセル
+            </button>
+          </div>
+        </form>
+      </div>
 
       <div
         v-else-if="isState(props.state, 'workspace_listing_required')"

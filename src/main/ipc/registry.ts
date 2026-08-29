@@ -51,9 +51,11 @@ import {
   ipcReadModelOverviewResponseSchema,
   ipcReadModelTaskDetailInputSchema,
   ipcReadModelTaskDetailResponseSchema,
-  ipcSetupAuthenticateAsanaInputSchema,
+  ipcSetupBeginAsanaAuthorizationInputSchema,
+  ipcSetupCancelAsanaAuthorizationInputSchema,
   ipcSetupChooseExternalToolInputSchema,
   ipcSetupChooseVaultInputSchema,
+  ipcSetupCompleteAsanaAuthorizationInputSchema,
   ipcSetupCompleteCodexAuthenticationInputSchema,
   ipcSetupListWorkspacesInputSchema,
   ipcSetupRetryResourcesInputSchema,
@@ -79,7 +81,9 @@ import {
   type IpcAiTurnInput,
   type IpcAiTurnResult,
   type IpcCodexDelta,
-  type IpcSetupCredentialsInput,
+  type IpcSetupAsanaAuthorizationBeginInput,
+  type IpcSetupAsanaAuthorizationCancelInput,
+  type IpcSetupAsanaAuthorizationCompleteInput,
   type IpcSetupExternalToolChoiceInput,
   type IpcSetupProjectSelectionInput,
   type IpcSetupState,
@@ -130,7 +134,18 @@ export interface IpcSetupPort {
   getState(): MaybePromise<IpcSetupState>;
   start(signal: AbortSignal): MaybePromise<IpcSetupState>;
   completeCodexAuthentication(signal: AbortSignal): MaybePromise<IpcSetupState>;
-  authenticateAsana(input: IpcSetupCredentialsInput, signal: AbortSignal): MaybePromise<IpcSetupState>;
+  beginAsanaAuthorization(
+    input: IpcSetupAsanaAuthorizationBeginInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcSetupState>;
+  completeAsanaAuthorization(
+    input: IpcSetupAsanaAuthorizationCompleteInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcSetupState>;
+  cancelAsanaAuthorization(
+    input: IpcSetupAsanaAuthorizationCancelInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcSetupState>;
   listWorkspaces(signal: AbortSignal): MaybePromise<IpcSetupState>;
   selectWorkspace(input: IpcSetupWorkspaceSelectionInput, signal: AbortSignal): MaybePromise<IpcSetupState>;
   selectProject(input: IpcSetupProjectSelectionInput, signal: AbortSignal): MaybePromise<IpcSetupState>;
@@ -409,15 +424,41 @@ export class IpcHandlerRegistry {
     );
     this.registerHandle(
       ipcMain,
-      "setup:authenticate-asana",
-      ipcSetupAuthenticateAsanaInputSchema,
+      "setup:begin-asana-authorization",
+      ipcSetupBeginAsanaAuthorizationInputSchema,
       ipcSetupStateResponseSchema,
       async (input, signal) => {
         const port = this.options.ports.setup;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.authenticateAsana(input, signal);
+        return port.beginAsanaAuthorization(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "setup:complete-asana-authorization",
+      ipcSetupCompleteAsanaAuthorizationInputSchema,
+      ipcSetupStateResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.setup;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.completeAsanaAuthorization(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "setup:cancel-asana-authorization",
+      ipcSetupCancelAsanaAuthorizationInputSchema,
+      ipcSetupStateResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.setup;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.cancelAsanaAuthorization(input, signal);
       },
     );
     this.registerHandle(

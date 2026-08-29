@@ -15,13 +15,17 @@ import {
   vaultIdSchema,
 } from "../domain";
 import {
-  setupCredentialsInputSchema,
+  setupAsanaAuthorizationBeginInputSchema,
+  setupAsanaAuthorizationCancelInputSchema,
+  setupAsanaAuthorizationCompleteInputSchema,
   setupExternalToolChoiceInputSchema,
   setupProjectSelectionInputSchema,
   setupStateSchema,
   setupVaultChoiceInputSchema,
   setupWorkspaceSelectionInputSchema,
-  type SetupCredentialsInput,
+  type SetupAsanaAuthorizationBeginInput,
+  type SetupAsanaAuthorizationCancelInput,
+  type SetupAsanaAuthorizationCompleteInput,
   type SetupExternalToolChoiceInput,
   type SetupProjectSelectionInput,
   type SetupState,
@@ -351,7 +355,9 @@ const syncResultSchema = z
 const setupEmptyInputSchema = z.undefined();
 const setupWorkspaceInputSchema = setupWorkspaceSelectionInputSchema;
 const setupProjectInputSchema = setupProjectSelectionInputSchema;
-const setupCredentialsInput = setupCredentialsInputSchema;
+const setupAsanaAuthorizationBeginInput = setupAsanaAuthorizationBeginInputSchema;
+const setupAsanaAuthorizationCompleteInput = setupAsanaAuthorizationCompleteInputSchema;
+const setupAsanaAuthorizationCancelInput = setupAsanaAuthorizationCancelInputSchema;
 const setupVaultInputSchema = setupVaultChoiceInputSchema;
 const setupExternalToolInputSchema = setupExternalToolChoiceInputSchema;
 
@@ -489,7 +495,9 @@ export const ipcChannelSchema = z.enum([
   "setup:get-state",
   "setup:start",
   "setup:complete-codex-authentication",
-  "setup:authenticate-asana",
+  "setup:begin-asana-authorization",
+  "setup:complete-asana-authorization",
+  "setup:cancel-asana-authorization",
   "setup:list-workspaces",
   "setup:select-workspace",
   "setup:select-project",
@@ -539,7 +547,9 @@ export const ipcAsanaReauthenticateOAuthResponseSchema = responseSchema(syncResu
 export const ipcSetupStateResponseSchema = responseSchema(setupStateSchema);
 export const ipcSetupStartInputSchema = setupEmptyInputSchema;
 export const ipcSetupCompleteCodexAuthenticationInputSchema = setupEmptyInputSchema;
-export const ipcSetupAuthenticateAsanaInputSchema = setupCredentialsInput;
+export const ipcSetupBeginAsanaAuthorizationInputSchema = setupAsanaAuthorizationBeginInput;
+export const ipcSetupCompleteAsanaAuthorizationInputSchema = setupAsanaAuthorizationCompleteInput;
+export const ipcSetupCancelAsanaAuthorizationInputSchema = setupAsanaAuthorizationCancelInput;
 export const ipcSetupListWorkspacesInputSchema = setupEmptyInputSchema;
 export const ipcSetupSelectWorkspaceInputSchema = setupWorkspaceInputSchema;
 export const ipcSetupSelectProjectInputSchema = setupProjectInputSchema;
@@ -590,7 +600,9 @@ export type IpcResponse<T> = { readonly kind: "ok"; readonly value: T } | IpcFai
 export type IpcSyncInput = z.infer<typeof syncRequestSchema>;
 export type IpcSyncResult = z.infer<typeof syncResultSchema>;
 export type IpcSetupState = SetupState;
-export type IpcSetupCredentialsInput = SetupCredentialsInput;
+export type IpcSetupAsanaAuthorizationBeginInput = SetupAsanaAuthorizationBeginInput;
+export type IpcSetupAsanaAuthorizationCompleteInput = SetupAsanaAuthorizationCompleteInput;
+export type IpcSetupAsanaAuthorizationCancelInput = SetupAsanaAuthorizationCancelInput;
 export type IpcSetupExternalToolChoiceInput = SetupExternalToolChoiceInput;
 export type IpcSetupProjectSelectionInput = SetupProjectSelectionInput;
 export type IpcSetupVaultChoiceInput = SetupVaultChoiceInput;

@@ -72,7 +72,15 @@ type SetupAction =
   | { readonly kind: "start" }
   | { readonly kind: "complete_codex_authentication" }
   | {
-      readonly kind: "authenticate_asana";
+      readonly kind: "begin_asana_authorization";
+      readonly request: Promise<SetupResult>;
+    }
+  | {
+      readonly kind: "complete_asana_authorization";
+      readonly request: Promise<SetupResult>;
+    }
+  | {
+      readonly kind: "cancel_asana_authorization";
       readonly request: Promise<SetupResult>;
     }
   | { readonly kind: "list_workspaces" }
@@ -870,11 +878,9 @@ function applySetupState(value: unknown): void {
   screen.value = rendererScreenStateSchema.parse({ kind: "setup", setup: parsed });
 }
 
-async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
-  setupBusy.value = true;
-  feedback.value = "";
+async function resynchronizeSetupState(): Promise<void> {
   try {
-    const result = await request;
+    const result = await window.taskHub.setup.getState();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -882,6 +888,23 @@ async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
     applySetupState(result.value);
   } catch {
     showUnexpectedFailure();
+  }
+}
+
+async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
+  setupBusy.value = true;
+  feedback.value = "";
+  try {
+    const result = await request;
+    if (isFailure(result)) {
+      showFailure(result);
+      await resynchronizeSetupState();
+      return;
+    }
+    applySetupState(result.value);
+  } catch {
+    showUnexpectedFailure();
+    await resynchronizeSetupState();
   } finally {
     setupBusy.value = false;
   }
@@ -966,7 +989,9 @@ function handleSetupAction(action: SetupAction): void {
     case "complete_codex_authentication":
       void runSetupRequest(window.taskHub.setup.completeCodexAuthentication());
       return;
-    case "authenticate_asana":
+    case "begin_asana_authorization":
+    case "complete_asana_authorization":
+    case "cancel_asana_authorization":
       void runSetupRequest(action.request);
       return;
     case "list_workspaces":

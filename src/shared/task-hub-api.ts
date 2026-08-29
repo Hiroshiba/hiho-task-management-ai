@@ -19,7 +19,9 @@ import type {
   IpcObsidianVaultResult,
   IpcReadModelOverview,
   IpcReadModelTaskDetail,
-  IpcSetupCredentialsInput,
+  IpcSetupAsanaAuthorizationBeginInput,
+  IpcSetupAsanaAuthorizationCancelInput,
+  IpcSetupAsanaAuthorizationCompleteInput,
   IpcSetupExternalToolChoiceInput,
   IpcSetupProjectSelectionInput,
   IpcSetupState,
@@ -57,7 +59,15 @@ export interface TaskHubApi {
     readonly getState: () => IpcResult<IpcSetupState>;
     readonly start: () => IpcResult<IpcSetupState>;
     readonly completeCodexAuthentication: () => IpcResult<IpcSetupState>;
-    readonly authenticateAsana: (input: IpcSetupCredentialsInput) => IpcResult<IpcSetupState>;
+    readonly beginAsanaAuthorization: (
+      input: IpcSetupAsanaAuthorizationBeginInput,
+    ) => IpcResult<IpcSetupState>;
+    readonly completeAsanaAuthorization: (
+      input: IpcSetupAsanaAuthorizationCompleteInput,
+    ) => IpcResult<IpcSetupState>;
+    readonly cancelAsanaAuthorization: (
+      input: IpcSetupAsanaAuthorizationCancelInput,
+    ) => IpcResult<IpcSetupState>;
     readonly listWorkspaces: () => IpcResult<IpcSetupState>;
     readonly selectWorkspace: (input: IpcSetupWorkspaceSelectionInput) => IpcResult<IpcSetupState>;
     readonly selectProject: (input: IpcSetupProjectSelectionInput) => IpcResult<IpcSetupState>;
