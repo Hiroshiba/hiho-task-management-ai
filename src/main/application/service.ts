@@ -1020,25 +1020,10 @@ export class TaskHubApplication {
     this.codexWorkspace = initializeCodexWorkspace({
       userDataPath: options.user_data_path,
     });
-    try {
-      const disabledInstallation = installDisabledExternalToolsSkill(
-        this.codexWorkspace.workspacePath,
-        "safe_execution_boundary_unavailable",
-      );
-      if (
-        disabledInstallation.kind !== "disabled"
-        || disabledInstallation.reason !== "safe_execution_boundary_unavailable"
-      ) {
-        throw new Error("初期外部ツール無効Skillの導入結果が一致しません。");
-      }
-    } catch (error: unknown) {
-      this.externalToolLifecycle = {
-        kind: "recovery_required",
-        reason: "safe_execution_boundary_unavailable",
-        broker: { kind: "none" },
-        errors: [error],
-      };
-    }
+    this.externalToolLifecycle = {
+      kind: "disabled",
+      reason: "no_registered_tools",
+    };
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
       environment: createCodexProcessEnvironment(),
@@ -1907,6 +1892,14 @@ export class TaskHubApplication {
     this.setCodexExternalSocketPaths([]);
   }
 
+  private setExternalToolsDisabled(): void {
+    this.externalToolLifecycle = {
+      kind: "disabled",
+      reason: "no_registered_tools",
+    };
+    this.setCodexExternalSocketPaths([]);
+  }
+
   private codexDisabledByExternalToolSafety(): boolean {
     return this.externalToolLifecycle.kind === "recovery_required";
   }
@@ -2250,24 +2243,12 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<void> {
     const selection = this.setup.getExternalToolSelection();
-    if (selection == null || selection.kind !== "configured") {
-      const disabledReason = selection?.kind === "unavailable"
-        ? externalToolsDisabledReasonFromSetupReason(selection.reason_code)
-        : "no_registered_tools";
-      const deactivation = await this.runExternalToolConfigurationOperation(
-        signal,
-        (operationSignal) =>
-          this.deactivateDiscordExternalToolInternal(
-            disabledReason,
-            operationSignal,
-          ),
-      );
-      if (deactivation.kind === "unavailable" && selection != null) {
-        await this.markExternalToolUnavailableSafely(
-          deactivation.reason_code,
-          new Error("保存済み外部ツール選択を安全な無効状態へ移行できませんでした。"),
-        );
-      }
+    if (
+      selection == null
+      || selection.kind === "skipped"
+      || selection.kind === "unavailable"
+    ) {
+      this.setExternalToolsDisabled();
       return;
     }
     const result = await this.runExternalToolConfigurationOperation(

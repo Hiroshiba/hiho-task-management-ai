@@ -1295,17 +1295,6 @@ export class SetupOrchestrator {
         reason_code: reasonCode,
       }), signal);
     }
-    const deactivation = setupExternalToolDeactivationResultSchema.parse(
-      await this.externalTool.deactivateDiscord(signal),
-    );
-    if (deactivation.kind === "unavailable") {
-      return this.commitExternalToolChoice(state, parseState({
-        kind: "external_tool_unavailable",
-        step: "full_sync",
-        context: state.context,
-        reason_code: deactivation.reason_code,
-      }), signal);
-    }
     return this.commitExternalToolChoice(state, parseState({
       kind: "external_tool_skipped",
       step: "full_sync",
@@ -1379,6 +1368,10 @@ export class SetupOrchestrator {
       signal.throwIfAborted();
       this.checkpoint.save(nextState);
     } catch (error: unknown) {
+      this.state = previousState;
+      if (nextState.kind === "external_tool_skipped") {
+        throw error;
+      }
       const deactivationSignal = new AbortController().signal;
       let deactivation: SetupExternalToolDeactivationResult;
       try {
@@ -1393,7 +1386,6 @@ export class SetupOrchestrator {
           { cause: error },
         );
       }
-      this.state = previousState;
       if (deactivation.kind === "unavailable") {
         throw new AggregateError(
           [error, new Error("外部ツール選択の確定失敗後にDiscord連携を無効化できませんでした。")],
