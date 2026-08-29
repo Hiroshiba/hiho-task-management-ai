@@ -850,9 +850,6 @@ export class SetupOrchestrator {
     validateAbortSignal(signal);
     signal.throwIfAborted();
     const state = parseState(this.state);
-    if (state.kind === "ready") {
-      return state;
-    }
     const availability = stateCodexAvailability(state);
     if (
       availability == null
@@ -869,6 +866,18 @@ export class SetupOrchestrator {
     this.checkpoint.save(nextState);
     this.state = nextState;
     this.codexAvailability = detected;
+    return parseState(nextState);
+  }
+
+  /** 現在のCodex利用状態を保存済み初回設定へ反映します。 */
+  public updateCodexAvailability(
+    availability: SetupCodexAvailability,
+  ): SetupState {
+    const validatedAvailability = setupCodexAvailabilitySchema.parse(availability);
+    const nextState = updateStateCodexAvailability(this.state, validatedAvailability);
+    this.checkpoint.save(nextState);
+    this.state = nextState;
+    this.codexAvailability = validatedAvailability;
     return parseState(nextState);
   }
 

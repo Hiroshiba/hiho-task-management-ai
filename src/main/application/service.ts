@@ -1817,6 +1817,21 @@ export class TaskHubApplication {
       return recheckedState;
     }
     await this.ensureConfiguredCodexLaunchAttempt(signal);
+    const currentAvailability = this.codexAvailability;
+    if (currentAvailability == null) {
+      return recheckedState;
+    }
+    if (
+      currentAvailability.kind === "unavailable"
+      || (
+        availability.kind === "unavailable"
+        && currentAvailability.kind === "available"
+      )
+    ) {
+      return setupStateSchema.parse(
+        this.setup.updateCodexAvailability(currentAvailability),
+      );
+    }
     return recheckedState;
   }
 
