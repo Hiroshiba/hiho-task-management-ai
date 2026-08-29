@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { TokenProvider } from "../../asana/transport";
 import { identifierSchema } from "../../../shared/domain";
 import { asanaClientSecretSchema } from "../../../shared/setup/schemas";
@@ -7,16 +7,13 @@ import {
   type SecretStorageData,
 } from "../secret-storage";
 import {
-  authorizationCodeSchema,
   asanaOAuthOutOfBandRedirectUri,
   codeVerifierSchema,
   oauthAuthorizationRequestSchema,
   oauthOutOfBandAuthorizationCodeSchema,
-  oauthOutOfBandRedirectUriSchema,
   oauthStateSchema,
   oauthTokenErrorResponseSchema,
   oauthTokenResponseSchema,
-  redirectUriSchema,
   type OAuthAuthorizationRequest,
   type OAuthTokenErrorCode,
   type OAuthTokenResponse,
@@ -48,12 +45,6 @@ function createRandomValue(): string {
 
 function createCodeChallenge(codeVerifier: string): string {
   return createHash("sha256").update(codeVerifier, "utf8").digest("base64url");
-}
-
-function isSameValue(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left, "utf8");
-  const rightBytes = Buffer.from(right, "utf8");
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
 function requestId(response: Response): string | undefined {
@@ -95,16 +86,6 @@ async function readStructuredTokenErrorCode(
     return undefined;
   }
   return result.data.error;
-}
-
-function readClientSecret(
-  secretStorage: SecretStorage,
-): string {
-  const stored = secretStorage.load();
-  if (stored == null || stored.asana_client_secret == null) {
-    throw new AsanaOAuthCredentialError();
-  }
-  return stored.asana_client_secret;
 }
 
 function readRefreshSecrets(
@@ -188,29 +169,24 @@ function createInitialSecretData(
 /** Asana OAuth PKCE認証とトークン管理を提供します。 */
 export class AsanaOAuthClient implements TokenProvider {
   private readonly clientId: string;
-  private readonly redirectUri: string;
   private pendingAuthorization: PendingAuthorization | undefined;
 
   public constructor(
     clientId: string,
-    redirectUri: string,
     private readonly secretStorage: SecretStorage,
   ) {
     this.clientId = identifierSchema.parse(clientId);
-    this.redirectUri = redirectUriSchema
-      .or(oauthOutOfBandRedirectUriSchema)
-      .parse(redirectUri);
   }
 
-  /** PKCE認可URLと照合用stateを生成します。 */
-  public createAuthorizationRequest(): OAuthAuthorizationRequest {
+  /** OAuth Out-of-Band用のPKCE認可要求を生成します。 */
+  public createOutOfBandAuthorizationRequest(): OAuthAuthorizationRequest {
     const state = oauthStateSchema.parse(createRandomValue());
     const codeVerifier = codeVerifierSchema.parse(createRandomValue());
     this.pendingAuthorization = { state, codeVerifier };
     const url = new URL(authorizationEndpoint);
     url.search = new URLSearchParams({
       client_id: this.clientId,
-      redirect_uri: this.redirectUri,
+      redirect_uri: asanaOAuthOutOfBandRedirectUri,
       response_type: "code",
       state,
       code_challenge: createCodeChallenge(codeVerifier),
@@ -219,73 +195,6 @@ export class AsanaOAuthClient implements TokenProvider {
     return oauthAuthorizationRequestSchema.parse({
       authorization_url: url.href,
       state,
-    });
-  }
-
-  /** OAuth Out-of-Band用のPKCE認可要求を生成します。 */
-  public createOutOfBandAuthorizationRequest(): OAuthAuthorizationRequest {
-    if (this.redirectUri !== asanaOAuthOutOfBandRedirectUri) {
-      throw new AsanaOAuthStateError();
-    }
-    return this.createAuthorizationRequest();
-  }
-
-  /** 初回認証の認可コードを新しいClient Secretで交換して秘密情報を保存します。 */
-  public async exchangeInitialAuthorizationCode(
-    state: string,
-    code: string,
-    clientSecret: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    signal.throwIfAborted();
-    const validatedClientSecret = asanaClientSecretSchema.parse(clientSecret);
-    const validatedState = oauthStateSchema.parse(state);
-    const validatedCode = authorizationCodeSchema.parse(code);
-    const pendingAuthorization = this.takePendingAuthorization(validatedState);
-    const response = await this.requestAuthorizationCodeToken(
-      validatedCode,
-      pendingAuthorization,
-      validatedClientSecret,
-      signal,
-    );
-    const refreshToken = requireRefreshToken(response);
-    signal.throwIfAborted();
-    const latest = this.secretStorage.load();
-    this.secretStorage.save(
-      createInitialSecretData(
-        validatedClientSecret,
-        response.access_token,
-        refreshToken,
-        latest,
-      ),
-    );
-  }
-
-  /** 認可コードを検証してトークンを保存します。 */
-  public async exchangeAuthorizationCode(
-    state: string,
-    code: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    signal.throwIfAborted();
-    const validatedState = oauthStateSchema.parse(state);
-    const validatedCode = authorizationCodeSchema.parse(code);
-    const pendingAuthorization = this.takePendingAuthorization(validatedState);
-    const clientSecret = readClientSecret(this.secretStorage);
-    const response = await this.requestAuthorizationCodeToken(
-      validatedCode,
-      pendingAuthorization,
-      clientSecret,
-      signal,
-    );
-    const refreshToken = requireRefreshToken(response);
-    const latest = readLatestSecrets(this.secretStorage);
-    assertClientSecretUnchanged(latest, clientSecret);
-    signal.throwIfAborted();
-    this.secretStorage.save({
-      ...latest,
-      access_token: response.access_token,
-      refresh_token: refreshToken,
     });
   }
 
@@ -350,18 +259,6 @@ export class AsanaOAuthClient implements TokenProvider {
     this.pendingAuthorization = undefined;
   }
 
-  private takePendingAuthorization(validatedState: string): PendingAuthorization {
-    const pendingAuthorization = this.pendingAuthorization;
-    if (
-      pendingAuthorization == null
-      || !isSameValue(pendingAuthorization.state, validatedState)
-    ) {
-      throw new AsanaOAuthStateError();
-    }
-    this.pendingAuthorization = undefined;
-    return pendingAuthorization;
-  }
-
   private takePendingAuthorizationWithoutState(): PendingAuthorization {
     const pendingAuthorization = this.pendingAuthorization;
     if (pendingAuthorization == null) {
@@ -382,7 +279,7 @@ export class AsanaOAuthClient implements TokenProvider {
         grant_type: "authorization_code",
         client_id: this.clientId,
         client_secret: clientSecret,
-        redirect_uri: this.redirectUri,
+        redirect_uri: asanaOAuthOutOfBandRedirectUri,
         code: validatedCode,
         code_verifier: pendingAuthorization.codeVerifier,
       }),

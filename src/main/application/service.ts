@@ -50,7 +50,6 @@ import {
   AsanaOAuthResponseError,
   AsanaOAuthTokenEndpointError,
   AsanaOAuthTransportError,
-  asanaOAuthOutOfBandRedirectUri,
   asanaOAuthCoordinatorResultSchema,
   AsanaOAuthOutOfBandAuthenticationInProgressError,
   AsanaOAuthOutOfBandAuthorizationIdMismatchError,
@@ -1087,7 +1086,6 @@ export class TaskHubApplication {
           this.tokenProvider.setProvider(
             new AsanaOAuthClient(
               result.client_id,
-              asanaOAuthOutOfBandRedirectUri,
               this.secretStorage,
             ),
           );
@@ -1441,7 +1439,6 @@ export class TaskHubApplication {
     this.tokenProvider.setProvider(
       new AsanaOAuthClient(
         validatedSettings.client_id,
-        asanaOAuthOutOfBandRedirectUri,
         this.secretStorage,
       ),
     );
@@ -1481,7 +1478,6 @@ export class TaskHubApplication {
         this.tokenProvider.setProvider(
           new AsanaOAuthClient(
             clientId,
-            asanaOAuthOutOfBandRedirectUri,
             this.secretStorage,
           ),
         );

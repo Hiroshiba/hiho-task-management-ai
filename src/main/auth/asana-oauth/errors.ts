@@ -84,14 +84,6 @@ export class AsanaOAuthResponseError extends AsanaOAuthError {
   }
 }
 
-/** OAuth認可サーバーが認可を拒否したことを表すエラーです。 */
-export class AsanaOAuthAuthorizationError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuth認可が拒否されました。");
-    this.name = "AsanaOAuthAuthorizationError";
-  }
-}
-
 /** OAuth認可URLの起動失敗を表すエラーです。 */
 export class AsanaOAuthAuthorizationUrlOpenError extends AsanaOAuthError {
   public readonly kind: "error" | "unknown";
@@ -100,14 +92,6 @@ export class AsanaOAuthAuthorizationUrlOpenError extends AsanaOAuthError {
     super("OAuth認可URLの起動に失敗しました。", { cause: error });
     this.name = "AsanaOAuthAuthorizationUrlOpenError";
     this.kind = error instanceof Error ? "error" : "unknown";
-  }
-}
-
-/** OAuth認証処理が既に実行中であることを表すエラーです。 */
-export class AsanaOAuthAuthenticationInProgressError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuth認証処理が既に実行中です。");
-    this.name = "AsanaOAuthAuthenticationInProgressError";
   }
 }
 
@@ -164,45 +148,5 @@ export class AsanaOAuthOutOfBandStoppedError extends AsanaOAuthError {
   public constructor() {
     super("OAuth Out-of-Band認証が停止されました。");
     this.name = "AsanaOAuthOutOfBandStoppedError";
-  }
-}
-
-/** OAuthコールバックの待機が中断されたことを表すエラーです。 */
-export class AsanaOAuthCallbackAbortedError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuthコールバックの待機が中断されました。");
-    this.name = "AsanaOAuthCallbackAbortedError";
-  }
-}
-
-/** OAuthコールバックの待機がタイムアウトしたことを表すエラーです。 */
-export class AsanaOAuthCallbackTimeoutError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuthコールバックの待機がタイムアウトしました。");
-    this.name = "AsanaOAuthCallbackTimeoutError";
-  }
-}
-
-/** OAuthコールバックの不正要求が上限に達したことを表すエラーです。 */
-export class AsanaOAuthCallbackAttemptLimitError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuthコールバックの不正要求が上限に達しました。");
-    this.name = "AsanaOAuthCallbackAttemptLimitError";
-  }
-}
-
-/** OAuthコールバックの同時接続数が上限に達したことを表すエラーです。 */
-export class AsanaOAuthCallbackSocketLimitError extends AsanaOAuthError {
-  public constructor() {
-    super("OAuthコールバックの同時接続数が上限に達しました。");
-    this.name = "AsanaOAuthCallbackSocketLimitError";
-  }
-}
-
-/** OAuthコールバックサーバーの処理に失敗したことを表すエラーです。 */
-export class AsanaOAuthCallbackServerError extends AsanaOAuthError {
-  public constructor(cause: unknown) {
-    super("OAuthコールバックサーバーの処理に失敗しました。", { cause });
-    this.name = "AsanaOAuthCallbackServerError";
   }
 }
