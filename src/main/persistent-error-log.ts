@@ -484,6 +484,13 @@ function writeBuffer(fileDescriptor: number, data: Buffer): void {
   }
 }
 
+function normalizeThrownError(error: unknown, message: string): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(message, { cause: error });
+}
+
 function restoreAppendStart(
   fileDescriptor: number,
   appendStartSize: number,
@@ -497,7 +504,7 @@ function restoreAppendStart(
       "永続エラーログの途中書き込みを復元できませんでした。",
     );
   }
-  throw appendError;
+  throw normalizeThrownError(appendError, "永続エラーログの書き込みに失敗しました。");
 }
 
 /** 開発者向けのエラーを再起動後も確認できるJSONLログへ保存します。 */
@@ -599,7 +606,7 @@ export class PersistentErrorLog {
       }
     }
     if (appendError != null) {
-      throw appendError;
+      throw normalizeThrownError(appendError, "永続エラーログの追記に失敗しました。");
     }
   }
 
