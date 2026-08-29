@@ -10,6 +10,20 @@ import {
   isApplicationUrl,
 } from "../security";
 import {
+  AsanaOAuthCredentialStateError,
+  AsanaOAuthHttpError,
+  AsanaOAuthOutOfBandAbortedError,
+  AsanaOAuthOutOfBandAuthorizationIdMismatchError,
+  AsanaOAuthOutOfBandCancelledError,
+  AsanaOAuthOutOfBandExpiredError,
+  AsanaOAuthOutOfBandNotPendingError,
+  AsanaOAuthOutOfBandStoppedError,
+  AsanaOAuthResponseError,
+  AsanaOAuthStateError,
+  AsanaOAuthTokenEndpointError,
+  AsanaOAuthTransportError,
+} from "../auth/asana-oauth";
+import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
   ipcAiDeltaEventSchema,
@@ -238,12 +252,54 @@ const failureMessages: Record<IpcFailure["code"], string> = {
   sender_untrusted: "IPC送信元が信頼できません。",
   not_configured: "この機能は設定されていません。",
   operation_failed: "IPC操作に失敗しました。",
+  oauth_invalid_client: "Client ID、Client Secret、OAuthアプリ設定を確認して認証を最初からやり直してください。",
+  oauth_invalid_grant: "認可コードが期限切れ、使用済み、または別アプリの可能性があるため認証を最初からやり直してください。",
+  oauth_token_endpoint_rejected: "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。",
+  oauth_network_error: "ネットワークとAsanaの状態を確認して最初からやり直してください。",
+  oauth_session_error: "認証セッションを最初からやり直してください。",
   aborted: "IPC操作が中断されました。",
   conflict: "操作が競合しました。",
   not_found: "指定された対象が見つかりません。",
   authentication_required: "認証が必要です。",
   unavailable: "この機能は現在利用できません。",
 };
+
+function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
+  if (error instanceof AsanaOAuthTokenEndpointError) {
+    switch (error.code) {
+      case "invalid_client":
+      case "unauthorized_client":
+        return "oauth_invalid_client";
+      case "invalid_grant":
+        return "oauth_invalid_grant";
+      default:
+        return "oauth_token_endpoint_rejected";
+    }
+  }
+  if (
+    error instanceof AsanaOAuthTransportError
+    || error instanceof AsanaOAuthHttpError
+    || error instanceof AsanaOAuthResponseError
+  ) {
+    return "oauth_network_error";
+  }
+  if (
+    error instanceof AsanaOAuthOutOfBandExpiredError
+    || error instanceof AsanaOAuthStateError
+    || error instanceof AsanaOAuthOutOfBandCancelledError
+    || error instanceof AsanaOAuthOutOfBandAbortedError
+    || error instanceof AsanaOAuthOutOfBandStoppedError
+    || error instanceof AsanaOAuthOutOfBandNotPendingError
+    || error instanceof AsanaOAuthCredentialStateError
+    || error instanceof AsanaOAuthOutOfBandAuthorizationIdMismatchError
+  ) {
+    return "oauth_session_error";
+  }
+  if (error instanceof z.ZodError) {
+    return "invalid_response";
+  }
+  return "operation_failed";
+}
 
 function validateOptions(options: IpcHandlerRegistryOptions): void {
   if (typeof options?.rendererUrl !== "string" || options.rendererUrl.length === 0) {
@@ -913,9 +969,7 @@ export class IpcHandlerRegistry {
           return responseSchema.parse(this.createFailure("not_configured"));
         }
         this.options.diagnostic.record(error, channel);
-        const code: IpcFailure["code"] = error instanceof z.ZodError
-          ? "invalid_response"
-          : "operation_failed";
+        const code = ipcFailureCodeForError(error);
         return responseSchema.parse(this.createFailure(code));
       }
     } finally {

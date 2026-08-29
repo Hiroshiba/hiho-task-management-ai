@@ -259,6 +259,16 @@ function failureText(code: RendererFailure["code"]): string {
       return "この機能はまだ設定されていません。";
     case "operation_failed":
       return "操作に失敗しました。";
+    case "oauth_invalid_client":
+      return "Client ID、Client Secret、OAuthアプリ設定を確認して認証を最初からやり直してください。";
+    case "oauth_invalid_grant":
+      return "認可コードが期限切れ、使用済み、または別アプリの可能性があるため認証を最初からやり直してください。";
+    case "oauth_token_endpoint_rejected":
+      return "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。";
+    case "oauth_network_error":
+      return "ネットワークとAsanaの状態を確認して最初からやり直してください。";
+    case "oauth_session_error":
+      return "認証セッションを最初からやり直してください。";
     case "aborted":
       return "操作を中断しました。";
     case "conflict":
