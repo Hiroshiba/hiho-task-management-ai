@@ -11,25 +11,6 @@ export class CodexExecutableNotFoundError extends Error {
   }
 }
 
-/** Codex CLIの版表記を解析できないことを表します。 */
-export class CodexVersionFormatError extends Error {
-  public constructor() {
-    super("Codex CLIの版表記が不正です。");
-    this.name = "CodexVersionFormatError";
-  }
-}
-
-/** Codex CLIの版が対応範囲外であることを表します。 */
-export class CodexUnsupportedVersionError extends Error {
-  public readonly version: string;
-
-  public constructor(version: string) {
-    super("対応していないCodex CLIの版です。");
-    this.name = "CodexUnsupportedVersionError";
-    this.version = version;
-  }
-}
-
 /** Codex CLIの版取得コマンドが失敗したことを表します。 */
 export class CodexVersionCommandError extends Error {
   public constructor(cause: unknown) {

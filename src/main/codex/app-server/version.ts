@@ -2,13 +2,10 @@ import { execFile } from "node:child_process";
 import { statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { codexVersionInfoSchema, type CodexVersionInfo } from "./schemas";
 import {
   CodexExecutableNotFoundError,
   CodexRequestAbortedError,
-  CodexUnsupportedVersionError,
   CodexVersionCommandError,
-  CodexVersionFormatError,
 } from "./errors";
 
 const safeEnvironmentKeys = new Set([
@@ -39,9 +36,6 @@ const safeEnvironmentKeys = new Set([
 const safeEnvironmentKeysByLowerCase = new Map(
   [...safeEnvironmentKeys].map((key) => [key.toLowerCase(), key]),
 );
-
-const versionPattern =
-  /^codex-cli (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$/;
 
 function isNoEntryError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -110,7 +104,7 @@ function executeVersionCommand(
   executable: string,
   environment: NodeJS.ProcessEnv,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(
       executable,
@@ -124,7 +118,7 @@ function executeVersionCommand(
         maxBuffer: 64 * 1024,
         encoding: "utf8",
       },
-      (error, stdout) => {
+      (error) => {
         if (error != null) {
           if (signal.aborted) {
             reject(new CodexRequestAbortedError("codex --version"));
@@ -137,64 +131,17 @@ function executeVersionCommand(
           reject(new CodexVersionCommandError(error));
           return;
         }
-        resolve(stdout);
+        resolve();
       },
     );
   });
 }
 
-function parseVersionOutput(output: string): CodexVersionInfo {
-  const normalizedOutput = output.trim();
-  const match = versionPattern.exec(normalizedOutput);
-  if (match == null) {
-    throw new CodexVersionFormatError();
-  }
-
-  const majorText = match.groups?.major;
-  const minorText = match.groups?.minor;
-  const patchText = match.groups?.patch;
-  if (majorText == null || minorText == null || patchText == null) {
-    throw new CodexVersionFormatError();
-  }
-
-  const major = Number(majorText);
-  const minor = Number(minorText);
-  const patch = Number(patchText);
-  if (
-    !Number.isSafeInteger(major) ||
-    !Number.isSafeInteger(minor) ||
-    !Number.isSafeInteger(patch)
-  ) {
-    throw new CodexVersionFormatError();
-  }
-  if (major !== 0 || minor !== 150) {
-    throw new CodexUnsupportedVersionError(normalizedOutput);
-  }
-
-  const version = codexVersionInfoSchema.safeParse({
-    raw: normalizedOutput,
-    major,
-    minor,
-    patch,
-  });
-  if (!version.success) {
-    throw new CodexVersionFormatError();
-  }
-  return version.data;
-}
-
-/** 指定した実行ファイルの対応するCodex CLIの版を取得します。 */
-export async function getCodexVersionForExecutable(
+/** 指定した実行ファイルのCodex CLI実行可否を検査します。 */
+export async function checkCodexExecutable(
   executable: string,
   environment: NodeJS.ProcessEnv,
   signal: AbortSignal,
-): Promise<CodexVersionInfo> {
-  const output = await executeVersionCommand(executable, environment, signal);
-  return parseVersionOutput(output);
-}
-
-/** 対応するCodex CLIの版を取得します。 */
-export async function getCodexVersion(signal: AbortSignal): Promise<CodexVersionInfo> {
-  const environment = createSafeCodexEnvironment(process.env);
-  return getCodexVersionForExecutable(resolveCodexExecutable(), environment, signal);
+): Promise<void> {
+  await executeVersionCommand(executable, environment, signal);
 }

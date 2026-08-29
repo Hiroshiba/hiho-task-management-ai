@@ -697,7 +697,6 @@ function handleCodexStatus(value: IpcAiStatus): void {
   if (value.kind === "ready") {
     codexState.value = rendererCodexStateSchema.parse({
       kind: "ready",
-      version: value.codex_version,
     });
     return;
   }

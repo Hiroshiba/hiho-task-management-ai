@@ -127,12 +127,7 @@ const rendererCodexUnavailableReasonSchema = z.enum([
 
 export const rendererCodexStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("connecting") }).strict(),
-  z
-    .object({
-      kind: z.literal("ready"),
-      version: z.string().min(1).max(64),
-    })
-    .strict(),
+  z.object({ kind: z.literal("ready") }).strict(),
   z.object({ kind: z.literal("authentication_required") }).strict(),
   z
     .object({

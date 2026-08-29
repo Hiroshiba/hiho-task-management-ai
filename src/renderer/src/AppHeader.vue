@@ -149,7 +149,7 @@ function codexLabel(state: RendererCodexState): string {
     case "connecting":
       return "接続中";
     case "ready":
-      return `利用可能 ${state.version}`;
+      return "利用可能";
     case "authentication_required":
       return "認証が必要です";
     case "unavailable":

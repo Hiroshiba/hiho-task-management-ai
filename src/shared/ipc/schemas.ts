@@ -502,13 +502,9 @@ const syncStateEventSchema = z.discriminatedUnion("kind", [
 const aiStatusSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ready"),
-    codex_version: identifierSchema,
     model: identifierSchema,
   }).strict(),
-  z.object({
-    kind: z.literal("authentication_required"),
-    codex_version: identifierSchema,
-  }).strict(),
+  z.object({ kind: z.literal("authentication_required") }).strict(),
   z.object({ kind: z.literal("starting") }).strict(),
   z.object({
     kind: z.literal("unavailable"),

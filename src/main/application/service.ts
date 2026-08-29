@@ -890,15 +890,6 @@ function toIpcAsanaReauthenticationOperationState(
   }
 }
 
-function rendererCodexVersion(rawVersion: string): string {
-  const match = /^codex-cli (?<version>\d+\.\d+\.\d+)$/u.exec(rawVersion);
-  const version = match?.groups?.version;
-  if (version == null) {
-    throw new CodexSessionCapabilityError("Codex CLIの表示用バージョンが不正です。");
-  }
-  return identifierSchema.parse(version);
-}
-
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
@@ -3866,21 +3857,13 @@ export class TaskHubApplication {
         reason_code: this.codexAvailability.reason_code,
       });
     }
-    const rawVersion = this.codexAdapter.getVersion();
     if (this.codexAuthenticationRequired || this.aiStartResult?.state === "authentication_required") {
-      if (rawVersion == null) {
-        return ipcAiStatusEventSchema.parse({ kind: "starting" });
-      }
-      return ipcAiStatusEventSchema.parse({
-        kind: "authentication_required",
-        codex_version: rendererCodexVersion(rawVersion),
-      });
+      return ipcAiStatusEventSchema.parse({ kind: "authentication_required" });
     }
     const model = this.codexAdapter.getReadyModel();
-    if (rawVersion != null && model != null && isReadyCodexResult(this.aiStartResult)) {
+    if (model != null && isReadyCodexResult(this.aiStartResult)) {
       return ipcAiStatusEventSchema.parse({
         kind: "ready",
-        codex_version: rendererCodexVersion(rawVersion),
         model,
       });
     }

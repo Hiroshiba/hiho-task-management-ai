@@ -19,9 +19,7 @@ export {
   CodexStopTimeoutError,
   CodexStdioError,
   CodexUnknownResponseIdError,
-  CodexUnsupportedVersionError,
   CodexVersionCommandError,
-  CodexVersionFormatError,
   CodexWriteError,
   type CodexProtocolFailureCode,
 } from "./errors";
@@ -34,7 +32,6 @@ export {
   codexDiagnosticSchema,
   codexNotificationSchema,
   codexRpcIdSchema,
-  codexVersionInfoSchema,
   experimentalFeatureListParamsSchema,
   experimentalFeatureListResultSchema,
   initializeCapabilitiesSchema,
@@ -63,7 +60,6 @@ export {
   type CodexDiagnostic,
   type CodexNotification,
   type CodexRpcId,
-  type CodexVersionInfo,
   type ExperimentalFeatureListParams,
   type ExperimentalFeatureListResult,
   type InitializeCapabilities,
@@ -87,6 +83,5 @@ export {
 } from "./schemas";
 export {
   createSafeCodexEnvironment,
-  getCodexVersion,
   resolveCodexExecutable,
 } from "./version";

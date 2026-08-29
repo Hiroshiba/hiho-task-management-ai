@@ -71,7 +71,7 @@ import {
   CodexUnknownResponseIdError,
   CodexWriteError,
 } from "./errors";
-import { createSafeCodexEnvironment, getCodexVersionForExecutable } from "./version";
+import { checkCodexExecutable, createSafeCodexEnvironment } from "./version";
 
 const maxLineBytes = 256 * 1024;
 const maxJsonDepth = 32;
@@ -313,7 +313,7 @@ export class CodexAppServerConnection {
     this.state = "starting";
 
     try {
-      await getCodexVersionForExecutable(this.executable, this.environment, signal);
+      await checkCodexExecutable(this.executable, this.environment, signal);
       if (this.state !== "starting") {
         throw new CodexConnectionStoppedError();
       }

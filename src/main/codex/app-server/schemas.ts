@@ -111,16 +111,6 @@ const jsonObjectSchema = jsonValueSchema.superRefine((value, context) => {
   }
 });
 
-/** Codex CLIの対応版を表すスキーマです。 */
-export const codexVersionInfoSchema = z
-  .object({
-    raw: z.string().regex(/^codex-cli 0\.150\.\d+$/),
-    major: z.literal(0),
-    minor: z.literal(150),
-    patch: z.number().int().nonnegative(),
-  })
-  .strict();
-
 /** JSON-RPCの要求識別子を表すスキーマです。 */
 export const codexRpcIdSchema = z.union([
   z.string().min(1).max(200),
@@ -916,7 +906,6 @@ export const codexConnectionOptionsSchema = z
   })
   .strict();
 
-export type CodexVersionInfo = z.infer<typeof codexVersionInfoSchema>;
 export type CodexRpcId = z.infer<typeof codexRpcIdSchema>;
 export type InitializeClientInfo = z.infer<typeof initializeClientInfoSchema>;
 export type InitializeCapabilities = z.infer<typeof initializeCapabilitiesSchema>;

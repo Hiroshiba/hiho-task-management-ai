@@ -1,11 +1,9 @@
 import {
   CodexExecutableNotFoundError,
   CodexProcessError,
-  CodexUnsupportedVersionError,
   CodexVersionCommandError,
-  CodexVersionFormatError,
 } from "../codex/app-server";
-import { getCodexVersionForExecutable } from "../codex/app-server/version";
+import { checkCodexExecutable } from "../codex/app-server/version";
 import {
   CodexSessionCapabilityError,
   CodexSessionDisabledError,
@@ -37,9 +35,6 @@ function knownAvailability(
 ): Extract<SetupCodexAvailability, { readonly kind: "unavailable" }> | undefined {
   if (error instanceof CodexExecutableNotFoundError) {
     return { kind: "unavailable", reason_code: "not_installed" };
-  }
-  if (error instanceof CodexUnsupportedVersionError || error instanceof CodexVersionFormatError) {
-    return { kind: "unavailable", reason_code: "incompatible" };
   }
   if (error instanceof CodexSessionCapabilityError) {
     return { kind: "unavailable", reason_code: "incompatible" };
@@ -74,7 +69,6 @@ export class CodexSetupAdapter {
   private startResult: CodexSessionStartResult | undefined;
   private loginOpened = false;
   private structuredOutputVerified = false;
-  private version: string | undefined;
 
   public constructor(options: CodexAdapterOptions) {
     if (typeof options?.session?.start !== "function") {
@@ -89,12 +83,11 @@ export class CodexSetupAdapter {
   /** Codex CLIの導入状態を検査します。 */
   public async detectCli(signal: AbortSignal): Promise<SetupCodexAvailability> {
     try {
-      const version = await getCodexVersionForExecutable(
+      await checkCodexExecutable(
         this.executable,
         this.environment,
         signal,
       );
-      this.version = version.raw;
       return parseAvailability({ kind: "available" });
     } catch (error: unknown) {
       const availability = knownAvailability(error);
@@ -209,11 +202,6 @@ export class CodexSetupAdapter {
       return parseAvailability({ kind: "available" });
     }
     return parseAvailability({ kind: "unavailable", reason_code: "disabled" });
-  }
-
-  /** Codexの検出済みバージョンを取得します。 */
-  public getVersion(): string | undefined {
-    return this.version;
   }
 
   /** 構造化出力検証済みのCodexモデルを取得します。 */
