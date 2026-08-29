@@ -1846,9 +1846,7 @@ export class TaskHubApplication {
   private notifyUnexpectedError(error: unknown, channel: string): void {
     this.recordDiagnostic(diagnosticCodeForChannel(channel), "error");
     try {
-      this.options.notify_unexpected_error(
-        new Error("予期しないエラーが発生しました。"),
-      );
+      this.options.notify_unexpected_error(error);
     } catch (notificationError: unknown) {
       this.options.diagnostic(
         new AggregateError(
