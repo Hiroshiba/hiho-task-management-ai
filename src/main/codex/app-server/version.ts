@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { statSync, type Stats } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { codexVersionInfoSchema, type CodexVersionInfo } from "./schemas";
 import {
   CodexExecutableNotFoundError,
@@ -33,20 +36,72 @@ const safeEnvironmentKeys = new Set([
   "XDG_CACHE_HOME",
   "CODEX_HOME",
 ]);
+const safeEnvironmentKeysByLowerCase = new Map(
+  [...safeEnvironmentKeys].map((key) => [key.toLowerCase(), key]),
+);
 
 const versionPattern =
   /^codex-cli (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$/;
+
+function isNoEntryError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function resolveWindowsCodexExecutable(): string {
+  const candidate = join(
+    homedir(),
+    "AppData",
+    "Local",
+    "Programs",
+    "OpenAI",
+    "Codex",
+    "bin",
+    "codex.exe",
+  );
+  let stats: Stats;
+  try {
+    stats = statSync(candidate);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return "codex";
+    }
+    throw error;
+  }
+  if (!stats.isFile()) {
+    throw new Error("公式Codex CLI候補は通常ファイルでなければなりません。");
+  }
+  return candidate;
+}
+
+/** Windowsの公式Codex CLI候補を優先して実行ファイルを解決します。 */
+export function resolveCodexExecutable(): string {
+  return process.platform === "win32" ? resolveWindowsCodexExecutable() : "codex";
+}
 
 /** Codexへ渡す環境変数を安全なOS由来の許可リストへ絞ります。 */
 export function createSafeCodexEnvironment(
   sourceEnvironment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const safeEnvironment: NodeJS.ProcessEnv = {};
+  const isWindows = process.platform === "win32";
+  const seenWindowsKeys = new Set<string>();
   for (const [key, value] of Object.entries(sourceEnvironment)) {
-    if (!safeEnvironmentKeys.has(key) || value == null) {
+    if (value == null) {
       continue;
     }
-    safeEnvironment[key] = value;
+    if (!isWindows) {
+      if (!safeEnvironmentKeys.has(key)) {
+        continue;
+      }
+      safeEnvironment[key] = value;
+      continue;
+    }
+    const canonicalKey = safeEnvironmentKeysByLowerCase.get(key.toLowerCase());
+    if (canonicalKey == null || seenWindowsKeys.has(canonicalKey)) {
+      continue;
+    }
+    safeEnvironment[canonicalKey] = value;
+    seenWindowsKeys.add(canonicalKey);
   }
   return safeEnvironment;
 }
@@ -141,5 +196,5 @@ export async function getCodexVersionForExecutable(
 /** 対応するCodex CLIの版を取得します。 */
 export async function getCodexVersion(signal: AbortSignal): Promise<CodexVersionInfo> {
   const environment = createSafeCodexEnvironment(process.env);
-  return getCodexVersionForExecutable("codex", environment, signal);
+  return getCodexVersionForExecutable(resolveCodexExecutable(), environment, signal);
 }

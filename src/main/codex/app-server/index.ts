@@ -85,4 +85,8 @@ export {
   type TurnStartParams,
   type TurnStartResult,
 } from "./schemas";
-export { createSafeCodexEnvironment, getCodexVersion } from "./version";
+export {
+  createSafeCodexEnvironment,
+  getCodexVersion,
+  resolveCodexExecutable,
+} from "./version";

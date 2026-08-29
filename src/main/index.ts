@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
+import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
@@ -310,7 +311,7 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
     secret_storage_path: join(userDataPath, "secret-storage.json"),
     checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
     app_version: app.getVersion(),
-    codex_executable: "codex",
+    codex_executable: resolveCodexExecutable(),
     read_only_vault_paths: [],
     lifecycle_signal: controller.signal,
     online_provider: () => net.isOnline(),
