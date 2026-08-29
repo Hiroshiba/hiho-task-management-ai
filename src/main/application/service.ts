@@ -74,7 +74,6 @@ import {
 } from "../codex/app-server";
 import {
   CodexSessionAbortedError,
-  CodexSessionCapabilityError,
   CodexSessionService,
   createCodexAppServerConnectionFactory,
   type CodexSessionStartResult,
