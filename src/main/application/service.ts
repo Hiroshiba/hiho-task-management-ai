@@ -114,6 +114,7 @@ import {
 } from "../domain";
 import { ReadModelService } from "../read-model";
 import { ObsidianReadService } from "../obsidian";
+import { discoverTasksVault } from "../obsidian/tasks-vault-discovery";
 import {
   ExternalToolBroker,
   ExternalToolRegistry,
@@ -1154,6 +1155,12 @@ export class TaskHubApplication {
     throwIfAborted(signal);
     if (this.stopped) {
       throw new Error("アプリケーションは停止済みです。");
+    }
+    const tasksVaultDiscovery = await discoverTasksVault(signal);
+    if (tasksVaultDiscovery.kind === "found") {
+      throwIfAborted(signal);
+      this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
+      this.updateCodexVaultPaths();
     }
     this.recordDiagnostic("app.start", "info");
     await this.reconcileExternalToolsAtStartup(signal);
