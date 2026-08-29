@@ -18,6 +18,7 @@ const asanaClientSecretSchema = createUtf8ByteLimitedStringSchema(
 )
   .min(1)
   .refine((value) => value.trim().length > 0, "Asana Client Secretは空白だけにできません。")
+  .refine((value) => value === value.trim(), "Asana Client Secretの前後に空白を指定できません。")
   .refine((value) => !hasControlCharacter(value), "Asana Client Secretに制御文字を含めることはできません。");
 
 const setupAuthorizationIdSchema = z
