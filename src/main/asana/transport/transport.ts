@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  identifierSchema,
   isJsonValue,
   type JsonValue,
 } from "../../../shared/domain";
@@ -20,6 +19,7 @@ import {
   AsanaResponseError,
   AsanaTransportError,
 } from "./errors";
+import { asanaSyncTokenSchema } from "../sync-token";
 import type {
   AsanaRequest,
   AsanaTransportRequestPort,
@@ -38,17 +38,9 @@ const httpDatePattern = /^(?:[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d
 const jsonContentTypePattern = /^application\/json(?:\s*;\s*charset\s*=\s*(?:"[^"]+"|[^;\s]+))?\s*$/i;
 const eventsResetResponseSchema = z
   .object({
-    errors: z
-      .array(
-        z
-          .object({
-            sync: identifierSchema,
-          })
-          .strip(),
-      )
-      .min(1, "Asana Events APIのerrorsを空にできません。"),
+    sync: asanaSyncTokenSchema,
   })
-  .strict();
+  .strip();
 
 type RequestPathAndQuery = {
   readonly path: readonly string[];
@@ -549,15 +541,7 @@ export class AsanaTransport {
     }
     try {
       const parsed = eventsResetResponseSchema.parse(payload);
-      const syncTokens = new Set(parsed.errors.map((error) => error.sync));
-      if (syncTokens.size !== 1) {
-        throw new Error("Asana Events APIのsyncが一致しません。");
-      }
-      const [syncToken] = syncTokens;
-      if (syncToken == null) {
-        throw new Error("Asana Events APIのsyncを取得できません。");
-      }
-      return syncToken;
+      return parsed.sync;
     } catch (error) {
       throw new AsanaResponseError(error);
     }

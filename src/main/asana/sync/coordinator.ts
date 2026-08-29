@@ -51,6 +51,7 @@ import {
   asanaNormalizationPlanApplierResultSchema,
 } from "./normalization-plan-applier";
 import { StorageDatabase } from "../../storage";
+import { asanaSyncTokenSchema } from "../sync-token";
 
 const synchronizationModeSchema = z.enum(["full", "delta"]);
 const oauthMismatchManagedTaskThreshold = 10;
@@ -150,7 +151,7 @@ const coordinatorResultSchema = z
     performed_mode: synchronizationModeSchema,
     fallback_reason: fallbackReasonSchema.optional(),
     synced_at: isoDateTimeSchema,
-    events_token: identifierSchema.optional(),
+    events_token: asanaSyncTokenSchema.optional(),
     application_result: asanaNormalizationPlanApplierResultSchema,
     normalization_notifications: normalizationNotificationsSchema,
     remaining_plan: normalizationPlanSummarySchema,

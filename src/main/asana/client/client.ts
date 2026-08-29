@@ -13,6 +13,7 @@ import {
   AsanaEventsResetError,
   type AsanaTransportRequestPort,
 } from "../transport";
+import { asanaSyncTokenSchema } from "../sync-token";
 
 const listLimit = "100";
 const taskOptFields = [
@@ -110,7 +111,7 @@ const eventSchema = z
   })
   .strip();
 
-const eventSyncSchema = identifierSchema;
+const eventSyncSchema = asanaSyncTokenSchema;
 
 const eventsResponseSchema = z
   .object({

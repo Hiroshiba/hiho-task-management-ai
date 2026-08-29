@@ -1,13 +1,14 @@
 import { z } from "zod";
 import { gidSchema } from "../../../shared/domain";
 import { AsanaReadClient, type AsanaEventsResult } from "../client/client";
+import { asanaSyncTokenSchema } from "../sync-token";
 
 const maximumAffectedTaskCount = 10_000;
 
 const deltaSyncInputSchema = z
   .object({
     project_gid: gidSchema,
-    sync_token: gidSchema.optional(),
+    sync_token: asanaSyncTokenSchema.optional(),
   })
   .strict();
 
@@ -43,14 +44,14 @@ const deltaSyncResultSchema = z
     z
       .object({
         kind: z.literal("delta"),
-        sync_token: gidSchema,
+        sync_token: asanaSyncTokenSchema,
         affected_task_gids: z.array(gidSchema).max(maximumAffectedTaskCount),
       })
       .strict(),
     z
       .object({
         kind: z.literal("full_sync_required"),
-        sync_token: gidSchema,
+        sync_token: asanaSyncTokenSchema,
         reason: z.enum(["events_reset", "unsafe_structure"]),
       })
       .strict(),
