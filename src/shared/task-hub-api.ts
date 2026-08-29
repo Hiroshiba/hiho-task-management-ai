@@ -8,6 +8,9 @@ import type {
   IpcAiSelectionInput,
   IpcAiTurnInput,
   IpcAiTurnResult,
+  IpcAsanaAuthenticationState,
+  IpcAsanaReauthenticationCancelInput,
+  IpcAsanaReauthenticationCompleteInput,
   IpcCodexDelta,
   IpcFailure,
   IpcGuiEditInput,
@@ -44,7 +47,14 @@ export interface TaskHubApi {
     readonly getVersion: () => Promise<string>;
   };
   readonly asana: {
-    readonly reauthenticateOAuth: () => IpcResult<IpcSyncResult>;
+    readonly getAuthenticationState: () => IpcResult<IpcAsanaAuthenticationState>;
+    readonly beginReauthentication: () => IpcResult<IpcAsanaAuthenticationState>;
+    readonly completeReauthentication: (
+      input: IpcAsanaReauthenticationCompleteInput,
+    ) => IpcResult<IpcSyncResult>;
+    readonly cancelReauthentication: (
+      input: IpcAsanaReauthenticationCancelInput,
+    ) => IpcResult<IpcAsanaAuthenticationState>;
   };
   readonly readModel: {
     readonly getOverview: () => IpcResult<IpcReadModelOverview>;

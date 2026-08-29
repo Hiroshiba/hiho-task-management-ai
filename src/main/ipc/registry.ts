@@ -28,8 +28,13 @@ import {
   ipcAiStartNewSessionResponseSchema,
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
-  ipcAsanaReauthenticateOAuthInputSchema,
-  ipcAsanaReauthenticateOAuthResponseSchema,
+  ipcAsanaAuthenticationStateResponseSchema,
+  ipcAsanaGetAuthenticationStateInputSchema,
+  ipcAsanaBeginReauthenticationInputSchema,
+  ipcAsanaCompleteReauthenticationInputSchema,
+  ipcAsanaCompleteReauthenticationResponseSchema,
+  ipcAsanaCancelReauthenticationInputSchema,
+  ipcAsanaCancelReauthenticationResponseSchema,
   ipcChannelSchema,
   ipcEmptyRequestSchema,
   ipcFailureSchema,
@@ -80,6 +85,9 @@ import {
   type IpcAiSelectionInput,
   type IpcAiTurnInput,
   type IpcAiTurnResult,
+  type IpcAsanaAuthenticationState,
+  type IpcAsanaReauthenticationCancelInput,
+  type IpcAsanaReauthenticationCompleteInput,
   type IpcCodexDelta,
   type IpcSetupAsanaAuthorizationBeginInput,
   type IpcSetupAsanaAuthorizationCancelInput,
@@ -126,7 +134,16 @@ export interface IpcSyncPort {
 
 /** 設定済みAsana認証操作をIPCへ提供するポートです。 */
 export interface IpcAsanaPort {
-  reauthenticateOAuth(signal: AbortSignal): MaybePromise<IpcSyncResult>;
+  getAuthenticationState(): MaybePromise<IpcAsanaAuthenticationState>;
+  beginReauthentication(signal: AbortSignal): MaybePromise<IpcAsanaAuthenticationState>;
+  completeReauthentication(
+    input: IpcAsanaReauthenticationCompleteInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcSyncResult>;
+  cancelReauthentication(
+    input: IpcAsanaReauthenticationCancelInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcAsanaAuthenticationState>;
 }
 
 /** 初回設定の状態機械をIPCへ提供するポートです。 */
@@ -319,15 +336,54 @@ export class IpcHandlerRegistry {
   private registerInvokeHandlers(ipcMain: IpcMain): void {
     this.registerHandle(
       ipcMain,
-      "asana:reauthenticate-oauth",
-      ipcAsanaReauthenticateOAuthInputSchema,
-      ipcAsanaReauthenticateOAuthResponseSchema,
+      "asana:get-authentication-state",
+      ipcAsanaGetAuthenticationStateInputSchema,
+      ipcAsanaAuthenticationStateResponseSchema,
+      async () => {
+        const port = this.options.ports.asana;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.getAuthenticationState();
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "asana:begin-reauthentication",
+      ipcAsanaBeginReauthenticationInputSchema,
+      ipcAsanaAuthenticationStateResponseSchema,
       async (_input, signal) => {
         const port = this.options.ports.asana;
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.reauthenticateOAuth(signal);
+        return port.beginReauthentication(signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "asana:complete-reauthentication",
+      ipcAsanaCompleteReauthenticationInputSchema,
+      ipcAsanaCompleteReauthenticationResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.asana;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.completeReauthentication(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "asana:cancel-reauthentication",
+      ipcAsanaCancelReauthenticationInputSchema,
+      ipcAsanaCancelReauthenticationResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.asana;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.cancelReauthentication(input, signal);
       },
     );
     this.registerHandle(

@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import {
+  ipcAsanaAuthenticationStateSchema,
+  ipcAsanaCancelReauthenticationInputSchema,
+  ipcAsanaCompleteReauthenticationInputSchema,
   ipcFailureSchema,
   ipcGuiEditResultSchema,
   ipcObsidianOpenNoteInputSchema,
@@ -11,6 +14,7 @@ import {
   ipcSyncStateEventSchema,
   ipcSyncResultSchema,
   type IpcAiStatus,
+  type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcGuiEditResult,
   type IpcObsidianNoteSummary,
@@ -146,10 +150,20 @@ type GuiEditCompletion =
   | { readonly kind: "settled"; readonly message: string }
   | { readonly kind: "recovery_required"; readonly message: string };
 
+const asanaAuthenticationStatePollIntervalMilliseconds = 500;
+const asanaAuthenticationStateMaximumRetryCount = 3;
+
 const screen = ref<RendererScreenState>(rendererScreenStateSchema.parse({ kind: "loading" }));
 const setupState = ref<SetupState | undefined>();
 const setupBusy = ref(false);
 const asanaAuthenticationBusy = ref(false);
+const asanaAuthenticationStateLoaded = ref(false);
+const asanaAuthenticationStateNeedsRecheck = ref(true);
+const asanaAuthenticationStateRequestBusy = ref(false);
+const asanaAuthenticationState = ref<IpcAsanaAuthenticationState>(
+  ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" }),
+);
+const asanaAuthorizationCodeInput = ref<HTMLInputElement | null>(null);
 const overview = ref<ViewModelOverview | undefined>();
 const selectedTask = ref<ViewModelTaskDetail | undefined>();
 const selectedTaskGid = ref<string | undefined>();
@@ -174,6 +188,9 @@ let removeSyncSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let clockTimer: number | undefined;
+let asanaAuthenticationStateTimer: number | undefined;
+let asanaAuthenticationStateGeneration = 0;
+let asanaAuthenticationStateLoadInProgress = false;
 let taskDataGeneration = 0;
 let taskDetailGeneration = 0;
 let obsidianStatusGeneration = 0;
@@ -867,13 +884,23 @@ function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefr
 }
 
 function applySetupState(value: unknown): void {
+  const wasConfigured = configured.value;
+  const wasLoading = screen.value.kind === "loading";
   const parsed = setupStateSchema.parse(value);
   setupState.value = parsed;
   setCodexFromSetup(parsed);
   if (parsed.kind === "ready") {
     screen.value = rendererScreenStateSchema.parse({ kind: "dashboard" });
     void reloadTaskData();
+    if (!wasConfigured && !wasLoading && !asanaAuthenticationStateLoaded.value) {
+      void loadAsanaAuthenticationState();
+    }
     return;
+  }
+  if (wasConfigured) {
+    asanaAuthenticationStateLoaded.value = false;
+    asanaAuthenticationStateNeedsRecheck.value = true;
+    advanceAsanaAuthenticationStateGeneration();
   }
   screen.value = rendererScreenStateSchema.parse({ kind: "setup", setup: parsed });
 }
@@ -938,25 +965,333 @@ async function completeCodexAuthenticationFromHeader(): Promise<void> {
   }
 }
 
-async function reauthenticateAsana(): Promise<void> {
-  if (asanaAuthenticationBusy.value
-    || !configured.value
-    || syncState.value.kind !== "authentication_required") {
+function clearAsanaAuthorizationCode(): void {
+  const input = asanaAuthorizationCodeInput.value;
+  if (input != null) {
+    input.value = "";
+  }
+}
+
+function clearAsanaAuthenticationStateTimer(): void {
+  if (asanaAuthenticationStateTimer != null) {
+    window.clearTimeout(asanaAuthenticationStateTimer);
+    asanaAuthenticationStateTimer = undefined;
+  }
+}
+
+function advanceAsanaAuthenticationStateGeneration(): number {
+  asanaAuthenticationStateGeneration += 1;
+  asanaAuthenticationStateRequestBusy.value = false;
+  clearAsanaAuthenticationStateTimer();
+  return asanaAuthenticationStateGeneration;
+}
+
+function scheduleAsanaAuthenticationStatePolling(
+  state: IpcAsanaAuthenticationState,
+  generation: number,
+): void {
+  clearAsanaAuthenticationStateTimer();
+  if (generation !== asanaAuthenticationStateGeneration) {
     return;
   }
+  let delayMilliseconds: number;
+  switch (state.kind) {
+    case "idle":
+      return;
+    case "opening":
+    case "completing":
+    case "synchronizing":
+      delayMilliseconds = asanaAuthenticationStatePollIntervalMilliseconds;
+      break;
+    case "authorization_pending": {
+      const expiresAt = Date.parse(state.expires_at);
+      if (!Number.isFinite(expiresAt)) {
+        throw new Error("Asana認証の有効期限を確認できません。");
+      }
+      delayMilliseconds = Math.max(0, expiresAt - Date.now());
+      break;
+    }
+  }
+  asanaAuthenticationStateTimer = window.setTimeout(() => {
+    asanaAuthenticationStateTimer = undefined;
+    if (generation !== asanaAuthenticationStateGeneration) {
+      return;
+    }
+    const pollingGeneration = advanceAsanaAuthenticationStateGeneration();
+    void requestAsanaAuthenticationState(pollingGeneration, 0);
+  }, delayMilliseconds);
+}
+
+function scheduleAsanaAuthenticationOpeningPolling(generation: number): void {
+  clearAsanaAuthenticationStateTimer();
+  if (generation !== asanaAuthenticationStateGeneration) {
+    return;
+  }
+  asanaAuthenticationStateTimer = window.setTimeout(() => {
+    asanaAuthenticationStateTimer = undefined;
+    if (generation !== asanaAuthenticationStateGeneration) {
+      return;
+    }
+    const pollingGeneration = advanceAsanaAuthenticationStateGeneration();
+    void requestAsanaAuthenticationState(pollingGeneration, 0);
+  }, asanaAuthenticationStatePollIntervalMilliseconds);
+}
+
+function scheduleAsanaAuthenticationStateRetry(
+  generation: number,
+  retryCount: number,
+): void {
+  clearAsanaAuthenticationStateTimer();
+  if (
+    generation !== asanaAuthenticationStateGeneration
+    || retryCount >= asanaAuthenticationStateMaximumRetryCount
+  ) {
+    return;
+  }
+  asanaAuthenticationStateTimer = window.setTimeout(() => {
+    asanaAuthenticationStateTimer = undefined;
+    if (generation !== asanaAuthenticationStateGeneration) {
+      return;
+    }
+    const retryGeneration = advanceAsanaAuthenticationStateGeneration();
+    void requestAsanaAuthenticationState(retryGeneration, retryCount + 1);
+  }, asanaAuthenticationStatePollIntervalMilliseconds);
+}
+
+function applyAsanaAuthenticationState(
+  value: unknown,
+  generation: number,
+  reconcileSyncStateOnIdleTransition: boolean,
+): IpcAsanaAuthenticationState | undefined {
+  if (generation !== asanaAuthenticationStateGeneration) {
+    return undefined;
+  }
+  const parsed = ipcAsanaAuthenticationStateSchema.parse(value);
+  const previous = asanaAuthenticationState.value;
+  asanaAuthenticationState.value = parsed;
+  asanaAuthenticationStateNeedsRecheck.value = false;
+  scheduleAsanaAuthenticationStatePolling(parsed, generation);
+  if (
+    reconcileSyncStateOnIdleTransition
+    && previous.kind !== "idle"
+    && parsed.kind === "idle"
+  ) {
+    clearAsanaAuthorizationCode();
+    void loadInitialSyncState();
+  }
+  return parsed;
+}
+
+async function loadAsanaAuthenticationState(): Promise<void> {
+  if (asanaAuthenticationStateLoadInProgress || asanaAuthenticationBusy.value) {
+    return;
+  }
+  asanaAuthenticationStateLoadInProgress = true;
+  asanaAuthenticationStateLoaded.value = false;
+  asanaAuthenticationStateNeedsRecheck.value = true;
+  const generation = advanceAsanaAuthenticationStateGeneration();
+  try {
+    asanaAuthenticationBusy.value = true;
+    await requestAsanaAuthenticationState(generation, 0);
+  } finally {
+    asanaAuthenticationBusy.value = false;
+    asanaAuthenticationStateLoadInProgress = false;
+  }
+}
+
+async function requestAsanaAuthenticationState(
+  generation: number,
+  retryCount: number,
+): Promise<boolean> {
+  asanaAuthenticationStateRequestBusy.value = true;
+  try {
+    const result = await window.taskHub.asana.getAuthenticationState();
+    if (generation !== asanaAuthenticationStateGeneration) {
+      return false;
+    }
+    if (isFailure(result)) {
+      showFailure(result);
+      asanaAuthenticationStateNeedsRecheck.value = true;
+      scheduleAsanaAuthenticationStateRetry(generation, retryCount);
+      return false;
+    }
+    const state = applyAsanaAuthenticationState(
+      result.value,
+      generation,
+      true,
+    );
+    if (state == null) {
+      return false;
+    }
+    if (state.kind === "opening" || state.kind === "authorization_pending") {
+      setSyncState(rendererSyncStateSchema.parse({ kind: "authentication_required" }));
+    }
+    asanaAuthenticationStateLoaded.value = true;
+    return true;
+  } catch {
+    if (generation !== asanaAuthenticationStateGeneration) {
+      return false;
+    }
+    showUnexpectedFailure();
+    asanaAuthenticationStateNeedsRecheck.value = true;
+    scheduleAsanaAuthenticationStateRetry(generation, retryCount);
+    return false;
+  } finally {
+    if (generation === asanaAuthenticationStateGeneration) {
+      asanaAuthenticationStateRequestBusy.value = false;
+    }
+  }
+}
+
+async function resynchronizeAsanaAuthenticationState(): Promise<boolean> {
+  const generation = advanceAsanaAuthenticationStateGeneration();
+  return requestAsanaAuthenticationState(generation, 0);
+}
+
+async function recheckAsanaAuthenticationState(): Promise<void> {
+  if (
+    asanaAuthenticationBusy.value
+    || asanaAuthenticationStateRequestBusy.value
+    || !configured.value
+  ) {
+    return;
+  }
+  const generation = advanceAsanaAuthenticationStateGeneration();
   asanaAuthenticationBusy.value = true;
   feedback.value = "";
+  clearAsanaAuthorizationCode();
+  try {
+    await requestAsanaAuthenticationState(generation, 0);
+  } finally {
+    clearAsanaAuthorizationCode();
+    asanaAuthenticationBusy.value = false;
+  }
+}
+
+async function reconcileAsanaAuthenticationFailure(
+  fallback: RendererSyncState,
+  failureMessage: string,
+): Promise<void> {
+  asanaAuthenticationStateNeedsRecheck.value = true;
+  const authenticationStateReconciled = await resynchronizeAsanaAuthenticationState();
+  await reconcileSyncStateAfterFailure(fallback);
+  if (authenticationStateReconciled) {
+    feedback.value = failureMessage;
+  }
+}
+
+async function beginAsanaReauthentication(): Promise<void> {
+  if (asanaAuthenticationBusy.value
+    || !configured.value
+    || syncState.value.kind !== "authentication_required"
+    || !asanaAuthenticationStateLoaded.value
+    || asanaAuthenticationState.value.kind !== "idle") {
+    return;
+  }
+  const generation = advanceAsanaAuthenticationStateGeneration();
+  asanaAuthenticationBusy.value = true;
+  feedback.value = "";
+  clearAsanaAuthorizationCode();
+  scheduleAsanaAuthenticationOpeningPolling(generation);
   const authenticationRequired = rendererSyncStateSchema.parse({
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.reauthenticateOAuth();
+    const result = await window.taskHub.asana.beginReauthentication();
+    if (generation !== asanaAuthenticationStateGeneration) {
+      if (asanaAuthenticationBusy.value && isFailure(result)) {
+        asanaAuthenticationStateNeedsRecheck.value = true;
+        clearAsanaAuthorizationCode();
+        showFailure(result);
+        await reconcileAsanaAuthenticationFailure(
+          authenticationRequired,
+          displayFailure(result).message,
+        );
+      }
+      return;
+    }
+    clearAsanaAuthorizationCode();
     if (isFailure(result)) {
-      await reconcileSyncStateAfterFailure(authenticationRequired);
-      feedback.value = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
+      const failureMessage = displayFailure(result).message;
+      showFailure(result);
+      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+      return;
+    }
+    const state = applyAsanaAuthenticationState(result.value, generation, false);
+    if (state == null) {
+      return;
+    }
+    if (state.kind === "idle") {
+      throw new Error("Asana再認証の開始結果が不正です。");
+    }
+  } catch {
+    if (generation !== asanaAuthenticationStateGeneration) {
+      if (asanaAuthenticationBusy.value) {
+        showUnexpectedFailure();
+        await reconcileAsanaAuthenticationFailure(
+          authenticationRequired,
+          "Asana再認証の開始に失敗しました。",
+        );
+      }
+      return;
+    }
+    clearAsanaAuthorizationCode();
+    const failureMessage = "Asana再認証の開始に失敗しました。";
+    showUnexpectedFailure();
+    await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+  } finally {
+    clearAsanaAuthorizationCode();
+    asanaAuthenticationBusy.value = false;
+  }
+}
+
+async function completeAsanaReauthentication(): Promise<void> {
+  if (asanaAuthenticationBusy.value
+    || !configured.value
+    || asanaAuthenticationStateNeedsRecheck.value
+    || asanaAuthenticationStateRequestBusy.value
+    || asanaAuthenticationState.value.kind !== "authorization_pending") {
+    return;
+  }
+  const generation = advanceAsanaAuthenticationStateGeneration();
+  const input = asanaAuthorizationCodeInput.value;
+  if (input == null) {
+    throw new Error("Asana認可コード入力欄がありません。");
+  }
+  const state = asanaAuthenticationState.value;
+  const parsedInput = ipcAsanaCompleteReauthenticationInputSchema.safeParse({
+    authorization_id: state.authorization_id,
+    authorization_code: input.value.trim(),
+  });
+  clearAsanaAuthorizationCode();
+  if (!parsedInput.success) {
+    scheduleAsanaAuthenticationStatePolling(state, generation);
+    feedback.value = "Asana認可コードを確認してください。";
+    return;
+  }
+  asanaAuthenticationBusy.value = true;
+  feedback.value = "";
+  applyAsanaAuthenticationState({
+    kind: "completing",
+    authorization_id: state.authorization_id,
+  }, generation, false);
+  const authenticationRequired = rendererSyncStateSchema.parse({
+    kind: "authentication_required",
+  });
+  try {
+    const result = await window.taskHub.asana.completeReauthentication(parsedInput.data);
+    clearAsanaAuthorizationCode();
+    if (isFailure(result)) {
+      const failureMessage = displayFailure(result).message;
+      showFailure(result);
+      if (asanaAuthenticationBusy.value) {
+        await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+      }
       return;
     }
     const synchronized = ipcSyncResultSchema.parse(result.value);
+    const completionGeneration = advanceAsanaAuthenticationStateGeneration();
+    applyAsanaAuthenticationState({ kind: "idle" }, completionGeneration, false);
     setConnectionState("online", rendererSyncStateSchema.parse({
       kind: "synced",
       synced_at: synchronized.synced_at,
@@ -974,9 +1309,85 @@ async function reauthenticateAsana(): Promise<void> {
       synchronized.normalization_notifications,
     );
   } catch {
-    await reconcileSyncStateAfterFailure(authenticationRequired);
-    feedback.value = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
+    clearAsanaAuthorizationCode();
+    const failureMessage = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
+    showUnexpectedFailure();
+    if (asanaAuthenticationBusy.value) {
+      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+    }
   } finally {
+    clearAsanaAuthorizationCode();
+    asanaAuthenticationBusy.value = false;
+  }
+}
+
+async function cancelAsanaReauthentication(): Promise<void> {
+  if (asanaAuthenticationBusy.value
+    || !configured.value
+    || asanaAuthenticationStateNeedsRecheck.value
+    || asanaAuthenticationStateRequestBusy.value
+    || asanaAuthenticationState.value.kind !== "authorization_pending") {
+    return;
+  }
+  const generation = advanceAsanaAuthenticationStateGeneration();
+  const state = asanaAuthenticationState.value;
+  const input = ipcAsanaCancelReauthenticationInputSchema.parse({
+    authorization_id: state.authorization_id,
+  });
+  asanaAuthenticationBusy.value = true;
+  feedback.value = "";
+  clearAsanaAuthorizationCode();
+  scheduleAsanaAuthenticationStatePolling(state, generation);
+  const authenticationRequired = rendererSyncStateSchema.parse({
+    kind: "authentication_required",
+  });
+  try {
+    const result = await window.taskHub.asana.cancelReauthentication(input);
+    if (generation !== asanaAuthenticationStateGeneration) {
+      if (asanaAuthenticationBusy.value && isFailure(result)) {
+        asanaAuthenticationStateNeedsRecheck.value = true;
+        clearAsanaAuthorizationCode();
+        showFailure(result);
+        await reconcileAsanaAuthenticationFailure(
+          authenticationRequired,
+          displayFailure(result).message,
+        );
+      }
+      return;
+    }
+    clearAsanaAuthorizationCode();
+    if (isFailure(result)) {
+      const failureMessage = displayFailure(result).message;
+      showFailure(result);
+      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+      return;
+    }
+    const nextState = applyAsanaAuthenticationState(result.value, generation, false);
+    if (nextState == null) {
+      return;
+    }
+    if (nextState.kind !== "idle") {
+      throw new Error("Asana再認証の取消結果が不正です。");
+    }
+    setSyncState(authenticationRequired);
+    feedback.value = "Asana再認証をキャンセルしました。";
+  } catch {
+    if (generation !== asanaAuthenticationStateGeneration) {
+      if (asanaAuthenticationBusy.value) {
+        showUnexpectedFailure();
+        await reconcileAsanaAuthenticationFailure(
+          authenticationRequired,
+          "Asana再認証のキャンセルに失敗しました。",
+        );
+      }
+      return;
+    }
+    clearAsanaAuthorizationCode();
+    const failureMessage = "Asana再認証のキャンセルに失敗しました。";
+    showUnexpectedFailure();
+    await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
+  } finally {
+    clearAsanaAuthorizationCode();
     asanaAuthenticationBusy.value = false;
   }
 }
@@ -1649,6 +2060,9 @@ async function initialize(): Promise<void> {
     await loadObsidianVaults();
   }
   await loadInitialSyncState();
+  if (setupState.value?.kind === "ready") {
+    await loadAsanaAuthenticationState();
+  }
   await loadInitialCodexStatus();
 }
 
@@ -1657,6 +2071,13 @@ onMounted(() => {
     currentAsOf.value = new Date().toISOString();
   }, 60_000);
   void initialize();
+});
+
+onBeforeUnmount(() => {
+  clearAsanaAuthorizationCode();
+  asanaAuthenticationBusy.value = false;
+  asanaAuthenticationStateRequestBusy.value = false;
+  advanceAsanaAuthenticationStateGeneration();
 });
 
 onUnmounted(() => {
@@ -1688,13 +2109,18 @@ onUnmounted(() => {
       :codex-state="codexState"
       :codex-authentication-busy="setupBusy"
       :asana-authentication-busy="asanaAuthenticationBusy"
+      :asana-authentication-state-loaded="asanaAuthenticationStateLoaded"
+      :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
+      :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
+      :asana-authentication-state="asanaAuthenticationState"
       :app-version="appVersion"
       :cleanup-count="cleanupCount"
       @sync="manualSync"
       @full-sync="fullSync"
       @new-ai-session="startAiSession"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
-      @reauthenticate-asana="reauthenticateAsana"
+      @begin-reauthentication="beginAsanaReauthentication"
+      @recheck-authentication-state="recheckAsanaAuthenticationState"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p
@@ -1730,6 +2156,68 @@ onUnmounted(() => {
         </p>
       </div>
       <template v-else>
+        <section
+          v-if="asanaAuthenticationState.kind === 'opening'
+            || asanaAuthenticationState.kind === 'completing'
+            || asanaAuthenticationState.kind === 'synchronizing'"
+          class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950"
+          role="status"
+          aria-live="polite"
+        >
+          <p v-if="asanaAuthenticationState.kind === 'opening'">
+            認証ページを開いています
+          </p>
+          <p v-else-if="asanaAuthenticationState.kind === 'completing'">
+            認可コードを確認しています
+          </p>
+          <p v-else>
+            Asana同期を再開しています
+          </p>
+        </section>
+        <section
+          v-if="asanaAuthenticationState.kind === 'authorization_pending'"
+          class="rounded-xl border border-amber-200 bg-amber-50 p-4"
+          aria-labelledby="asana-reauthentication-title"
+        >
+          <h2
+            id="asana-reauthentication-title"
+            class="text-lg font-semibold text-amber-950"
+          >
+            Asana認証コードを入力してください
+          </h2>
+          <p class="mt-2 text-sm text-amber-950">
+            Asanaの認証後に表示された認可コードを貼り付けてください。
+          </p>
+          <form
+            class="mt-3 flex flex-wrap items-end gap-2"
+            @submit.prevent="completeAsanaReauthentication"
+          >
+            <label class="min-w-[20rem] flex-1 text-sm font-medium text-amber-950">
+              認可コード
+              <input
+                ref="asanaAuthorizationCodeInput"
+                type="text"
+                autocomplete="off"
+                class="mt-1 block w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-600"
+              >
+            </label>
+            <button
+              type="submit"
+              class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
+            >
+              {{ asanaAuthenticationBusy ? "確認中" : "認証を確定" }}
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
+              @click="cancelAsanaReauthentication"
+            >
+              キャンセル
+            </button>
+          </form>
+        </section>
         <section
           v-if="overview != null"
           class="space-y-5"

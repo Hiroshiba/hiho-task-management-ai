@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { isoDateTimeSchema } from "../../shared/domain";
+import type { IpcAsanaAuthenticationState } from "../../shared/ipc";
 import type {
   RendererCodexState,
   RendererConnectionState,
@@ -18,6 +19,10 @@ const props = defineProps<{
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
   asanaAuthenticationBusy: boolean;
+  asanaAuthenticationStateLoaded: boolean;
+  asanaAuthenticationStateNeedsRecheck: boolean;
+  asanaAuthenticationStateRequestBusy: boolean;
+  asanaAuthenticationState: IpcAsanaAuthenticationState;
   appVersion: string;
   cleanupCount: number;
 }>();
@@ -27,7 +32,8 @@ const emit = defineEmits<{
   (event: "full-sync"): void;
   (event: "new-ai-session"): void;
   (event: "complete-codex-authentication"): void;
-  (event: "reauthenticate-asana"): void;
+  (event: "begin-reauthentication"): void;
+  (event: "recheck-authentication-state"): void;
 }>();
 
 const fullSyncConfirmationOpen = ref(false);
@@ -151,6 +157,39 @@ function codexLabel(state: RendererCodexState): string {
   }
 }
 
+function asanaAuthenticationButtonLabel(
+  state: IpcAsanaAuthenticationState,
+  busy: boolean,
+  needsRecheck: boolean,
+  requestBusy: boolean,
+): string {
+  if (needsRecheck) {
+    return busy || requestBusy
+      ? "Asana認証状態を再確認中"
+      : "Asana認証状態を再確認";
+  }
+  switch (state.kind) {
+    case "idle":
+      return busy ? "再認証中" : "Asanaを再認証";
+    case "opening":
+      return "認証ページを開いています";
+    case "authorization_pending":
+      return "認証コード入力待ち";
+    case "completing":
+      return "認可コードを確認しています";
+    case "synchronizing":
+      return "Asana同期を再開しています";
+  }
+}
+
+function handleAsanaAuthenticationAction(): void {
+  if (props.asanaAuthenticationStateNeedsRecheck) {
+    emit("recheck-authentication-state");
+    return;
+  }
+  emit("begin-reauthentication");
+}
+
 function jstDateTimeLabel(value: string | undefined): string {
   if (value == null) {
     return "未同期";
@@ -202,14 +241,14 @@ function jstDateTimeLabel(value: string | undefined): string {
       </div>
       <div class="flex items-center gap-2">
         <button
-          v-if="configured && connectionState.sync.kind === 'authentication_required'"
+          v-if="configured && (connectionState.sync.kind === 'authentication_required' || asanaAuthenticationState.kind !== 'idle' || asanaAuthenticationStateNeedsRecheck)"
           type="button"
           class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="asanaAuthenticationBusy"
-          aria-label="Asanaを再認証"
-          @click="emit('reauthenticate-asana')"
+          :disabled="asanaAuthenticationBusy || asanaAuthenticationStateRequestBusy || (!asanaAuthenticationStateNeedsRecheck && (!asanaAuthenticationStateLoaded || asanaAuthenticationState.kind !== 'idle'))"
+          :aria-label="asanaAuthenticationStateNeedsRecheck ? 'Asana認証状態を再確認' : 'Asanaを再認証'"
+          @click="handleAsanaAuthenticationAction"
         >
-          {{ asanaAuthenticationBusy ? "再認証中" : "Asanaを再認証" }}
+          {{ asanaAuthenticationButtonLabel(asanaAuthenticationState, asanaAuthenticationBusy, asanaAuthenticationStateNeedsRecheck, asanaAuthenticationStateRequestBusy) }}
         </button>
         <button
           v-if="configured"

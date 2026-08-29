@@ -52,6 +52,12 @@ import {
   AsanaOAuthTransportError,
   asanaOAuthOutOfBandRedirectUri,
   asanaOAuthCoordinatorResultSchema,
+  AsanaOAuthOutOfBandAuthenticationInProgressError,
+  AsanaOAuthOutOfBandAuthorizationIdMismatchError,
+  AsanaOAuthOutOfBandNotPendingError,
+  oauthOutOfBandBeginResultSchema,
+  oauthOutOfBandStateSchema,
+  type OAuthOutOfBandState,
 } from "../auth/asana-oauth";
 import {
   SecretStorage,
@@ -185,6 +191,9 @@ import {
 import {
   ipcAiDeltaEventSchema,
   ipcAiStatusEventSchema,
+  ipcAsanaAuthenticationStateSchema,
+  ipcAsanaCompleteReauthenticationInputSchema,
+  ipcAsanaCancelReauthenticationInputSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResultSchema,
   ipcSyncInputSchema,
@@ -203,6 +212,9 @@ import {
   type IpcAiEditInput,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
+  type IpcAsanaAuthenticationState,
+  type IpcAsanaReauthenticationCancelInput,
+  type IpcAsanaReauthenticationCompleteInput,
 } from "../../shared/ipc";
 import {
   deviceSettingsSchema,
@@ -317,7 +329,6 @@ type ExternalToolConfigurationStopReason = {
 
 const maximumApprovalTaskCount = 10_000;
 const diagnosticLogRetentionLimit = 1_000;
-const asanaOAuthReauthenticationTimeoutMilliseconds = 120_000;
 
 function diagnosticCodeForChannel(
   channel: string,
@@ -813,6 +824,71 @@ function toIpcSyncResult(
   return ipcSyncResultSchema.parse(rendererResult);
 }
 
+function toIpcAsanaAuthenticationState(
+  state: OAuthOutOfBandState,
+): IpcAsanaAuthenticationState {
+  switch (state.kind) {
+    case "idle":
+    case "expired":
+    case "cancelled":
+      return ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" });
+    case "opening":
+      return ipcAsanaAuthenticationStateSchema.parse({
+        kind: "opening",
+        authorization_id: state.authorization_id,
+        expires_at: state.expires_at,
+      });
+    case "authorization_pending":
+      return ipcAsanaAuthenticationStateSchema.parse({
+        kind: "authorization_pending",
+        authorization_id: state.authorization_id,
+        expires_at: state.expires_at,
+      });
+    case "completing":
+      return ipcAsanaAuthenticationStateSchema.parse({
+        kind: "completing",
+        authorization_id: state.authorization_id,
+      });
+  }
+}
+
+type ActiveOutOfBandState = Extract<
+  OAuthOutOfBandState,
+  { kind: "opening" | "authorization_pending" | "completing" }
+>;
+
+function isActiveOutOfBandState(
+  state: OAuthOutOfBandState,
+): state is ActiveOutOfBandState {
+  return state.kind === "opening"
+    || state.kind === "authorization_pending"
+    || state.kind === "completing";
+}
+
+type AsanaReauthenticationOperation =
+  | { readonly kind: "idle" }
+  | { readonly kind: "completing"; readonly authorizationId: string }
+  | { readonly kind: "synchronizing"; readonly authorizationId: string };
+
+function toIpcAsanaReauthenticationOperationState(
+  operation: AsanaReauthenticationOperation,
+): IpcAsanaAuthenticationState {
+  switch (operation.kind) {
+    case "idle":
+      return ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" });
+    case "completing":
+      return ipcAsanaAuthenticationStateSchema.parse({
+        kind: "completing",
+        authorization_id: operation.authorizationId,
+      });
+    case "synchronizing":
+      return ipcAsanaAuthenticationStateSchema.parse({
+        kind: "synchronizing",
+        authorization_id: operation.authorizationId,
+      });
+  }
+}
+
 function rendererCodexVersion(rawVersion: string): string {
   const match = /^codex-cli (?<version>\d+\.\d+\.\d+)$/u.exec(rawVersion);
   const version = match?.groups?.version;
@@ -852,6 +928,9 @@ export class TaskHubApplication {
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
+  private asanaReauthenticationOperation: AsanaReauthenticationOperation = {
+    kind: "idle",
+  };
   private externalToolLifecycle: ExternalToolLifecycleState = {
     kind: "uninitialized",
   };
@@ -1165,6 +1244,7 @@ export class TaskHubApplication {
   public async onForeground(signal: AbortSignal): Promise<void> {
     validateAbortSignal(signal);
     this.assertOperationalReady();
+    this.assertAsanaReauthenticationIdle();
     const runtime = this.requireRuntime();
     const result = await this.requireSynchronizedResult(runtime.onForeground(signal));
     await this.afterSynchronizedState(result, signal);
@@ -1173,6 +1253,7 @@ export class TaskHubApplication {
   /** Electronのオンライン復帰を同期へ渡します。 */
   public async onOnline(): Promise<void> {
     this.assertOperationalReady();
+    this.assertAsanaReauthenticationIdle();
     const runtime = this.requireRuntime();
     let result: AsanaSyncRuntimeResult;
     try {
@@ -1210,41 +1291,130 @@ export class TaskHubApplication {
     runtime.setOnline(online);
   }
 
-  /** 保存済み認証情報でAsana OAuthを再認証して同期を再開します。 */
-  public async reauthenticateAsanaOAuth(
+  /** 設定済みAsana OAuthの認証状態を取得します。 */
+  public getAsanaAuthenticationState(): IpcAsanaAuthenticationState {
+    this.requireConfiguredDeviceSettings();
+    if (this.asanaReauthenticationOperation.kind !== "idle") {
+      return toIpcAsanaReauthenticationOperationState(
+        this.asanaReauthenticationOperation,
+      );
+    }
+    const state = oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState());
+    return toIpcAsanaAuthenticationState(state);
+  }
+
+  /** 設定済みAsana OAuthのOut-of-Band再認証を開始します。 */
+  public async beginAsanaReauthentication(
     signal: AbortSignal,
-  ): Promise<IpcSyncResult> {
+  ): Promise<IpcAsanaAuthenticationState> {
+    const settings = this.requireConfiguredDeviceSettings();
     validateAbortSignal(signal);
+    if (this.asanaReauthenticationOperation.kind !== "idle") {
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+    }
     throwIfAborted(signal);
-    this.assertOperationalReady();
-    const storedSettings = this.database.getDeviceSettings();
-    if (storedSettings == null) {
-      throw new Error("設定済みAsana OAuthの端末設定がありません。");
-    }
-    const settings = deviceSettingsSchema.parse(storedSettings);
-    if (!contextMatchesSettings(this.requireContext(), settings)) {
-      throw new Error("設定済み文脈と端末設定が一致しません。");
-    }
-    const authentication = asanaOAuthCoordinatorResultSchema.parse(
-      await this.oauth.reauthenticate(
-        {
-          client_id: settings.client_id,
-          redirect_uri: this.options.redirect_uri,
-          timeout_milliseconds: asanaOAuthReauthenticationTimeoutMilliseconds,
-        },
+    const result = oauthOutOfBandBeginResultSchema.parse(
+      await this.oauth.beginOutOfBandReauthentication(
+        { client_id: settings.client_id },
         signal,
       ),
     );
-    if (authentication.client_id !== settings.client_id) {
-      throw new Error("Asana OAuth再認証結果のClient IDが一致しません。");
+    try {
+      const state = oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState());
+      if (
+        state.kind !== "authorization_pending"
+        || state.authorization_id !== result.authorization_id
+        || state.expires_at !== result.expires_at
+      ) {
+        throw new Error("Asana OAuth再認証の開始状態が不正です。");
+      }
+      return toIpcAsanaAuthenticationState(state);
+    } catch (error: unknown) {
+      return this.rethrowAfterAsanaReauthenticationBeginFailure(
+        result.authorization_id,
+        error,
+      );
+    }
+  }
+
+  /** 設定済みAsana OAuthのOut-of-Band再認証を完了します。 */
+  public async completeAsanaReauthentication(
+    input: IpcAsanaReauthenticationCompleteInput,
+    signal: AbortSignal,
+  ): Promise<IpcSyncResult> {
+    const settings = this.requireConfiguredDeviceSettings();
+    validateAbortSignal(signal);
+    const validatedInput = ipcAsanaCompleteReauthenticationInputSchema.parse(input);
+    const operation = this.asanaReauthenticationOperation;
+    if (operation.kind !== "idle") {
+      if (operation.authorizationId !== validatedInput.authorization_id) {
+        throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+      }
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
     }
     throwIfAborted(signal);
-    this.configureAsanaFromSettings(settings);
-    const synchronized = await this.requireSynchronizedResult(
-      this.requireRuntime().onOnline(signal),
+    this.asanaReauthenticationOperation = {
+      kind: "completing",
+      authorizationId: validatedInput.authorization_id,
+    };
+    try {
+      const rawAuthentication = await this.oauth.completeOutOfBandAuthorization(
+        validatedInput,
+        signal,
+      );
+      this.asanaReauthenticationOperation = {
+        kind: "synchronizing",
+        authorizationId: validatedInput.authorization_id,
+      };
+      const authentication = asanaOAuthCoordinatorResultSchema.parse(rawAuthentication);
+      if (authentication.client_id !== settings.client_id) {
+        throw new Error("Asana OAuth再認証結果のClient IDが一致しません。");
+      }
+      throwIfAborted(signal);
+      this.configureAsanaFromSettings(settings);
+      const synchronized = await this.requireSynchronizedResult(
+        this.requireRuntime().onOnline(signal),
+      );
+      await this.afterSynchronizedState(synchronized, signal);
+      return toIpcSyncResult(synchronized.result);
+    } finally {
+      this.asanaReauthenticationOperation = { kind: "idle" };
+    }
+  }
+
+  /** 設定済みAsana OAuthのOut-of-Band再認証を取り消します。 */
+  public cancelAsanaReauthentication(
+    input: IpcAsanaReauthenticationCancelInput,
+    signal: AbortSignal,
+  ): IpcAsanaAuthenticationState {
+    this.requireConfiguredDeviceSettings();
+    validateAbortSignal(signal);
+    const validatedInput = ipcAsanaCancelReauthenticationInputSchema.parse(input);
+    const operation = this.asanaReauthenticationOperation;
+    if (operation.kind !== "idle") {
+      if (operation.authorizationId !== validatedInput.authorization_id) {
+        throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+      }
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+    }
+    throwIfAborted(signal);
+    const state = oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState());
+    if (state.kind === "idle") {
+      throw new AsanaOAuthOutOfBandNotPendingError();
+    }
+    if (state.authorization_id !== validatedInput.authorization_id) {
+      throw new AsanaOAuthOutOfBandAuthorizationIdMismatchError();
+    }
+    if (state.kind === "expired" || state.kind === "cancelled") {
+      return toIpcAsanaAuthenticationState(state);
+    }
+    if (state.kind === "completing") {
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+    }
+    this.oauth.cancelOutOfBandAuthorization(validatedInput);
+    return toIpcAsanaAuthenticationState(
+      oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState()),
     );
-    await this.afterSynchronizedState(synchronized, signal);
-    return toIpcSyncResult(synchronized.result);
   }
 
   private resolveDeviceId(): string {
@@ -2478,6 +2648,41 @@ export class TaskHubApplication {
     this.recordDiagnostic("sync.completed", "info");
   }
 
+  private requireConfiguredDeviceSettings(): DeviceSettings {
+    this.assertOperationalReady();
+    const storedSettings = this.database.getDeviceSettings();
+    if (storedSettings == null) {
+      throw new Error("設定済みAsana OAuthの端末設定がありません。");
+    }
+    const settings = deviceSettingsSchema.parse(storedSettings);
+    if (!contextMatchesSettings(this.requireContext(), settings)) {
+      throw new Error("設定済み文脈と端末設定が一致しません。");
+    }
+    return settings;
+  }
+
+  private rethrowAfterAsanaReauthenticationBeginFailure(
+    authorizationId: string,
+    error: unknown,
+  ): never {
+    try {
+      const state = oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState());
+      if (
+        isActiveOutOfBandState(state)
+        && state.authorization_id === authorizationId
+      ) {
+        this.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId });
+      }
+    } catch (cleanupError: unknown) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Asana OAuth再認証開始後の後処理に失敗しました。",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
   private assertSetupReady(): void {
     if (this.setup.getState().kind !== "ready") {
       throw new Error("初回設定が完了するまで運用機能を利用できません。");
@@ -3357,6 +3562,7 @@ export class TaskHubApplication {
 
   private assertWritesAllowed(): void {
     this.assertOperationalReady();
+    this.assertAsanaReauthenticationIdle();
     const synchronizationState = this.requireRuntime().getState();
     if (
       synchronizationState.kind !== "online"
@@ -3377,6 +3583,12 @@ export class TaskHubApplication {
       throw new Error(
         "同一のAsana OAuthアプリ設定を確認するまで書き込みを開始できません。",
       );
+    }
+  }
+
+  private assertAsanaReauthenticationIdle(): void {
+    if (this.asanaReauthenticationOperation.kind !== "idle") {
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
     }
   }
 
@@ -3402,7 +3614,12 @@ export class TaskHubApplication {
 
   private createAsanaPort(): IpcAsanaPort {
     return {
-      reauthenticateOAuth: (signal) => this.reauthenticateAsanaOAuth(signal),
+      getAuthenticationState: () => this.getAsanaAuthenticationState(),
+      beginReauthentication: (signal) => this.beginAsanaReauthentication(signal),
+      completeReauthentication: (input, signal) =>
+        this.completeAsanaReauthentication(input, signal),
+      cancelReauthentication: (input, signal) =>
+        this.cancelAsanaReauthentication(input, signal),
     };
   }
 
@@ -3414,6 +3631,7 @@ export class TaskHubApplication {
       },
       run: async (input, signal) => {
         this.assertOperationalReady();
+        this.assertAsanaReauthenticationIdle();
         const request = ipcSyncInputSchema.parse(input);
         const runtime = this.requireRuntime();
         const result = await this.requireSynchronizedResult(

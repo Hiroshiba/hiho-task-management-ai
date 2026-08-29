@@ -94,6 +94,40 @@ function responseSchema<T extends z.ZodType>(valueSchema: T) {
 const emptyRequestSchema = z.undefined();
 const appVersionSchema = z.string().min(1).max(64);
 
+const asanaAuthorizationIdSchema = z
+  .string()
+  .length(43)
+  .regex(/^[A-Za-z0-9_-]+$/u, "OAuth取引の識別子が不正です。");
+const asanaAuthenticationStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("idle") }).strict(),
+  z
+    .object({
+      kind: z.literal("opening"),
+      authorization_id: asanaAuthorizationIdSchema,
+      expires_at: isoDateTimeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("authorization_pending"),
+      authorization_id: asanaAuthorizationIdSchema,
+      expires_at: isoDateTimeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("completing"),
+      authorization_id: asanaAuthorizationIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("synchronizing"),
+      authorization_id: asanaAuthorizationIdSchema,
+    })
+    .strict(),
+]);
+
 const readModelOverviewRequestSchema = z.undefined();
 const readModelTaskDetailRequestSchema = z
   .object({ task_gid: gidSchema })
@@ -484,7 +518,10 @@ export const ipcFailureSchema = failureSchema;
 export const ipcAppVersionSchema = appVersionSchema;
 export const ipcChannelSchema = z.enum([
   "app:get-version",
-  "asana:reauthenticate-oauth",
+  "asana:get-authentication-state",
+  "asana:begin-reauthentication",
+  "asana:complete-reauthentication",
+  "asana:cancel-reauthentication",
   "read-model:get-overview",
   "read-model:get-task-detail",
   "sync:run",
@@ -542,8 +579,18 @@ export const ipcSyncResponseSchema = responseSchema(syncResultSchema);
 export const ipcSyncStateEventSchema = syncStateEventSchema;
 export const ipcSyncGetStateInputSchema = emptyRequestSchema;
 export const ipcSyncGetStateResponseSchema = responseSchema(syncStateEventSchema);
-export const ipcAsanaReauthenticateOAuthInputSchema = emptyRequestSchema;
-export const ipcAsanaReauthenticateOAuthResponseSchema = responseSchema(syncResultSchema);
+export const ipcAsanaAuthenticationStateSchema = asanaAuthenticationStateSchema;
+export const ipcAsanaAuthenticationStateResponseSchema = responseSchema(
+  asanaAuthenticationStateSchema,
+);
+export const ipcAsanaGetAuthenticationStateInputSchema = emptyRequestSchema;
+export const ipcAsanaBeginReauthenticationInputSchema = emptyRequestSchema;
+export const ipcAsanaCompleteReauthenticationInputSchema = setupAsanaAuthorizationCompleteInputSchema;
+export const ipcAsanaCompleteReauthenticationResponseSchema = responseSchema(syncResultSchema);
+export const ipcAsanaCancelReauthenticationInputSchema = setupAsanaAuthorizationCancelInputSchema;
+export const ipcAsanaCancelReauthenticationResponseSchema = responseSchema(
+  asanaAuthenticationStateSchema,
+);
 export const ipcSetupStateResponseSchema = responseSchema(setupStateSchema);
 export const ipcSetupStartInputSchema = setupEmptyInputSchema;
 export const ipcSetupCompleteCodexAuthenticationInputSchema = setupEmptyInputSchema;
@@ -599,6 +646,13 @@ export type IpcFailure = z.infer<typeof failureSchema>;
 export type IpcResponse<T> = { readonly kind: "ok"; readonly value: T } | IpcFailure;
 export type IpcSyncInput = z.infer<typeof syncRequestSchema>;
 export type IpcSyncResult = z.infer<typeof syncResultSchema>;
+export type IpcAsanaAuthenticationState = z.infer<typeof asanaAuthenticationStateSchema>;
+export type IpcAsanaReauthenticationCompleteInput = z.infer<
+  typeof ipcAsanaCompleteReauthenticationInputSchema
+>;
+export type IpcAsanaReauthenticationCancelInput = z.infer<
+  typeof ipcAsanaCancelReauthenticationInputSchema
+>;
 export type IpcSetupState = SetupState;
 export type IpcSetupAsanaAuthorizationBeginInput = SetupAsanaAuthorizationBeginInput;
 export type IpcSetupAsanaAuthorizationCompleteInput = SetupAsanaAuthorizationCompleteInput;
