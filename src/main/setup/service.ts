@@ -119,7 +119,10 @@ export type SetupCapabilityPort = Pick<
 
 export type SetupDatabasePort = Pick<
   StorageDatabase,
-  "saveDeviceSettings" | "getDeviceSettings" | "saveVaultMapping"
+  | "saveDeviceSettings"
+  | "getDeviceSettings"
+  | "saveVaultMapping"
+  | "getVaultMappings"
 >;
 
 export type SetupCheckpointPort = {
@@ -664,6 +667,7 @@ export class SetupOrchestrator {
     validateFunction(options.database.saveDeviceSettings, "端末設定保存関数が必要です。");
     validateFunction(options.database.getDeviceSettings, "端末設定取得関数が必要です。");
     validateFunction(options.database.saveVaultMapping, "Vault保存関数が必要です。");
+    validateFunction(options.database.getVaultMappings, "Vault一覧取得関数が必要です。");
     validateFunction(options.checkpoint.load, "初回設定チェックポイント取得関数が必要です。");
     validateFunction(options.checkpoint.save, "初回設定チェックポイント保存関数が必要です。");
     validateFunction(options.externalTool.configureDiscord, "Discord外部ツール設定関数が必要です。");
@@ -1185,13 +1189,29 @@ export class SetupOrchestrator {
       return this.getState();
     }
     const readyResult = assertCapabilityReady(result);
+    const context = {
+      ...state.context,
+      test_task_gid: readyResult.test_task_gid,
+    };
+    const taskVaultMappings = this.database.getVaultMappings()
+      .filter((mapping) => mapping.vault_id === "tasks");
+    if (taskVaultMappings.length > 1) {
+      throw new Error("tasks Vaultマッピングが重複しています。");
+    }
+    const taskVaultMapping = taskVaultMappings[0];
+    if (taskVaultMapping != null) {
+      this.state = parseState({
+        kind: "vault_configured",
+        step: "external_tool",
+        context,
+        vault_id: taskVaultMapping.vault_id,
+      });
+      return this.chooseExternalTool({ kind: "skip" }, signal);
+    }
     this.state = parseState({
       kind: "vault_choice_required",
       step: "vault",
-      context: {
-        ...state.context,
-        test_task_gid: readyResult.test_task_gid,
-      },
+      context,
     });
     return this.getState();
   }
@@ -1224,14 +1244,14 @@ export class SetupOrchestrator {
         context: state.context,
         vault_id: mapping.vault_id,
       });
-      return this.getState();
+      return this.chooseExternalTool({ kind: "skip" }, signal);
     }
     this.state = parseState({
       kind: "vault_skipped",
       step: "external_tool",
       context: state.context,
     });
-    return this.getState();
+    return this.chooseExternalTool({ kind: "skip" }, signal);
   }
 
   /** 固定Discord読取連携を設定するか明示的にスキップします。 */

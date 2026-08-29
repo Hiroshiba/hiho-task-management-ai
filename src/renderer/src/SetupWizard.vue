@@ -58,8 +58,6 @@ const emit = defineEmits<{
 const clientId = ref("");
 const clientSecretInput = ref<HTMLInputElement | null>(null);
 const authorizationCodeInput = ref<HTMLInputElement | null>(null);
-const discordBotTokenInput = ref<HTMLInputElement | null>(null);
-const discordChannelIds = ref("");
 const projectName = ref("");
 const vaultId = ref("");
 const vaultPath = ref("");
@@ -84,16 +82,9 @@ function clearAuthorizationCode(): void {
   }
 }
 
-function clearDiscordBotToken(): void {
-  if (discordBotTokenInput.value != null) {
-    discordBotTokenInput.value.value = "";
-  }
-}
-
 function clearSensitiveInputs(): void {
   clearClientSecret();
   clearAuthorizationCode();
-  clearDiscordBotToken();
 }
 
 watch(() => props.state?.kind, clearSensitiveInputs);
@@ -128,7 +119,6 @@ function stateTitle(state: SetupState | undefined): string {
       return "Vaultを設定します";
     case "vault_skipped":
     case "vault_configured":
-      return "外部読み取りツールを設定します";
     case "external_tool_skipped":
     case "external_tool_configured":
     case "external_tool_unavailable":
@@ -360,39 +350,10 @@ function selectProject(value: string): void {
 function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {
   try {
     const request = window.taskHub.setup.chooseExternalTool(input);
-    void request.then(clearDiscordBotToken, clearDiscordBotToken);
     emit("action", { kind: "choose_external_tool", request });
   } catch {
-    localError.value = "Discord読取連携の設定を開始できませんでした。";
-  } finally {
-    clearDiscordBotToken();
+    localError.value = "外部ツール設定を開始できませんでした。";
   }
-}
-
-function parseDiscordChannelIds(value: string): string[] {
-  return value
-    .split(/[\n,]+/u)
-    .map((channelId) => channelId.trim())
-    .filter((channelId) => channelId.length > 0);
-}
-
-function submitDiscordExternalTool(): void {
-  localError.value = "";
-  const tokenInput = discordBotTokenInput.value;
-  if (tokenInput == null) {
-    throw new Error("Discord Bot Token入力欄が見つかりません。");
-  }
-  const parsed = setupExternalToolChoiceInputSchema.safeParse({
-    kind: "configure_discord",
-    bot_token: tokenInput.value,
-    allowed_channel_ids: parseDiscordChannelIds(discordChannelIds.value),
-  });
-  if (!parsed.success) {
-    clearDiscordBotToken();
-    localError.value = "Discord Bot Tokenと許可チャンネルIDを確認してください。";
-    return;
-  }
-  beginExternalToolChoice(parsed.data);
 }
 
 function skipExternalTool(): void {
@@ -757,53 +718,15 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-4"
       >
         <p class="text-sm text-slate-600">
-          読み取り専用のDiscord連携を登録できます。利用できる操作は検索、スレッド取得、メッセージ取得だけです。
-          任意の実行ファイルや書き込み操作は登録できません。
+          Discord連携は使用しません。
         </p>
-        <form
-          class="grid gap-4 sm:max-w-xl"
-          @submit.prevent="submitDiscordExternalTool"
-        >
-          <label
-            class="field-label"
-            for="discord-bot-token"
-          >Discord Bot Token<input
-            id="discord-bot-token"
-            ref="discordBotTokenInput"
-            class="text-input"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-          ></label>
-          <label
-            class="field-label"
-            for="discord-channel-ids"
-          >許可するDiscordチャンネルID<textarea
-            id="discord-channel-ids"
-            v-model="discordChannelIds"
-            class="text-input min-h-24"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="123456789012345678, 234567890123456789"
-          /></label>
-          <p class="text-xs leading-5 text-slate-500">
-            チャンネルIDはカンマまたは改行で区切ってください。Bot Tokenは保護ストレージへ送信し、Codexへ渡しません。
-          </p>
-          <button
-            type="submit"
-            class="primary-button"
-            :disabled="props.busy"
-          >
-            Discord読取を登録
-          </button>
-        </form>
         <button
           type="button"
-          class="secondary-button"
+          class="primary-button"
           :disabled="props.busy"
           @click="skipExternalTool"
         >
-          外部ツールを使わずに続ける
+          初回同期へ進む
         </button>
       </div>
 

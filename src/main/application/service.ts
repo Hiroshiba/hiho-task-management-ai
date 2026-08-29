@@ -1103,6 +1103,7 @@ export class TaskHubApplication {
         saveDeviceSettings: (value) => this.database.saveDeviceSettings(value),
         getDeviceSettings: () => this.database.getDeviceSettings(),
         saveVaultMapping: (value) => this.database.saveVaultMapping(value),
+        getVaultMappings: () => this.database.getVaultMappings(),
       },
       checkpoint: {
         load: () => this.checkpoint.load(),
