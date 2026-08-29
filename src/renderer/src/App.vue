@@ -266,7 +266,15 @@ function failureText(code: RendererFailure["code"]): string {
     case "oauth_token_endpoint_rejected":
       return "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。";
     case "oauth_network_error":
-      return "ネットワークとAsanaの状態を確認して最初からやり直してください。";
+      return "Asanaとの通信に失敗しました。ネットワークを確認して最初からやり直してください。";
+    case "oauth_http_rejected":
+      return "Asanaが認証要求を拒否しました。Client ID、Client Secret、Redirect URLを確認し、新しいコードで再認証してください。";
+    case "oauth_service_unavailable":
+      return "Asana認証サービスを一時利用できません。待ってから最初からやり直してください。";
+    case "oauth_response_invalid":
+      return "Asanaの認証応答形式を確認できません。最初からやり直し、続く場合はこの表示文を共有してください。";
+    case "secure_storage_unavailable":
+      return "OS保護ストレージが使えず秘密情報を保存できません。Windows版またはキーチェーン対応環境で起動してください。";
     case "oauth_session_error":
       return "認証セッションを最初からやり直してください。";
     case "aborted":

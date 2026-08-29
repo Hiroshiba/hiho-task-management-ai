@@ -23,6 +23,7 @@ import {
   AsanaOAuthTokenEndpointError,
   AsanaOAuthTransportError,
 } from "../auth/asana-oauth";
+import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -255,7 +256,11 @@ const failureMessages: Record<IpcFailure["code"], string> = {
   oauth_invalid_client: "Client ID、Client Secret、OAuthアプリ設定を確認して認証を最初からやり直してください。",
   oauth_invalid_grant: "認可コードが期限切れ、使用済み、または別アプリの可能性があるため認証を最初からやり直してください。",
   oauth_token_endpoint_rejected: "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。",
-  oauth_network_error: "ネットワークとAsanaの状態を確認して最初からやり直してください。",
+  oauth_network_error: "Asanaとの通信に失敗しました。ネットワークを確認して最初からやり直してください。",
+  oauth_http_rejected: "Asanaが認証要求を拒否しました。Client ID、Client Secret、Redirect URLを確認し、新しいコードで再認証してください。",
+  oauth_service_unavailable: "Asana認証サービスを一時利用できません。待ってから最初からやり直してください。",
+  oauth_response_invalid: "Asanaの認証応答形式を確認できません。最初からやり直し、続く場合はこの表示文を共有してください。",
+  secure_storage_unavailable: "OS保護ストレージが使えず秘密情報を保存できません。Windows版またはキーチェーン対応環境で起動してください。",
   oauth_session_error: "認証セッションを最初からやり直してください。",
   aborted: "IPC操作が中断されました。",
   conflict: "操作が競合しました。",
@@ -276,12 +281,24 @@ function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
         return "oauth_token_endpoint_rejected";
     }
   }
-  if (
-    error instanceof AsanaOAuthTransportError
-    || error instanceof AsanaOAuthHttpError
-    || error instanceof AsanaOAuthResponseError
-  ) {
+  if (error instanceof AsanaOAuthTransportError) {
     return "oauth_network_error";
+  }
+  if (error instanceof AsanaOAuthHttpError) {
+    if (
+      error.status === 408
+      || error.status === 429
+      || (error.status >= 500 && error.status <= 599)
+    ) {
+      return "oauth_service_unavailable";
+    }
+    return "oauth_http_rejected";
+  }
+  if (error instanceof AsanaOAuthResponseError) {
+    return "oauth_response_invalid";
+  }
+  if (error instanceof SecretStorageEncryptionUnavailableError) {
+    return "secure_storage_unavailable";
   }
   if (
     error instanceof AsanaOAuthOutOfBandExpiredError
