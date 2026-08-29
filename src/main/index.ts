@@ -15,6 +15,12 @@ import { TaskHubApplication } from "./application/service";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import {
+  PersistentErrorLog,
+  type PersistentErrorLogContext,
+  type PersistentErrorLogSource,
+  writePersistentErrorLogFailure,
+} from "./persistent-error-log";
+import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
   assertAllowedExternalUrl,
@@ -58,6 +64,45 @@ let foregroundScheduled = false;
 let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
+let persistentErrorLog: PersistentErrorLog | undefined;
+let uncaughtExceptionMonitorRegistered = false;
+
+function recordPersistentError(
+  source: PersistentErrorLogSource,
+  diagnosticCode: DiagnosticRecord["code"],
+  context: PersistentErrorLogContext,
+  error: unknown,
+): void {
+  const logger = persistentErrorLog;
+  if (logger == null) {
+    return;
+  }
+  logger.record(source, diagnosticCode, context, error);
+}
+
+function initializePersistentErrorLog(): void {
+  try {
+    persistentErrorLog = new PersistentErrorLog(app.getPath("logs"));
+  } catch {
+    persistentErrorLog = undefined;
+    writePersistentErrorLogFailure();
+  }
+}
+
+function registerUncaughtExceptionMonitor(): void {
+  if (uncaughtExceptionMonitorRegistered || persistentErrorLog == null) {
+    return;
+  }
+  process.on("uncaughtExceptionMonitor", (error) => {
+    recordPersistentError(
+      "uncaught_exception",
+      "app.error",
+      "uncaught_exception",
+      error,
+    );
+  });
+  uncaughtExceptionMonitorRegistered = true;
+}
 
 function recordDiagnostic(
   code: DiagnosticRecord["code"],
@@ -70,35 +115,38 @@ function recordDiagnostic(
   }
   try {
     application.recordDiagnostic(code, severity);
-  } catch {
+  } catch (error) {
+    recordPersistentError("main", "storage.error", "diagnostic_storage", error);
     console.error("診断情報を記録できませんでした。");
   }
 }
 
 function recordServiceDiagnostic(error: unknown, channel: string): void {
-  void error;
+  let diagnosticCode: DiagnosticRecord["code"];
   switch (channel) {
     case "sync":
     case "display_order":
-      recordDiagnostic("sync.failed", "error");
-      return;
+      diagnosticCode = "sync.failed";
+      break;
     case "codex":
-      recordDiagnostic("codex.status", "error");
-      return;
+      diagnosticCode = "codex.status";
+      break;
     case "external_tools":
-      recordDiagnostic("external_tools.status", "error");
-      return;
+      diagnosticCode = "external_tools.status";
+      break;
     case "application_journal":
-      recordDiagnostic("proposal.application", "error");
-      return;
+      diagnosticCode = "proposal.application";
+      break;
     case "ipc":
     case "sync_state_listener":
     case "ai_status_listener":
-      recordDiagnostic("ipc.error", "error");
-      return;
+      diagnosticCode = "ipc.error";
+      break;
     default:
-      recordDiagnostic("app.error", "error");
+      diagnosticCode = "app.error";
   }
+  recordPersistentError("service", diagnosticCode, "service_diagnostic", error);
+  recordDiagnostic(diagnosticCode, "error");
 }
 
 function getRendererUrl(): string {
@@ -230,7 +278,7 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
       ),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
     notify_unexpected_error: (error) => {
-      void error;
+      recordPersistentError("service", "app.error", "service_diagnostic", error);
       recordDiagnostic("app.error", "error");
     },
     diagnostic: recordServiceDiagnostic,
@@ -252,10 +300,12 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const externalUrl = assertAllowedExternalUrl(url);
-      void shell.openExternal(externalUrl.href).catch(() => {
+      void shell.openExternal(externalUrl.href).catch((error) => {
+        recordPersistentError("main", "app.error", "external_url", error);
         recordDiagnostic("app.error", "error");
       });
-    } catch {
+    } catch (error) {
+      recordPersistentError("main", "app.error", "external_url", error);
       recordDiagnostic("app.error", "error");
     }
     return { action: "deny" };
@@ -264,15 +314,20 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
 
 function registerVersionIpcHandler(rendererUrl: string): void {
   ipcMain.handle(appGetVersionChannel, (event, payload: unknown): string => {
-    z.undefined().parse(payload);
+    try {
+      z.undefined().parse(payload);
 
-    const window = mainWindow;
-    if (window == null) {
-      throw new Error("メインウィンドウが初期化されていません。");
+      const window = mainWindow;
+      if (window == null) {
+        throw new Error("メインウィンドウが初期化されていません。");
+      }
+
+      assertTrustedIpcSender(event, window.webContents, rendererUrl);
+      return app.getVersion();
+    } catch (error) {
+      recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", error);
+      throw error;
     }
-
-    assertTrustedIpcSender(event, window.webContents, rendererUrl);
-    return app.getVersion();
   });
   versionIpcRegistered = true;
 }
@@ -280,7 +335,8 @@ function registerVersionIpcHandler(rendererUrl: string): void {
 function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
   try {
     registry.dispose();
-  } catch {
+  } catch (error) {
+    recordPersistentError("main", "ipc.error", "registry_dispose", error);
     recordDiagnostic("ipc.error", "error");
   }
   if (mainWindowRegistry === registry) {
@@ -303,7 +359,8 @@ function enqueueBackgroundOperation(
     }
     try {
       await operation();
-    } catch {
+    } catch (error) {
+      recordPersistentError("main", failureCode, "background_operation", error);
       if (!controller.signal.aborted) {
         recordDiagnostic(failureCode, "error");
       }
@@ -465,7 +522,10 @@ async function createMainWindow(
     rendererUrl,
     ports: application.getIpcPorts(),
     diagnostic: {
-      record: () => recordDiagnostic("ipc.error", "error"),
+      record: (error) => {
+        recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", error);
+        recordDiagnostic("ipc.error", "error");
+      },
     },
   });
 
@@ -539,7 +599,8 @@ async function stopApplication(): Promise<void> {
   if (versionIpcRegistered) {
     try {
       ipcMain.removeHandler(appGetVersionChannel);
-    } catch {
+    } catch (error) {
+      recordPersistentError("main", "ipc.error", "application_stop", error);
       recordDiagnostic("ipc.error", "error");
     }
     versionIpcRegistered = false;
@@ -549,7 +610,8 @@ async function stopApplication(): Promise<void> {
   if (application != null) {
     try {
       await application.stop();
-    } catch {
+    } catch (error) {
+      recordPersistentError("main", "app.error", "application_stop", error);
       recordDiagnostic("app.error", "error");
       console.error("アプリケーションの停止に失敗しました。");
     }
@@ -558,6 +620,8 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  initializePersistentErrorLog();
+  registerUncaughtExceptionMonitor();
   configureContentSecurityPolicy();
   configurePermissionPolicy();
   const rendererUrl = getRendererUrl();
@@ -572,7 +636,8 @@ async function bootstrap(): Promise<void> {
 
   app.on("activate", () => {
     if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
-      void ensureMainWindow(rendererUrl, application).catch(() => {
+      void ensureMainWindow(rendererUrl, application).catch((error) => {
+        recordPersistentError("main", "app.error", "main_window", error);
         recordDiagnostic("app.error", "error");
       });
     }
@@ -597,7 +662,8 @@ app.on("before-quit", (event) => {
   void stopApplication().then(() => {
     shutdownState = { kind: "stopped" };
     app.quit();
-  }).catch(() => {
+  }).catch((error) => {
+    recordPersistentError("main", "app.error", "application_quit", error);
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの停止に失敗しました。");
     shutdownState = { kind: "stopped" };
@@ -610,7 +676,8 @@ if (!singleInstanceLockAcquired) {
   app.quit();
 } else {
   app.on("second-instance", showAndFocusMainWindow);
-  void bootstrap().catch(() => {
+  void bootstrap().catch((error) => {
+    recordPersistentError("main", "app.error", "bootstrap", error);
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの起動に失敗しました。");
     app.quit();
