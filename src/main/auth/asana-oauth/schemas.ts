@@ -100,7 +100,7 @@ export const oauthTokenResponseSchema = z
     refresh_token: tokenValueSchema.optional(),
     data: oauthUserDataSchema.optional(),
   })
-  .strict();
+  .strip();
 
 /** OAuth認可要求を検証するスキーマです。 */
 export const oauthAuthorizationRequestSchema = z
