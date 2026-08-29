@@ -845,6 +845,33 @@ export class SetupOrchestrator {
     return this.getState();
   }
 
+  /** 保存済みCodex利用不可状態を現在のCLIで再検査します。 */
+  public async recheckPersistedCodex(signal: AbortSignal): Promise<SetupState> {
+    validateAbortSignal(signal);
+    signal.throwIfAborted();
+    const state = parseState(this.state);
+    if (state.kind === "ready") {
+      return state;
+    }
+    const availability = stateCodexAvailability(state);
+    if (
+      availability == null
+      || availability.kind === "available"
+      || availability.reason_code === "disabled"
+    ) {
+      return state;
+    }
+    const detected = setupCodexAvailabilitySchema.parse(
+      await this.codex.detectCli(signal),
+    );
+    signal.throwIfAborted();
+    const nextState = updateStateCodexAvailability(state, detected);
+    this.checkpoint.save(nextState);
+    this.state = nextState;
+    this.codexAvailability = detected;
+    return parseState(nextState);
+  }
+
   /** Codex CLIとChatGPTログイン状態を確認します。 */
   public async start(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);

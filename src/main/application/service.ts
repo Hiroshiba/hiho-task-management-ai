@@ -1153,7 +1153,7 @@ export class TaskHubApplication {
     if (state.kind === "created" || state.kind === "codex_cli_ready") {
       state = await this.setup.start(signal);
     } else if (!readyCheckpointOffline) {
-      await this.restorePersistedCodexSession(state, signal);
+      state = await this.restorePersistedCodexSession(signal);
       if (state.kind === "resources_requires_action" || isContextState(state)) {
         state = await this.resumeSetupAtStartup(state, signal);
       }
@@ -1800,22 +1800,24 @@ export class TaskHubApplication {
   }
 
   private async restorePersistedCodexSession(
-    state: SetupState,
     signal: AbortSignal,
-  ): Promise<void> {
-    const validatedState = setupStateSchema.parse(state);
-    const availability = codexAvailabilityFromState(validatedState);
+  ): Promise<SetupState> {
+    const recheckedState = setupStateSchema.parse(
+      await this.setup.recheckPersistedCodex(signal),
+    );
+    const availability = codexAvailabilityFromState(recheckedState);
     this.codexAvailability = availability;
     if (availability == null) {
-      return;
+      return recheckedState;
     }
     if (
-      validatedState.kind !== "ready"
+      recheckedState.kind !== "ready"
       && availability.kind === "unavailable"
     ) {
-      return;
+      return recheckedState;
     }
     await this.ensureConfiguredCodexLaunchAttempt(signal);
+    return recheckedState;
   }
 
   private notifyUnexpectedError(error: unknown, channel: string): void {
