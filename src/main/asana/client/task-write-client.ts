@@ -44,6 +44,16 @@ const taskResponseSchema = z
   })
   .strip();
 
+const taskGidResponseSchema = z
+  .object({
+    data: z
+      .object({
+        gid: gidSchema,
+      })
+      .strip(),
+  })
+  .strip();
+
 const emptyActionResponseSchema = z
   .object({
     data: z.object({}).strict(),
@@ -246,6 +256,9 @@ const clearParentBodySchema = z
 type TaskCreationInput = z.infer<typeof taskCreationInputSchema>;
 type TaskUpdate = z.infer<typeof taskUpdateSchema>;
 type TaskInsertionPosition = z.infer<typeof taskInsertionPositionSchema>;
+type TaskGidResponseData = Readonly<
+  z.infer<typeof taskGidResponseSchema>["data"]
+>;
 
 export type AsanaTaskCreationInput = TaskCreationInput;
 export type AsanaTaskUpdate = TaskUpdate;
@@ -296,11 +309,11 @@ export class AsanaTaskWriteClient {
     this.transport = transport;
   }
 
-  /** Custom external data付きのAsanaタスクを作成します。 */
+  /** Custom external data付きのAsanaタスクを作成し、GIDを返します。 */
   public async createTask(
     input: AsanaTaskCreationInput,
     signal: AbortSignal,
-  ): Promise<AsanaTaskResponse> {
+  ): Promise<TaskGidResponseData> {
     const validatedInput = taskCreationInputSchema.parse(input);
     const data: JsonObject = {
       name: validatedInput.title,
@@ -325,22 +338,21 @@ export class AsanaTaskWriteClient {
       {
         method: "POST",
         path: ["tasks"],
-        query: { opt_fields: taskOptFields },
         body,
         retry_safe: false,
-        response_schema: taskResponseSchema,
+        response_schema: taskGidResponseSchema,
       },
       signal,
     );
     return response.data;
   }
 
-  /** Asanaタスクの許可された項目を1つだけ更新します。 */
+  /** Asanaタスクの許可された項目を1つだけ更新し、GIDを返します。 */
   public async updateTask(
     taskGid: string,
     update: AsanaTaskUpdate,
     signal: AbortSignal,
-  ): Promise<AsanaTaskResponse> {
+  ): Promise<TaskGidResponseData> {
     const validatedTaskGid = validateGid(taskGid);
     const validatedUpdate = taskUpdateSchema.parse(update);
     const body = buildTaskUpdateBody(validatedUpdate);
@@ -348,10 +360,9 @@ export class AsanaTaskWriteClient {
       {
         method: "PUT",
         path: ["tasks", validatedTaskGid],
-        query: { opt_fields: taskOptFields },
         body,
         retry_safe: true,
-        response_schema: taskResponseSchema,
+        response_schema: taskGidResponseSchema,
       },
       signal,
     );

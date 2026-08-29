@@ -1329,9 +1329,13 @@ export class AsanaProposalOperationWriter {
         ? { due_at: operation.after.due.due_at }
         : {}),
     };
+    const createdTaskReference = await this.writeClient.createTask(
+      creationInput,
+      signal,
+    );
     const created = parseTask(
-      await this.writeClient.createTask(creationInput, signal),
-      undefined,
+      await this.readClient.getTask(createdTaskReference.gid, signal),
+      createdTaskReference.gid,
     );
     const createdExternal = readCurrentExternal(created);
     if (createdExternal.kind === "conflict") {

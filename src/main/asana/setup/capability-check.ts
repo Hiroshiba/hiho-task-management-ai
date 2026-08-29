@@ -279,26 +279,23 @@ export class AsanaCapabilityCheckService {
         created_via: "capability_check",
       });
       const title = `TaskHub能力検査 ${initialization.gid}`;
-      const createdTask = await this.runStep(
+      const createdTaskReference = await this.runStep(
         "task_create_failed",
         async () =>
-          parseTask(
-            await this.writeClient.createTask(
-              {
-                project_gid: validatedInput.project_gid,
-                title,
-                external: {
-                  gid: initialization.gid,
-                  data: initialization.data,
-                },
+          this.writeClient.createTask(
+            {
+              project_gid: validatedInput.project_gid,
+              title,
+              external: {
+                gid: initialization.gid,
+                data: initialization.data,
               },
-              signal,
-            ),
+            },
+            signal,
           ),
       );
-      const testTaskGid = createdTask.gid;
+      const testTaskGid = createdTaskReference.gid;
       createdTaskGid = testTaskGid;
-      assertTaskProjectMembership(createdTask, validatedInput.project_gid);
       let currentTask = await this.readTask(testTaskGid, signal);
       assertTaskProjectMembership(currentTask, validatedInput.project_gid);
       assertExternalData(
@@ -315,13 +312,7 @@ export class AsanaCapabilityCheckService {
             kind: "title",
             value: updatedTitle,
           };
-          parseTask(
-            await this.writeClient.updateTask(
-              testTaskGid,
-              update,
-              signal,
-            ),
-          );
+          await this.writeClient.updateTask(testTaskGid, update, signal);
         },
       );
       currentTask = await this.readTask(testTaskGid, signal);
