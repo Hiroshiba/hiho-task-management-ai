@@ -58,7 +58,9 @@ Asana APIのCustom external dataは、OAuthアプリ固有の構造化メタデ�
 
 ### 2.3 認証
 
-Custom external dataはOAuthが前提であるため、PATは採用しない。OAuthはPKCEを併用し、アクセストークンとリフレッシュトークンを使用する。AsanaのOAuthドキュメントでは、ネイティブ・CLI用途のリダイレクト方法も案内されている。[R6]
+Custom external dataはOAuthが前提であるため、PATは採用しない。OAuthはPKCEを併用し、アクセストークンとリフレッシュトークンを使用する。リダイレクトURIは`urn:ietf:wg:oauth:2.0:oob`に固定する。[R6]
+
+利用者はAsana Developer Consoleで個人用の非公開OAuthアプリを作成し、**Full permissions**を選ぶ。Redirect URLには`urn:ietf:wg:oauth:2.0:oob`を正確に登録する。TaskHubへClient IDとClient Secretを入力してブラウザで許可し、表示された認可コードを有効期限内にTaskHubへ貼り付ける。再認証も同じ方式で行う。認証待ち時間やローカルコールバックURLの入力は不要である。
 
 Asanaの現行スコープ体系では、プロジェクト内セクションを含む本設計の全操作を細粒度スコープだけで安定して賄えない可能性がある。このため、初期版はユーザー自身が作成した非公開OAuthアプリを**Full permissions**で使用する。アプリ内部ではAPI操作を許可リスト方式に限定し、削除APIは実装しない。[R7]
 
@@ -1608,10 +1610,12 @@ Codexがどれほど賢くても、この境界を省略しない。
 
 - Client ID。
 - Client Secret。
-- 対応するリダイレクト設定。
 - Full permissions。
+- Redirect URLとして`urn:ietf:wg:oauth:2.0:oob`を正確に登録する。
 
 2台のPCへ同じClient IDとClient Secretを設定する。
+
+TaskHubへClient IDとClient Secretを入力し、ブラウザで許可した後、表示された認可コードを有効期限内に貼り付ける。再認証も同じ方式で行う。認証待ち時間やローカルコールバックURLの入力は不要である。Client Secretは会話、Issue、ログへ貼らない。
 
 パッケージへ共通Client Secretを埋め込まない。デスクトップアプリへ埋め込んだ共有secretは抽出可能であり、配布アプリの秘密として成立しないためである。
 
@@ -1753,8 +1757,8 @@ AI変更案の途中で失敗した場合:
 
 1. Codex CLIを検出する。
 2. CodexのChatGPTログインを確認する。
-3. Asana OAuth Client ID / Client Secretを入力する。
-4. OAuth認証を完了する。
+3. Asana Developer Consoleで個人用の非公開OAuthアプリを作成し、Full permissionsを選び、Redirect URLへ`urn:ietf:wg:oauth:2.0:oob`を正確に登録する。
+4. TaskHubへClient IDとClient Secretを入力し、ブラウザで許可して表示された認可コードを有効期限内に貼り付ける。
 5. 専用Asanaプロジェクトを作成または選択する。
 6. 4つの状態セクションを作成・確認する。
 7. 重要度・未分類・ブロック状態タグを作成・確認する。
@@ -1763,6 +1767,8 @@ AI変更案の途中で失敗した場合:
 10. 外部読み取りツールを登録する。これは任意。
 11. フル同期する。
 12. Codex能力検査を行う。
+
+再認証も同じ方式で行う。認証待ち時間やローカルコールバックURLの入力は不要である。
 
 ### 22.2 無料範囲の能力検査
 
