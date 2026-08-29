@@ -17,3 +17,6 @@ export {
   type ObsidianSearchResult,
   type ObsidianVaultValidationResult,
 } from "./obsidian-read-service";
+export {
+  createObsidianOpenUri,
+} from "./obsidian-uri";

@@ -113,7 +113,10 @@ import {
   type NormalizationTask,
 } from "../domain";
 import { ReadModelService } from "../read-model";
-import { ObsidianReadService } from "../obsidian";
+import {
+  createObsidianOpenUri,
+  ObsidianReadService,
+} from "../obsidian";
 import { discoverTasksVault } from "../obsidian/tasks-vault-discovery";
 import {
   ExternalToolBroker,
@@ -4072,7 +4075,12 @@ export class TaskHubApplication {
         if (result.kind === "missing") {
           throw new Error("開くObsidianノートが見つかりません。");
         }
-        await this.options.open_path(result.absolute_path, signal);
+        throwIfAborted(signal);
+        const uri = createObsidianOpenUri({
+          vault_id: result.vault_id,
+          relative_path: result.relative_path,
+        });
+        await this.options.open_obsidian_url(uri, signal);
       },
     };
   }

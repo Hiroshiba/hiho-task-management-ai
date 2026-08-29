@@ -14,6 +14,7 @@ import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
+import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
 import {
   PersistentErrorLog,
   type PersistentErrorLogContext,
@@ -251,6 +252,56 @@ async function openResolvedPath(
   signal.throwIfAborted();
 }
 
+function validateObsidianOpenUri(rawUri: string): URL {
+  const parsedUrl = new URL(rawUri);
+  if (
+    parsedUrl.protocol !== "obsidian:"
+    || parsedUrl.host !== "open"
+    || parsedUrl.username !== ""
+    || parsedUrl.password !== ""
+    || parsedUrl.port !== ""
+    || parsedUrl.pathname !== ""
+    || parsedUrl.hash !== ""
+  ) {
+    throw new Error("Obsidian URIが不正です。");
+  }
+  const entries = [...parsedUrl.searchParams.entries()];
+  const keys = new Set(entries.map(([key]) => key));
+  if (
+    entries.length !== 2
+    || keys.size !== 2
+    || !keys.has("vault")
+    || !keys.has("file")
+  ) {
+    throw new Error("Obsidian URIのqueryが不正です。");
+  }
+  const vaultValues = parsedUrl.searchParams.getAll("vault");
+  const fileValues = parsedUrl.searchParams.getAll("file");
+  if (vaultValues.length !== 1 || fileValues.length !== 1) {
+    throw new Error("Obsidian URIのqueryが重複しています。");
+  }
+  const vaultId = vaultValues[0];
+  const relativePath = fileValues[0];
+  if (vaultId == null || relativePath == null) {
+    throw new Error("Obsidian URIのquery値が不正です。");
+  }
+  obsidianOpenUriInputSchema.parse({
+    vault_id: vaultId,
+    relative_path: relativePath,
+  });
+  return parsedUrl;
+}
+
+async function openObsidianUrl(
+  rawUrl: string,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  const validatedUrl = validateObsidianOpenUri(rawUrl);
+  await shell.openExternal(validatedUrl.href);
+  signal.throwIfAborted();
+}
+
 function createTaskHubApplication(controller: AbortController): TaskHubApplication {
   const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
   return new TaskHubApplication({
@@ -276,6 +327,8 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
         signal,
         assertAllowedCodexAuthorizationUrl,
       ),
+    open_obsidian_url: (obsidianUrl, signal) =>
+      openObsidianUrl(obsidianUrl, signal),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
     notify_unexpected_error: (error) => {
       recordPersistentError("service", "app.error", "service_diagnostic", error);
