@@ -946,7 +946,9 @@ export class SetupOrchestrator {
       await this.codex.completeAuthentication(signal),
     );
     if (authenticationState.kind === "required") {
-      const availability = setupCodexAvailabilitySchema.parse({ kind: "available" });
+      const availability = requireCodexAvailable(
+        setupCodexAvailabilitySchema.parse({ kind: "available" }),
+      );
       this.codexAvailability = availability;
       if (this.state.kind === "codex_authentication_required") {
         this.state = parseState({
