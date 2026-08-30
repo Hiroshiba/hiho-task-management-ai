@@ -67,7 +67,7 @@ let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
 let persistentErrorLog: PersistentErrorLog | undefined;
-let persistentLoggerReady = false;
+let persistentErrorLogInitialized = false;
 let uncaughtExceptionMonitorRegistered = false;
 
 const singleInstanceLockAcquired = app.requestSingleInstanceLock();
@@ -89,6 +89,9 @@ function getPersistentErrorLog(): PersistentErrorLog | undefined {
   }
   const createdLogger = createPersistentErrorLog();
   persistentErrorLog = createdLogger;
+  if (createdLogger != null) {
+    registerUncaughtExceptionMonitor();
+  }
   return createdLogger;
 }
 
@@ -115,10 +118,10 @@ function recordLifecycleEvent(event: PersistentLifecycleEvent): void {
 
 function initializePersistentErrorLog(): void {
   const logger = getPersistentErrorLog();
-  if (logger == null || persistentLoggerReady) {
+  if (logger == null || persistentErrorLogInitialized) {
     return;
   }
-  persistentLoggerReady = true;
+  persistentErrorLogInitialized = true;
   logger.recordLifecycleEvent("persistent_logger_ready");
 }
 

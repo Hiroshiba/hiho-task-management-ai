@@ -78,7 +78,10 @@ export class CodexSetupAdapter {
   }
 
   /** Codex CLIの導入状態を検査します。 */
-  public async detectCli(signal: AbortSignal): Promise<SetupCodexAvailability> {
+  public async detectCli(
+    signal: AbortSignal,
+    captureKnownFailure: (error: unknown) => void,
+  ): Promise<SetupCodexAvailability> {
     try {
       await checkCodexExecutable(
         this.executable,
@@ -91,6 +94,7 @@ export class CodexSetupAdapter {
       if (availability == null) {
         throw error;
       }
+      captureKnownFailure(error);
       return parseAvailability(availability);
     }
   }
@@ -98,6 +102,7 @@ export class CodexSetupAdapter {
   /** Codexセッションの認証状態を検査します。 */
   public async getAuthenticationState(
     signal: AbortSignal,
+    captureKnownFailure: (error: unknown) => void,
   ): Promise<CodexAuthenticationState> {
     try {
       const result = await this.ensureStarted(signal);
@@ -122,6 +127,7 @@ export class CodexSetupAdapter {
       if (availability == null) {
         throw error;
       }
+      captureKnownFailure(error);
       return availability;
     }
   }
@@ -129,6 +135,7 @@ export class CodexSetupAdapter {
   /** ChatGPT認証後のCodexセッションを再開します。 */
   public async completeAuthentication(
     signal: AbortSignal,
+    captureKnownFailure: (error: unknown) => void,
   ): Promise<CodexAuthenticationState> {
     try {
       const sessionState = this.session.getState();
@@ -161,6 +168,7 @@ export class CodexSetupAdapter {
       if (availability == null) {
         throw error;
       }
+      captureKnownFailure(error);
       return availability;
     }
   }

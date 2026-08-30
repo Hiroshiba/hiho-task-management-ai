@@ -258,6 +258,10 @@ const codexAuthenticationStateSchema = z.union([
 
 type CodexAuthenticationState = z.infer<typeof codexAuthenticationStateSchema>;
 
+type CodexKnownFailureCapture =
+  | { readonly kind: "none" }
+  | { readonly kind: "captured"; readonly error: unknown };
+
 type SyncDiagnosticState =
   | { readonly kind: "idle" }
   | {
@@ -1635,6 +1639,27 @@ export class TaskHubApplication {
     this.options.diagnostic(new Error(message, { cause: error }), channel);
   }
 
+  private recordCodexKnownFailure(error: unknown, message: string): void {
+    try {
+      this.recordFeatureFailure(error, "codex", message);
+    } catch (diagnosticError: unknown) {
+      const report = new AggregateError(
+        [diagnosticError],
+        "Codex既知エラーの診断記録に失敗しました。",
+        { cause: error },
+      );
+      try {
+        this.options.notify_unexpected_error(report);
+      } catch (notificationError: unknown) {
+        throw new AggregateError(
+          [report, notificationError],
+          "Codex既知エラーの診断通知にも失敗しました。",
+          { cause: report },
+        );
+      }
+    }
+  }
+
   private async detectCodexSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
@@ -1645,9 +1670,14 @@ export class TaskHubApplication {
       });
     }
     let availability: SetupCodexAvailability;
+    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
+      value: { kind: "none" },
+    };
     try {
       availability = setupCodexAvailabilitySchema.parse(
-        await this.codexAdapter.detectCli(signal),
+        await this.codexAdapter.detectCli(signal, (error) => {
+          knownFailureCapture.value = { kind: "captured", error };
+        }),
       );
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
@@ -1661,10 +1691,10 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
-    if (availability.kind === "unavailable") {
-      this.recordFeatureFailure(
-        availability,
-        "codex",
+    const knownFailure = knownFailureCapture.value;
+    if (knownFailure.kind === "captured") {
+      this.recordCodexKnownFailure(
+        knownFailure.error,
         "Codex CLIを利用できないためAI機能を無効にしました。",
       );
     }
@@ -1681,9 +1711,14 @@ export class TaskHubApplication {
       });
     }
     let state: CodexAuthenticationState;
+    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
+      value: { kind: "none" },
+    };
     try {
       state = codexAuthenticationStateSchema.parse(
-        await this.codexAdapter.getAuthenticationState(signal),
+        await this.codexAdapter.getAuthenticationState(signal, (error) => {
+          knownFailureCapture.value = { kind: "captured", error };
+        }),
       );
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
@@ -1697,10 +1732,10 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
-    if (state.kind === "unavailable") {
-      this.recordFeatureFailure(
-        state,
-        "codex",
+    const knownFailure = knownFailureCapture.value;
+    if (knownFailure.kind === "captured") {
+      this.recordCodexKnownFailure(
+        knownFailure.error,
         "Codex認証状態を利用できないためAI機能を無効にしました。",
       );
     }
@@ -1717,9 +1752,14 @@ export class TaskHubApplication {
       });
     }
     let authenticationState: CodexAuthenticationState;
+    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
+      value: { kind: "none" },
+    };
     try {
       authenticationState = codexAuthenticationStateSchema.parse(
-        await this.codexAdapter.completeAuthentication(signal),
+        await this.codexAdapter.completeAuthentication(signal, (error) => {
+          knownFailureCapture.value = { kind: "captured", error };
+        }),
       );
     } catch (error: unknown) {
       this.rethrowFeatureAbort(error, signal);
@@ -1733,10 +1773,10 @@ export class TaskHubApplication {
         reason_code: "startup_failed",
       });
     }
-    if (authenticationState.kind === "unavailable") {
-      this.recordFeatureFailure(
-        authenticationState,
-        "codex",
+    const knownFailure = knownFailureCapture.value;
+    if (knownFailure.kind === "captured") {
+      this.recordCodexKnownFailure(
+        knownFailure.error,
         "Codex再認証を完了できないためAI機能を無効にしました。",
       );
     }
