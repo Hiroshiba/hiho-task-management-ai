@@ -30,10 +30,6 @@ const maximumAggregateErrors = 8;
 const maximumErrorNodes = 16;
 const persistentErrorLogFileName = "taskhub-error.log";
 const persistentErrorLogFailureMessage = "永続エラーログの書き込みに失敗しました。";
-const persistentErrorLogFailureBuffer = Buffer.from(
-  `${persistentErrorLogFailureMessage}\n`,
-  "utf8",
-);
 const safeErrorNamePattern = /^[A-Za-z][A-Za-z0-9]*(?:Error|Exception)$/u;
 const parenthesizedStackFramePattern =
   /^\s{2,}at\s+[^()\r\n]*\(([^()\r\n]+):([0-9]{1,6}):([0-9]{1,6})\)\s*$/u;
@@ -64,11 +60,26 @@ const persistentErrorLogContextSchema = z.enum([
   "uncaught_exception",
 ]);
 
+const persistentLifecycleEventSchema = z.enum([
+  "lock_acquired",
+  "lock_rejected",
+  "when_ready",
+  "bootstrap_started",
+  "persistent_logger_ready",
+  "main_window_created",
+  "window_all_closed",
+  "before_quit",
+  "bootstrap_failure",
+]);
+
 export type PersistentErrorLogSource = z.infer<
   typeof persistentErrorLogSourceSchema
 >;
 export type PersistentErrorLogContext = z.infer<
   typeof persistentErrorLogContextSchema
+>;
+export type PersistentLifecycleEvent = z.infer<
+  typeof persistentLifecycleEventSchema
 >;
 
 type SafeErrorDetail = {
@@ -99,9 +110,19 @@ const persistentErrorLogRecordSchema = z
     source: persistentErrorLogSourceSchema,
     diagnostic_code: diagnosticCodeSchema,
     context: persistentErrorLogContextSchema,
+    event: persistentLifecycleEventSchema.optional(),
     error: safeErrorDetailSchema,
   })
   .strict();
+
+type PersistentErrorLogRecord = z.infer<typeof persistentErrorLogRecordSchema>;
+
+const lifecycleEventErrorDetail: SafeErrorDetail = {
+  error_name: "LifecycleEventError",
+  stack_frames: [],
+  cause_chain: [],
+  aggregate_errors: [],
+};
 
 const absolutePathSchema = z
   .string()
@@ -119,12 +140,13 @@ function isMissingPathError(error: unknown): boolean {
 }
 
 /** 永続エラーログの失敗を固定文で標準エラーへ通知します。 */
-function writePersistentErrorLogFailure(): void {
+function writePersistentErrorLogFailure(error: unknown): void {
   if (!persistentErrorLogFailureOutputEnabled) {
     return;
   }
   try {
-    writeSync(2, persistentErrorLogFailureBuffer);
+    const failureMessage = `${persistentErrorLogFailureMessage} 原因: ${getSafeErrorName(error)}\n`;
+    writeSync(2, Buffer.from(failureMessage, "utf8"));
   } catch {
     persistentErrorLogFailureOutputEnabled = false;
   }
@@ -534,7 +556,7 @@ export class PersistentErrorLog {
     error: unknown,
   ): void {
     if (this.writing) {
-      writePersistentErrorLogFailure();
+      writePersistentErrorLogFailure(undefined);
       return;
     }
     this.writing = true;
@@ -552,16 +574,44 @@ export class PersistentErrorLog {
           { remaining: maximumErrorNodes },
         ),
       });
-      const serializedRecord = JSON.stringify(record);
-      if (serializedRecord == null) {
-        throw new Error("永続エラーログをシリアライズできませんでした。");
-      }
-      this.append(serializedRecord);
-    } catch {
-      writePersistentErrorLogFailure();
+      this.writeRecord(record);
+    } catch (error) {
+      writePersistentErrorLogFailure(error);
     } finally {
       this.writing = false;
     }
+  }
+
+  /** 固定イベントを開発者向けの永続ログへ保存します。 */
+  public recordLifecycleEvent(event: PersistentLifecycleEvent): void {
+    if (this.writing) {
+      writePersistentErrorLogFailure(undefined);
+      return;
+    }
+    this.writing = true;
+    try {
+      const record = persistentErrorLogRecordSchema.parse({
+        occurred_at: new Date().toISOString(),
+        source: "main",
+        diagnostic_code: "app.start",
+        context: "bootstrap",
+        event,
+        error: lifecycleEventErrorDetail,
+      });
+      this.writeRecord(record);
+    } catch (error) {
+      writePersistentErrorLogFailure(error);
+    } finally {
+      this.writing = false;
+    }
+  }
+
+  private writeRecord(record: PersistentErrorLogRecord): void {
+    const serializedRecord = JSON.stringify(record);
+    if (serializedRecord == null) {
+      throw new Error("永続エラーログをシリアライズできませんでした。");
+    }
+    this.append(serializedRecord);
   }
 
   private append(serializedRecord: string): void {

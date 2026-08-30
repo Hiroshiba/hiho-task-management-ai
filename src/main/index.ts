@@ -20,6 +20,7 @@ import {
   PersistentErrorLog,
   type PersistentErrorLogContext,
   type PersistentErrorLogSource,
+  type PersistentLifecycleEvent,
   writePersistentErrorLogFailure,
 } from "./persistent-error-log";
 import {
@@ -33,7 +34,6 @@ import {
 const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-const singleInstanceLockAcquired = app.requestSingleInstanceLock();
 const resolvedAbsolutePathSchema = z
   .string()
   .min(1)
@@ -67,7 +67,30 @@ let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
 let persistentErrorLog: PersistentErrorLog | undefined;
+let persistentLoggerReady = false;
 let uncaughtExceptionMonitorRegistered = false;
+
+const singleInstanceLockAcquired = app.requestSingleInstanceLock();
+recordLifecycleEvent(singleInstanceLockAcquired ? "lock_acquired" : "lock_rejected");
+
+function createPersistentErrorLog(): PersistentErrorLog | undefined {
+  try {
+    return new PersistentErrorLog(app.getPath("logs"));
+  } catch (error) {
+    writePersistentErrorLogFailure(error);
+    return undefined;
+  }
+}
+
+function getPersistentErrorLog(): PersistentErrorLog | undefined {
+  const logger = persistentErrorLog;
+  if (logger != null) {
+    return logger;
+  }
+  const createdLogger = createPersistentErrorLog();
+  persistentErrorLog = createdLogger;
+  return createdLogger;
+}
 
 function recordPersistentError(
   source: PersistentErrorLogSource,
@@ -75,20 +98,28 @@ function recordPersistentError(
   context: PersistentErrorLogContext,
   error: unknown,
 ): void {
-  const logger = persistentErrorLog;
+  const logger = getPersistentErrorLog();
   if (logger == null) {
     return;
   }
   logger.record(source, diagnosticCode, context, error);
 }
 
-function initializePersistentErrorLog(): void {
-  try {
-    persistentErrorLog = new PersistentErrorLog(app.getPath("logs"));
-  } catch {
-    persistentErrorLog = undefined;
-    writePersistentErrorLogFailure();
+function recordLifecycleEvent(event: PersistentLifecycleEvent): void {
+  const logger = getPersistentErrorLog();
+  if (logger == null) {
+    return;
   }
+  logger.recordLifecycleEvent(event);
+}
+
+function initializePersistentErrorLog(): void {
+  const logger = getPersistentErrorLog();
+  if (logger == null || persistentLoggerReady) {
+    return;
+  }
+  persistentLoggerReady = true;
+  logger.recordLifecycleEvent("persistent_logger_ready");
 }
 
 function registerUncaughtExceptionMonitor(): void {
@@ -571,6 +602,7 @@ async function createMainWindow(
       preload: join(__dirname, "../preload/index.cjs"),
     },
   });
+  recordLifecycleEvent("main_window_created");
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,
@@ -674,6 +706,7 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  recordLifecycleEvent("when_ready");
   initializePersistentErrorLog();
   registerUncaughtExceptionMonitor();
   configureContentSecurityPolicy();
@@ -699,6 +732,7 @@ async function bootstrap(): Promise<void> {
 }
 
 app.on("window-all-closed", () => {
+  recordLifecycleEvent("window_all_closed");
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -712,6 +746,7 @@ app.on("before-quit", (event) => {
   if (shutdownState.kind === "stopping") {
     return;
   }
+  recordLifecycleEvent("before_quit");
   shutdownState = { kind: "stopping" };
   void stopApplication().then(() => {
     shutdownState = { kind: "stopped" };
@@ -730,8 +765,10 @@ if (!singleInstanceLockAcquired) {
   app.quit();
 } else {
   app.on("second-instance", showAndFocusMainWindow);
+  recordLifecycleEvent("bootstrap_started");
   void bootstrap().catch((error) => {
     recordPersistentError("main", "app.error", "bootstrap", error);
+    recordLifecycleEvent("bootstrap_failure");
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの起動に失敗しました。");
     app.quit();
