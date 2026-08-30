@@ -73,7 +73,9 @@ import {
 } from "./errors";
 import { checkCodexExecutable, createSafeCodexEnvironment } from "./version";
 
-const maxLineBytes = 256 * 1024;
+const maxStdinMessageBytes = 256 * 1024;
+const maxStdoutLineBytes = 4 * 1024 * 1024;
+const maxStderrLineBytes = 256 * 1024;
 const maxJsonDepth = 32;
 const maxPendingRequests = 128;
 const maxStoredDiagnostics = 256;
@@ -861,7 +863,7 @@ export class CodexAppServerConnection {
     if (serialized == null) {
       throw new CodexWriteError(new Error("Codex app-server要求をJSON化できません。"));
     }
-    if (Buffer.byteLength(serialized, "utf8") > maxLineBytes) {
+    if (Buffer.byteLength(serialized, "utf8") > maxStdinMessageBytes) {
       throw new CodexProtocolError(
         "message_too_large",
         new Error("Codex app-server要求がサイズ上限を超えました。"),
@@ -959,7 +961,7 @@ export class CodexAppServerConnection {
     }
     try {
       const byteLength = Buffer.byteLength(line, "utf8");
-      if (byteLength > maxLineBytes) {
+      if (byteLength > maxStdoutLineBytes) {
         throw new CodexProtocolError(
           "message_too_large",
           new Error("Codex app-server応答がサイズ上限を超えました。"),
@@ -990,7 +992,7 @@ export class CodexAppServerConnection {
         continue;
       }
       this.stdoutLineBytes += 1;
-      if (this.stdoutLineBytes > maxLineBytes) {
+      if (this.stdoutLineBytes > maxStdoutLineBytes) {
         const protocolError = new CodexProtocolError(
           "message_too_large",
           new Error("Codex app-server応答の行サイズが上限を超えました。"),
@@ -1125,7 +1127,7 @@ export class CodexAppServerConnection {
         continue;
       }
       this.stderrLineBytes += 1;
-      if (this.stderrLineBytes > maxLineBytes) {
+      if (this.stderrLineBytes > maxStderrLineBytes) {
         this.stderrReadingStopped = true;
         this.stderrReader?.close();
         this.stderrReader = undefined;
