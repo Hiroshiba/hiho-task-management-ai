@@ -71,6 +71,7 @@ import {
 } from "../codex/workspace";
 import {
   createSafeCodexEnvironment,
+  resolveCodexHomePath,
 } from "../codex/app-server";
 import {
   CodexSessionAbortedError,
@@ -1014,9 +1015,10 @@ export class TaskHubApplication {
       kind: "disabled",
       reason: "no_registered_tools",
     };
+    const codexEnvironment = createCodexProcessEnvironment();
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
-      environment: createCodexProcessEnvironment(),
+      environment: codexEnvironment,
       clientInfo: {
         name: "taskhub",
         title: "TaskHub",
@@ -1029,6 +1031,7 @@ export class TaskHubApplication {
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
       tmpDirectoryPath: this.codexWorkspace.tmpDirectoryPath,
+      expectedCodexHomePathProvider: () => resolveCodexHomePath(codexEnvironment),
       readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
       connectionFactory,
       snapshotProvider: () => this.createTaskctlSnapshot(),
@@ -1037,7 +1040,7 @@ export class TaskHubApplication {
     this.codexAdapter = new CodexSetupAdapter({
       session: this.codexSession,
       executable: options.codex_executable,
-      environment: createCodexProcessEnvironment(),
+      environment: codexEnvironment,
       openAuthorizationUrl: options.open_codex_authorization_url,
     });
     this.readModel = new ReadModelService(this.database);

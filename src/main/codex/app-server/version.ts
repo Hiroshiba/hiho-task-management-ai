@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import {
   CodexExecutableNotFoundError,
   CodexRequestAbortedError,
@@ -36,6 +36,7 @@ const safeEnvironmentKeys = new Set([
 const safeEnvironmentKeysByLowerCase = new Map(
   [...safeEnvironmentKeys].map((key) => [key.toLowerCase(), key]),
 );
+const maxCodexHomePathCodeUnits = 4_096;
 
 function isNoEntryError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -98,6 +99,25 @@ export function createSafeCodexEnvironment(
     seenWindowsKeys.add(canonicalKey);
   }
   return safeEnvironment;
+}
+
+/** 安全な環境変数からCodexホームの正規化候補を解決します。 */
+export function resolveCodexHomePath(
+  safeEnvironment: NodeJS.ProcessEnv,
+): string {
+  const configuredPath = safeEnvironment.CODEX_HOME;
+  const candidatePath = configuredPath ?? join(homedir(), ".codex");
+  if (
+    candidatePath.length === 0
+    || candidatePath.length > maxCodexHomePathCodeUnits
+    || !isAbsolute(candidatePath)
+    || candidatePath.includes("\0")
+    || candidatePath.includes("\n")
+    || candidatePath.includes("\r")
+  ) {
+    throw new Error("Codexホームのパスが不正です。");
+  }
+  return normalize(candidatePath);
 }
 
 function executeVersionCommand(

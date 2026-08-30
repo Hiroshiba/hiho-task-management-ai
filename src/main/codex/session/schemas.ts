@@ -6,6 +6,7 @@ import {
   type CodexDiagnostic,
   type ChatGptLoginStartParams,
   type ChatGptLoginStartResult,
+  type CodexConnectionOptions,
   type ModelListParams,
   type ModelListResult,
   type McpServerStatusListParams,
@@ -65,6 +66,13 @@ const connectionFactorySchema = z.custom<CodexSessionConnectionFactory>(
   "Codex接続ファクトリが必要です。",
 );
 
+type CodexHomePathProvider = () => string;
+
+const codexHomePathProviderSchema = z.custom<CodexHomePathProvider>(
+  (value) => typeof value === "function",
+  "Codexホームパス供給関数が必要です。",
+);
+
 const syncBeforeTurnSchema = z.custom<CodexSessionSyncFunction>(
   (value) => typeof value === "function",
   "AIターン前同期関数が必要です。",
@@ -114,7 +122,9 @@ export interface CodexSessionConnection {
 
 /** セッションが新しいapp-server接続を作る関数の型です。 */
 export type CodexSessionConnectionFactory =
-  () => CodexSessionConnection | PromiseLike<CodexSessionConnection>;
+  (
+    configOverrides: CodexConnectionOptions["configOverrides"],
+  ) => CodexSessionConnection | PromiseLike<CodexSessionConnection>;
 
 /** セッションがターン開始直前に同期を実行する関数の型です。 */
 export type CodexSessionSyncFunction = (signal: AbortSignal) => void | PromiseLike<void>;
@@ -133,6 +143,7 @@ export const codexSessionOptionsSchema = z
     workspacePath: absolutePathSchema,
     agentsFilePath: absolutePathSchema,
     tmpDirectoryPath: absolutePathSchema,
+    expectedCodexHomePathProvider: codexHomePathProviderSchema,
     readOnlyVaultPaths: z
       .array(absolutePathSchema)
       .max(maximumVaultPaths)

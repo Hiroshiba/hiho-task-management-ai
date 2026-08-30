@@ -569,12 +569,23 @@ export function createCodexAppServerConnectionFactory(
   options: CodexConnectionOptions,
 ): CodexSessionConnectionFactory {
   const validatedOptions = codexConnectionOptionsSchema.parse(options);
+  if (validatedOptions.configOverrides.length !== 0) {
+    throw new CodexSessionCapabilityError(
+      "Codex接続ファクトリの初期設定へ設定上書きを指定できません。",
+    );
+  }
   if (validatedOptions.capabilities?.experimentalApi !== true) {
     throw new CodexSessionCapabilityError(
       "Codexの実験APIが有効でないため権限プロファイルを利用できません。",
     );
   }
-  return (): CodexSessionConnection => new CodexAppServerConnection(validatedOptions);
+  return (configOverrides): CodexSessionConnection => {
+    const connectionOptions = codexConnectionOptionsSchema.parse({
+      ...validatedOptions,
+      configOverrides,
+    });
+    return new CodexAppServerConnection(connectionOptions);
+  };
 }
 
 /** Codex app-serverと一時taskctlを一つのAIセッションとして管理します。 */
@@ -1205,7 +1216,7 @@ export class CodexSessionService {
 
   private async connectAndStartThread(signal: AbortSignal): Promise<void> {
     this.assertSafetyIntact();
-    const candidate = await Promise.resolve(this.options.connectionFactory());
+    const candidate = await Promise.resolve(this.options.connectionFactory([]));
     if (!isConnectionShape(candidate)) {
       throw new CodexSessionCapabilityError("Codex接続ファクトリが不正な接続を返しました。");
     }
@@ -1218,8 +1229,24 @@ export class CodexSessionService {
       this.receiveDiagnostic(diagnostic);
     });
     try {
+      const expectedCodexHomePath = codexHomePathSchema.parse(
+        this.options.expectedCodexHomePathProvider(),
+      );
       await candidate.start(signal);
       this.assertSafetyIntact();
+      const expectedCodexHomeRealPath = resolveExistingDirectory(
+        expectedCodexHomePath,
+        "期待するCodex認証領域",
+      );
+      const initializedCodexHomePath = resolveExistingDirectory(
+        candidate.getCodexHome(),
+        "Codex認証領域",
+      );
+      if (initializedCodexHomePath !== expectedCodexHomeRealPath) {
+        throw new CodexSessionCapabilityError(
+          "Codex認証領域が期待するパスと一致しません。",
+        );
+      }
       const accountInspection = await this.inspectAccount(candidate, signal);
       if (accountInspection.kind !== "authenticated") {
         throw new CodexSessionAuthenticationError();

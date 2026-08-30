@@ -83,5 +83,6 @@ export {
 } from "./schemas";
 export {
   createSafeCodexEnvironment,
+  resolveCodexHomePath,
   resolveCodexExecutable,
 } from "./version";
