@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const maxPathLength = 4_096;
 const workspaceDirectoryName = "codex-workspace";
+const codexHomeDirectoryName = "codex-home";
 const skillNamesSchema = z.tuple([
   z.literal("taskctl"),
   z.literal("obsidian"),
@@ -43,6 +44,7 @@ export const codexWorkspaceInitializationInputSchema = z
 export const codexWorkspaceInitializationResultSchema = z
   .object({
     userDataPath: userDataPathSchema,
+    codexHomePath: absolutePathSchema,
     workspacePath: absolutePathSchema,
     agentsFilePath: absolutePathSchema,
     skillsDirectoryPath: absolutePathSchema,
@@ -54,6 +56,7 @@ export const codexWorkspaceInitializationResultSchema = z
   .strict()
   .superRefine((result, context) => {
     const expectedWorkspacePath = join(result.userDataPath, workspaceDirectoryName);
+    const expectedCodexHomePath = join(result.userDataPath, codexHomeDirectoryName);
     const expectedAgentsFilePath = join(expectedWorkspacePath, "AGENTS.md");
     const expectedSkillsDirectoryPath = join(
       expectedWorkspacePath,
@@ -64,6 +67,7 @@ export const codexWorkspaceInitializationResultSchema = z
     const expectedTaskctlPath = join(expectedBinDirectoryPath, "taskctl");
     const expectedTmpDirectoryPath = join(expectedWorkspacePath, "tmp");
     const expectedPaths: readonly [string, string, string][] = [
+      ["codexHomePath", expectedCodexHomePath, result.codexHomePath],
       ["workspacePath", expectedWorkspacePath, result.workspacePath],
       ["agentsFilePath", expectedAgentsFilePath, result.agentsFilePath],
       ["skillsDirectoryPath", expectedSkillsDirectoryPath, result.skillsDirectoryPath],

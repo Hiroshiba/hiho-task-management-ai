@@ -71,7 +71,6 @@ import {
 } from "../codex/workspace";
 import {
   createSafeCodexEnvironment,
-  resolveCodexHomePath,
 } from "../codex/app-server";
 import {
   CodexSessionAbortedError,
@@ -751,9 +750,12 @@ function createMutableTokenProvider(): MutableTokenProviderPort {
   };
 }
 
-function createCodexProcessEnvironment(): Record<string, string> {
+function createCodexProcessEnvironment(codexHomePath: string): Record<string, string> {
   return z.record(z.string(), z.string()).parse(
-    createSafeCodexEnvironment(process.env),
+    {
+      ...createSafeCodexEnvironment(process.env),
+      CODEX_HOME: codexHomePath,
+    },
   );
 }
 
@@ -1019,7 +1021,9 @@ export class TaskHubApplication {
       kind: "disabled",
       reason: "no_registered_tools",
     };
-    const codexEnvironment = createCodexProcessEnvironment();
+    const codexEnvironment = createCodexProcessEnvironment(
+      this.codexWorkspace.codexHomePath,
+    );
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
       environment: codexEnvironment,
@@ -1035,7 +1039,7 @@ export class TaskHubApplication {
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
       tmpDirectoryPath: this.codexWorkspace.tmpDirectoryPath,
-      expectedCodexHomePathProvider: () => resolveCodexHomePath(codexEnvironment),
+      expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
       readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
       connectionFactory,
       snapshotProvider: () => this.createTaskctlSnapshot(),

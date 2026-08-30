@@ -21,6 +21,7 @@ import { CodexWorkspaceError } from "./errors";
 import { taskctlClientScript } from "../taskctl/client-script";
 
 const workspaceDirectoryName = "codex-workspace";
+const codexHomeDirectoryName = "codex-home";
 const agentsDirectoryName = ".agents";
 const skillsDirectoryName = "skills";
 const agentsFileName = "AGENTS.md";
@@ -196,6 +197,7 @@ export function initializeCodexWorkspace(
   ensureDirectory(userDataPath, "ユーザーデータ領域");
 
   const workspacePath = join(userDataPath, workspaceDirectoryName);
+  const codexHomePath = join(userDataPath, codexHomeDirectoryName);
   const agentsDirectoryPath = join(workspacePath, agentsDirectoryName);
   const skillsDirectoryPath = join(agentsDirectoryPath, skillsDirectoryName);
   const agentsFilePath = join(workspacePath, agentsFileName);
@@ -203,6 +205,7 @@ export function initializeCodexWorkspace(
   const taskctlPath = join(binDirectoryPath, "taskctl");
   const tmpDirectoryPath = join(workspacePath, tmpDirectoryName);
 
+  ensureDirectory(codexHomePath, "TaskHub専用Codexホーム");
   ensureDirectory(workspacePath, "Codex専用ワークスペース");
   ensureDirectory(agentsDirectoryPath, "Codexスキル設定ディレクトリ");
   ensureDirectory(skillsDirectoryPath, "Codexスキルディレクトリ");
@@ -216,6 +219,7 @@ export function initializeCodexWorkspace(
 
   return codexWorkspaceInitializationResultSchema.parse({
     userDataPath,
+    codexHomePath,
     workspacePath,
     agentsFilePath,
     skillsDirectoryPath,
