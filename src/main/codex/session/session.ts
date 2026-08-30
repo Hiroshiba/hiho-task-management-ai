@@ -86,6 +86,12 @@ const maximumModelRecords = 10_000;
 const requiredSkillNames = new Set(["taskctl", "obsidian", "external-tools"]);
 const permissionProfileId = "taskhub";
 const permissionProfileWaitTimeoutMs = 5_000;
+const accountReadRetryDelaysMilliseconds: readonly [number, number, number, number] = [
+  250,
+  500,
+  750,
+  1_000,
+];
 const disabledFeatureNames = [
   "apps",
   "plugins",
@@ -122,6 +128,11 @@ type PermissionProfileWaiter = {
   readonly abortListener: () => void;
   readonly timer: NodeJS.Timeout;
 };
+
+type AccountInspectionResult =
+  | { readonly kind: "authenticated" }
+  | { readonly kind: "authentication_pending" }
+  | { readonly kind: "wrong_account_type" };
 
 const finalAgentMessageSchema = z
   .object({
@@ -736,7 +747,14 @@ export class CodexSessionService {
     }
     this.state = "starting";
     try {
-      await this.inspectAccount(connection, signal);
+      const accountInspection = await this.inspectAccountWithRetry(connection, signal);
+      if (accountInspection.kind === "authentication_pending") {
+        this.state = "authentication_required";
+        return this.createAuthenticationRequiredResult();
+      }
+      if (accountInspection.kind === "wrong_account_type") {
+        throw new CodexSessionAuthenticationError();
+      }
       await this.inspectModel(connection, signal);
       await this.inspectSkills(connection, signal);
       await this.inspectPermissionProfile(connection, signal);
@@ -1201,7 +1219,10 @@ export class CodexSessionService {
     try {
       await candidate.start(signal);
       this.assertSafetyIntact();
-      await this.inspectAccount(candidate, signal);
+      const accountInspection = await this.inspectAccount(candidate, signal);
+      if (accountInspection.kind !== "authenticated") {
+        throw new CodexSessionAuthenticationError();
+      }
       this.assertSafetyIntact();
       await this.inspectModel(candidate, signal);
       this.assertSafetyIntact();
@@ -1232,16 +1253,65 @@ export class CodexSessionService {
   private async inspectAccount(
     connection: CodexSessionConnection,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<AccountInspectionResult> {
     const params = accountReadParamsSchema.parse({ refreshToken: false });
     const result = accountReadResultSchema.parse(await connection.readAccount(params, signal));
-    if (
-      result.requiresOpenaiAuth
-      || result.account == null
-      || result.account.type !== "chatgpt"
-    ) {
-      throw new CodexSessionAuthenticationError();
+    if (result.account != null && result.account.type !== "chatgpt") {
+      return { kind: "wrong_account_type" };
     }
+    if (result.requiresOpenaiAuth || result.account == null) {
+      return { kind: "authentication_pending" };
+    }
+    return { kind: "authenticated" };
+  }
+
+  private async inspectAccountWithRetry(
+    connection: CodexSessionConnection,
+    signal: AbortSignal,
+  ): Promise<AccountInspectionResult> {
+    let inspection = await this.inspectAccount(connection, signal);
+    for (const delayMilliseconds of accountReadRetryDelaysMilliseconds) {
+      if (inspection.kind !== "authentication_pending") {
+        return inspection;
+      }
+      await this.waitForAccountReadRetry(delayMilliseconds, signal);
+      this.assertSafetyIntact();
+      inspection = await this.inspectAccount(connection, signal);
+    }
+    return inspection;
+  }
+
+  private waitForAccountReadRetry(
+    delayMilliseconds: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted) {
+      throw new CodexSessionAbortedError();
+    }
+    return new Promise<void>((resolvePromise, rejectPromise) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolvePromise();
+      }, delayMilliseconds);
+      const onAbort = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", onAbort);
+        rejectPromise(new CodexSessionAbortedError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+      }
+    });
   }
 
   private async inspectModel(

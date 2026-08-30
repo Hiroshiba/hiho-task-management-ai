@@ -1705,16 +1705,16 @@ export class TaskHubApplication {
 
   private async completeCodexAuthenticationSafely(
     signal: AbortSignal,
-  ): Promise<SetupCodexAvailability> {
+  ): Promise<CodexAuthenticationState> {
     if (this.codexDisabledByExternalToolSafety()) {
-      return setupCodexAvailabilitySchema.parse({
+      return codexAuthenticationStateSchema.parse({
         kind: "unavailable",
         reason_code: "disabled",
       });
     }
-    let availability: SetupCodexAvailability;
+    let authenticationState: CodexAuthenticationState;
     try {
-      availability = setupCodexAvailabilitySchema.parse(
+      authenticationState = codexAuthenticationStateSchema.parse(
         await this.codexAdapter.completeAuthentication(signal),
       );
     } catch (error: unknown) {
@@ -1724,19 +1724,19 @@ export class TaskHubApplication {
         "codex",
         "Codex再認証に失敗したためAI機能を無効にしました。",
       );
-      return setupCodexAvailabilitySchema.parse({
+      return codexAuthenticationStateSchema.parse({
         kind: "unavailable",
         reason_code: "startup_failed",
       });
     }
-    if (availability.kind === "unavailable") {
+    if (authenticationState.kind === "unavailable") {
       this.recordFeatureFailure(
-        availability,
+        authenticationState,
         "codex",
         "Codex再認証を完了できないためAI機能を無効にしました。",
       );
     }
-    return availability;
+    return authenticationState;
   }
 
   private async checkCodexCapabilitiesSafely(

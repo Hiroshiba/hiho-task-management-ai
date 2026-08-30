@@ -132,14 +132,14 @@ export class CodexSetupAdapter {
   /** ChatGPT認証後のCodexセッションを再開します。 */
   public async completeAuthentication(
     signal: AbortSignal,
-  ): Promise<SetupCodexAvailability> {
+  ): Promise<CodexAuthenticationState> {
     try {
       const sessionState = this.session.getState();
       if (sessionState === "created") {
         const started = await this.ensureStarted(signal);
         if (isReady(started)) {
           this.loginOpened = false;
-          return parseAvailability({ kind: "available" });
+          return { kind: "authenticated" };
         }
       } else if (sessionState === "ready") {
         const result = this.startResult;
@@ -149,19 +149,22 @@ export class CodexSetupAdapter {
           );
         }
         this.loginOpened = false;
-        return parseAvailability({ kind: "available" });
+        return { kind: "authenticated" };
       }
       const result = await this.session.completeAuthentication(signal);
       this.startResult = result;
       this.structuredOutputVerified = false;
+      if (result.state === "authentication_required") {
+        return { kind: "required" };
+      }
       this.loginOpened = false;
-      return parseAvailability({ kind: "available" });
+      return { kind: "authenticated" };
     } catch (error: unknown) {
       const availability = knownAvailability(error);
       if (availability == null) {
         throw error;
       }
-      return parseAvailability(availability);
+      return availability;
     }
   }
 

@@ -86,7 +86,7 @@ export type SetupCodexPort = {
   ) => Promise<SetupCodexAuthenticationState>;
   readonly completeAuthentication: (
     signal: AbortSignal,
-  ) => Promise<SetupCodexAvailability>;
+  ) => Promise<SetupCodexAuthenticationState>;
   readonly checkCapabilities: (
     signal: AbortSignal,
   ) => Promise<SetupCodexAvailability>;
@@ -942,9 +942,25 @@ export class SetupOrchestrator {
     if (this.state.kind === "created" || this.state.kind === "codex_cli_ready") {
       throw new Error("現在の初回設定状態ではCodex認証を完了できません。");
     }
-    const availability = setupCodexAvailabilitySchema.parse(
+    const authenticationState = setupCodexAuthenticationStateSchema.parse(
       await this.codex.completeAuthentication(signal),
     );
+    if (authenticationState.kind === "required") {
+      const availability = setupCodexAvailabilitySchema.parse({ kind: "available" });
+      this.codexAvailability = availability;
+      if (this.state.kind === "codex_authentication_required") {
+        this.state = parseState({
+          ...this.state,
+          codex: availability,
+        });
+      } else {
+        this.state = updateStateCodexAvailability(this.state, availability);
+      }
+      return this.getState();
+    }
+    const availability = authenticationState.kind === "authenticated"
+      ? setupCodexAvailabilitySchema.parse({ kind: "available" })
+      : authenticationState;
     this.codexAvailability = availability;
     this.state = updateStateCodexAvailability(this.state, availability);
     return this.getState();
