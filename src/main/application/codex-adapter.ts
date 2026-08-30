@@ -36,9 +36,6 @@ function knownAvailability(
   if (error instanceof CodexExecutableNotFoundError) {
     return { kind: "unavailable", reason_code: "not_installed" };
   }
-  if (error instanceof CodexSessionCapabilityError) {
-    return { kind: "unavailable", reason_code: "incompatible" };
-  }
   if (error instanceof CodexProcessError || error instanceof CodexVersionCommandError) {
     return { kind: "unavailable", reason_code: "startup_failed" };
   }
