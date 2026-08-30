@@ -1259,7 +1259,7 @@ export class CodexSessionService {
     if (result.account != null && result.account.type !== "chatgpt") {
       return { kind: "wrong_account_type" };
     }
-    if (result.requiresOpenaiAuth || result.account == null) {
+    if (result.account == null) {
       return { kind: "authentication_pending" };
     }
     return { kind: "authenticated" };
