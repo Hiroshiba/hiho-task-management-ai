@@ -33,6 +33,7 @@ import {
   type ChatGptLoginStartParams,
   type ChatGptLoginStartResult,
   type CodexConnectionOptions,
+  type CodexConfigOverrideValue,
   type CodexDiagnostic,
   type CodexNotification,
   type CodexRpcId,
@@ -272,6 +273,7 @@ export class CodexAppServerConnection {
   private readonly clientInfo: InitializeParams["clientInfo"];
   private readonly capabilities: InitializeParams["capabilities"];
   private readonly requestTimeoutMs: number;
+  private readonly configOverrides: readonly CodexConfigOverrideValue[];
   private codexHome: string | undefined;
   private state: ConnectionState = "created";
   private child: ChildProcess | undefined;
@@ -304,6 +306,7 @@ export class CodexAppServerConnection {
     this.clientInfo = validatedOptions.clientInfo;
     this.capabilities = validatedOptions.capabilities;
     this.requestTimeoutMs = validatedOptions.requestTimeoutMs ?? defaultRequestTimeoutMs;
+    this.configOverrides = validatedOptions.configOverrides;
   }
 
   /** Codex CLIを検査してapp-serverを初期化します。 */
@@ -716,7 +719,10 @@ export class CodexAppServerConnection {
 
   private startProcess(): void {
     const usePosixProcessGroup = process.platform !== "win32";
-    const child = spawn(this.executable, ["app-server"], {
+    const child = spawn(this.executable, [
+      ...this.configOverrides.flatMap((override) => ["-c", override.toArgument()]),
+      "app-server",
+    ], {
       detached: usePosixProcessGroup,
       env: this.environment,
       shell: false,

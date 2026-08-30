@@ -1023,6 +1023,7 @@ export class TaskHubApplication {
         version: options.app_version,
       },
       capabilities: { experimentalApi: true },
+      configOverrides: [],
     });
     this.codexSession = new CodexSessionService({
       workspacePath: this.codexWorkspace.workspacePath,

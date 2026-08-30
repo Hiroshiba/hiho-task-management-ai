@@ -13,6 +13,87 @@ const threadIdSchema = nonEmptyTextSchema.max(200);
 const turnIdSchema = nonEmptyTextSchema.max(200);
 const maxJsonValueBytes = 128 * 1024;
 const maxJsonValueDepth = 32;
+const maxCodexConfigOverrideCount = 64;
+const maxCodexConfigOverrideCodeUnits = 16 * 1024;
+const maxCodexConfigOverrideBytes = 16 * 1024;
+const maxCodexConfigOverrideTotalCodeUnits = 8 * 1024;
+const maxCodexExecutableCodeUnits = 4_096;
+const maxWindowsCommandLineCodeUnits = 32_767;
+
+const codexConfigOverrideSchema = z
+  .string()
+  .min(1, "Codex設定上書きを空にできません。")
+  .max(maxCodexConfigOverrideCodeUnits, "Codex設定上書きが大きすぎます。")
+  .refine(
+    (value) => !value.includes("\0"),
+    "Codex設定上書きに使用できない文字が含まれています。",
+  )
+  .refine(
+    (value) => !value.includes("\n") && !value.includes("\r"),
+    "Codex設定上書きに改行を指定できません。",
+  )
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= maxCodexConfigOverrideBytes,
+    "Codex設定上書きが大きすぎます。",
+  );
+
+class CodexConfigOverride {
+  private readonly argument: string;
+
+  private constructor(argument: string) {
+    this.argument = codexConfigOverrideSchema.parse(argument);
+  }
+
+  /** 検証済みのCodex設定上書きを起動引数へ変換します。 */
+  public toArgument(): string {
+    return this.argument;
+  }
+}
+
+export type CodexConfigOverrideValue = CodexConfigOverride;
+
+const codexConfigOverridesSchema = z
+  .array(
+    z.custom<CodexConfigOverride>(
+      (value) => value instanceof CodexConfigOverride,
+      "Codex設定上書きの型が不正です。",
+    ),
+  )
+  .max(maxCodexConfigOverrideCount, "Codex設定上書きの件数が上限を超えています。")
+  .superRefine((overrides, context) => {
+    const totalCodeUnits = overrides.reduce(
+      (length, override) => length + override.toArgument().length,
+      0,
+    );
+    if (totalCodeUnits > maxCodexConfigOverrideTotalCodeUnits) {
+      context.addIssue({
+        code: "custom",
+        message: "Codex設定上書きの合計UTF-16長が上限を超えています。",
+      });
+    }
+  });
+
+function windowsCommandLineArgumentCodeUnits(value: string): number {
+  return value.length * 2 + 2;
+}
+
+function windowsCommandLineCodeUnits(
+  executable: string,
+  overrides: readonly CodexConfigOverride[],
+): number {
+  const argumentCount = overrides.length * 2 + 2;
+  return (
+    windowsCommandLineArgumentCodeUnits(executable)
+    + overrides.length * windowsCommandLineArgumentCodeUnits("-c")
+    + overrides.reduce(
+      (length, override) => length + windowsCommandLineArgumentCodeUnits(override.toArgument()),
+      0,
+    )
+    + windowsCommandLineArgumentCodeUnits("app-server")
+    + argumentCount - 1
+    + 1
+  );
+}
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value == null || Array.isArray(value)) {
@@ -898,13 +979,27 @@ export const codexDiagnosticSchema = z.discriminatedUnion("kind", [
 /** Codex接続の生成設定を表すスキーマです。 */
 export const codexConnectionOptionsSchema = z
   .object({
-    executable: nonEmptyTextSchema.max(4_096).optional(),
+    executable: nonEmptyTextSchema.max(maxCodexExecutableCodeUnits).optional(),
     environment: z.record(z.string().min(1).max(200), z.string()).optional(),
     clientInfo: initializeClientInfoSchema,
     capabilities: initializeCapabilitiesSchema.optional(),
     requestTimeoutMs: z.number().int().positive().max(120_000).optional(),
+    configOverrides: codexConfigOverridesSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((options, context) => {
+    const executable = options.executable ?? "codex";
+    if (
+      windowsCommandLineCodeUnits(executable, options.configOverrides)
+      >= maxWindowsCommandLineCodeUnits
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["configOverrides"],
+        message: "WindowsのCodex起動引数が32767 UTF-16単位以上になります。",
+      });
+    }
+  });
 
 export type CodexRpcId = z.infer<typeof codexRpcIdSchema>;
 export type InitializeClientInfo = z.infer<typeof initializeClientInfoSchema>;
@@ -933,4 +1028,9 @@ export type TurnInterruptParams = z.infer<typeof turnInterruptParamsSchema>;
 export type TurnInterruptResult = z.infer<typeof turnInterruptResultSchema>;
 export type CodexNotification = z.infer<typeof codexNotificationSchema>;
 export type CodexDiagnostic = z.infer<typeof codexDiagnosticSchema>;
-export type CodexConnectionOptions = z.infer<typeof codexConnectionOptionsSchema>;
+export type CodexConnectionOptions = Omit<
+  z.infer<typeof codexConnectionOptionsSchema>,
+  "configOverrides"
+> & {
+  configOverrides: CodexConfigOverrideValue[];
+};
