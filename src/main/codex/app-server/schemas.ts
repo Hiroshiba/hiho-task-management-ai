@@ -659,22 +659,12 @@ export const threadStartParamsSchema = z
     cwd: pathSchema.optional(),
     approvalPolicy: z.literal("never").optional(),
     sandbox: z.enum(["read-only", "workspace-write"]).optional(),
-    permissions: nonEmptyTextSchema.max(200).optional(),
     config: permissionProfileConfigSchema.optional(),
     personality: nonEmptyTextSchema.max(100).optional(),
     serviceName: nonEmptyTextSchema.max(200).optional(),
     ephemeral: z.boolean().optional(),
   })
-  .strict()
-  .superRefine((params, context) => {
-    if (params.sandbox !== undefined && params.permissions !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["sandbox"],
-        message: "sandboxとpermissionsを同時に指定できません。",
-      });
-    }
-  });
+  .strict();
 
 const threadSummarySchema = z
   .object({

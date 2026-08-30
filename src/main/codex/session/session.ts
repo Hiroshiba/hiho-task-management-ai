@@ -1723,7 +1723,6 @@ export class CodexSessionService {
       model: this.requireSelectedModel(),
       cwd: this.options.workspacePath,
       approvalPolicy: "never",
-      permissions: permissionProfileId,
       config,
     };
     const validatedParams = threadStartParamsSchema.parse(params);
