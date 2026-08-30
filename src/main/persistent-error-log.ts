@@ -19,6 +19,12 @@ import { z } from "zod";
 import { isoDateTimeSchema } from "../shared/domain";
 import { diagnosticCodeSchema } from "../shared/storage";
 import type { DiagnosticRecord } from "./application/diagnostics";
+import {
+  CodexRpcError,
+  codexRpcCodeSchema,
+  codexRpcOperationSchema,
+  type CodexRpcOperation,
+} from "./codex/app-server/errors";
 
 const maximumLogBytes = 1 * 1024 * 1024;
 const maximumStackFrames = 32;
@@ -87,6 +93,8 @@ type SafeErrorDetail = {
   stack_frames: string[];
   cause_chain: SafeErrorDetail[];
   aggregate_errors: SafeErrorDetail[];
+  rpc_operation?: CodexRpcOperation | undefined;
+  rpc_code?: number | undefined;
 };
 
 const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
@@ -100,6 +108,8 @@ const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
       aggregate_errors: z
         .array(safeErrorDetailSchema)
         .max(maximumAggregateErrors),
+      rpc_operation: codexRpcOperationSchema.optional(),
+      rpc_code: codexRpcCodeSchema.optional(),
     })
     .strict(),
 );
@@ -378,6 +388,21 @@ function getAggregateErrors(error: unknown): unknown[] {
   return aggregateErrors;
 }
 
+type SafeCodexRpcDetail = {
+  rpc_operation?: CodexRpcOperation | undefined;
+  rpc_code?: number | undefined;
+};
+
+function getSafeCodexRpcDetail(value: unknown): SafeCodexRpcDetail {
+  if (!(value instanceof CodexRpcError)) {
+    return {};
+  }
+  return {
+    rpc_operation: codexRpcOperationSchema.parse(value.operation),
+    rpc_code: codexRpcCodeSchema.parse(value.rpcCode),
+  };
+}
+
 function createSafeErrorDetail(
   value: unknown,
   stackSanitizer: StackSanitizer,
@@ -412,6 +437,7 @@ function createSafeErrorDetail(
     stack_frames: getStackFrames(value, stackSanitizer),
     cause_chain: [],
     aggregate_errors: [],
+    ...getSafeCodexRpcDetail(value),
   };
 
   if (depth < maximumErrorDepth) {

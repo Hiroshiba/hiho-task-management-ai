@@ -1,7 +1,31 @@
+import { z } from "zod";
+
 export type CodexProtocolFailureCode =
   | "message_too_large"
   | "json_too_deep"
   | "invalid_message";
+
+export const codexRpcOperationSchema = z.enum([
+  "initialize",
+  "account/read",
+  "account/login/start",
+  "model/list",
+  "skills/list",
+  "permissionProfile/list",
+  "mcpServerStatus/list",
+  "experimentalFeature/list",
+  "thread/start",
+  "turn/start",
+  "turn/interrupt",
+]);
+
+export type CodexRpcOperation = z.infer<typeof codexRpcOperationSchema>;
+
+export const codexRpcCodeSchema = z
+  .number()
+  .int()
+  .min(-2_147_483_648)
+  .max(2_147_483_647);
 
 /** Codex CLI実行ファイルが見つからないことを表します。 */
 export class CodexExecutableNotFoundError extends Error {
@@ -40,12 +64,14 @@ export class CodexUnknownResponseIdError extends Error {
 
 /** Codex app-serverがRPCエラーを返したことを表します。 */
 export class CodexRpcError extends Error {
+  public readonly operation: CodexRpcOperation;
   public readonly rpcCode: number;
 
-  public constructor(rpcCode: number) {
+  public constructor(operation: CodexRpcOperation, rpcCode: number) {
     super("Codex app-serverがRPCエラーを返しました。");
     this.name = "CodexRpcError";
-    this.rpcCode = rpcCode;
+    this.operation = codexRpcOperationSchema.parse(operation);
+    this.rpcCode = codexRpcCodeSchema.parse(rpcCode);
   }
 }
 

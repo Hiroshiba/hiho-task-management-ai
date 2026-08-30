@@ -58,6 +58,8 @@ import {
 import {
   CodexConnectionStateError,
   CodexConnectionStoppedError,
+  codexRpcCodeSchema,
+  codexRpcOperationSchema,
   CodexPendingRequestLimitError,
   CodexProcessError,
   CodexProcessExitError,
@@ -95,7 +97,7 @@ const rpcResponseResultSchema = z
 
 const rpcErrorSchema = z
   .object({
-    code: z.number().int(),
+    code: codexRpcCodeSchema,
     message: z.string().min(1).max(2_000),
     data: z.unknown().optional(),
   })
@@ -141,6 +143,7 @@ type ProcessSignalResult =
   | { readonly kind: "not_running" };
 
 interface PendingRequest {
+  readonly operation: z.infer<typeof codexRpcOperationSchema>;
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: unknown) => void;
   readonly timeout: NodeJS.Timeout;
@@ -780,12 +783,13 @@ export class CodexAppServerConnection {
   }
 
   private requestInternal<Output>(
-    method: string,
+    operation: z.infer<typeof codexRpcOperationSchema>,
     params: unknown,
     schema: z.ZodType<Output>,
     signal: AbortSignal,
   ): Promise<Output> {
     validateAbortSignal(signal);
+    const validatedOperation = codexRpcOperationSchema.parse(operation);
     if (this.state !== "starting" && this.state !== "ready") {
       if (this.state === "stopped" || this.state === "stopping") {
         return Promise.reject(new CodexConnectionStoppedError());
@@ -802,7 +806,7 @@ export class CodexAppServerConnection {
       return Promise.reject(new CodexRequestIdExhaustedError());
     }
     if (signal.aborted) {
-      return Promise.reject(new CodexRequestAbortedError(method));
+      return Promise.reject(new CodexRequestAbortedError(validatedOperation));
     }
     const id = this.nextRequestId;
     this.nextRequestId += 1;
@@ -810,12 +814,13 @@ export class CodexAppServerConnection {
 
     return new Promise<Output>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.handleRequestTimeout(key, method);
+        this.handleRequestTimeout(key, validatedOperation);
       }, this.requestTimeoutMs);
       const abortListener = (): void => {
-        this.handleRequestAbort(key, method);
+        this.handleRequestAbort(key, validatedOperation);
       };
       this.pendingRequests.set(key, {
+        operation: validatedOperation,
         resolve: (value: unknown) => {
           resolve(schema.parse(value));
         },
@@ -826,11 +831,11 @@ export class CodexAppServerConnection {
       });
       signal.addEventListener("abort", abortListener, { once: true });
       if (signal.aborted) {
-        this.handleRequestAbort(key, method);
+        this.handleRequestAbort(key, validatedOperation);
         return;
       }
       try {
-        void this.writeMessage({ method, id, params }).catch((error: unknown) => {
+        void this.writeMessage({ method: validatedOperation, id, params }).catch((error: unknown) => {
           this.failConnection(error);
         });
       } catch (error: unknown) {
@@ -1064,7 +1069,7 @@ export class CodexAppServerConnection {
     }
     this.pendingRequests.delete(key);
     this.cleanupPending(pending);
-    const rpcError = new CodexRpcError(response.error.code);
+    const rpcError = new CodexRpcError(pending.operation, response.error.code);
     pending.reject(rpcError);
   }
 
