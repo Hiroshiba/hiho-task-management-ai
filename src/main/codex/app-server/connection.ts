@@ -975,8 +975,8 @@ export class CodexAppServerConnection {
       this.handleParsedMessage(parsed);
     } catch (error: unknown) {
       const connectionError = this.toConnectionError(error);
-      this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
       this.failConnection(connectionError);
+      this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
     }
   }
 
@@ -995,8 +995,8 @@ export class CodexAppServerConnection {
           "message_too_large",
           new Error("Codex app-server応答の行サイズが上限を超えました。"),
         );
-        this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
         this.failConnection(protocolError);
+        this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
         return;
       }
     }
