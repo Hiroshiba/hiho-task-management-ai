@@ -1762,7 +1762,7 @@ export class TaskHubApplication {
       );
       return setupCodexAvailabilitySchema.parse({
         kind: "unavailable",
-        reason_code: "disabled",
+        reason_code: "startup_failed",
       });
     }
     if (availability.kind === "unavailable") {
