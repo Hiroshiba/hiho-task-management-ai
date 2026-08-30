@@ -19,6 +19,164 @@ const maxCodexConfigOverrideBytes = 16 * 1024;
 const maxCodexConfigOverrideTotalCodeUnits = 8 * 1024;
 const maxCodexExecutableCodeUnits = 4_096;
 const maxWindowsCommandLineCodeUnits = 32_767;
+const maxTaskHubPermissionVaultPaths = 32;
+const maxTaskHubPermissionSocketPaths = 33;
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit <= 0x1f || (codeUnit >= 0x7f && codeUnit <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function containsLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) {
+        return true;
+      }
+      index += 1;
+      continue;
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const tomlBasicStringValueSchema = z
+  .string()
+  .refine(
+    (value) => !value.includes("\0"),
+    "TOML文字列にNULを指定できません。",
+  )
+  .refine(
+    (value) => !value.includes("\n") && !value.includes("\r"),
+    "TOML文字列に改行を指定できません。",
+  )
+  .refine(
+    (value) => !containsControlCharacter(value),
+    "TOML文字列に制御文字を指定できません。",
+  )
+  .refine(
+    (value) => !containsLoneSurrogate(value),
+    "TOML文字列に孤立したサロゲートを指定できません。",
+  );
+
+const tomlBasicStringSchema = z
+  .string()
+  .min(2)
+  .refine(
+    (value) => value.startsWith("\"") && value.endsWith("\""),
+    "TOML基本文字列の引用が不正です。",
+  );
+
+const taskHubPermissionPathSchema = pathSchema
+  .refine(isAbsolute, "TaskHub権限設定のパスは絶対パスでなければなりません。")
+  .refine(
+    (value) => !value.includes("\0"),
+    "TaskHub権限設定のパスにNULを指定できません。",
+  )
+  .refine(
+    (value) => !value.includes("\n") && !value.includes("\r"),
+    "TaskHub権限設定のパスに改行を指定できません。",
+  )
+  .refine(
+    (value) => !containsControlCharacter(value),
+    "TaskHub権限設定のパスに制御文字を指定できません。",
+  )
+  .refine(
+    (value) => !containsLoneSurrogate(value),
+    "TaskHub権限設定のパスに孤立したサロゲートを指定できません。",
+  );
+
+const taskHubVerifiedPermissionProfilePathsSchema = z
+  .object({
+    workspacePath: taskHubPermissionPathSchema,
+    codexHomePath: taskHubPermissionPathSchema,
+    readOnlyVaultPaths: z.array(taskHubPermissionPathSchema).max(maxTaskHubPermissionVaultPaths),
+    unixSocketPaths: z
+      .array(taskHubPermissionPathSchema)
+      .min(1, "taskctlのローカルIPCが必要です。")
+      .max(maxTaskHubPermissionSocketPaths),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const filesystemKeys = [
+      input.workspacePath,
+      input.codexHomePath,
+      ...input.readOnlyVaultPaths,
+    ];
+    if (new Set(filesystemKeys).size !== filesystemKeys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["readOnlyVaultPaths"],
+        message: "TaskHub権限設定のfilesystemキーを重複させられません。",
+      });
+    }
+    if (new Set(input.unixSocketPaths).size !== input.unixSocketPaths.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["unixSocketPaths"],
+        message: "TaskHub権限設定のソケットを重複させられません。",
+      });
+    }
+  });
+
+function quoteTomlBasicString(value: string): string {
+  const validatedValue = tomlBasicStringValueSchema.parse(value);
+  return tomlBasicStringSchema.parse(JSON.stringify(validatedValue));
+}
+
+type TomlInlineTableValue =
+  | {
+      readonly kind: "basic_string";
+      readonly value: string;
+    }
+  | {
+      readonly kind: "inline_table";
+      readonly value: string;
+    }
+  | {
+      readonly kind: "boolean";
+      readonly value: "false";
+    };
+
+type TomlInlineTableEntry = readonly [string, TomlInlineTableValue];
+
+function createTomlBasicStringValue(value: string): TomlInlineTableValue {
+  return {
+    kind: "basic_string",
+    value: quoteTomlBasicString(value),
+  };
+}
+
+function createTomlInlineTable(entries: readonly TomlInlineTableEntry[]): string {
+  const serializedEntries = entries
+    .map(([key, value]) => `${quoteTomlBasicString(key)}=${value.value}`)
+    .join(",");
+  return z.string().parse(`{${serializedEntries}}`);
+}
+
+function createTomlInlineTableValue(
+  entries: readonly TomlInlineTableEntry[],
+): TomlInlineTableValue {
+  return {
+    kind: "inline_table",
+    value: createTomlInlineTable(entries),
+  };
+}
+
+const tomlFalseValue: TomlInlineTableValue = {
+  kind: "boolean",
+  value: "false",
+};
 
 const codexConfigOverrideSchema = z
   .string()
@@ -42,6 +200,12 @@ class CodexConfigOverride {
 
   private constructor(argument: string) {
     this.argument = codexConfigOverrideSchema.parse(argument);
+    Object.freeze(this);
+  }
+
+  /** 検証済みのCodex設定上書きを作成します。 */
+  public static create(argument: string): CodexConfigOverride {
+    return new CodexConfigOverride(argument);
   }
 
   /** 検証済みのCodex設定上書きを起動引数へ変換します。 */
@@ -93,6 +257,68 @@ function windowsCommandLineCodeUnits(
     + argumentCount - 1
     + 1
   );
+}
+
+function compareUtf16CodeUnits(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
+/** 検証済みの実体パスをTaskHub権限プロファイルのTOML上書きへ変換する低水準関数です。 */
+export function createTaskHubPermissionProfileOverridesFromVerifiedPaths(
+  input: TaskHubVerifiedPermissionProfilePaths,
+): readonly CodexConfigOverrideValue[] {
+  const validatedInput = taskHubVerifiedPermissionProfilePathsSchema.parse(input);
+  const readOnlyVaultPaths = [...validatedInput.readOnlyVaultPaths].sort(
+    compareUtf16CodeUnits,
+  );
+  const unixSocketPaths = [...validatedInput.unixSocketPaths].sort(
+    compareUtf16CodeUnits,
+  );
+  const filesystem = createTomlInlineTableValue([
+    [":root", createTomlBasicStringValue("deny")],
+    [":minimal", createTomlBasicStringValue("read")],
+    [":tmpdir", createTomlBasicStringValue("deny")],
+    [":slash_tmp", createTomlBasicStringValue("deny")],
+    [
+      validatedInput.workspacePath,
+      createTomlInlineTableValue([
+        [".", createTomlBasicStringValue("read")],
+        ["tmp", createTomlBasicStringValue("write")],
+      ]),
+    ],
+    [validatedInput.codexHomePath, createTomlBasicStringValue("deny")],
+    ...readOnlyVaultPaths.map(
+      (path): TomlInlineTableEntry => [path, createTomlBasicStringValue("read")],
+    ),
+  ]);
+  const network = createTomlInlineTableValue([
+    ["enabled", tomlFalseValue],
+    [
+      "unix_sockets",
+      createTomlInlineTableValue(
+        unixSocketPaths.map(
+          (path): TomlInlineTableEntry => [path, createTomlBasicStringValue("allow")],
+        ),
+      ),
+    ],
+  ]);
+  const profile = createTomlInlineTableValue([
+    ["filesystem", filesystem],
+    ["network", network],
+  ]);
+  const overrides = codexConfigOverridesSchema.parse([
+    CodexConfigOverride.create(
+      `default_permissions=${createTomlBasicStringValue("taskhub").value}`,
+    ),
+    CodexConfigOverride.create(`permissions.taskhub=${profile.value}`),
+  ]);
+  return Object.freeze(overrides);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1032,5 +1258,8 @@ export type CodexConnectionOptions = Omit<
   z.infer<typeof codexConnectionOptionsSchema>,
   "configOverrides"
 > & {
-  configOverrides: CodexConfigOverrideValue[];
+  configOverrides: readonly CodexConfigOverrideValue[];
 };
+export type TaskHubVerifiedPermissionProfilePaths = z.infer<
+  typeof taskHubVerifiedPermissionProfilePathsSchema
+>;
