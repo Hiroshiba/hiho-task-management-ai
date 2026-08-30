@@ -593,8 +593,6 @@ function isConnectionShape(value: unknown): value is CodexSessionConnection {
     "listModels",
     "listSkills",
     "listPermissionProfiles",
-    "listMcpServerStatuses",
-    "listExperimentalFeatures",
     "getCodexHome",
     "startThread",
     "startTurn",
@@ -651,6 +649,7 @@ export class CodexSessionService {
   private permissionProfileNotification: PermissionProfileNotification | undefined;
   private skillConfiguration: Array<{ path: string; enabled: boolean }> = [];
   private threadConfigurationChanged = false;
+  private connectionConfigurationChanged = false;
   private lifecycleSignal: AbortSignal | undefined;
   private lifecycleAbortListener: (() => void) | undefined;
   private recoveryAbortController: AbortController | undefined;
@@ -694,6 +693,7 @@ export class CodexSessionService {
     }
     this.readOnlyVaultPaths = validatedPaths;
     this.threadConfigurationChanged = true;
+    this.connectionConfigurationChanged = true;
   }
 
   /** Codexが接続できる追加ローカルIPCを更新します。 */
@@ -717,6 +717,7 @@ export class CodexSessionService {
     }
     this.additionalLocalSocketPaths = validatedPaths;
     this.threadConfigurationChanged = true;
+    this.connectionConfigurationChanged = true;
   }
 
   /** 専用ワークスペースのスキル更新後に新規スレッドを必須化します。 */
@@ -799,7 +800,14 @@ export class CodexSessionService {
       throw new CodexSessionAbortedError();
     }
     this.state = "starting";
+    const shouldRestartConnection = this.connectionConfigurationChanged;
     try {
+      if (shouldRestartConnection) {
+        await this.restartConnectionForConfigurationChange(signal);
+        this.assertSafetyIntact();
+        this.state = "ready";
+        return this.createStartResult();
+      }
       const accountInspection = await this.inspectAccountWithRetry(connection, signal);
       if (accountInspection.kind === "authentication_pending") {
         this.state = "authentication_required";
@@ -816,6 +824,15 @@ export class CodexSessionService {
       this.state = "ready";
       return this.createStartResult();
     } catch (error: unknown) {
+      if (
+        shouldRestartConnection
+        && error instanceof CodexSessionAuthenticationError
+        && this.connection != null
+        && !this.safetyViolation
+      ) {
+        this.state = "authentication_required";
+        return this.createAuthenticationRequiredResult();
+      }
       if (error instanceof CodexSessionAuthenticationError && !this.safetyViolation) {
         this.state = "authentication_required";
         throw error;
@@ -843,7 +860,14 @@ export class CodexSessionService {
       throw new CodexSessionStateError();
     }
     this.state = "starting";
+    const shouldRestartConnection = this.connectionConfigurationChanged;
     try {
+      if (shouldRestartConnection) {
+        await this.restartConnectionForConfigurationChange(signal);
+        this.assertSafetyIntact();
+        this.state = "ready";
+        return this.createStartResult();
+      }
       await this.inspectSkills(connection, signal);
       await this.inspectPermissionProfile(connection, signal);
       await this.inspectModel(connection, signal);
@@ -852,6 +876,15 @@ export class CodexSessionService {
       this.state = "ready";
       return this.createStartResult();
     } catch (error: unknown) {
+      if (
+        shouldRestartConnection
+        && error instanceof CodexSessionAuthenticationError
+        && this.connection != null
+        && !this.safetyViolation
+      ) {
+        this.state = "authentication_required";
+        return this.createAuthenticationRequiredResult();
+      }
       await this.disableAi(error);
       throw error;
     }
@@ -1294,6 +1327,7 @@ export class CodexSessionService {
           "Codex認証領域が期待するパスと一致しません。",
         );
       }
+      this.connectionConfigurationChanged = false;
       const accountInspection = await this.inspectAccount(candidate, signal);
       if (accountInspection.kind !== "authenticated") {
         throw new CodexSessionAuthenticationError();
@@ -1321,6 +1355,20 @@ export class CodexSessionService {
       }
       throw error;
     }
+  }
+
+  private async restartConnectionForConfigurationChange(signal: AbortSignal): Promise<void> {
+    const cleanupErrors = await this.cleanupConnection();
+    for (const cleanupError of cleanupErrors) {
+      this.recordDiagnostic("connection_stop_error", cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new CodexSessionError(
+        "Codex接続を安全に停止できませんでした。",
+        new AggregateError(cleanupErrors),
+      );
+    }
+    await this.connectAndStartThread(signal);
   }
 
   private async inspectAccount(
@@ -1597,16 +1645,15 @@ export class CodexSessionService {
     const result = threadStartResultSchema.parse(
       await connection.startThread(validatedParams, signal),
     );
-    const hasUnexpectedWorkspaceInstructionSource = result.instructionSources.some(
-      (source) => isPathWithin(this.options.workspacePath, source)
-        && source !== this.options.agentsFilePath,
+    const hasUnexpectedInstructionSource = result.instructionSources.some(
+      (source) => source !== this.options.agentsFilePath,
     );
     if (
       result.model !== this.requireSelectedModel()
       || result.cwd !== this.options.workspacePath
       || result.approvalPolicy !== "never"
       || !result.instructionSources.includes(this.options.agentsFilePath)
-      || hasUnexpectedWorkspaceInstructionSource
+      || hasUnexpectedInstructionSource
       || !hasWorkspaceWriteSandbox(
         result.sandbox,
         this.options.tmpDirectoryPath,
@@ -2078,6 +2125,7 @@ export class CodexSessionService {
     this.permissionProfileNotification = undefined;
     this.skillConfiguration = [];
     this.threadConfigurationChanged = false;
+    this.connectionConfigurationChanged = false;
     this.frozenTaskctlSnapshot = undefined;
     if (connection != null) {
       try {
