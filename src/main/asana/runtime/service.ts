@@ -32,6 +32,12 @@ import {
 const fullSyncIntervalMilliseconds = 24 * 60 * 60 * 1000;
 const onlineSyncIntervalMilliseconds = 60 * 1000;
 
+export type AsanaSyncRuntimeInternalResult =
+  | Exclude<AsanaSyncRuntimeResult, { kind: "failed" }>
+  | (Extract<AsanaSyncRuntimeResult, { kind: "failed" }> & {
+      readonly cause: unknown;
+    });
+
 type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
 type StorageDatabasePort = Pick<StorageDatabase, "getSyncState">;
 type BeforeSynchronization = (
@@ -41,7 +47,7 @@ type OnlineReadiness =
   | { readonly kind: "ready" }
   | {
       readonly kind: "unavailable";
-      readonly result: AsanaSyncRuntimeResult;
+      readonly result: AsanaSyncRuntimeInternalResult;
     };
 type RuntimeConnectionState =
   | { readonly kind: "offline" }
@@ -138,29 +144,42 @@ function classifyKnownError(error: unknown): AsanaSyncRuntimeErrorCode | undefin
   return undefined;
 }
 
-function createAbortResult(): AsanaSyncRuntimeResult {
-  return asanaSyncRuntimeResultSchema.parse({
+function createAbortResult(): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
     kind: "aborted",
     reason: "aborted",
   });
+  if (result.kind !== "aborted") {
+    throw new Error("同期中断結果の種別が不正です。");
+  }
+  return result;
 }
 
 function createRejectedResult(
   reason: "offline" | "stopped",
-): AsanaSyncRuntimeResult {
-  return asanaSyncRuntimeResultSchema.parse({
+): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
     kind: "rejected",
     reason,
   });
+  if (result.kind !== "rejected") {
+    throw new Error("同期拒否結果の種別が不正です。");
+  }
+  return result;
 }
 
 function createFailedResult(
   errorCode: AsanaSyncRuntimeErrorCode,
-): AsanaSyncRuntimeResult {
-  return asanaSyncRuntimeResultSchema.parse({
+  cause: unknown,
+): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
     kind: "failed",
     error_code: errorCode,
   });
+  if (result.kind !== "failed") {
+    throw new Error("同期失敗結果の種別が不正です。");
+  }
+  return { ...result, cause };
 }
 
 function toError(error: unknown): Error {
@@ -173,14 +192,18 @@ function toError(error: unknown): Error {
 function createSynchronizedResult(
   requestedMode: AsanaSyncRuntimeSynchronizationMode,
   result: AsanaSyncCoordinatorResult,
-): AsanaSyncRuntimeResult {
-  return asanaSyncRuntimeResultSchema.parse({
+): AsanaSyncRuntimeInternalResult {
+  const synchronized = asanaSyncRuntimeResultSchema.parse({
     kind: "synchronized",
     requested_mode: requestedMode,
     performed_mode: result.performed_mode,
     synced_at: result.synced_at,
     result,
   });
+  if (synchronized.kind !== "synchronized") {
+    throw new Error("同期成功結果の種別が不正です。");
+  }
+  return synchronized;
 }
 
 function createCombinedSignal(signals: AbortSignal[]): AbortSignal {
@@ -202,7 +225,7 @@ export class AsanaSyncRuntime {
     this.handleLifecycleAbort();
   };
   private activeRunController: AbortController | undefined;
-  private running: Promise<AsanaSyncRuntimeResult> | undefined;
+  private running: Promise<AsanaSyncRuntimeInternalResult> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pendingMode: AsanaSyncRuntimeSynchronizationMode | undefined;
   private pendingBarrier = false;
@@ -254,41 +277,41 @@ export class AsanaSyncRuntime {
   }
 
   /** 起動後の同期を実行します。 */
-  public start(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public start(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestSelectedMode(false, signal);
   }
 
   /** フォアグラウンド復帰後の同期を実行します。 */
-  public onForeground(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public onForeground(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestSelectedMode(false, signal);
   }
 
   /** AIターン開始前の鮮度確保を実行します。 */
-  public beforeAiTurn(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public beforeAiTurn(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestSelectedMode(false, signal);
   }
 
   /** GUI変更後の同期と後処理を実行します。 */
   public async afterGuiEdit(
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestAfterApplyBarrier(signal);
   }
 
   /** AI変更適用後の同期と後処理を実行します。 */
   public async afterAiApply(
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestAfterApplyBarrier(signal);
   }
 
   /** 通常の手動同期を実行します。 */
-  public manualSync(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public manualSync(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestSelectedMode(false, signal);
   }
 
   /** 完全同期を指定して手動同期を実行します。 */
-  public manualFullSync(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public manualFullSync(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     return this.requestSelectedMode(true, signal);
   }
 
@@ -335,7 +358,7 @@ export class AsanaSyncRuntime {
   }
 
   /** オンライン復帰後の同期を実行します。 */
-  public async onOnline(signal: AbortSignal): Promise<AsanaSyncRuntimeResult> {
+  public async onOnline(signal: AbortSignal): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return createAbortResult();
@@ -385,7 +408,7 @@ export class AsanaSyncRuntime {
 
   private async requestAfterApplyBarrier(
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return createAbortResult();
@@ -403,7 +426,7 @@ export class AsanaSyncRuntime {
   private async requestSelectedMode(
     forceFull: boolean,
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return createAbortResult();
@@ -492,7 +515,7 @@ export class AsanaSyncRuntime {
     mode: AsanaSyncRuntimeSynchronizationMode,
     signal: AbortSignal,
     barrier: boolean,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return Promise.resolve(createAbortResult());
@@ -520,7 +543,7 @@ export class AsanaSyncRuntime {
     this.runningMode = mode;
     this.pendingBarrier = false;
     this.pendingMode = undefined;
-    const deferred = createDeferred<AsanaSyncRuntimeResult>();
+    const deferred = createDeferred<AsanaSyncRuntimeInternalResult>();
     this.running = deferred.promise;
     const sharedSignal = createCombinedSignal([
       this.lifecycleSignal,
@@ -534,14 +557,14 @@ export class AsanaSyncRuntime {
   }
 
   private waitForCaller(
-    running: Promise<AsanaSyncRuntimeResult>,
+    running: Promise<AsanaSyncRuntimeInternalResult>,
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return Promise.resolve(createAbortResult());
     }
-    return new Promise<AsanaSyncRuntimeResult>((resolve, reject) => {
+    return new Promise<AsanaSyncRuntimeInternalResult>((resolve, reject) => {
       let settled = false;
       const removeAbortListener = (): void => {
         signal.removeEventListener("abort", onAbort);
@@ -584,7 +607,7 @@ export class AsanaSyncRuntime {
     initialMode: AsanaSyncRuntimeSynchronizationMode,
     sharedSignal: AbortSignal,
     generation: number,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     let mode = initialMode;
     try {
       while (true) {
@@ -629,7 +652,7 @@ export class AsanaSyncRuntime {
   private async execute(
     mode: AsanaSyncRuntimeSynchronizationMode,
     signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeResult> {
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     if (
       signal.aborted
       || this.connectionState.kind !== "online"
@@ -703,7 +726,7 @@ export class AsanaSyncRuntime {
       } else {
         this.publishState(this.createErrorState(knownCode));
       }
-      return createFailedResult(knownCode);
+      return createFailedResult(knownCode, error);
     }
   }
 

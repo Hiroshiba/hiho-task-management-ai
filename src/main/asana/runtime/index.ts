@@ -1,5 +1,6 @@
 export {
   AsanaSyncRuntime,
+  type AsanaSyncRuntimeInternalResult,
   type AsanaSyncRuntimeStateListener,
   type AsanaSyncRuntimeUnexpectedErrorNotifier,
 } from "./service";

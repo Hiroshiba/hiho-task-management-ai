@@ -33,7 +33,7 @@ import {
 } from "../asana/sync";
 import {
   AsanaSyncRuntime,
-  type AsanaSyncRuntimeResult,
+  type AsanaSyncRuntimeInternalResult,
   type AsanaSyncRuntimeState,
 } from "../asana/runtime";
 import {
@@ -684,7 +684,7 @@ function postWriteRecoveryRequired(
 }
 
 function postWriteSynchronizationFromRuntimeResult(
-  result: AsanaSyncRuntimeResult,
+  result: AsanaSyncRuntimeInternalResult,
 ): PostWriteSynchronizationResult {
   switch (result.kind) {
     case "synchronized":
@@ -709,7 +709,7 @@ function postWriteSynchronizationFromRuntimeResult(
           return postWriteRecoveryRequired(result.error_code);
         case "unexpected_error":
           throw new Error("書き込み後の同期が想定外エラーで停止しました。", {
-            cause: result,
+            cause: result.cause,
           });
       }
   }
@@ -819,7 +819,7 @@ function toIpcSyncState(state: AsanaSyncRuntimeState): IpcSyncStateEvent {
 }
 
 function toIpcSyncResult(
-  result: Extract<AsanaSyncRuntimeResult, { kind: "synchronized" }>["result"],
+  result: Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>["result"],
 ): IpcSyncResult {
   const {
     events_token: _eventsToken,
@@ -1248,7 +1248,7 @@ export class TaskHubApplication {
     this.assertOperationalReady();
     this.assertAsanaReauthenticationIdle();
     const runtime = this.requireRuntime();
-    let result: AsanaSyncRuntimeResult;
+    let result: AsanaSyncRuntimeInternalResult;
     try {
       result = await runtime.onOnline(this.options.lifecycle_signal);
     } catch (error: unknown) {
@@ -3024,9 +3024,9 @@ export class TaskHubApplication {
   }
 
   private async requireSynchronizedResult(
-    resultPromise: Promise<AsanaSyncRuntimeResult>,
-  ): Promise<Extract<AsanaSyncRuntimeResult, { kind: "synchronized" }>> {
-    let result: AsanaSyncRuntimeResult;
+    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
+  ): Promise<Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>> {
+    let result: AsanaSyncRuntimeInternalResult;
     try {
       result = await resultPromise;
     } catch (error: unknown) {
@@ -3047,11 +3047,13 @@ export class TaskHubApplication {
     if (result.kind === "aborted") {
       throw new Error("Asana同期が中断されました。");
     }
-    throw new Error(`Asana同期に失敗しました。エラーコード: ${result.error_code}`);
+    throw new Error(`Asana同期に失敗しました。エラーコード: ${result.error_code}`, {
+      cause: result.cause,
+    });
   }
 
   private async afterSynchronizedState(
-    result: Extract<AsanaSyncRuntimeResult, { kind: "synchronized" }>,
+    result: Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>,
     signal: AbortSignal,
   ): Promise<void> {
     void result;
@@ -3124,10 +3126,10 @@ export class TaskHubApplication {
   }
 
   private async resolvePostWriteSynchronization(
-    resultPromise: Promise<AsanaSyncRuntimeResult>,
+    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
-    let runtimeResult: AsanaSyncRuntimeResult;
+    let runtimeResult: AsanaSyncRuntimeInternalResult;
     try {
       runtimeResult = await resultPromise;
     } catch (error: unknown) {
