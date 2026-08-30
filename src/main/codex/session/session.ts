@@ -11,10 +11,6 @@ import {
   codexConnectionOptionsSchema,
   codexDiagnosticSchema,
   codexNotificationSchema,
-  experimentalFeatureListParamsSchema,
-  experimentalFeatureListResultSchema,
-  mcpServerStatusListParamsSchema,
-  mcpServerStatusListResultSchema,
   modelListParamsSchema,
   modelListResultSchema,
   permissionProfileListParamsSchema,
@@ -30,15 +26,13 @@ import {
   type CodexConnectionOptions,
   type CodexDiagnostic,
   type CodexNotification,
-  type ExperimentalFeatureListResult,
-  type McpServerStatusListResult,
   type ModelListResult,
   type PermissionProfileListResult,
   type ChatGptLoginStartResult,
   type ThreadStartResult,
 } from "../app-server";
 import {
-  createTaskHubPermissionProfileOverridesFromVerifiedPaths,
+  createTaskHubConnectionOverridesFromVerifiedPaths,
 } from "../app-server/schemas";
 import {
   TaskctlBroker,
@@ -95,27 +89,6 @@ const accountReadRetryDelaysMilliseconds: readonly [number, number, number, numb
   750,
   1_000,
 ];
-const disabledFeatureNames = [
-  "apps",
-  "plugins",
-  "in_app_browser",
-  "browser_use",
-  "browser_use_full_cdp_access",
-  "browser_use_external",
-  "computer_use",
-  "remote_plugin",
-  "image_generation",
-  "in_app_local_automation",
-  "hooks",
-  "multi_agent",
-  "multi_agent_v2",
-  "skill_mcp_dependency_install",
-  "web_search_request",
-  "standalone_executable",
-  "code_mode_host",
-  "tool_suggest",
-];
-
 type PermissionProfileNotification = {
   readonly threadId: string;
   readonly profileId: string | undefined;
@@ -676,7 +649,6 @@ export class CodexSessionService {
   private threadId: string | undefined;
   private selectedModel: string | undefined;
   private permissionProfileNotification: PermissionProfileNotification | undefined;
-  private mcpServerNames: string[] | undefined;
   private skillConfiguration: Array<{ path: string; enabled: boolean }> = [];
   private threadConfigurationChanged = false;
   private lifecycleSignal: AbortSignal | undefined;
@@ -839,7 +811,6 @@ export class CodexSessionService {
       await this.inspectModel(connection, signal);
       await this.inspectSkills(connection, signal);
       await this.inspectPermissionProfile(connection, signal);
-      await this.inspectMcpServers(connection, signal);
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
       this.state = "ready";
@@ -876,7 +847,6 @@ export class CodexSessionService {
       await this.inspectSkills(connection, signal);
       await this.inspectPermissionProfile(connection, signal);
       await this.inspectModel(connection, signal);
-      await this.inspectMcpServers(connection, signal);
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
       this.state = "ready";
@@ -1293,7 +1263,7 @@ export class CodexSessionService {
       if (taskctlStartResult == null) {
         throw new CodexSessionStateError();
       }
-      const configOverrides = this.createPermissionProfileOverrides(
+      const configOverrides = this.createConnectionOverrides(
         expectedCodexHomePath,
         taskctlStartResult,
       );
@@ -1334,8 +1304,6 @@ export class CodexSessionService {
       await this.inspectSkills(candidate, signal);
       this.assertSafetyIntact();
       await this.inspectPermissionProfile(candidate, signal);
-      this.assertSafetyIntact();
-      await this.inspectMcpServers(candidate, signal);
       this.assertSafetyIntact();
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
@@ -1545,96 +1513,7 @@ export class CodexSessionService {
     }
   }
 
-  private async inspectMcpServers(
-    connection: CodexSessionConnection,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const params = mcpServerStatusListParamsSchema.parse({
-      detail: "toolsAndAuthOnly",
-      limit: 1_000,
-    });
-    const result: McpServerStatusListResult = mcpServerStatusListResultSchema.parse(
-      await connection.listMcpServerStatuses(params, signal),
-    );
-    if (result.nextCursor != null) {
-      throw new CodexSessionCapabilityError("MCPサーバー一覧を全件確認できません。");
-    }
-    const names = result.data.map((server) => server.name);
-    if (new Set(names).size !== names.length) {
-      throw new CodexSessionCapabilityError("MCPサーバー一覧に重複した名前があります。");
-    }
-    this.mcpServerNames = names.sort(compareStrings);
-  }
-
-  private async inspectMcpServersAfterThread(
-    connection: CodexSessionConnection,
-    threadId: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const expectedNames = this.mcpServerNames;
-    if (expectedNames == null) {
-      throw new CodexSessionStateError();
-    }
-    const params = mcpServerStatusListParamsSchema.parse({
-      detail: "toolsAndAuthOnly",
-      limit: 1_000,
-      threadId,
-    });
-    const result: McpServerStatusListResult = mcpServerStatusListResultSchema.parse(
-      await connection.listMcpServerStatuses(params, signal),
-    );
-    if (result.nextCursor != null) {
-      throw new CodexSessionCapabilityError("スレッドのMCPサーバー一覧を全件確認できません。");
-    }
-    const actualNames = result.data.map((server) => server.name).sort(compareStrings);
-    if (
-      actualNames.length !== expectedNames.length
-      || actualNames.some((name, index) => name !== expectedNames[index])
-    ) {
-      throw new CodexSessionCapabilityError("スレッドのMCPサーバー構成を確認できません。");
-    }
-    for (const server of result.data) {
-      if (
-        Object.keys(server.tools).length > 0
-        || server.resources.length > 0
-        || server.resourceTemplates.length > 0
-      ) {
-        throw new CodexSessionCapabilityError("MCPサーバーの外部機能を無効化できません。");
-      }
-    }
-  }
-
-  private async inspectExperimentalFeatures(
-    connection: CodexSessionConnection,
-    threadId: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const params = experimentalFeatureListParamsSchema.parse({
-      limit: 1_000,
-      threadId,
-    });
-    const result: ExperimentalFeatureListResult = experimentalFeatureListResultSchema.parse(
-      await connection.listExperimentalFeatures(params, signal),
-    );
-    if (result.nextCursor != null) {
-      throw new CodexSessionCapabilityError("Codex機能一覧を全件確認できません。");
-    }
-    const seen = new Set<string>();
-    for (const feature of result.data) {
-      if (seen.has(feature.name)) {
-        throw new CodexSessionCapabilityError("Codex機能一覧に重複した名前があります。");
-      }
-      seen.add(feature.name);
-    }
-    for (const featureName of disabledFeatureNames) {
-      const feature = result.data.find((candidate) => candidate.name === featureName);
-      if (feature == null || feature.enabled !== false) {
-        throw new CodexSessionCapabilityError("Codexの外部機能を無効化できません。");
-      }
-    }
-  }
-
-  private createPermissionProfileOverrides(
+  private createConnectionOverrides(
     expectedCodexHomePath: string,
     taskctlStartResult: TaskctlBrokerStartResult,
   ): CodexConnectionOptions["configOverrides"] {
@@ -1680,7 +1559,7 @@ export class CodexSessionService {
         throw new CodexSessionCapabilityError("Codex専用ワークスペースとVaultの範囲が重なっています。");
       }
     }
-    return createTaskHubPermissionProfileOverridesFromVerifiedPaths({
+    return createTaskHubConnectionOverridesFromVerifiedPaths({
       workspacePath: realWorkspacePath,
       codexHomePath,
       readOnlyVaultPaths: verifiedVaultPaths,
@@ -1689,24 +1568,12 @@ export class CodexSessionService {
   }
 
   private createThreadConfiguration(): Record<string, unknown> {
-    const disabledFeatures: Record<string, unknown> = {};
-    for (const featureName of disabledFeatureNames) {
-      disabledFeatures[featureName] = false;
-    }
-    const mcpServerNames = this.mcpServerNames;
-    if (mcpServerNames == null) {
-      throw new CodexSessionStateError();
-    }
-    const mcpServers = Object.fromEntries(
-      mcpServerNames.map((serverName) => [serverName, { enabled: false }]),
-    );
     return {
       default_permissions: permissionProfileId,
-      features: disabledFeatures,
+      features: { apps: false, plugins: false },
       web_search: "disabled",
       tools: { web_search: false },
       skills: { config: this.skillConfiguration },
-      mcp_servers: mcpServers,
     };
   }
 
@@ -1749,10 +1616,6 @@ export class CodexSessionService {
     }
     this.threadId = result.thread.id;
     this.validateStoredPermissionProfileNotification(result.thread.id);
-    this.assertSafetyIntact();
-    await this.inspectMcpServersAfterThread(connection, result.thread.id, signal);
-    this.assertSafetyIntact();
-    await this.inspectExperimentalFeatures(connection, result.thread.id, signal);
     this.assertSafetyIntact();
     if (this.threadConfigurationChanged) {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
@@ -2213,7 +2076,6 @@ export class CodexSessionService {
     this.connection = undefined;
     this.threadId = undefined;
     this.permissionProfileNotification = undefined;
-    this.mcpServerNames = undefined;
     this.skillConfiguration = [];
     this.threadConfigurationChanged = false;
     this.frozenTaskctlSnapshot = undefined;

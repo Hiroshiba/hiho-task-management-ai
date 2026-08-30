@@ -269,8 +269,8 @@ function compareUtf16CodeUnits(left: string, right: string): number {
   return 0;
 }
 
-/** 検証済みの実体パスをTaskHub権限プロファイルのTOML上書きへ変換する低水準関数です。 */
-export function createTaskHubPermissionProfileOverridesFromVerifiedPaths(
+/** 検証済みの実体パスをTaskHub接続用のTOML上書きへ変換します。 */
+export function createTaskHubConnectionOverridesFromVerifiedPaths(
   input: TaskHubVerifiedPermissionProfilePaths,
 ): readonly CodexConfigOverrideValue[] {
   const validatedInput = taskHubVerifiedPermissionProfilePathsSchema.parse(input);
@@ -317,6 +317,8 @@ export function createTaskHubPermissionProfileOverridesFromVerifiedPaths(
       `default_permissions=${createTomlBasicStringValue("taskhub").value}`,
     ),
     CodexConfigOverride.create(`permissions.taskhub=${profile.value}`),
+    CodexConfigOverride.create("features.apps=false"),
+    CodexConfigOverride.create("features.plugins=false"),
   ]);
   return Object.freeze(overrides);
 }
