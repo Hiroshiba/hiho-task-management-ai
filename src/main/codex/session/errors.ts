@@ -38,6 +38,14 @@ export class CodexSessionCapabilityError extends CodexSessionError {
   }
 }
 
+/** Codex接続の安全性を確認できないことを表します。 */
+export class CodexSessionSafetyViolationError extends CodexSessionCapabilityError {
+  public constructor(cause?: unknown) {
+    super("Codex接続の安全性を確認できないためAIを開始できません。", cause);
+    this.name = "CodexSessionSafetyViolationError";
+  }
+}
+
 /** AIターン直前の同期に失敗したことを表します。 */
 export class CodexSessionSyncError extends CodexSessionError {
   public constructor(cause: unknown) {

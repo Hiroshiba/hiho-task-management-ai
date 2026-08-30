@@ -53,6 +53,7 @@ import {
   CodexSessionDisabledError,
   CodexSessionError,
   CodexSessionOutputValidationError,
+  CodexSessionSafetyViolationError,
   CodexSessionStateError,
   CodexSessionSyncError,
   CodexSessionTurnError,
@@ -275,11 +276,11 @@ function isSafetyCriticalState(state: CodexSessionState): boolean {
   );
 }
 
-function createSafetyViolationError(cause?: unknown): CodexSessionCapabilityError {
-  return new CodexSessionCapabilityError(
-    "Codex接続の安全性を確認できないためAIを開始できません。",
-    cause,
-  );
+function createSafetyViolationError(cause?: unknown): CodexSessionSafetyViolationError {
+  if (cause instanceof CodexSessionSafetyViolationError) {
+    return cause;
+  }
+  return new CodexSessionSafetyViolationError(cause);
 }
 
 function isPathWithin(parentPath: string, candidatePath: string): boolean {
