@@ -38,6 +38,9 @@ import {
   type ThreadStartResult,
 } from "../app-server";
 import {
+  createTaskHubPermissionProfileOverridesFromVerifiedPaths,
+} from "../app-server/schemas";
+import {
   TaskctlBroker,
   taskctlBrokerStartResultSchema,
   taskctlSnapshotSchema,
@@ -86,7 +89,6 @@ const maximumFinalMessageBytes = 256 * 1024;
 const maximumModelRecords = 10_000;
 const requiredSkillNames = new Set(["taskctl", "obsidian", "external-tools"]);
 const permissionProfileId = "taskhub";
-const permissionProfileWaitTimeoutMs = 5_000;
 const accountReadRetryDelaysMilliseconds: readonly [number, number, number, number] = [
   250,
   500,
@@ -119,15 +121,6 @@ type PermissionProfileNotification = {
   readonly profileId: string | undefined;
   readonly profileExtends: string | null | undefined;
   readonly sandboxValid: boolean;
-};
-
-type PermissionProfileWaiter = {
-  readonly threadId: string;
-  readonly resolve: (profileId: string) => void;
-  readonly reject: (error: unknown) => void;
-  readonly signal: AbortSignal;
-  readonly abortListener: () => void;
-  readonly timer: NodeJS.Timeout;
 };
 
 type AccountInspectionResult =
@@ -341,6 +334,74 @@ function resolveExistingDirectory(directoryPath: string, label: string): string 
   }
 }
 
+function isNoEntryError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && error.code === "ENOENT";
+}
+
+function resolveCodexHomeCandidate(directoryPath: string): string {
+  const normalizedPath = resolve(directoryPath);
+  if (normalizedPath !== directoryPath) {
+    throw new CodexSessionCapabilityError(
+      "Codex認証領域のパスが正規化されていません。",
+    );
+  }
+  const rootPath = parse(normalizedPath).root;
+  const parts = relative(rootPath, normalizedPath)
+    .split(sep)
+    .filter((part) => part.length > 0);
+  let currentPath = rootPath;
+  try {
+    for (const [index, part] of parts.entries()) {
+      currentPath = join(currentPath, part);
+      let stats: Stats;
+      try {
+        stats = lstatSync(currentPath);
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          if (index === parts.length - 1) {
+            return normalizedPath;
+          }
+          throw new CodexSessionCapabilityError(
+            "Codex認証領域の親ディレクトリを確認できません。",
+            error,
+          );
+        }
+        throw error;
+      }
+      if (stats.isSymbolicLink()) {
+        throw new CodexSessionCapabilityError(
+          "Codex認証領域のパスにシンボリックリンクを指定できません。",
+        );
+      }
+      if (!stats.isDirectory()) {
+        throw new CodexSessionCapabilityError(
+          "Codex認証領域のパスはディレクトリでなければなりません。",
+        );
+      }
+      const realPath = realpathSync.native(currentPath);
+      if (realPath !== currentPath) {
+        throw new CodexSessionCapabilityError(
+          "Codex認証領域の設定パスと実体パスが一致しません。",
+        );
+      }
+      if (index === parts.length - 1) {
+        return realPath;
+      }
+    }
+    return normalizedPath;
+  } catch (error: unknown) {
+    if (error instanceof CodexSessionCapabilityError) {
+      throw error;
+    }
+    throw new CodexSessionCapabilityError(
+      "Codex認証領域を安全に検証できません。",
+      error,
+    );
+  }
+}
+
 function resolveVerifiedConfigurationDirectory(
   directoryPath: string,
   label: string,
@@ -522,7 +583,6 @@ function validateTurnSkills(
 
 function hasWorkspaceWriteSandbox(
   sandbox: ThreadStartResult["sandbox"],
-  workspacePath: string,
   tmpDirectoryPath: string,
 ): boolean {
   if (sandbox.type !== "workspaceWrite") {
@@ -530,12 +590,22 @@ function hasWorkspaceWriteSandbox(
   }
   const roots = new Set(sandbox.writableRoots);
   return (
-    roots.size === 2
-    && roots.has(workspacePath)
+    sandbox.writableRoots.length === 1
+    && roots.size === 1
     && roots.has(tmpDirectoryPath)
     && sandbox.networkAccess === false
     && sandbox.excludeTmpdirEnvVar === true
     && sandbox.excludeSlashTmp === true
+  );
+}
+
+function isValidPermissionProfileNotification(
+  notification: PermissionProfileNotification,
+): boolean {
+  return (
+    notification.profileId === permissionProfileId
+    && notification.profileExtends === null
+    && notification.sandboxValid
   );
 }
 
@@ -606,7 +676,6 @@ export class CodexSessionService {
   private threadId: string | undefined;
   private selectedModel: string | undefined;
   private permissionProfileNotification: PermissionProfileNotification | undefined;
-  private permissionProfileWaiter: PermissionProfileWaiter | undefined;
   private mcpServerNames: string[] | undefined;
   private skillConfiguration: Array<{ path: string; enabled: boolean }> = [];
   private threadConfigurationChanged = false;
@@ -1216,25 +1285,33 @@ export class CodexSessionService {
 
   private async connectAndStartThread(signal: AbortSignal): Promise<void> {
     this.assertSafetyIntact();
-    const candidate = await Promise.resolve(this.options.connectionFactory([]));
-    if (!isConnectionShape(candidate)) {
-      throw new CodexSessionCapabilityError("Codex接続ファクトリが不正な接続を返しました。");
-    }
-    this.structuredOutputVerified = false;
-    this.connection = candidate;
-    this.removeNotificationListener = candidate.onNotification((notification) => {
-      this.receiveNotification(notification);
-    });
-    this.removeDiagnosticListener = candidate.onDiagnostic((diagnostic) => {
-      this.receiveDiagnostic(diagnostic);
-    });
     try {
       const expectedCodexHomePath = codexHomePathSchema.parse(
         this.options.expectedCodexHomePathProvider(),
       );
+      const taskctlStartResult = this.taskctlStartResult;
+      if (taskctlStartResult == null) {
+        throw new CodexSessionStateError();
+      }
+      const configOverrides = this.createPermissionProfileOverrides(
+        expectedCodexHomePath,
+        taskctlStartResult,
+      );
+      const candidate = await Promise.resolve(this.options.connectionFactory(configOverrides));
+      if (!isConnectionShape(candidate)) {
+        throw new CodexSessionCapabilityError("Codex接続ファクトリが不正な接続を返しました。");
+      }
+      this.structuredOutputVerified = false;
+      this.connection = candidate;
+      this.removeNotificationListener = candidate.onNotification((notification) => {
+        this.receiveNotification(notification);
+      });
+      this.removeDiagnosticListener = candidate.onDiagnostic((diagnostic) => {
+        this.receiveDiagnostic(diagnostic);
+      });
       await candidate.start(signal);
       this.assertSafetyIntact();
-      const expectedCodexHomeRealPath = resolveExistingDirectory(
+      const expectedCodexHomeRealPath = resolveVerifiedConfigurationDirectory(
         expectedCodexHomePath,
         "期待するCodex認証領域",
       );
@@ -1463,7 +1540,7 @@ export class CodexSessionService {
       throw new CodexSessionCapabilityError("権限プロファイル一覧を全件確認できません。");
     }
     const selected = result.data.find((profile) => profile.id === permissionProfileId);
-    if (selected != null && selected.allowed !== true) {
+    if (selected == null || selected.allowed !== true) {
       throw new CodexSessionCapabilityError("TaskHub用権限プロファイルが許可されていません。");
     }
   }
@@ -1557,11 +1634,11 @@ export class CodexSessionService {
     }
   }
 
-  private createThreadConfiguration(
-    codexHome: string,
+  private createPermissionProfileOverrides(
+    expectedCodexHomePath: string,
     taskctlStartResult: TaskctlBrokerStartResult,
-  ): Record<string, unknown> {
-    const realCodexHome = resolveExistingDirectory(codexHome, "Codex認証領域");
+  ): CodexConnectionOptions["configOverrides"] {
+    const codexHomePath = resolveCodexHomeCandidate(expectedCodexHomePath);
     const realWorkspacePath = resolveVerifiedConfigurationDirectory(
       this.options.workspacePath,
       "Codex専用ワークスペース",
@@ -1571,20 +1648,28 @@ export class CodexSessionService {
       "Codex専用ワークスペースのtmp",
     );
     if (
-      isPathWithin(realWorkspacePath, realCodexHome)
-      || isPathWithin(realCodexHome, realWorkspacePath)
+      isPathWithin(realWorkspacePath, codexHomePath)
+      || isPathWithin(codexHomePath, realWorkspacePath)
     ) {
       throw new CodexSessionCapabilityError("Codex認証領域と専用ワークスペースの範囲が重なっています。");
     }
     const socketPath = validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
+    const additionalSocketPaths = validateAdditionalLocalSocketPaths(
+      this.additionalLocalSocketPaths,
+      realTmpDirectoryPath,
+    );
+    const unixSocketPaths = [socketPath, ...additionalSocketPaths];
+    if (new Set(unixSocketPaths).size !== unixSocketPaths.length) {
+      throw new CodexSessionCapabilityError("同じローカルIPCを重複して指定できません。");
+    }
     const verifiedVaultPaths = this.readOnlyVaultPaths.map(resolveVerifiedReadOnlyDirectory);
     if (new Set(verifiedVaultPaths).size !== verifiedVaultPaths.length) {
       throw new CodexSessionCapabilityError("同じVaultの実体パスを重複して指定できません。");
     }
     for (const vaultPath of verifiedVaultPaths) {
       if (
-        isPathWithin(vaultPath, realCodexHome)
-        || isPathWithin(realCodexHome, vaultPath)
+        isPathWithin(vaultPath, codexHomePath)
+        || isPathWithin(codexHomePath, vaultPath)
       ) {
         throw new CodexSessionCapabilityError("Codex認証領域とVaultの範囲が重なっています。");
       }
@@ -1595,20 +1680,15 @@ export class CodexSessionService {
         throw new CodexSessionCapabilityError("Codex専用ワークスペースとVaultの範囲が重なっています。");
       }
     }
-    const filesystem: Record<string, unknown> = {
-      ":root": "deny",
-      ":minimal": "read",
-      ":tmpdir": "deny",
-      ":slash_tmp": "deny",
-      [realWorkspacePath]: {
-        ".": "read",
-        tmp: "write",
-      },
-      [realCodexHome]: "deny",
-    };
-    for (const vaultPath of verifiedVaultPaths) {
-      filesystem[vaultPath] = "read";
-    }
+    return createTaskHubPermissionProfileOverridesFromVerifiedPaths({
+      workspacePath: realWorkspacePath,
+      codexHomePath,
+      readOnlyVaultPaths: verifiedVaultPaths,
+      unixSocketPaths,
+    });
+  }
+
+  private createThreadConfiguration(): Record<string, unknown> {
     const disabledFeatures: Record<string, unknown> = {};
     for (const featureName of disabledFeatureNames) {
       disabledFeatures[featureName] = false;
@@ -1620,27 +1700,8 @@ export class CodexSessionService {
     const mcpServers = Object.fromEntries(
       mcpServerNames.map((serverName) => [serverName, { enabled: false }]),
     );
-    const unixSocketPaths = [
-      socketPath,
-      ...validateAdditionalLocalSocketPaths(
-        this.additionalLocalSocketPaths,
-        realTmpDirectoryPath,
-      ),
-    ];
-    const unixSockets = Object.fromEntries(
-      [...new Set(unixSocketPaths)].map((path) => [path, "allow"]),
-    );
     return {
       default_permissions: permissionProfileId,
-      permissions: {
-        [permissionProfileId]: {
-          filesystem,
-          network: {
-            enabled: false,
-            unix_sockets: unixSockets,
-          },
-        },
-      },
       features: disabledFeatures,
       web_search: "disabled",
       tools: { web_search: false },
@@ -1651,15 +1712,13 @@ export class CodexSessionService {
 
   private async startThreadOnCurrentConnection(signal: AbortSignal): Promise<void> {
     const connection = this.connection;
-    const taskctlStartResult = this.taskctlStartResult;
-    if (connection == null || taskctlStartResult == null) {
+    if (connection == null) {
       throw new CodexSessionStateError();
     }
     if (this.threadConfigurationChanged) {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
-    const codexHome = codexHomePathSchema.parse(connection.getCodexHome());
-    const config = this.createThreadConfiguration(codexHome, taskctlStartResult);
+    const config = this.createThreadConfiguration();
     const params = {
       model: this.requireSelectedModel(),
       cwd: this.options.workspacePath,
@@ -1684,83 +1743,34 @@ export class CodexSessionService {
       || hasUnexpectedWorkspaceInstructionSource
       || !hasWorkspaceWriteSandbox(
         result.sandbox,
-        this.options.workspacePath,
         this.options.tmpDirectoryPath,
       )
     ) {
       throw new CodexSessionCapabilityError("Codexスレッドの権限制約を確認できません。");
     }
     this.threadId = result.thread.id;
-    const activePermissionProfile = await this.waitForPermissionProfile(result.thread.id, signal);
-    if (activePermissionProfile !== permissionProfileId) {
-      throw new CodexSessionCapabilityError("TaskHub用権限プロファイルが有効化されませんでした。");
-    }
+    this.validateStoredPermissionProfileNotification(result.thread.id);
+    this.assertSafetyIntact();
     await this.inspectMcpServersAfterThread(connection, result.thread.id, signal);
+    this.assertSafetyIntact();
     await this.inspectExperimentalFeatures(connection, result.thread.id, signal);
+    this.assertSafetyIntact();
     if (this.threadConfigurationChanged) {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
+    this.assertSafetyIntact();
   }
 
-  private waitForPermissionProfile(
-    threadId: string,
-    signal: AbortSignal,
-  ): Promise<string> {
-    validateAbortSignal(signal);
+  private validateStoredPermissionProfileNotification(threadId: string): void {
     const notification = this.permissionProfileNotification;
-    if (notification != null && notification.threadId === threadId) {
-      if (
-        notification.profileId == null
-        || notification.profileExtends !== null
-        || !notification.sandboxValid
-      ) {
-        return Promise.reject(
-          new CodexSessionCapabilityError("有効な権限プロファイルを確認できません。"),
-        );
-      }
-      return Promise.resolve(notification.profileId);
+    if (notification == null || notification.threadId !== threadId) {
+      return;
     }
-    return new Promise<string>((resolvePromise, rejectPromise) => {
-      const abortListener = (): void => {
-        const waiter = this.permissionProfileWaiter;
-        if (waiter == null || waiter.threadId !== threadId) {
-          return;
-        }
-        this.clearPermissionProfileWaiter();
-        rejectPromise(new CodexSessionAbortedError());
-      };
-      const timer = setTimeout(() => {
-        const waiter = this.permissionProfileWaiter;
-        if (waiter == null || waiter.threadId !== threadId) {
-          return;
-        }
-        this.clearPermissionProfileWaiter();
-        rejectPromise(new CodexSessionCapabilityError("有効な権限プロファイル通知を受信できません。"));
-      }, permissionProfileWaitTimeoutMs);
-      this.permissionProfileWaiter = {
-        threadId,
-        resolve: resolvePromise,
-        reject: rejectPromise,
-        signal,
-        abortListener,
-        timer,
-      };
-      signal.addEventListener("abort", abortListener, { once: true });
-      if (signal.aborted) {
-        abortListener();
-      }
-    });
-  }
-
-  private clearPermissionProfileWaiter(): PermissionProfileWaiter | undefined {
-    const waiter = this.permissionProfileWaiter;
-    if (waiter == null) {
-      return undefined;
+    if (!isValidPermissionProfileNotification(notification)) {
+      this.markSafetyViolation(
+        new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
+      );
     }
-    clearTimeout(waiter.timer);
-    waiter.signal.removeEventListener("abort", waiter.abortListener);
-    this.permissionProfileWaiter = undefined;
-    return waiter;
   }
 
   private createStartResult(): CodexSessionStartResult {
@@ -1992,33 +2002,24 @@ export class CodexSessionService {
       const profileExtends = activeProfile == null ? undefined : activeProfile.extends;
       const sandboxValid = hasWorkspaceWriteSandbox(
         notification.params.threadSettings.sandboxPolicy,
-        this.options.workspacePath,
         this.options.tmpDirectoryPath,
       );
-      this.permissionProfileNotification = {
+      const permissionProfileNotification: PermissionProfileNotification = {
         threadId: notification.params.threadId,
         profileId,
         profileExtends,
         sandboxValid,
       };
+      this.permissionProfileNotification = permissionProfileNotification;
       const currentThreadId = this.threadId;
       if (
         currentThreadId === notification.params.threadId
-        && (this.state === "ready" || this.state === "turning")
-        && (profileId !== permissionProfileId || profileExtends !== null || !sandboxValid)
+        && isSafetyCriticalState(this.state)
+        && !isValidPermissionProfileNotification(permissionProfileNotification)
       ) {
-        void this.disableAi(
+        this.markSafetyViolation(
           new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
         );
-      }
-      const waiter = this.permissionProfileWaiter;
-      if (waiter != null && waiter.threadId === notification.params.threadId) {
-        this.clearPermissionProfileWaiter();
-        if (profileId == null || profileExtends !== null || !sandboxValid) {
-          waiter.reject(new CodexSessionCapabilityError("有効な権限プロファイルを確認できません。"));
-        } else {
-          waiter.resolve(profileId);
-        }
       }
       return;
     }
@@ -2191,10 +2192,6 @@ export class CodexSessionService {
 
   private async cleanupConnection(): Promise<unknown[]> {
     const errors: unknown[] = [];
-    const permissionProfileWaiter = this.clearPermissionProfileWaiter();
-    if (permissionProfileWaiter != null) {
-      permissionProfileWaiter.reject(new CodexSessionError("Codex接続を停止しました。"));
-    }
     const removeNotificationListener = this.removeNotificationListener;
     const removeDiagnosticListener = this.removeDiagnosticListener;
     this.removeNotificationListener = undefined;

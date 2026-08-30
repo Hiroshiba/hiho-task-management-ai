@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   CodexExecutableNotFoundError,
   CodexRequestAbortedError,
@@ -117,7 +117,7 @@ export function resolveCodexHomePath(
   ) {
     throw new Error("Codexホームのパスが不正です。");
   }
-  return normalize(candidatePath);
+  return resolve(candidatePath);
 }
 
 function executeVersionCommand(
