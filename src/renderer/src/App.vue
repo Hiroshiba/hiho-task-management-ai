@@ -265,13 +265,13 @@ function clearAiFeedback(): void {
 function feedbackClass(kind: FeedbackKind): string {
   switch (kind) {
     case "success":
-      return "bg-emerald-50 text-emerald-900";
+      return "bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100";
     case "progress":
-      return "bg-sky-50 text-sky-950";
+      return "bg-sky-50 text-sky-950 dark:bg-sky-950 dark:text-sky-100";
     case "warning":
-      return "bg-amber-50 text-amber-900";
+      return "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
     case "failure":
-      return "bg-rose-50 text-rose-900";
+      return "bg-rose-50 text-rose-900 dark:bg-rose-950 dark:text-rose-100";
   }
 }
 
@@ -2434,7 +2434,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-100 text-slate-900">
+  <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <AppHeader
       :connection-state="connectionState"
       :last-sync-at="lastSyncAt"
@@ -2469,7 +2469,7 @@ onUnmounted(() => {
       </p>
       <div
         v-if="screen.kind === 'loading'"
-        class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600"
+        class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
         role="status"
       >
         読み込み中です。
@@ -2482,12 +2482,12 @@ onUnmounted(() => {
       />
       <div
         v-else-if="screen.kind === 'error'"
-        class="rounded-xl border border-rose-200 bg-white p-8"
+        class="rounded-xl border border-rose-200 bg-white p-8 dark:border-rose-800 dark:bg-slate-900"
         role="alert"
       >
-        <h2 class="text-xl font-semibold text-rose-900">
+        <h2 class="text-xl font-semibold text-rose-900 dark:text-rose-100">
           画面を読み込めません
-        </h2><p class="mt-2 text-sm text-rose-800">
+        </h2><p class="mt-2 text-sm text-rose-800 dark:text-rose-200">
           {{ screen.failure.message }}
         </p>
       </div>
@@ -2496,7 +2496,7 @@ onUnmounted(() => {
           v-if="asanaAuthenticationState.kind === 'opening'
             || asanaAuthenticationState.kind === 'completing'
             || asanaAuthenticationState.kind === 'synchronizing'"
-          class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950"
+          class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
           role="status"
           aria-live="polite"
         >
@@ -2512,41 +2512,41 @@ onUnmounted(() => {
         </section>
         <section
           v-if="asanaAuthenticationState.kind === 'authorization_pending'"
-          class="rounded-xl border border-amber-200 bg-amber-50 p-4"
+          class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950"
           aria-labelledby="asana-reauthentication-title"
         >
           <h2
             id="asana-reauthentication-title"
-            class="text-lg font-semibold text-amber-950"
+            class="text-lg font-semibold text-amber-950 dark:text-amber-100"
           >
             Asana認証コードを入力してください
           </h2>
-          <p class="mt-2 text-sm text-amber-950">
+          <p class="mt-2 text-sm text-amber-950 dark:text-amber-100">
             Asanaの認証後に表示された認可コードを貼り付けてください。
           </p>
           <form
             class="mt-3 flex flex-wrap items-end gap-2"
             @submit.prevent="completeAsanaReauthentication"
           >
-            <label class="w-full min-w-0 max-w-xl flex-1 text-sm font-medium text-amber-950">
+            <label class="w-full min-w-0 max-w-xl flex-1 text-sm font-medium text-amber-950 dark:text-amber-100">
               認可コード
               <input
                 ref="asanaAuthorizationCodeInput"
                 type="text"
                 autocomplete="off"
-                class="mt-1 block w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-600"
+                class="mt-1 block w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-600 dark:border-amber-800 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-400 dark:focus:border-sky-400 dark:focus:ring-sky-400"
               >
             </label>
             <button
               type="submit"
-              class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-amber-800 dark:text-amber-100 dark:hover:bg-amber-700 dark:focus:ring-amber-400 dark:focus:ring-offset-slate-950 dark:disabled:bg-slate-700 dark:disabled:text-slate-400"
               :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
             >
               {{ asanaAuthenticationBusy ? "確認中" : "認証を確定" }}
             </button>
             <button
               type="button"
-              class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950 dark:disabled:border-slate-700 dark:disabled:bg-slate-900 dark:disabled:text-slate-400"
               :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
               @click="cancelAsanaReauthentication"
             >
@@ -2567,20 +2567,20 @@ onUnmounted(() => {
           <details
             v-if="overview.cleanup_items.length > 0"
             :open="filter.kind === 'cleanup'"
-            class="rounded-xl border border-amber-200 bg-amber-50"
+            class="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950"
             aria-labelledby="cleanup-title"
           >
             <summary
               id="cleanup-title"
-              class="cursor-pointer px-4 py-4 text-lg font-semibold text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset"
+              class="cursor-pointer px-4 py-4 text-lg font-semibold text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset dark:text-amber-100 dark:focus:ring-amber-400"
             >
               要整理 {{ overview.cleanup_items.length }}件
             </summary>
-            <ul class="grid gap-2 border-t border-amber-200 p-4 text-sm text-amber-950 lg:grid-cols-2">
+            <ul class="grid gap-2 border-t border-amber-200 p-4 text-sm text-amber-950 lg:grid-cols-2 dark:border-amber-800 dark:text-amber-100">
               <li
                 v-for="item in overview.cleanup_items"
                 :key="`${item.kind}-${item.message}-${cleanupScopeLabel(item)}`"
-                class="rounded-md border border-amber-200 bg-white p-3"
+                class="rounded-md border border-amber-200 bg-white p-3 dark:border-amber-800 dark:bg-slate-900"
               >
                 <p class="font-medium">
                   {{ cleanupKindLabel(item.kind) }}・{{ cleanupScopeLabel(item) }}
@@ -2657,7 +2657,7 @@ onUnmounted(() => {
         </section>
         <div
           v-else
-          class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600"
+          class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
           role="status"
         >
           タスク一覧を読み込んでいます。

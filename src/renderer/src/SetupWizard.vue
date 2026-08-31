@@ -197,11 +197,11 @@ function setupProgressStatusLabel(status: SetupProgressStatus): string {
 function setupProgressStatusClass(status: SetupProgressStatus): string {
   switch (status) {
     case "completed":
-      return "border border-emerald-200 bg-emerald-50 text-emerald-900";
+      return "border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100";
     case "current":
-      return "border border-sky-300 bg-sky-50 text-sky-900 ring-1 ring-sky-200";
+      return "border border-sky-300 bg-sky-50 text-sky-900 ring-1 ring-sky-200 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100 dark:ring-sky-800";
     case "upcoming":
-      return "border border-slate-200 bg-slate-100 text-slate-500";
+      return "border border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400";
   }
 }
 
@@ -473,20 +473,20 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
 
 <template>
   <section
-    class="mx-auto w-full max-w-4xl rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8"
+    class="mx-auto w-full max-w-4xl rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900 sm:p-8"
     aria-labelledby="setup-title"
   >
-    <div class="border-b border-slate-200 pb-5">
-      <p class="text-sm font-semibold text-sky-700">
+    <div class="border-b border-slate-200 pb-5 dark:border-slate-700">
+      <p class="text-sm font-semibold text-sky-700 dark:text-sky-400">
         初回設定ウィザード
       </p>
       <h2
         id="setup-title"
-        class="mt-2 text-2xl font-semibold text-slate-900"
+        class="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100"
       >
         {{ stateTitle(props.state) }}
       </h2>
-      <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+      <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
         {{ stateDescription(props.state) }}
       </p>
     </div>
@@ -513,7 +513,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
 
     <p
       v-if="localError.length > 0"
-      class="mt-5 rounded-md bg-rose-50 px-4 py-3 text-sm text-rose-800"
+      class="mt-5 rounded-md bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
       role="alert"
     >
       {{ localError }}
@@ -524,7 +524,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-if="props.state == null || isState(props.state, 'created', 'codex_cli_ready')"
         class="space-y-3"
       >
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           対応するCodex CLIと接続状態を確認します。
         </p>
         <button
@@ -541,7 +541,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'codex_authentication_required')"
         class="space-y-3"
       >
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           ChatGPTのブラウザログインを開始できます。
         </p>
         <button
@@ -578,7 +578,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           type="password"
           autocomplete="off"
         ></label>
-        <p class="text-sm leading-6 text-slate-600">
+        <p class="text-sm leading-6 text-slate-600 dark:text-slate-300">
           Asana Developer ConsoleのRedirect URLに<code>urn:ietf:wg:oauth:2.0:oob</code>を登録してください。
         </p>
         <button
@@ -594,7 +594,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="props.state?.kind === 'asana_authorization_pending'"
         class="space-y-4"
       >
-        <p class="text-sm leading-6 text-slate-600">
+        <p class="text-sm leading-6 text-slate-600 dark:text-slate-300">
           Asanaの認可画面に表示された認可コードを入力してください。認可コードの有効期限は{{ jstDateTimeLabel(props.state.expires_at) }}までです。
         </p>
         <form
@@ -650,7 +650,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'workspace_selection_required')"
         class="space-y-3"
       >
-        <p class="text-sm font-medium text-slate-800">
+        <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
           対象ワークスペース
         </p>
         <div class="grid gap-2">
@@ -663,7 +663,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
             @click="selectWorkspace(workspace.gid)"
           >
             <span class="min-w-0 whitespace-normal break-words">{{ workspace.name }}</span>
-            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500">{{ workspace.gid }}</span>
+            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500 dark:text-slate-400">{{ workspace.gid }}</span>
           </button>
         </div>
       </div>
@@ -674,7 +674,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
       >
         <p
           v-if="props.state.kind === 'project_requires_action'"
-          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
           role="alert"
         >
           {{ projectReasonLabel(props.state.reason_code) }}
@@ -689,7 +689,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
             @click="selectProject(project.gid)"
           >
             <span class="min-w-0 whitespace-normal break-words">{{ project.name }}</span>
-            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500">{{ project.gid }}</span>
+            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500 dark:text-slate-400">{{ project.gid }}</span>
           </button>
         </div>
         <form
@@ -718,7 +718,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'resources_requires_action')"
         class="space-y-3"
       >
-        <ul class="list-disc space-y-1 pl-5 text-sm text-slate-700">
+        <ul class="list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300">
           <li
             v-for="issue in resourceIssues"
             :key="`${issue.resource}-${issue.name}-${issue.reason}`"
@@ -740,12 +740,12 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'resources_ready', 'asana_capability_failed')"
         class="space-y-3"
       >
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           タスク、セクション、タグ、外部データへの操作を確認します。
         </p>
         <p
           v-if="props.state.kind === 'asana_capability_failed'"
-          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
           role="alert"
         >
           {{ capabilityReasonLabel(props.state.reason_code) }}
@@ -808,7 +808,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'vault_skipped', 'vault_configured')"
         class="space-y-4"
       >
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           Discord連携は使用しません。
         </p>
         <button
@@ -827,19 +827,19 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
       >
         <p
           v-if="props.state.kind === 'external_tool_configured'"
-          class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+          class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
           role="status"
         >
           Discord読取連携を登録しました。
         </p>
         <p
           v-if="props.state.kind === 'external_tool_unavailable'"
-          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
           role="status"
         >
           {{ externalToolUnavailableReasonLabel(props.state.reason_code) }}
         </p>
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           専用プロジェクトから初回の完全同期を実行します。
         </p>
         <button
@@ -856,7 +856,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         v-else-if="isState(props.state, 'codex_capability_required')"
         class="space-y-3"
       >
-        <p class="text-sm text-slate-600">
+        <p class="text-sm text-slate-600 dark:text-slate-300">
           専用ワークスペース、権限、スキル、構造化出力を確認します。
         </p>
         <button
@@ -871,7 +871,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
 
       <div
         v-else-if="isState(props.state, 'ready')"
-        class="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+        class="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
         role="status"
       >
         設定済みです。同期済みデータを表示します。

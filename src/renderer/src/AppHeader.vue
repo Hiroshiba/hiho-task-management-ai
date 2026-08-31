@@ -105,16 +105,16 @@ function syncErrorLabel(
 function syncClass(state: RendererSyncState): string {
   switch (state.kind) {
     case "waiting":
-      return "bg-slate-100 text-slate-700";
+      return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-100";
     case "syncing":
-      return "bg-sky-100 text-sky-800";
+      return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-100";
     case "synced":
-      return "bg-emerald-100 text-emerald-800";
+      return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100";
     case "authentication_required":
     case "recovery_pending":
-      return "bg-amber-100 text-amber-900";
+      return "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
     case "error":
-      return "bg-rose-100 text-rose-800";
+      return "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-100";
   }
 }
 
@@ -132,11 +132,11 @@ function networkLabel(state: RendererConnectionState): string {
 function networkClass(state: RendererConnectionState): string {
   switch (state.kind) {
     case "checking":
-      return "bg-sky-100 text-sky-800";
+      return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-100";
     case "online":
-      return "bg-emerald-100 text-emerald-800";
+      return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100";
     case "offline":
-      return "bg-rose-100 text-rose-800";
+      return "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-100";
   }
 }
 
@@ -175,26 +175,26 @@ function codexLabel(state: RendererCodexState): string {
 function codexClass(state: RendererCodexState): string {
   switch (state.kind) {
     case "connecting":
-      return "bg-sky-100 text-sky-800";
+      return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-100";
     case "ready":
-      return "bg-emerald-100 text-emerald-800";
+      return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100";
     case "authentication_required":
-      return "bg-amber-100 text-amber-900";
+      return "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
     case "unavailable":
-      return "bg-rose-100 text-rose-800";
+      return "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-100";
   }
 }
 
 function writeClass(canWrite: boolean): string {
   return canWrite
-    ? "bg-emerald-100 text-emerald-800"
-    : "bg-amber-100 text-amber-900";
+    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
+    : "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
 }
 
 function cleanupClass(cleanupCount: number): string {
   return cleanupCount > 0
-    ? "bg-amber-100 text-amber-900"
-    : "bg-slate-100 text-slate-700";
+    ? "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+    : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-100";
 }
 
 function asanaAuthenticationButtonLabel(
@@ -249,7 +249,7 @@ function jstDateTimeLabel(value: string | undefined): string {
 
 <template>
   <header
-    class="border-b border-slate-200 bg-white"
+    class="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
     aria-label="アプリケーションヘッダー"
   >
     <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 lg:grid-cols-[auto_minmax(0,1fr)] lg:px-6 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-4">
@@ -258,15 +258,15 @@ function jstDateTimeLabel(value: string | undefined): string {
         role="group"
         aria-label="ブランド"
       >
-        <p class="text-xs font-semibold tracking-[0.18em] text-sky-700">
+        <p class="text-xs font-semibold tracking-[0.18em] text-sky-700 dark:text-sky-400">
           TASKHUB
         </p>
-        <h1 class="text-lg font-semibold text-slate-900">
+        <h1 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
           Asanaタスク管理
         </h1>
       </div>
       <div
-        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 xl:justify-center"
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 dark:text-slate-300 xl:justify-center"
         role="group"
         aria-label="状態"
       >
@@ -276,7 +276,7 @@ function jstDateTimeLabel(value: string | undefined): string {
           aria-live="polite"
           aria-atomic="true"
         >同期: {{ syncLabel(connectionState.sync) }}</span>
-        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">
+        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-800 dark:text-slate-100">
           最終同期: {{ jstDateTimeLabel(lastSyncAt) }}
         </span>
         <span
@@ -370,7 +370,7 @@ function jstDateTimeLabel(value: string | undefined): string {
       </div>
       <div
         v-if="configured && fullSyncConfirmationOpen"
-        class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 lg:col-span-2 xl:col-span-3"
+        class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 lg:col-span-2 xl:col-span-3"
         role="group"
         aria-label="完全同期の確認"
       >
