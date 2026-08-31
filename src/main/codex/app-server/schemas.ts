@@ -626,6 +626,57 @@ export const skillsListResultSchema = z
 
 const permissionProfileIdSchema = nonEmptyTextSchema.max(200);
 
+const dynamicToolFunctionSpecSchema = z
+  .object({
+    type: z.literal("function"),
+    name: nonEmptyTextSchema.max(200),
+    description: boundedTextSchema,
+    inputSchema: jsonValueSchema,
+    deferLoading: z.boolean().optional(),
+  })
+  .strict();
+
+const dynamicToolCallOutputContentItemSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("inputText"),
+      text: boundedTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("inputImage"),
+      imageUrl: boundedTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("inputAudio"),
+      audioUrl: boundedTextSchema,
+    })
+    .strict(),
+]);
+
+/** dynamic tool呼び出しの引数を表すスキーマです。 */
+export const dynamicToolCallParamsSchema = z
+  .object({
+    threadId: threadIdSchema,
+    turnId: turnIdSchema,
+    callId: nonEmptyTextSchema.max(200),
+    namespace: nonEmptyTextSchema.max(200).nullable(),
+    tool: nonEmptyTextSchema.max(200),
+    arguments: jsonValueSchema,
+  })
+  .strict();
+
+/** dynamic tool呼び出しの応答を表すスキーマです。 */
+export const dynamicToolCallResponseSchema = z
+  .object({
+    contentItems: z.array(dynamicToolCallOutputContentItemSchema).max(100),
+    success: z.boolean(),
+  })
+  .strict();
+
 const permissionProfileSummarySchema = z
   .object({
     id: permissionProfileIdSchema,
@@ -674,6 +725,7 @@ export const threadStartParamsSchema = z
     personality: nonEmptyTextSchema.max(100).optional(),
     serviceName: nonEmptyTextSchema.max(200).optional(),
     ephemeral: z.boolean().optional(),
+    dynamicTools: z.array(dynamicToolFunctionSpecSchema).max(100).nullable().optional(),
   })
   .strict();
 
@@ -1229,6 +1281,8 @@ export const codexConnectionOptionsSchema = z
   });
 
 export type CodexRpcId = z.infer<typeof codexRpcIdSchema>;
+export type DynamicToolCallParams = z.infer<typeof dynamicToolCallParamsSchema>;
+export type DynamicToolCallResponse = z.infer<typeof dynamicToolCallResponseSchema>;
 export type InitializeClientInfo = z.infer<typeof initializeClientInfoSchema>;
 export type InitializeCapabilities = z.infer<typeof initializeCapabilitiesSchema>;
 export type InitializeParams = z.infer<typeof initializeParamsSchema>;

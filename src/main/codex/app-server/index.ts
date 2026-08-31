@@ -1,5 +1,6 @@
 export {
   CodexAppServerConnection,
+  type CodexDynamicToolHandler,
   type CodexDiagnosticListener,
   type CodexNotificationListener,
 } from "./connection";
@@ -32,6 +33,8 @@ export {
   codexDiagnosticSchema,
   codexNotificationSchema,
   codexRpcIdSchema,
+  dynamicToolCallParamsSchema,
+  dynamicToolCallResponseSchema,
   experimentalFeatureListParamsSchema,
   experimentalFeatureListResultSchema,
   initializeCapabilitiesSchema,
@@ -60,6 +63,8 @@ export {
   type CodexDiagnostic,
   type CodexNotification,
   type CodexRpcId,
+  type DynamicToolCallParams,
+  type DynamicToolCallResponse,
   type ExperimentalFeatureListParams,
   type ExperimentalFeatureListResult,
   type InitializeCapabilities,

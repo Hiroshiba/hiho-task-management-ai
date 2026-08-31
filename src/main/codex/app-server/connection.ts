@@ -10,6 +10,8 @@ import {
   codexDiagnosticSchema,
   codexNotificationSchema,
   codexRpcIdSchema,
+  dynamicToolCallParamsSchema,
+  dynamicToolCallResponseSchema,
   experimentalFeatureListParamsSchema,
   experimentalFeatureListResultSchema,
   initializeParamsSchema,
@@ -37,6 +39,8 @@ import {
   type CodexDiagnostic,
   type CodexNotification,
   type CodexRpcId,
+  type DynamicToolCallParams,
+  type DynamicToolCallResponse,
   type ExperimentalFeatureListParams,
   type ExperimentalFeatureListResult,
   type InitializeParams,
@@ -160,6 +164,12 @@ export type CodexNotificationListener =
 /** 本文を含まないCodex診断を受け取る購読関数の型です。 */
 export type CodexDiagnosticListener =
   (diagnostic: CodexDiagnostic) => void | PromiseLike<void>;
+
+/** Codex dynamic toolの呼び出しを処理する関数の型です。 */
+export type CodexDynamicToolHandler = (
+  params: DynamicToolCallParams,
+  signal: AbortSignal,
+) => DynamicToolCallResponse | PromiseLike<DynamicToolCallResponse>;
 
 function responseIdKey(id: CodexRpcId): string {
   return `${typeof id}:${String(id)}`;
@@ -285,6 +295,8 @@ export class CodexAppServerConnection {
   private stderrReader: Interface | undefined;
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly dynamicToolRequests = new Map<string, AbortController>();
+  private dynamicToolHandler: CodexDynamicToolHandler | undefined;
   private readonly diagnostics: CodexDiagnostic[] = [];
   private readonly notificationListeners = new Set<CodexNotificationListener>();
   private readonly diagnosticListeners = new Set<CodexDiagnosticListener>();
@@ -527,6 +539,31 @@ export class CodexAppServerConnection {
     );
   }
 
+  /** Codex dynamic toolのhandlerを登録します。 */
+  public onDynamicToolCall(handler: CodexDynamicToolHandler): () => void {
+    if (typeof handler !== "function") {
+      throw new TypeError("Codex dynamic toolのhandlerが必要です。");
+    }
+    if (
+      this.state === "failed"
+      || this.state === "stopping"
+      || this.state === "stopped"
+    ) {
+      throw new CodexConnectionStateError();
+    }
+    if (this.dynamicToolHandler != null) {
+      throw new CodexConnectionStateError();
+    }
+    this.dynamicToolHandler = handler;
+    return () => {
+      if (this.dynamicToolHandler !== handler) {
+        return;
+      }
+      this.dynamicToolHandler = undefined;
+      this.abortDynamicToolRequests();
+    };
+  }
+
   /** 型付き通知の購読を登録します。 */
   public onNotification(listener: CodexNotificationListener): () => void {
     this.notificationListeners.add(listener);
@@ -545,11 +582,13 @@ export class CodexAppServerConnection {
 
   /** 保持中の本文なし診断を読み出します。 */
   public getDiagnostics(): readonly CodexDiagnostic[] {
-    return this.diagnostics.slice();
+    return [...this.diagnostics];
   }
 
   /** JSONL接続、子プロセス、保留要求を停止します。 */
   public stop(): Promise<void> {
+    this.dynamicToolHandler = undefined;
+    this.abortDynamicToolRequests();
     if (this.stopPromise != null) {
       return this.stopPromise;
     }
@@ -1106,20 +1145,124 @@ export class CodexAppServerConnection {
   }
 
   private handleServerRequest(request: RpcServerRequestEnvelope): void {
+    const handler = this.dynamicToolHandler;
+    if (request.method === "item/tool/call" && handler != null) {
+      const parsedParams = dynamicToolCallParamsSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        this.emitDiagnostic({
+          kind: "protocol_error",
+          code: "protocol_error",
+        });
+        this.sendServerRequestError(
+          request.id,
+          -32602,
+          "Codex dynamic toolの引数が不正です。",
+        );
+        return;
+      }
+      this.startDynamicToolCall(request.id, parsedParams.data, handler);
+      return;
+    }
     this.emitDiagnostic({
       kind: "server_request_rejected",
       code: "server_request_rejected",
       method: request.method,
     });
-    void this.writeMessage({
-      id: request.id,
-      error: {
-        code: -32601,
-        message: "サーバー開始要求は許可されていません。",
+    this.sendServerRequestError(
+      request.id,
+      -32601,
+      "サーバー開始要求は許可されていません。",
+    );
+  }
+
+  private startDynamicToolCall(
+    id: CodexRpcId,
+    params: DynamicToolCallParams,
+    handler: CodexDynamicToolHandler,
+  ): void {
+    const key = responseIdKey(id);
+    if (this.dynamicToolRequests.has(key)) {
+      this.emitDiagnostic({
+        kind: "protocol_error",
+        code: "protocol_error",
+      });
+      this.sendServerRequestError(
+        id,
+        -32600,
+        "Codex dynamic tool要求が不正です。",
+      );
+      return;
+    }
+    const controller = new AbortController();
+    this.dynamicToolRequests.set(key, controller);
+    const responsePromise = Promise.resolve()
+      .then(() => handler(params, controller.signal))
+      .then((response) => dynamicToolCallResponseSchema.parse(response));
+    void responsePromise.then(
+      (response) => {
+        if (
+          controller.signal.aborted
+          || this.state === "failed"
+          || this.state === "stopping"
+          || this.state === "stopped"
+        ) {
+          return;
+        }
+        return this.writeMessage({ id, result: response });
       },
+      () => this.respondDynamicToolError(id, controller),
+    ).catch((error: unknown) => {
+      this.failConnection(error);
+    }).finally(() => {
+      if (this.dynamicToolRequests.get(key) === controller) {
+        this.dynamicToolRequests.delete(key);
+      }
+    });
+  }
+
+  private respondDynamicToolError(
+    id: CodexRpcId,
+    controller: AbortController,
+  ): Promise<void> {
+    if (
+      controller.signal.aborted
+      || this.state === "failed"
+      || this.state === "stopping"
+      || this.state === "stopped"
+    ) {
+      return Promise.resolve();
+    }
+    this.emitDiagnostic({
+      kind: "protocol_error",
+      code: "protocol_error",
+    });
+    return this.writeMessage({
+      id,
+      error: {
+        code: -32603,
+        message: "Codex dynamic toolの内部エラーが発生しました。",
+      },
+    });
+  }
+
+  private sendServerRequestError(
+    id: CodexRpcId,
+    code: number,
+    message: string,
+  ): void {
+    void this.writeMessage({
+      id,
+      error: { code, message },
     }).catch((error: unknown) => {
       this.failConnection(error);
     });
+  }
+
+  private abortDynamicToolRequests(): void {
+    for (const controller of this.dynamicToolRequests.values()) {
+      controller.abort();
+    }
+    this.dynamicToolRequests.clear();
   }
 
   private handleStderrLine(): void {
@@ -1236,9 +1379,13 @@ export class CodexAppServerConnection {
   private emitDiagnostic(diagnostic: CodexDiagnostic): void {
     const validatedDiagnostic = codexDiagnosticSchema.parse(diagnostic);
     this.storeDiagnostic(validatedDiagnostic);
+    this.notifyDiagnosticListeners(validatedDiagnostic);
+  }
+
+  private notifyDiagnosticListeners(diagnostic: CodexDiagnostic): void {
     for (const listener of this.diagnosticListeners) {
       try {
-        const result = listener(validatedDiagnostic);
+        const result = listener(diagnostic);
         this.handleListenerResult(result, "diagnostic");
       } catch {
         this.storeListenerError("diagnostic");
@@ -1302,6 +1449,8 @@ export class CodexAppServerConnection {
     if (this.terminalError == null) {
       this.terminalError = connectionError;
     }
+    this.dynamicToolHandler = undefined;
+    this.abortDynamicToolRequests();
     this.rejectPending(connectionError);
     if (this.state === "stopping" || this.state === "stopped") {
       return;
