@@ -54,31 +54,31 @@ function applicationOutcomePresentation(outcome: ApplicationOutcome): Applicatio
     case "applied":
     case "already_applied":
       return {
-        backgroundClass: "bg-emerald-50",
-        borderClass: "border-emerald-200",
-        detailTextClass: "text-emerald-950",
-        focusClass: "focus:ring-emerald-600",
+        backgroundClass: "bg-emerald-50 dark:bg-emerald-950",
+        borderClass: "border-emerald-200 dark:border-emerald-800",
+        detailTextClass: "text-emerald-950 dark:text-emerald-100",
+        focusClass: "focus:ring-emerald-600 dark:focus:ring-emerald-400",
         role: "status",
-        textClass: "text-emerald-900",
+        textClass: "text-emerald-900 dark:text-emerald-100",
       };
     case "partially_applied":
     case "unknown":
       return {
-        backgroundClass: "bg-amber-50",
-        borderClass: "border-amber-200",
-        detailTextClass: "text-amber-950",
-        focusClass: "focus:ring-amber-600",
+        backgroundClass: "bg-amber-50 dark:bg-amber-950",
+        borderClass: "border-amber-200 dark:border-amber-800",
+        detailTextClass: "text-amber-950 dark:text-amber-100",
+        focusClass: "focus:ring-amber-600 dark:focus:ring-amber-400",
         role: "alert",
-        textClass: "text-amber-900",
+        textClass: "text-amber-900 dark:text-amber-100",
       };
     case "not_applied":
       return {
-        backgroundClass: "bg-rose-50",
-        borderClass: "border-rose-200",
-        detailTextClass: "text-rose-950",
-        focusClass: "focus:ring-rose-600",
+        backgroundClass: "bg-rose-50 dark:bg-rose-950",
+        borderClass: "border-rose-200 dark:border-rose-800",
+        detailTextClass: "text-rose-950 dark:text-rose-100",
+        focusClass: "focus:ring-rose-600 dark:focus:ring-rose-400",
         role: "alert",
-        textClass: "text-rose-900",
+        textClass: "text-rose-900 dark:text-rose-100",
       };
   }
 }
@@ -520,17 +520,17 @@ function applicationReasonLabel(reason: string): string {
 
 <template>
   <section
-    class="rounded-xl border border-slate-200 bg-white shadow-sm"
+    class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
     aria-labelledby="ai-panel-title"
   >
-    <div class="border-b border-slate-200 px-5 py-4">
+    <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p class="text-sm font-semibold text-violet-700">
+          <p class="text-sm font-semibold text-violet-700 dark:text-violet-400">
             AIアシスタント
           </p><h2
             id="ai-panel-title"
-            class="mt-1 text-xl font-semibold text-slate-900"
+            class="mt-1 text-xl font-semibold text-slate-900 dark:text-slate-100"
           >
             {{ panelTitle }}
           </h2>
@@ -541,7 +541,7 @@ function applicationReasonLabel(reason: string): string {
     <div class="space-y-5 p-5">
       <p
         v-if="localError.length > 0"
-        class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"
+        class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
         role="alert"
       >
         {{ localError }}
@@ -573,7 +573,7 @@ function applicationReasonLabel(reason: string): string {
         </form>
         <p
           v-if="!props.canSendAi"
-          class="text-sm text-amber-800"
+          class="text-sm text-amber-800 dark:text-amber-200"
           role="status"
           aria-live="polite"
         >
@@ -581,7 +581,7 @@ function applicationReasonLabel(reason: string): string {
         </p>
         <p
           v-if="proposal != null"
-          class="text-xs text-slate-600"
+          class="text-xs text-slate-600 dark:text-slate-400"
         >
           表示中の変更案を保持したまま追質問や再提案を依頼できます。
         </p>
@@ -595,20 +595,20 @@ function applicationReasonLabel(reason: string): string {
       >
         <div
           v-if="props.state.text.length === 0"
-          class="flex items-center gap-3 rounded-md bg-slate-50 p-4"
+          class="flex items-center gap-3 rounded-md bg-slate-50 p-4 dark:bg-slate-800"
           role="status"
         >
           <span
-            class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600"
+            class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600 dark:border-slate-600 dark:border-t-violet-400"
             aria-hidden="true"
-          /><p class="text-sm font-medium text-slate-800">
+          /><p class="text-sm font-medium text-slate-800 dark:text-slate-100">
             AIが回答を準備しています
           </p>
         </div>
         <template v-else>
-          <p class="text-sm font-medium text-slate-800">
+          <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
             Codexの応答
-          </p><pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm leading-6 text-slate-800">{{ props.state.text }}</pre>
+          </p><pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm leading-6 text-slate-800 dark:bg-slate-800 dark:text-slate-100">{{ props.state.text }}</pre>
         </template>
       </div>
 
@@ -617,15 +617,15 @@ function applicationReasonLabel(reason: string): string {
         class="space-y-3"
         aria-live="polite"
       >
-        <p class="text-sm text-slate-700">
+        <p class="text-sm text-slate-700 dark:text-slate-300">
           {{ questionResponseMessage }}
         </p><ul class="space-y-3">
           <li
             v-for="question in responseQuestions"
             :key="question.question_id"
-            class="rounded-md border border-slate-200 p-3"
+            class="rounded-md border border-slate-200 p-3 dark:border-slate-700"
           >
-            <p class="font-medium text-slate-900">
+            <p class="font-medium text-slate-900 dark:text-slate-100">
               {{ question.text }}
             </p><div
               v-if="question.options != null"
@@ -647,12 +647,12 @@ function applicationReasonLabel(reason: string): string {
       </div>
 
       <template v-if="proposal != null">
-        <div class="rounded-md bg-slate-50 p-4">
-          <p class="text-sm font-medium text-slate-900">
+        <div class="rounded-md bg-slate-50 p-4 dark:bg-slate-800">
+          <p class="text-sm font-medium text-slate-900 dark:text-slate-100">
             {{ proposalMessage }}
-          </p><p class="mt-1 text-xs text-slate-600">
+          </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
             承認するまでAsanaには反映されません。
-          </p><p class="mt-1 text-xs text-slate-600">
+          </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
             影響を受けるタスク: {{ requireProposal().impact.impacted_task_count }}件
           </p>
         </div>
@@ -662,7 +662,7 @@ function applicationReasonLabel(reason: string): string {
           </h3><div
             v-for="(group, groupIndex) in requireProposal().proposal.groups"
             :key="group.group_id"
-            class="rounded-md border border-slate-200 p-4"
+            class="rounded-md border border-slate-200 p-4 dark:border-slate-700"
           >
             <div class="flex flex-wrap items-center gap-3">
               <input
@@ -672,27 +672,27 @@ function applicationReasonLabel(reason: string): string {
                 type="checkbox"
                 :aria-label="`変更グループ ${groupIndex + 1}を選択`"
                 @change="selectedGroupIds = toggleValue(selectedGroupIds, group.group_id)"
-              ><span class="font-medium text-slate-900">変更グループ {{ groupIndex + 1 }}</span><span class="text-xs text-slate-600">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
+              ><span class="font-medium text-slate-900 dark:text-slate-100">変更グループ {{ groupIndex + 1 }}</span><span class="text-xs text-slate-600 dark:text-slate-400">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
                 v-if="selectionMode === 'operations' && group.atomic"
-                class="text-xs text-slate-600"
+                class="text-xs text-slate-600 dark:text-slate-400"
               >一括選択で適用</span>
             </div><div class="mt-3 space-y-3">
               <article
                 v-for="operation in group.operations"
                 :key="operation.operation_id"
                 class="rounded-md p-3"
-                :class="operationIsApplicable(requireProposal(), operation.operation_id) ? 'bg-slate-50' : 'border border-rose-200 bg-rose-50'"
+                :class="operationIsApplicable(requireProposal(), operation.operation_id) ? 'bg-slate-50 dark:bg-slate-800' : 'border border-rose-200 bg-rose-50 dark:border-rose-800 dark:bg-rose-950'"
               >
                 <div class="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p class="font-medium text-slate-900">
-                      {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600">{{ targetLabel(operation) }}</span>
-                    </p><p class="mt-1 text-xs text-slate-600">
+                    <p class="font-medium text-slate-900 dark:text-slate-100">
+                      {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600 dark:text-slate-400">{{ targetLabel(operation) }}</span>
+                    </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
                       {{ operationValidation(requireProposal(), operation.operation_id) }}・{{ operation.basis === 'explicit' ? '明示' : '推測' }}・信頼度 {{ confidenceLabel(operation.confidence) }}
                     </p>
                   </div><label
                     v-if="selectionMode === 'operations' && !group.atomic"
-                    class="inline-flex items-center gap-2 text-xs text-slate-700"
+                    class="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"
                   ><input
                     :checked="selectedOperation(operation.operation_id)"
                     :disabled="!operationIsApplicable(requireProposal(), operation.operation_id)"
@@ -701,21 +701,21 @@ function applicationReasonLabel(reason: string): string {
                     @change="selectedOperationIds = toggleValue(selectedOperationIds, operation.operation_id)"
                   >操作を選択</label>
                 </div><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-                  <dt class="text-slate-600">
+                  <dt class="text-slate-600 dark:text-slate-400">
                     変更前
-                  </dt><dd class="break-words text-slate-800">
+                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
                     {{ valueLabel(operation.before) }}
-                  </dd><dt class="text-slate-600">
+                  </dd><dt class="text-slate-600 dark:text-slate-400">
                     変更後
-                  </dt><dd class="break-words text-slate-800">
+                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
                     {{ valueLabel(operation.after) }}
-                  </dd><dt class="text-slate-600">
+                  </dd><dt class="text-slate-600 dark:text-slate-400">
                     理由
-                  </dt><dd class="break-words text-slate-800">
+                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
                     {{ operation.reason }}
-                  </dd><dt class="text-slate-600">
+                  </dd><dt class="text-slate-600 dark:text-slate-400">
                     根拠
-                  </dt><dd class="break-words text-slate-800">
+                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
                     <span
                       v-for="evidence in operation.evidence_refs"
                       :key="`${evidence.kind}-${evidence.locator}`"
@@ -731,7 +731,7 @@ function applicationReasonLabel(reason: string): string {
                   変更後を編集
                 </button><form
                   v-if="editingOperationId === operation.operation_id"
-                  class="mt-3 grid gap-2 border-t border-slate-200 pt-3"
+                  class="mt-3 grid gap-2 border-t border-slate-200 pt-3 dark:border-slate-700"
                   @submit.prevent="saveCurrentEdit(operation)"
                 >
                   <label
@@ -762,32 +762,32 @@ function applicationReasonLabel(reason: string): string {
             </div>
           </div>
         </div>
-        <details class="rounded-md border border-slate-200 p-4">
-          <summary class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2">
+        <details class="rounded-md border border-slate-200 p-4 dark:border-slate-700">
+          <summary class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950">
             変更案の詳細
           </summary>
-          <div class="mt-3 space-y-4 text-xs text-slate-600">
+          <div class="mt-3 space-y-4 text-xs text-slate-600 dark:text-slate-400">
             <dl class="grid gap-1 sm:grid-cols-2">
-              <dt>変更案ID</dt><dd class="break-words text-slate-800">
+              <dt>変更案ID</dt><dd class="break-words text-slate-800 dark:text-slate-100">
                 {{ requireProposal().proposal_id }}
-              </dd><dt>基準データの識別子</dt><dd class="break-words text-slate-800">
+              </dd><dt>基準データの識別子</dt><dd class="break-words text-slate-800 dark:text-slate-100">
                 {{ requireProposal().baseline_snapshot_hash }}
               </dd>
             </dl>
             <div
               v-for="group in requireProposal().proposal.groups"
               :key="`detail-${group.group_id}`"
-              class="space-y-2 rounded-md bg-slate-50 p-3"
+              class="space-y-2 rounded-md bg-slate-50 p-3 dark:bg-slate-800"
             >
-              <p class="font-medium text-slate-800">
+              <p class="font-medium text-slate-800 dark:text-slate-100">
                 グループID: {{ group.group_id }}
               </p>
               <div
                 v-for="operation in group.operations"
                 :key="`detail-${operation.operation_id}`"
-                class="space-y-1 border-t border-slate-200 pt-2"
+                class="space-y-1 border-t border-slate-200 pt-2 dark:border-slate-700"
               >
-                <p class="font-medium text-slate-800">
+                <p class="font-medium text-slate-800 dark:text-slate-100">
                   操作ID: {{ operation.operation_id }}
                 </p>
                 <p>
@@ -801,7 +801,7 @@ function applicationReasonLabel(reason: string): string {
                   <span
                     v-for="evidence in operation.evidence_refs"
                     :key="`detail-${evidence.kind}-${evidence.locator}`"
-                    class="mr-2 inline-block break-words text-slate-800"
+                    class="mr-2 inline-block break-words text-slate-800 dark:text-slate-100"
                   >{{ evidence.kind }}: {{ evidence.locator }}</span>
                 </p>
               </div>
@@ -810,21 +810,21 @@ function applicationReasonLabel(reason: string): string {
         </details>
         <p
           v-if="selectionMode === 'all' && hasInapplicableOperation"
-          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"
+          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
           role="alert"
         >
           適用できない変更があります。適用範囲を選び直すか、変更案を修正してください。
         </p>
         <div class="flex flex-wrap gap-2">
-          <label class="inline-flex items-center gap-2 text-sm text-slate-700"><input
+          <label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
             v-model="selectionMode"
             type="radio"
             value="all"
-          >全体</label><label class="inline-flex items-center gap-2 text-sm text-slate-700"><input
+          >全体</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
             v-model="selectionMode"
             type="radio"
             value="groups"
-          >グループ単位</label><label class="inline-flex items-center gap-2 text-sm text-slate-700"><input
+          >グループ単位</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
             v-model="selectionMode"
             type="radio"
             value="operations"
@@ -856,7 +856,7 @@ function applicationReasonLabel(reason: string): string {
             順位への予測影響
           </h3><ul
             v-if="requireProposal().impact.rank_changes.length > 0"
-            class="mt-2 space-y-1 text-sm text-slate-700"
+            class="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300"
           >
             <li
               v-for="change in requireProposal().impact.rank_changes"
@@ -866,7 +866,7 @@ function applicationReasonLabel(reason: string): string {
             </li>
           </ul><p
             v-else
-            class="mt-2 text-sm text-slate-700"
+            class="mt-2 text-sm text-slate-700 dark:text-slate-300"
           >
             順位への影響はありません。
           </p>
@@ -900,7 +900,7 @@ function applicationReasonLabel(reason: string): string {
           :class="applicationOutcomePresentation(props.state.result.application.outcome).borderClass"
         >
           <summary
-            class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2"
+            class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-slate-950"
             :class="[
               applicationOutcomePresentation(props.state.result.application.outcome).detailTextClass,
               applicationOutcomePresentation(props.state.result.application.outcome).focusClass,
@@ -940,12 +940,12 @@ function applicationReasonLabel(reason: string): string {
       </div>
       <div
         v-if="props.state.kind === 'unavailable'"
-        class="rounded-md bg-amber-50 p-4"
+        class="rounded-md bg-amber-50 p-4 dark:bg-amber-950"
         role="alert"
       >
-        <p class="font-medium text-amber-900">
+        <p class="font-medium text-amber-900 dark:text-amber-100">
           AIは利用できません。
-        </p><p class="mt-1 text-sm text-amber-900">
+        </p><p class="mt-1 text-sm text-amber-900 dark:text-amber-100">
           {{ props.state.failure.message }}
         </p>
       </div>

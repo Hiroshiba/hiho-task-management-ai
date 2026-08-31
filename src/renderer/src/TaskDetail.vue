@@ -484,16 +484,16 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
 
 <template>
   <section
-    class="rounded-xl border border-slate-200 bg-white shadow-sm"
+    class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
     aria-labelledby="task-detail-title"
   >
     <div
       v-if="props.task == null"
-      class="px-5 py-10 text-center text-sm text-slate-600"
+      class="px-5 py-10 text-center text-sm text-slate-600 dark:text-slate-400"
     >
       <h2
         id="task-detail-title"
-        class="text-lg font-semibold text-slate-900"
+        class="text-lg font-semibold text-slate-900 dark:text-slate-100"
       >
         タスク詳細
       </h2>
@@ -502,15 +502,15 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
       </p>
     </div>
     <template v-else>
-      <div class="border-b border-slate-200 px-5 py-4">
+      <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
         <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <p class="text-xs text-slate-500">
+            <p class="text-xs text-slate-500 dark:text-slate-400">
               タスク詳細
             </p>
             <h2
               id="task-detail-title"
-              class="mt-1 break-words text-xl font-semibold text-slate-900"
+              class="mt-1 break-words text-xl font-semibold text-slate-900 dark:text-slate-100"
             >
               {{ props.task.title }}
             </h2>
@@ -524,14 +524,14 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
         </div>
         <details
           v-if="hasCleanupWarnings(props.task)"
-          class="mt-3 rounded-md border border-amber-200 bg-amber-50 text-amber-900"
+          class="mt-3 rounded-md border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
         >
           <summary
-            class="cursor-pointer px-3 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset"
+            class="cursor-pointer px-3 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset dark:text-amber-100 dark:focus:ring-amber-400"
           >
             要整理 {{ props.task.cleanup_warnings.length }}件
           </summary>
-          <ul class="list-disc space-y-1 border-t border-amber-200 p-3 pl-8 text-xs text-amber-900">
+          <ul class="list-disc space-y-1 border-t border-amber-200 p-3 pl-8 text-xs text-amber-900 dark:border-amber-800 dark:text-amber-100">
             <li
               v-for="warning in props.task.cleanup_warnings"
               :key="`${warning.kind}-${warning.message}`"
@@ -545,13 +545,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
       <div class="space-y-6 p-5">
         <p
           v-if="localError.length > 0"
-          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"
+          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
           role="alert"
         >
           {{ localError }}
         </p>
         <p
-          class="text-sm text-slate-600"
+          class="text-sm text-slate-600 dark:text-slate-300"
           role="status"
           aria-live="polite"
         >
@@ -657,7 +657,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </div>
 
-        <div class="field-group border-t border-slate-200 pt-5">
+        <div class="field-group border-t border-slate-200 pt-5 dark:border-slate-700">
           <p class="field-label">
             状態操作
           </p>
@@ -672,7 +672,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 完了にする
               </button><button
                 type="button"
-                class="secondary-button border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 focus:ring-amber-600"
+                class="secondary-button border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 focus:ring-amber-600 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 dark:hover:bg-amber-900 dark:focus:ring-amber-400 dark:disabled:border-slate-700 dark:disabled:bg-slate-900 dark:disabled:text-slate-400"
                 :disabled="!props.canWrite"
                 @click="submitOperation({ kind: 'withdraw' })"
               >
@@ -706,9 +706,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </div>
 
-        <details class="min-w-0 border-t border-slate-200 pt-5">
+        <details class="min-w-0 border-t border-slate-200 pt-5 dark:border-slate-700">
           <summary
-            class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+            class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
           >
             依存関係と親子関係を編集
           </summary>
@@ -725,7 +725,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 v-model="dependencyText"
                 class="text-input min-w-0"
                 :disabled="!props.canWrite"
-              ></label><p class="break-words text-xs text-slate-500">
+              ></label><p class="break-words text-xs text-slate-500 dark:text-slate-400">
                 複数はカンマ区切りで入力します。新しい依存先は GID:full または GID:partial の形式で指定します。
               </p><button
                 type="submit"
@@ -747,7 +747,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 v-model="parentGid"
                 class="text-input min-w-0"
                 :disabled="!props.canWrite"
-              ></label><p class="break-words text-xs text-slate-500">
+              ></label><p class="break-words text-xs text-slate-500 dark:text-slate-400">
                 空欄で親を解除します。
               </p><button
                 type="submit"
@@ -780,26 +780,26 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </details>
 
-        <div class="grid gap-6 border-t border-slate-200 pt-5 2xl:grid-cols-2">
+        <div class="grid gap-6 border-t border-slate-200 pt-5 dark:border-slate-700 2xl:grid-cols-2">
           <div>
             <h3 class="section-heading">
               順位の要約
-            </h3><p class="mt-2 text-sm font-medium text-sky-800">
+            </h3><p class="mt-2 text-sm font-medium text-sky-800 dark:text-sky-400">
               {{ rankingLabel(props.task) }}
             </p><p
               v-if="executionPoints(props.task) != null"
-              class="mt-2 text-sm text-slate-700"
+              class="mt-2 text-sm text-slate-700 dark:text-slate-300"
             >
               実行点: {{ executionPoints(props.task) }}
-            </p><p class="mt-2 text-sm text-slate-700">
+            </p><p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
               ブロック: {{ blockLabel(props.task.block_state) }}
             </p><p
               v-if="props.task.block_reason != null"
-              class="mt-1 text-sm text-amber-800"
+              class="mt-1 text-sm text-amber-800 dark:text-amber-200"
             >
               {{ props.task.block_reason.summary }}
             </p><div class="mt-4">
-              <p class="text-sm font-medium text-slate-800">
+              <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                 順位理由
               </p><div
                 v-if="rankingReasonSummary(props.task).visible.length > 0"
@@ -808,32 +808,32 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 <span
                   v-for="reason in rankingReasonSummary(props.task).visible"
                   :key="reason"
-                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                 >{{ reason }}</span>
                 <span
                   v-if="rankingReasonSummary(props.task).remaining > 0"
-                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                 >ほか{{ rankingReasonSummary(props.task).remaining }}件</span>
               </div><p
                 v-else
-                class="mt-1 text-sm text-slate-600"
+                class="mt-1 text-sm text-slate-600 dark:text-slate-400"
               >
                 なし
               </p>
             </div>
             <details
-              class="mt-4 border-t border-slate-200 pt-3"
+              class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700"
               :open="rankingDetailsOpen(props.task)"
             >
               <summary
-                class="cursor-pointer rounded-md px-2 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+                class="cursor-pointer rounded-md px-2 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
               >
                 順位の計算根拠
               </summary>
-              <div class="mt-3 space-y-4 border-l border-slate-200 pl-3">
+              <div class="mt-3 space-y-4 border-l border-slate-200 pl-3 dark:border-slate-700">
                 <p
                   v-if="props.task.ranking.calculated_at != null"
-                  class="text-xs text-slate-500"
+                  class="text-xs text-slate-500 dark:text-slate-400"
                 >
                   計算日時: {{ jstDateTimeLabel(props.task.ranking.calculated_at) }}
                 </p>
@@ -842,15 +842,15 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                     v-for="entry in scoreEntries(props.task)"
                     :key="entry.label"
                   >
-                    <dt class="text-slate-600">
+                    <dt class="text-slate-600 dark:text-slate-400">
                       {{ entry.label }}
-                    </dt><dd class="break-words text-right font-medium text-slate-900">
+                    </dt><dd class="break-words text-right font-medium text-slate-900 dark:text-slate-100">
                       {{ entry.value }}
                     </dd>
                   </template>
                 </dl>
                 <div>
-                  <p class="text-sm font-medium text-slate-800">
+                  <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                     全理由
                   </p><div
                     v-if="rankingReasons(props.task).length > 0"
@@ -859,19 +859,19 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                     <span
                       v-for="reason in rankingReasons(props.task)"
                       :key="reason"
-                      class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                      class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                     >{{ reason }}</span>
                   </div><p
                     v-else
-                    class="mt-1 text-sm text-slate-600"
+                    class="mt-1 text-sm text-slate-600 dark:text-slate-400"
                   >
                     なし
                   </p>
                 </div>
                 <div>
-                  <p class="text-sm font-medium text-slate-800">
+                  <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                     完了すると進むタスク
-                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600 dark:text-slate-400">
                     <li
                       v-for="gid in releaseTargetGids(props.task)"
                       :key="gid"
@@ -884,9 +884,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   </ul>
                 </div>
                 <div>
-                  <p class="text-sm font-medium text-slate-800">
+                  <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                     除外理由
-                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600 dark:text-slate-400">
                     <li
                       v-for="reason in exclusionReasons(props.task)"
                       :key="reason"
@@ -899,9 +899,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   </ul>
                 </div>
                 <div>
-                  <p class="text-sm font-medium text-slate-800">
+                  <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                     同点時の比較値
-                  </p><p class="mt-1 text-xs text-slate-500">
+                  </p><p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     同点の場合は、実効期限、重要度、解放点、活動基準日、タスクGIDの順に比較します。
                   </p><dl
                     v-if="tieBreakEntries(props.task).length > 0"
@@ -911,15 +911,15 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                       v-for="entry in tieBreakEntries(props.task)"
                       :key="entry.label"
                     >
-                      <dt class="text-slate-600">
+                      <dt class="text-slate-600 dark:text-slate-400">
                         {{ entry.label }}
-                      </dt><dd class="break-all text-right font-medium text-slate-900">
+                      </dt><dd class="break-all text-right font-medium text-slate-900 dark:text-slate-100">
                         {{ entry.value }}
                       </dd>
                     </template>
                   </dl><p
                     v-else
-                    class="mt-1 text-sm text-slate-600"
+                    class="mt-1 text-sm text-slate-600 dark:text-slate-400"
                   >
                     順位キャッシュがないため確認できません。
                   </p>
@@ -927,9 +927,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 <div
                   v-if="props.task.ranking.detail_text != null"
                 >
-                  <p class="text-sm font-medium text-slate-800">
+                  <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                     順位計算の詳細
-                  </p><pre class="mt-2 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-700">{{ props.task.ranking.detail_text }}</pre>
+                  </p><pre class="mt-2 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ props.task.ranking.detail_text }}</pre>
                 </div>
               </div>
             </details>
@@ -937,14 +937,14 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           <div>
             <h3 class="section-heading">
               タスク関係
-            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700">
+            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700 dark:text-slate-300">
               親: {{ props.task.parent == null ? "なし" : relationLabel(props.task.parent) }}
-            </p><p class="mt-1 min-w-0 break-words text-sm text-slate-700">
+            </p><p class="mt-1 min-w-0 break-words text-sm text-slate-700 dark:text-slate-300">
               親作業モード: {{ parentWorkModeLabel(props.task.parent_work_mode) }}
             </p><div class="mt-3 min-w-0">
-              <p class="text-sm font-medium text-slate-800">
+              <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                 依存先
-              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600">
+              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600 dark:text-slate-400">
                 <li
                   v-for="dependency in props.task.dependencies"
                   :key="`${dependency.gid}-${dependency.source}`"
@@ -956,9 +956,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 </li>
               </ul>
             </div><div class="mt-3 min-w-0">
-              <p class="text-sm font-medium text-slate-800">
+              <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
                 依存元
-              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600">
+              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600 dark:text-slate-400">
                 <li
                   v-for="dependent in props.task.dependents"
                   :key="`${dependent.gid}-${dependent.source}`"
@@ -976,13 +976,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </div>
 
-        <div class="grid gap-6 border-t border-slate-200 pt-5 2xl:grid-cols-2">
+        <div class="grid gap-6 border-t border-slate-200 pt-5 dark:border-slate-700 2xl:grid-cols-2">
           <div>
             <h3 class="section-heading">
               子タスク
-            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700">
+            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700 dark:text-slate-300">
               進捗 {{ props.task.child_progress.completed_count }}/{{ props.task.child_progress.total_count }}
-            </p><ul class="mt-2 min-w-0 space-y-1 text-sm text-slate-600">
+            </p><ul class="mt-2 min-w-0 space-y-1 text-sm text-slate-600 dark:text-slate-400">
               <li
                 v-for="child in props.task.children"
                 :key="child.gid"
@@ -1006,25 +1006,25 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               >
                 関連ノートを再解析
               </button>
-            </div><ul class="mt-2 min-w-0 space-y-2 text-sm text-slate-600">
+            </div><ul class="mt-2 min-w-0 space-y-2 text-sm text-slate-600 dark:text-slate-400">
               <li
                 v-for="link in props.task.obsidian_links"
                 :key="`${link.vault_id}-${link.path}`"
-                class="flex min-w-0 flex-col gap-3 rounded-md border border-slate-200 p-3 sm:flex-row sm:items-start sm:justify-between"
+                class="flex min-w-0 flex-col gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:flex-row sm:items-start sm:justify-between"
               >
                 <div class="min-w-0 flex-1">
-                  <p class="break-words font-medium text-slate-800">
+                  <p class="break-words font-medium text-slate-800 dark:text-slate-100">
                     {{ link.title }}・{{ statusForLink(link) }}
-                  </p><p class="mt-1 break-words text-xs text-slate-500">
+                  </p><p class="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">
                     {{ link.path }}
                   </p>
                   <details class="mt-2 min-w-0">
                     <summary
-                      class="cursor-pointer rounded-md px-2 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+                      class="cursor-pointer rounded-md px-2 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
                     >
                       リンクの詳細
                     </summary>
-                    <div class="mt-2 min-w-0 space-y-1 border-l border-slate-200 pl-3 text-xs text-slate-500">
+                    <div class="mt-2 min-w-0 space-y-1 border-l border-slate-200 pl-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
                       <p class="break-words">
                         Vault ID: {{ link.vault_id }}
                       </p><p class="break-words">
@@ -1052,15 +1052,15 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                 なし
               </li>
             </ul>
-            <details class="mt-4 min-w-0 border-t border-slate-200 pt-3">
+            <details class="mt-4 min-w-0 border-t border-slate-200 pt-3 dark:border-slate-700">
               <summary
-                class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+                class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
               >
                 ノートを追加
               </summary>
               <div class="mt-3 min-w-0 space-y-3">
                 <form
-                  class="min-w-0 space-y-2 rounded-md border border-slate-200 p-3"
+                  class="min-w-0 space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-700"
                   @submit.prevent="emit('search-obsidian', { vaultId: obsidianVaultId, query: obsidianQuery })"
                 >
                   <label
@@ -1078,7 +1078,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                     :value="candidate"
                   >{{ candidate }}</option></select></label><p
                     v-else
-                    class="break-words text-xs text-slate-600"
+                    class="break-words text-xs text-slate-600 dark:text-slate-400"
                   >
                     登録済みVaultがありません。
                   </p><label
@@ -1111,18 +1111,18 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   class="min-w-0"
                 >
                   <template v-if="props.obsidianNotes.length > 0">
-                    <h4 class="text-sm font-medium text-slate-800">
+                    <h4 class="text-sm font-medium text-slate-800 dark:text-slate-100">
                       Vaultのノート
                     </h4>
                     <ul
-                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600"
+                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600 dark:text-slate-400"
                     >
                       <li
                         v-for="note in props.obsidianNotes"
                         :key="note.relative_path"
                         class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
                       >
-                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500">{{ note.relative_path }}</span></span><button
+                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500 dark:text-slate-400">{{ note.relative_path }}</span></span><button
                           type="button"
                           class="text-button"
                           :disabled="!props.canWrite"
@@ -1134,18 +1134,18 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                     </ul>
                   </template>
                   <template v-if="props.obsidianSearchResults.length > 0">
-                    <h4 class="mt-3 text-sm font-medium text-slate-800">
+                    <h4 class="mt-3 text-sm font-medium text-slate-800 dark:text-slate-100">
                       検索結果
                     </h4>
                     <ul
-                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600"
+                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600 dark:text-slate-400"
                     >
                       <li
                         v-for="note in props.obsidianSearchResults"
                         :key="`search-${note.relative_path}`"
                         class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
                       >
-                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500">{{ note.relative_path }}・{{ note.excerpt }}</span></span><button
+                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500 dark:text-slate-400">{{ note.relative_path }}・{{ note.excerpt }}</span></span><button
                           type="button"
                           class="text-button"
                           :disabled="!props.canWrite"
