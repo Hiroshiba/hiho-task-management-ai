@@ -976,7 +976,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </div>
 
-        <div class="grid gap-6 border-t border-slate-200 pt-5 lg:grid-cols-2">
+        <div class="grid gap-6 border-t border-slate-200 pt-5 2xl:grid-cols-2">
           <div>
             <h3 class="section-heading">
               子タスク
