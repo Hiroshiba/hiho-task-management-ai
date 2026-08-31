@@ -43,7 +43,7 @@ import {
   type TaskctlSnapshot,
 } from "../taskctl";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
-import { codexResponseSchema } from "../../../shared/ai";
+import { codexResponseSchema, type CodexResponse } from "../../../shared/ai";
 import {
   CodexSessionAbortedError,
   CodexSessionAuthenticationError,
@@ -127,6 +127,21 @@ const finalAgentMessageSchema = z
   })
   .strict();
 
+const structuredOutputEnvelopeSchema = z
+  .object({
+    response_json: createUtf8ByteLimitedStringSchema(maximumFinalMessageBytes),
+  })
+  .strict();
+
+const structuredOutputEnvelopeJsonSchema = {
+  type: "object",
+  properties: {
+    response_json: { type: "string" },
+  },
+  required: ["response_json"],
+  additionalProperties: false,
+} satisfies Record<string, unknown>;
+
 const codexHomePathSchema = z
   .string()
   .min(1)
@@ -189,7 +204,7 @@ function validateAbortSignal(signal: AbortSignal): void {
   }
 }
 
-function createOutputSchema(): Record<string, unknown> {
+function createModelFormatInstruction(): string {
   const generated = z.toJSONSchema(codexResponseSchema, { target: "draft-07" });
   const parsed = z.object({}).passthrough().safeParse(generated);
   if (!parsed.success) {
@@ -198,7 +213,82 @@ function createOutputSchema(): Record<string, unknown> {
       parsed.error,
     );
   }
-  return parsed.data;
+  const serialized = JSON.stringify(parsed.data);
+  if (serialized == null) {
+    throw new CodexSessionCapabilityError(
+      "構造化出力スキーマをJSON文字列へ変換できません。",
+    );
+  }
+  const instruction = [
+    "最終応答はJSONオブジェクトだけにしてください。",
+    "最上位オブジェクトにはresponse_jsonだけを含めてください。",
+    "response_jsonには、次のJSON Schemaを満たすオブジェクトをJSON文字列化した文字列を指定してください。",
+    "response_jsonの値はJSONとして解析できなければなりません。",
+    "Markdown、コードフェンス、説明、前後の余分な文字は付けないでください。",
+    "response_jsonをJSONとして解析した結果は、次のJSON Schemaを満たす必要があります。",
+    serialized,
+  ].join("\n");
+  const validatedInstruction = codexSessionTurnInputSchema.safeParse([
+    { type: "text", text: instruction },
+  ]);
+  if (!validatedInstruction.success) {
+    throw new CodexSessionCapabilityError(
+      "構造化出力の形式指示が上限を超えています。",
+      validatedInstruction.error,
+    );
+  }
+  const instructionItem = validatedInstruction.data[0];
+  if (instructionItem == null || instructionItem.type !== "text") {
+    throw new CodexSessionCapabilityError(
+      "構造化出力の形式指示を作成できません。",
+    );
+  }
+  return instructionItem.text;
+}
+
+function prependModelFormatInstruction(
+  input: CodexSessionTurnInput,
+  instruction: string,
+): CodexSessionTurnInput {
+  let textFound = false;
+  const prefixedInput = input.map((item) => {
+    if (textFound || item.type !== "text") {
+      return item;
+    }
+    textFound = true;
+    return {
+      ...item,
+      text: `${instruction}\n\n${item.text}`,
+    };
+  });
+  if (!textFound) {
+    throw new CodexSessionError("Codexターン入力にテキスト項目がありません。");
+  }
+  return codexSessionTurnInputSchema.parse(prefixedInput);
+}
+
+function parseStructuredOutput(text: string): CodexResponse {
+  let parsedEnvelope: unknown;
+  try {
+    parsedEnvelope = JSON.parse(text);
+  } catch (error: unknown) {
+    throw new CodexSessionOutputValidationError(error);
+  }
+  const envelope = structuredOutputEnvelopeSchema.safeParse(parsedEnvelope);
+  if (!envelope.success) {
+    throw new CodexSessionOutputValidationError(envelope.error);
+  }
+  let parsedResponse: unknown;
+  try {
+    parsedResponse = JSON.parse(envelope.data.response_json);
+  } catch (error: unknown) {
+    throw new CodexSessionOutputValidationError(error);
+  }
+  const response = codexResponseSchema.safeParse(parsedResponse);
+  if (!response.success) {
+    throw new CodexSessionOutputValidationError(response.error);
+  }
+  return response.data;
 }
 
 function isTurnNotification(notification: CodexNotification): boolean {
@@ -696,7 +786,8 @@ export function createCodexAppServerConnectionFactory(
 export class CodexSessionService {
   private readonly options: CodexSessionOptions;
   private readonly broker: TaskctlBroker;
-  private readonly outputSchema: Record<string, unknown>;
+  private readonly structuredOutputSchema: Record<string, unknown>;
+  private readonly modelFormatInstruction: string;
   private readOnlyVaultPaths: readonly string[];
   private additionalLocalSocketPaths: readonly string[];
   private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
@@ -738,7 +829,8 @@ export class CodexSessionService {
         return this.options.snapshotProvider();
       },
     });
-    this.outputSchema = createOutputSchema();
+    this.structuredOutputSchema = structuredOutputEnvelopeJsonSchema;
+    this.modelFormatInstruction = createModelFormatInstruction();
   }
 
   /** Codexが読み取り専用で参照できるVaultを更新します。 */
@@ -1073,6 +1165,10 @@ export class CodexSessionService {
         await Promise.resolve(validatedPrepareInput(signal)),
       );
       validateTurnSkills(validatedInput, this.options.workspacePath);
+      validatedInput = prependModelFormatInstruction(
+        validatedInput,
+        this.modelFormatInstruction,
+      );
     } catch (error: unknown) {
       if (createdActiveTurn.abortRequested || signal.aborted) {
         this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
@@ -1090,7 +1186,7 @@ export class CodexSessionService {
         cwd: this.options.workspacePath,
         approvalPolicy: "never",
         model: this.requireSelectedModel(),
-        outputSchema: this.outputSchema,
+        outputSchema: this.structuredOutputSchema,
       });
     } catch (error: unknown) {
       if (createdActiveTurn.abortRequested || signal.aborted) {
@@ -2140,27 +2236,19 @@ export class CodexSessionService {
       this.finishTurn(active, error);
       return;
     }
-    let parsed: unknown;
+    let response: CodexResponse;
     try {
-      parsed = JSON.parse(finalItem.text);
+      response = parseStructuredOutput(finalItem.text);
     } catch (error: unknown) {
-      const validationError = new CodexSessionOutputValidationError(error);
-      this.recordDiagnostic("output_validation_error", validationError);
-      this.finishTurn(active, validationError);
-      return;
-    }
-    const response = codexResponseSchema.safeParse(parsed);
-    if (!response.success) {
-      const validationError = new CodexSessionOutputValidationError(response.error);
-      this.recordDiagnostic("output_validation_error", validationError);
-      this.finishTurn(active, validationError);
+      this.recordDiagnostic("output_validation_error", error);
+      this.finishTurn(active, error);
       return;
     }
     this.structuredOutputVerified = true;
     const result = codexSessionTurnResultSchema.parse({
       threadId: active.threadId,
       turnId: active.turnId,
-      response: response.data,
+      response,
     });
     this.finishTurn(active, result);
   }
