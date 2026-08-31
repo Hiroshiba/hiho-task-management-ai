@@ -149,11 +149,13 @@ type SyncStateReadResult =
 type GuiEditCompletion =
   | {
       readonly kind: "settled";
+      readonly feedbackKind: FeedbackKind;
       readonly message: string;
       readonly save: "succeeded" | "failed";
     }
   | {
       readonly kind: "recovery_required";
+      readonly feedbackKind: FeedbackKind;
       readonly message: string;
       readonly save: "succeeded" | "unknown";
     };
@@ -169,6 +171,13 @@ type PendingTaskSelection =
 type GuiEditSelection =
   | { readonly kind: "keep_current" }
   | { readonly kind: "select_pending" };
+
+type FeedbackKind = "success" | "progress" | "warning" | "failure";
+
+type Feedback = {
+  readonly kind: FeedbackKind;
+  readonly message: string;
+};
 
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
 const asanaAuthenticationStateMaximumRetryCount = 3;
@@ -195,7 +204,7 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
 const currentAsOf = ref(new Date().toISOString());
-const feedback = ref("");
+const feedback = ref<Feedback | undefined>();
 const aiBusy = ref(false);
 const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
 const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
@@ -221,6 +230,38 @@ let activeSyncReload: ActiveSyncReload = { kind: "idle" };
 let normalizationNotificationDisplayState: NormalizationNotificationDisplayState = {
   kind: "idle",
 };
+
+function setFeedback(kind: FeedbackKind, message: string): void {
+  feedback.value = { kind, message };
+}
+
+function clearFeedback(): void {
+  feedback.value = undefined;
+}
+
+function feedbackClass(kind: FeedbackKind): string {
+  switch (kind) {
+    case "success":
+      return "bg-emerald-50 text-emerald-900";
+    case "progress":
+      return "bg-sky-50 text-sky-950";
+    case "warning":
+      return "bg-amber-50 text-amber-900";
+    case "failure":
+      return "bg-rose-50 text-rose-900";
+  }
+}
+
+function feedbackRole(kind: FeedbackKind): "status" | "alert" {
+  switch (kind) {
+    case "success":
+    case "progress":
+      return "status";
+    case "warning":
+    case "failure":
+      return "alert";
+  }
+}
 
 const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
@@ -368,11 +409,11 @@ function syncFailureStateFromIpc(value: IpcFailure): RendererSyncState {
 }
 
 function showFailure(value: IpcFailure): void {
-  feedback.value = displayFailure(value).message;
+  setFeedback("failure", displayFailure(value).message);
 }
 
 function showUnexpectedFailure(): void {
-  feedback.value = "予期しないエラーが発生しました。もう一度お試しください。";
+  setFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
 }
 
 function codexUnavailableReason(
@@ -414,6 +455,23 @@ function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の�
     case "synced":
       throw new Error("書き込み可能状態で利用不可メッセージを要求できません。");
   }
+}
+
+function unavailableFeedbackKind(): FeedbackKind {
+  if (connectionState.value.kind === "checking" || syncState.value.kind === "syncing") {
+    return "progress";
+  }
+  return "warning";
+}
+
+function aiSendDisabledFeedbackKind(): FeedbackKind {
+  if (codexState.value.kind === "connecting"
+    || connectionState.value.kind === "checking"
+    || syncState.value.kind === "syncing"
+    || guiEditState.value.kind === "saving") {
+    return "progress";
+  }
+  return "warning";
 }
 
 const normalizationStatusOrder: readonly SyncNormalizationNotification["status"][] = [
@@ -473,7 +531,20 @@ function includeNormalizationNotificationFeedback(
   return `${notificationFeedback} ${message}`;
 }
 
-function createSyncFeedback(result: IpcSyncResult): string {
+function syncFeedbackKind(result: IpcSyncResult): FeedbackKind {
+  const hasConflict = result.application_result.operations.some(
+    (operation) => operation.outcome === "conflict",
+  );
+  const remainingWriteCount = result.remaining_plan.status_write_task_gids.length
+    + result.remaining_plan.external_write_task_gids.length
+    + result.remaining_plan.tag_write_task_gids.length;
+  if (hasConflict || remainingWriteCount > 0 || result.critical_errors.length > 0) {
+    return "warning";
+  }
+  return "success";
+}
+
+function createSyncFeedback(result: IpcSyncResult): Feedback {
   let appliedCount = 0;
   let alreadyAppliedCount = 0;
   let conflictCount = 0;
@@ -501,10 +572,13 @@ function createSyncFeedback(result: IpcSyncResult): string {
     `残り書き込み ${remainingWriteCount}件`,
     `重大エラー ${result.critical_errors.length}件。`,
   ].join("、");
-  return includeNormalizationNotificationFeedback(
-    synchronizationSummary,
-    result.normalization_notifications,
-  );
+  return {
+    kind: syncFeedbackKind(result),
+    message: includeNormalizationNotificationFeedback(
+      synchronizationSummary,
+      result.normalization_notifications,
+    ),
+  };
 }
 
 function recoveryRequiredFeedback(
@@ -535,6 +609,18 @@ function guiEditResultFeedback(result: IpcGuiEditResult): string {
       return "オフラインのため変更できませんでした。";
     case "recovery_required":
       return recoveryRequiredFeedback(result.write_outcome);
+  }
+}
+
+function guiEditFeedbackKind(result: IpcGuiEditResult): FeedbackKind {
+  switch (result.outcome) {
+    case "applied":
+    case "already_applied":
+      return "success";
+    case "conflict":
+    case "rejected":
+    case "recovery_required":
+      return "warning";
   }
 }
 
@@ -715,7 +801,7 @@ function showNormalizationNotifications(
     kind: "displayed",
     synced_at: syncedAt,
   };
-  feedback.value = notificationFeedback;
+  setFeedback("success", notificationFeedback);
 }
 
 function handleSyncState(value: IpcSyncStateEvent): void {
@@ -1015,7 +1101,7 @@ async function resynchronizeSetupState(): Promise<void> {
 
 async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
   setupBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   try {
     const result = await request;
     if (isFailure(result)) {
@@ -1038,7 +1124,7 @@ async function completeCodexAuthenticationFromHeader(): Promise<void> {
   }
   const keepDashboard = screen.value.kind === "dashboard";
   setupBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   try {
     const result = await window.taskHub.setup.completeCodexAuthentication();
     if (isFailure(result)) {
@@ -1253,7 +1339,7 @@ async function recheckAsanaAuthenticationState(): Promise<void> {
   }
   const generation = advanceAsanaAuthenticationStateGeneration();
   asanaAuthenticationBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   clearAsanaAuthorizationCode();
   try {
     await requestAsanaAuthenticationState(generation, 0);
@@ -1271,7 +1357,7 @@ async function reconcileAsanaAuthenticationFailure(
   const authenticationStateReconciled = await resynchronizeAsanaAuthenticationState();
   await reconcileSyncStateAfterFailure(fallback);
   if (authenticationStateReconciled) {
-    feedback.value = failureMessage;
+    setFeedback("failure", failureMessage);
   }
 }
 
@@ -1285,7 +1371,7 @@ async function beginAsanaReauthentication(): Promise<void> {
   }
   const generation = advanceAsanaAuthenticationStateGeneration();
   asanaAuthenticationBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   clearAsanaAuthorizationCode();
   scheduleAsanaAuthenticationOpeningPolling(generation);
   const authenticationRequired = rendererSyncStateSchema.parse({
@@ -1361,11 +1447,11 @@ async function completeAsanaReauthentication(): Promise<void> {
   clearAsanaAuthorizationCode();
   if (!parsedInput.success) {
     scheduleAsanaAuthenticationStatePolling(state, generation);
-    feedback.value = "Asana認可コードを確認してください。";
+    setFeedback("warning", "Asana認可コードを確認してください。");
     return;
   }
   asanaAuthenticationBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   applyAsanaAuthenticationState({
     kind: "completing",
     authorization_id: state.authorization_id,
@@ -1393,16 +1479,16 @@ async function completeAsanaReauthentication(): Promise<void> {
     }));
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(synchronized.synced_at);
     if (refreshResult.kind === "failed") {
-      feedback.value = includeNormalizationNotificationFeedback(
+      setFeedback("warning", includeNormalizationNotificationFeedback(
         "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。",
         synchronized.normalization_notifications,
-      );
+      ));
       return;
     }
-    feedback.value = includeNormalizationNotificationFeedback(
+    setFeedback(syncFeedbackKind(synchronized), includeNormalizationNotificationFeedback(
       "Asanaを再認証し、タスク表示を更新しました。",
       synchronized.normalization_notifications,
-    );
+    ));
   } catch {
     clearAsanaAuthorizationCode();
     const failureMessage = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
@@ -1430,7 +1516,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
     authorization_id: state.authorization_id,
   });
   asanaAuthenticationBusy.value = true;
-  feedback.value = "";
+  clearFeedback();
   clearAsanaAuthorizationCode();
   scheduleAsanaAuthenticationStatePolling(state, generation);
   const authenticationRequired = rendererSyncStateSchema.parse({
@@ -1465,7 +1551,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
       throw new Error("Asana再認証の取消結果が不正です。");
     }
     setSyncState(authenticationRequired);
-    feedback.value = "Asana再認証をキャンセルしました。";
+    setFeedback("warning", "Asana再認証をキャンセルしました。");
   } catch {
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value) {
@@ -1550,7 +1636,7 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     const syncFeedback = createSyncFeedback(result.value);
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
     if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
-      feedback.value = syncFeedback;
+      setFeedback(syncFeedback.kind, syncFeedback.message);
     }
   } catch {
     showUnexpectedFailure();
@@ -1646,7 +1732,7 @@ async function loadObsidianVaults(): Promise<void> {
 async function listObsidian(vaultId: string): Promise<void> {
   const trimmedVaultId = vaultId.trim();
   if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    feedback.value = "登録済みのVaultだけを指定してください。";
+    setFeedback("warning", "登録済みのVaultだけを指定してください。");
     return;
   }
   obsidianBusy.value = true;
@@ -1669,7 +1755,7 @@ async function listObsidian(vaultId: string): Promise<void> {
 async function searchObsidian(input: { readonly vaultId: string; readonly query: string }): Promise<void> {
   const trimmedVaultId = input.vaultId.trim();
   if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    feedback.value = "登録済みのVaultだけを指定してください。";
+    setFeedback("warning", "登録済みのVaultだけを指定してください。");
     return;
   }
   obsidianBusy.value = true;
@@ -1725,7 +1811,7 @@ async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][num
 
 async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
   if (!registeredVaultIds.value.includes(link.vault_id)) {
-    feedback.value = "このVaultは登録されていません。";
+    setFeedback("warning", "このVaultは登録されていません。");
     return;
   }
   try {
@@ -1735,7 +1821,7 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
       showFailure(result);
       return;
     }
-    feedback.value = "Obsidianでノートを開きました。";
+    setFeedback("success", "Obsidianでノートを開きました。");
   } catch {
     showUnexpectedFailure();
   }
@@ -1743,22 +1829,24 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
 
 async function reloadTaskDataAfterGuiEdit(
   message: string,
+  feedbackKind: FeedbackKind,
   generation: number,
 ): Promise<void> {
   if (generation === guiEditGeneration) {
-    feedback.value = message;
+    setFeedback(feedbackKind, message);
   }
   try {
     await reloadTaskData();
   } finally {
     if (generation === guiEditGeneration) {
-      feedback.value = message;
+      setFeedback(feedbackKind, message);
     }
   }
 }
 
 async function reconcileSyncStateAfterGuiRecovery(
   message: string,
+  feedbackKind: FeedbackKind,
   generation: number,
 ): Promise<void> {
   try {
@@ -1768,7 +1856,7 @@ async function reconcileSyncStateAfterGuiRecovery(
     }
   } finally {
     if (generation === guiEditGeneration) {
-      feedback.value = message;
+      setFeedback(feedbackKind, message);
     }
   }
 }
@@ -1791,12 +1879,12 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
     throw new Error("GUI保存中に別の保存要求を受け取りました。");
   }
   if (!canWrite.value) {
-    feedback.value = writeUnavailableText("編集");
+    setFeedback(unavailableFeedbackKind(), writeUnavailableText("編集"));
     return;
   }
   const currentOverview = overview.value;
   if (currentOverview == null) {
-    feedback.value = "タスク状態を読み込むまで編集できません。";
+    setFeedback("warning", "タスク状態を読み込むまで編集できません。");
     return;
   }
   guiEditGeneration += 1;
@@ -1816,6 +1904,7 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
       if (isFailure(result)) {
         completion = {
           kind: "settled",
+          feedbackKind: "failure",
           message: displayFailure(result).message,
           save: "failed",
         };
@@ -1824,12 +1913,14 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
         if (validatedResult.outcome === "recovery_required") {
           completion = {
             kind: "recovery_required",
+            feedbackKind: guiEditFeedbackKind(validatedResult),
             message: guiEditResultFeedback(validatedResult),
             save: validatedResult.write_outcome === "unknown" ? "unknown" : "succeeded",
           };
         } else {
           completion = {
             kind: "settled",
+            feedbackKind: guiEditFeedbackKind(validatedResult),
             message: guiEditResultFeedback(validatedResult),
             save: validatedResult.outcome === "applied" || validatedResult.outcome === "already_applied"
               ? "succeeded"
@@ -1840,6 +1931,7 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
     } catch {
       completion = {
         kind: "settled",
+        feedbackKind: "failure",
         message: "予期しないエラーが発生しました。もう一度お試しください。",
         save: "failed",
       };
@@ -1849,16 +1941,28 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
         selection = { kind: "select_pending" };
       }
       try {
-        await reloadTaskDataAfterGuiEdit(completion.message, generation);
+        await reloadTaskDataAfterGuiEdit(
+          completion.message,
+          completion.feedbackKind,
+          generation,
+        );
       } finally {
-        await reconcileSyncStateAfterGuiRecovery(completion.message, generation);
+        await reconcileSyncStateAfterGuiRecovery(
+          completion.message,
+          completion.feedbackKind,
+          generation,
+        );
       }
       return;
     }
     if (completion.save === "succeeded") {
       selection = { kind: "select_pending" };
     }
-    await reloadTaskDataAfterGuiEdit(completion.message, generation);
+    await reloadTaskDataAfterGuiEdit(
+      completion.message,
+      completion.feedbackKind,
+      generation,
+    );
   } finally {
     finishGuiEdit(generation, selection);
   }
@@ -1880,7 +1984,7 @@ async function startAiSession(): Promise<void> {
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
-    feedback.value = "新しいAIセッションを開始しました。";
+    setFeedback("success", "新しいAIセッションを開始しました。");
   } catch {
     showUnexpectedFailure();
   } finally {
@@ -1933,7 +2037,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
     return;
   }
   if (!canSendAi.value) {
-    feedback.value = aiSendDisabledReason.value;
+    setFeedback(aiSendDisabledFeedbackKind(), aiSendDisabledReason.value);
     return;
   }
   const pendingProposal = pendingAiProposal(aiState.value);
@@ -1988,7 +2092,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
 
 async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   if (!canReanalyzeObsidianNotes.value) {
-    feedback.value = "関連ノートの再解析は現在利用できません。";
+    setFeedback("warning", "関連ノートの再解析は現在利用できません。");
     return;
   }
   const request = aiWorkflowTurnRequestSchema.parse({
@@ -2067,7 +2171,7 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
     return;
   }
   if (!canWrite.value) {
-    feedback.value = writeUnavailableText("変更案の適用");
+    setFeedback(unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
     return;
   }
   aiBusy.value = true;
@@ -2103,7 +2207,7 @@ async function rejectAiProposal(proposalId: string): Promise<void> {
       return;
     }
     aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    feedback.value = "変更案を却下しました。";
+    setFeedback("warning", "変更案を却下しました。");
   } catch {
     showUnexpectedFailure();
   } finally {
@@ -2120,7 +2224,7 @@ async function loadInitialSyncState(): Promise<void> {
     }
     handleSyncState(result.value);
   } catch {
-    feedback.value = "同期状態を取得できませんでした。";
+    setFeedback("failure", "同期状態を取得できませんでした。");
   }
 }
 
@@ -2149,7 +2253,7 @@ async function initialize(): Promise<void> {
       try {
         handleSyncState(value);
       } catch {
-        feedback.value = "同期状態を確認できませんでした。";
+        setFeedback("failure", "同期状態を確認できませんでした。");
       }
     });
   } catch {
@@ -2181,7 +2285,7 @@ async function initialize(): Promise<void> {
       kind: "unavailable",
       reason_code: "startup_failed",
     });
-    feedback.value = "Codex状態を購読できませんでした。";
+    setFeedback("failure", "Codex状態を購読できませんでした。");
   }
   try {
     const result = await window.taskHub.setup.getState();
@@ -2260,12 +2364,12 @@ onUnmounted(() => {
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p
-        v-if="feedback.length > 0"
-        class="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900"
-        role="status"
-        aria-live="polite"
+        v-if="feedback != null"
+        class="rounded-md px-4 py-3 text-sm"
+        :class="feedbackClass(feedback.kind)"
+        :role="feedbackRole(feedback.kind)"
       >
-        {{ feedback }}
+        {{ feedback.message }}
       </p>
       <div
         v-if="screen.kind === 'loading'"
