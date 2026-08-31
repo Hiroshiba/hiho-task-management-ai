@@ -307,13 +307,13 @@ function addSearchResult(note: IpcObsidianSearchResult): void {
 function statusForLink(link: ObsidianLink): string {
   const status = props.obsidianStatuses.get(`${link.vault_id}\0${link.path}`);
   if (status === "exists") {
-    return "存在を確認済み";
+    return "確認済み";
   }
   if (status === "missing") {
     return "見つかりません";
   }
   if (status === "unavailable") {
-    return "この端末では利用不可";
+    return "この端末では利用できません";
   }
   return "未確認";
 }
@@ -968,9 +968,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
             </ul>
           </div>
           <div>
-            <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
               <h3 class="section-heading">
-                Obsidianリンク
+                関連ノート
               </h3><button
                 type="button"
                 class="secondary-button"
@@ -979,117 +979,159 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               >
                 関連ノートを再解析
               </button>
-            </div><ul class="mt-2 space-y-2 text-sm text-slate-600">
+            </div><ul class="mt-2 min-w-0 space-y-2 text-sm text-slate-600">
               <li
                 v-for="link in props.task.obsidian_links"
                 :key="`${link.vault_id}-${link.path}`"
-                class="flex flex-wrap items-center justify-between gap-2"
+                class="flex min-w-0 flex-col gap-3 rounded-md border border-slate-200 p-3 sm:flex-row sm:items-start sm:justify-between"
               >
-                <span><span>{{ link.title }}</span> <span class="text-xs text-slate-500">Vault: {{ link.vault_id }}・{{ link.path }}</span> <span class="ml-1 text-xs text-slate-500">{{ confidenceLabel(link.confidence) }}・{{ confidenceReason(link.confidence) }}・{{ statusForLink(link) }}</span></span><span class="flex flex-wrap gap-2"><button
+                <div class="min-w-0 flex-1">
+                  <p class="break-words font-medium text-slate-800">
+                    {{ link.title }}・{{ statusForLink(link) }}
+                  </p><p class="mt-1 break-words text-xs text-slate-500">
+                    {{ link.path }}
+                  </p>
+                  <details class="mt-2 min-w-0">
+                    <summary
+                      class="cursor-pointer rounded-md px-2 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+                    >
+                      リンクの詳細
+                    </summary>
+                    <div class="mt-2 min-w-0 space-y-1 border-l border-slate-200 pl-3 text-xs text-slate-500">
+                      <p class="break-words">
+                        Vault ID: {{ link.vault_id }}
+                      </p><p class="break-words">
+                        {{ confidenceLabel(link.confidence) }}・{{ confidenceReason(link.confidence) }}
+                      </p>
+                    </div>
+                  </details>
+                </div><span class="flex min-w-0 flex-wrap gap-2"><button
                   type="button"
                   class="text-button"
                   :disabled="!props.readAvailable || !isRegisteredVault(link)"
                   @click="checkLink(link)"
-                >存在確認</button><button
+                >ファイルを確認</button><button
                   type="button"
                   class="text-button"
                   :disabled="!props.readAvailable || !isRegisteredVault(link)"
                   @click="openLink(link)"
-                >ローカルで開く</button><button
+                >ノートを開く</button><button
                   type="button"
                   class="text-button"
                   :disabled="!props.canWrite"
                   @click="unlinkLink(link)"
-                >解除</button></span>
+                >リンクを解除</button></span>
               </li><li v-if="props.task.obsidian_links.length === 0">
                 なし
               </li>
             </ul>
-            <form
-              class="mt-4 space-y-2 rounded-md border border-slate-200 p-3"
-              @submit.prevent="emit('search-obsidian', { vaultId: obsidianVaultId, query: obsidianQuery })"
-            >
-              <label
-                v-if="props.obsidianVaultIds.length > 0"
-                class="field-label"
-                for="obsidian-vault"
-              >登録Vault<select
-                id="obsidian-vault"
-                v-model="obsidianVaultId"
-                class="text-input"
-                :disabled="!props.readAvailable"
-              ><option
-                v-for="candidate in props.obsidianVaultIds"
-                :key="candidate"
-                :value="candidate"
-              >{{ candidate }}</option></select></label><p
-                v-else
-                class="text-xs text-slate-600"
+            <details class="mt-4 min-w-0 border-t border-slate-200 pt-3">
+              <summary
+                class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
               >
-                登録済みVaultがありません。
-              </p><label
-                class="field-label"
-                for="obsidian-query"
-              >ノート検索<input
-                id="obsidian-query"
-                v-model="obsidianQuery"
-                class="text-input"
-                :disabled="!props.readAvailable || obsidianVaultId.length === 0"
-              ></label><div class="flex flex-wrap gap-2">
-                <button
-                  type="submit"
-                  class="secondary-button"
-                  :disabled="!props.readAvailable || props.obsidianBusy || obsidianVaultId.length === 0"
+                ノートを追加
+              </summary>
+              <div class="mt-3 min-w-0 space-y-3">
+                <form
+                  class="min-w-0 space-y-2 rounded-md border border-slate-200 p-3"
+                  @submit.prevent="emit('search-obsidian', { vaultId: obsidianVaultId, query: obsidianQuery })"
                 >
-                  検索
-                </button><button
-                  type="button"
-                  class="secondary-button"
-                  :disabled="!props.readAvailable || props.obsidianBusy || obsidianVaultId.length === 0"
-                  @click="emit('list-obsidian', obsidianVaultId)"
+                  <label
+                    v-if="props.obsidianVaultIds.length > 0"
+                    class="field-label min-w-0"
+                    for="obsidian-vault"
+                  >Vault<select
+                    id="obsidian-vault"
+                    v-model="obsidianVaultId"
+                    class="text-input min-w-0"
+                    :disabled="!props.readAvailable"
+                  ><option
+                    v-for="candidate in props.obsidianVaultIds"
+                    :key="candidate"
+                    :value="candidate"
+                  >{{ candidate }}</option></select></label><p
+                    v-else
+                    class="break-words text-xs text-slate-600"
+                  >
+                    登録済みVaultがありません。
+                  </p><label
+                    class="field-label min-w-0"
+                    for="obsidian-query"
+                  >ノートを検索<input
+                    id="obsidian-query"
+                    v-model="obsidianQuery"
+                    class="text-input min-w-0"
+                    :disabled="!props.readAvailable || obsidianVaultId.length === 0"
+                  ></label><div class="flex flex-wrap gap-2">
+                    <button
+                      type="submit"
+                      class="secondary-button"
+                      :disabled="!props.readAvailable || props.obsidianBusy || obsidianVaultId.length === 0"
+                    >
+                      検索
+                    </button><button
+                      type="button"
+                      class="secondary-button"
+                      :disabled="!props.readAvailable || props.obsidianBusy || obsidianVaultId.length === 0"
+                      @click="emit('list-obsidian', obsidianVaultId)"
+                    >
+                      一覧を表示
+                    </button>
+                  </div>
+                </form>
+                <div
+                  v-if="props.obsidianNotes.length > 0 || props.obsidianSearchResults.length > 0"
+                  class="min-w-0"
                 >
-                  ノート一覧
-                </button>
+                  <template v-if="props.obsidianNotes.length > 0">
+                    <h4 class="text-sm font-medium text-slate-800">
+                      Vaultのノート
+                    </h4>
+                    <ul
+                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600"
+                    >
+                      <li
+                        v-for="note in props.obsidianNotes"
+                        :key="note.relative_path"
+                        class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+                      >
+                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500">{{ note.relative_path }}</span></span><button
+                          type="button"
+                          class="text-button"
+                          :disabled="!props.canWrite"
+                          @click="addNote(note)"
+                        >
+                          このノートを追加
+                        </button>
+                      </li>
+                    </ul>
+                  </template>
+                  <template v-if="props.obsidianSearchResults.length > 0">
+                    <h4 class="mt-3 text-sm font-medium text-slate-800">
+                      検索結果
+                    </h4>
+                    <ul
+                      class="mt-2 min-w-0 space-y-2 text-xs text-slate-600"
+                    >
+                      <li
+                        v-for="note in props.obsidianSearchResults"
+                        :key="`search-${note.relative_path}`"
+                        class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+                      >
+                        <span class="min-w-0 break-words">{{ note.title }} <span class="break-words text-slate-500">{{ note.relative_path }}・{{ note.excerpt }}</span></span><button
+                          type="button"
+                          class="text-button"
+                          :disabled="!props.canWrite"
+                          @click="addSearchResult(note)"
+                        >
+                          このノートを追加
+                        </button>
+                      </li>
+                    </ul>
+                  </template>
+                </div>
               </div>
-            </form>
-            <ul
-              v-if="props.obsidianNotes.length > 0"
-              class="mt-3 space-y-2 text-xs text-slate-600"
-            >
-              <li
-                v-for="note in props.obsidianNotes"
-                :key="note.relative_path"
-                class="flex flex-wrap items-center justify-between gap-2"
-              >
-                <span>{{ note.title }} <span class="text-slate-500">{{ note.relative_path }}</span></span><button
-                  type="button"
-                  class="text-button"
-                  :disabled="!props.canWrite"
-                  @click="addNote(note)"
-                >
-                  リンク追加
-                </button>
-              </li>
-            </ul>
-            <ul
-              v-if="props.obsidianSearchResults.length > 0"
-              class="mt-3 space-y-2 text-xs text-slate-600"
-            >
-              <li
-                v-for="note in props.obsidianSearchResults"
-                :key="`search-${note.relative_path}`"
-                class="flex flex-wrap items-center justify-between gap-2"
-              >
-                <span>{{ note.title }} <span class="text-slate-500">{{ note.relative_path }}・{{ note.excerpt }}</span></span><button
-                  type="button"
-                  class="text-button"
-                  :disabled="!props.canWrite"
-                  @click="addSearchResult(note)"
-                >
-                  検索結果を追加
-                </button>
-              </li>
-            </ul>
+            </details>
           </div>
         </div>
       </div>
