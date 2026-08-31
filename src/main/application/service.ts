@@ -165,6 +165,7 @@ import {
   type AiWorkflowSnapshot,
 } from "../../shared/ai-workflow";
 import {
+  taskHubExecutablePathEnvironmentVariable,
   taskctlSnapshotSchema,
   type TaskctlSnapshot,
 } from "../codex/taskctl";
@@ -750,11 +751,15 @@ function createMutableTokenProvider(): MutableTokenProviderPort {
   };
 }
 
-function createCodexProcessEnvironment(codexHomePath: string): Record<string, string> {
+function createCodexProcessEnvironment(
+  codexHomePath: string,
+  taskHubExecutablePath: string,
+): Record<string, string> {
   return z.record(z.string(), z.string()).parse(
     {
       ...createSafeCodexEnvironment(process.env),
       CODEX_HOME: codexHomePath,
+      [taskHubExecutablePathEnvironmentVariable]: taskHubExecutablePath,
     },
   );
 }
@@ -1023,6 +1028,7 @@ export class TaskHubApplication {
     };
     const codexEnvironment = createCodexProcessEnvironment(
       this.codexWorkspace.codexHomePath,
+      process.execPath,
     );
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,

@@ -18,7 +18,10 @@ import {
   type CodexWorkspaceInitializationResult,
 } from "./schemas";
 import { CodexWorkspaceError } from "./errors";
-import { taskctlClientScript } from "../taskctl/client-script";
+import {
+  taskctlClientScript,
+  taskctlWindowsLauncherScript,
+} from "../taskctl/client-script";
 
 const workspaceDirectoryName = "codex-workspace";
 const codexHomeDirectoryName = "codex-home";
@@ -57,14 +60,15 @@ description: 同期済みTaskHubタスク情報を必要時だけ読み取る手
 - taskctlは読み取り専用コマンドとして扱ってください。
 - 認証情報を引数、環境変数、出力から取得しないでください。
 - 出力をファイルへ保存せず、その場の判断材料として使用してください。
-- 必要なときだけ taskctl list --json、taskctl get <task-gid> --json、taskctl rank --json、taskctl graph --json、taskctl areas --json、taskctl search-local --query <text> --json を使用してください。
+- Unix系では必要なときだけ ./bin/taskctl list --json、./bin/taskctl get <task-gid> --json、./bin/taskctl rank --json、./bin/taskctl graph --json、./bin/taskctl areas --json、./bin/taskctl search-local --query <text> --json を使用してください。
+- Windowsでは必要なときだけ .\\bin\\taskctl.cmd list --json、.\\bin\\taskctl.cmd get <task-gid> --json、.\\bin\\taskctl.cmd rank --json、.\\bin\\taskctl.cmd graph --json、.\\bin\\taskctl.cmd areas --json、.\\bin\\taskctl.cmd search-local --query <text> --json を使用してください。
 - list は同期状態とGID順のタスク配列、get は指定タスクまたは構造化された不存在エラーを返します。
 - rank は同期状態と保存済み順位、graph はタスクと依存、親子の辺、areas は領域名の配列を返します。
 - search-local --query は同期状態、検索文字列、タイトルや本文、領域に一致したGID順のタスク配列を返します。
 - 成功応答と失敗応答の両方に最新同期状態が含まれます。同期状態がunavailableでもデータ不存在とはみなさず、変更案の根拠に使わないでください。
 - 失敗応答は ok:false と固定エラーコードを持ち、コマンドの終了状態も失敗になります。
 - タスクを作成、更新、削除するコマンドは実行しないでください。
-- Windowsで直接実行できない場合は node bin/taskctl <許可された引数> として呼び出してください。
+- 読み取り質問では必要なtaskctlコマンドを実行してください。起動できないだけでデータアクセスが拒否されたと断定しないでください。
 `,
   obsidian: `---
 name: obsidian
@@ -179,12 +183,18 @@ function writeFixedFiles(
   skillsPath: string,
   agentsPath: string,
   taskctlPath: string,
+  taskctlWindowsLauncherPath: string,
 ): void {
   writeFileAtomically(agentsPath, agentsFileContent, fileMode);
   for (const [skillName, content] of Object.entries(skillContents)) {
     writeFileAtomically(join(skillsPath, skillName, "SKILL.md"), content, fileMode);
   }
   writeFileAtomically(taskctlPath, taskctlClientScript, executableFileMode);
+  writeFileAtomically(
+    taskctlWindowsLauncherPath,
+    taskctlWindowsLauncherScript,
+    executableFileMode,
+  );
 }
 
 /** Codex専用ワークスペースを安全に初期化します。 */
@@ -203,6 +213,7 @@ export function initializeCodexWorkspace(
   const agentsFilePath = join(workspacePath, agentsFileName);
   const binDirectoryPath = join(workspacePath, binDirectoryName);
   const taskctlPath = join(binDirectoryPath, "taskctl");
+  const taskctlWindowsLauncherPath = join(binDirectoryPath, "taskctl.cmd");
   const tmpDirectoryPath = join(workspacePath, tmpDirectoryName);
 
   ensureDirectory(codexHomePath, "TaskHub専用Codexホーム");
@@ -215,7 +226,12 @@ export function initializeCodexWorkspace(
   ensureDirectory(binDirectoryPath, "Codexコマンドディレクトリ");
   ensureDirectory(tmpDirectoryPath, "Codex一時ディレクトリ");
   clearTemporaryDirectory(tmpDirectoryPath);
-  writeFixedFiles(skillsDirectoryPath, agentsFilePath, taskctlPath);
+  writeFixedFiles(
+    skillsDirectoryPath,
+    agentsFilePath,
+    taskctlPath,
+    taskctlWindowsLauncherPath,
+  );
 
   return codexWorkspaceInitializationResultSchema.parse({
     userDataPath,

@@ -1,4 +1,18 @@
 /** workspace/bin/taskctlへ固定配置する依存なしNodeクライアントです。 */
+export const taskHubExecutablePathEnvironmentVariable = "TASKHUB_EXECUTABLE_PATH";
+
+export const taskctlWindowsLauncherScript = String.raw`@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined ${taskHubExecutablePathEnvironmentVariable} goto run
+>&2 echo TaskHub実行ファイルの環境変数 ${taskHubExecutablePathEnvironmentVariable} が設定されていません。
+endlocal & exit /b 1
+:run
+set "ELECTRON_RUN_AS_NODE=1"
+"%${taskHubExecutablePathEnvironmentVariable}%" "%~dp0taskctl" %*
+set "taskHubExitCode=%ERRORLEVEL%"
+endlocal & exit /b %taskHubExitCode%
+`;
+
 export const taskctlClientScript = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
 const net = require("node:net");

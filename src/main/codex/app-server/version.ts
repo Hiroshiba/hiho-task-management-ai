@@ -7,6 +7,7 @@ import {
   CodexRequestAbortedError,
   CodexVersionCommandError,
 } from "./errors";
+import { taskHubExecutablePathEnvironmentVariable } from "../taskctl";
 
 const safeEnvironmentKeys = new Set([
   "PATH",
@@ -32,6 +33,7 @@ const safeEnvironmentKeys = new Set([
   "XDG_DATA_HOME",
   "XDG_CACHE_HOME",
   "CODEX_HOME",
+  taskHubExecutablePathEnvironmentVariable,
 ]);
 const safeEnvironmentKeysByLowerCase = new Map(
   [...safeEnvironmentKeys].map((key) => [key.toLowerCase(), key]),

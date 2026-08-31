@@ -7,6 +7,9 @@ export {
   TaskctlExecutionTimeoutError,
 } from "./errors";
 export {
+  taskHubExecutablePathEnvironmentVariable,
+} from "./client-script";
+export {
   isTaskctlRequest,
   isTaskctlResponse,
   taskctlBrokerOptionsSchema,
