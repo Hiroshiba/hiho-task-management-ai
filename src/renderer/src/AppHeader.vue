@@ -212,20 +212,32 @@ function jstDateTimeLabel(value: string | undefined): string {
     class="border-b border-slate-200 bg-white"
     aria-label="アプリケーションヘッダー"
   >
-    <div class="mx-auto flex max-w-[1600px] flex-wrap items-center gap-3 px-4 py-3 lg:px-6">
-      <div class="mr-auto min-w-[12rem]">
+    <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-4 lg:px-6">
+      <div
+        class="flex min-w-0 max-w-full flex-col px-1 py-1"
+        role="group"
+        aria-label="ブランド"
+      >
         <p class="text-xs font-semibold tracking-[0.18em] text-sky-700">
           TASKHUB
         </p>
         <h1 class="text-lg font-semibold text-slate-900">
           Asanaタスク管理
         </h1>
+        <p class="mt-2 text-xs text-slate-500">
+          アプリ {{ appVersion }}
+        </p>
       </div>
       <div
-        class="flex flex-wrap items-center gap-2 text-sm text-slate-700"
-        aria-live="polite"
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 xl:justify-center"
+        role="group"
+        aria-label="状態"
       >
-        <span class="rounded-full bg-slate-100 px-3 py-1">同期: {{ syncLabel(connectionState.sync) }}</span>
+        <span
+          class="rounded-full bg-slate-100 px-3 py-1"
+          aria-live="polite"
+          aria-atomic="true"
+        >同期: {{ syncLabel(connectionState.sync) }}</span>
         <span class="rounded-full bg-slate-100 px-3 py-1">
           最終同期: {{ jstDateTimeLabel(lastSyncAt) }}
         </span>
@@ -239,11 +251,15 @@ function jstDateTimeLabel(value: string | undefined): string {
         <span class="rounded-full bg-slate-100 px-3 py-1">編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
         <span class="rounded-full bg-slate-100 px-3 py-1">要整理: {{ cleanupCount }}件</span>
       </div>
-      <div class="flex items-center gap-2">
+      <div
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-3 xl:justify-end"
+        role="group"
+        aria-label="操作"
+      >
         <button
           v-if="configured && (connectionState.sync.kind === 'authentication_required' || asanaAuthenticationState.kind !== 'idle' || asanaAuthenticationStateNeedsRecheck)"
           type="button"
-          class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="primary-button"
           :disabled="asanaAuthenticationBusy || asanaAuthenticationStateRequestBusy || (!asanaAuthenticationStateNeedsRecheck && (!asanaAuthenticationStateLoaded || asanaAuthenticationState.kind !== 'idle'))"
           :aria-label="asanaAuthenticationStateNeedsRecheck ? 'Asana認証状態を再確認' : 'Asanaを再認証'"
           @click="handleAsanaAuthenticationAction"
@@ -253,7 +269,7 @@ function jstDateTimeLabel(value: string | undefined): string {
         <button
           v-if="configured"
           type="button"
-          class="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="secondary-button"
           :disabled="!canManualSync"
           aria-label="手動同期を実行"
           @click="emit('sync')"
@@ -263,41 +279,18 @@ function jstDateTimeLabel(value: string | undefined): string {
         <button
           v-if="configured && !fullSyncConfirmationOpen"
           type="button"
-          class="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="secondary-button"
           :disabled="!canFullSync"
-          aria-label="キャッシュを再構築する完全同期を確認"
-          title="Asanaから全件を取得してローカルキャッシュを再構築します"
+          aria-label="完全同期を確認"
+          title="Asanaから全件を取得して完全同期します"
           @click="requestFullSyncConfirmation"
         >
-          {{ fullSyncRunning ? "再構築中" : "キャッシュを再構築" }}
+          {{ fullSyncRunning ? "完全同期中" : "完全同期" }}
         </button>
-        <div
-          v-else-if="configured"
-          class="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950"
-          role="group"
-          aria-label="完全同期の確認"
-        >
-          <span>Asanaから全件を取得します。</span>
-          <button
-            type="button"
-            class="rounded-md bg-amber-700 px-3 py-1.5 font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!canFullSync"
-            @click="confirmFullSync"
-          >
-            完全同期を実行
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
-            @click="cancelFullSync"
-          >
-            やめる
-          </button>
-        </div>
         <button
           v-if="codexState.kind === 'authentication_required'"
           type="button"
-          class="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="primary-button"
           :disabled="codexAuthenticationBusy"
           aria-label="Codex認証を完了"
           @click="emit('complete-codex-authentication')"
@@ -307,7 +300,7 @@ function jstDateTimeLabel(value: string | undefined): string {
         <button
           v-else-if="codexState.kind === 'ready'"
           type="button"
-          class="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          class="secondary-button"
           :disabled="!canWrite"
           aria-label="新しいAIセッションを開始"
           @click="emit('new-ai-session')"
@@ -315,9 +308,29 @@ function jstDateTimeLabel(value: string | undefined): string {
           新しいAIセッション
         </button>
       </div>
-      <p class="w-full text-xs text-slate-500 lg:w-auto">
-        アプリ {{ appVersion }}
-      </p>
+      <div
+        v-if="configured && fullSyncConfirmationOpen"
+        class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 xl:col-span-3"
+        role="group"
+        aria-label="完全同期の確認"
+      >
+        <span>Asanaから全件を取得します。</span>
+        <button
+          type="button"
+          class="secondary-button"
+          :disabled="!canFullSync"
+          @click="confirmFullSync"
+        >
+          完全同期を実行
+        </button>
+        <button
+          type="button"
+          class="text-button"
+          @click="cancelFullSync"
+        >
+          やめる
+        </button>
+      </div>
     </div>
   </header>
 </template>
