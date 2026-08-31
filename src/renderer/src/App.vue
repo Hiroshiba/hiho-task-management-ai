@@ -211,6 +211,7 @@ const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" 
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
+const aiFeedback = ref<Feedback | undefined>();
 const aiBusy = ref(false);
 const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
 const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
@@ -251,6 +252,14 @@ function setTaskFeedback(kind: FeedbackKind, message: string): void {
 
 function clearTaskFeedback(): void {
   taskFeedback.value = undefined;
+}
+
+function setAiFeedback(kind: FeedbackKind, message: string): void {
+  aiFeedback.value = { kind, message };
+}
+
+function clearAiFeedback(): void {
+  aiFeedback.value = undefined;
 }
 
 function feedbackClass(kind: FeedbackKind): string {
@@ -436,6 +445,14 @@ function showTaskFailure(value: IpcFailure): void {
 
 function showTaskUnexpectedFailure(): void {
   setTaskFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
+}
+
+function showAiFailure(value: IpcFailure): void {
+  setAiFeedback("failure", displayFailure(value).message);
+}
+
+function showAiUnexpectedFailure(): void {
+  setAiFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
 }
 
 function codexUnavailableReason(
@@ -2046,21 +2063,22 @@ async function startAiSession(): Promise<void> {
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   const pendingProposal = pendingAiProposal(aiState.value);
   aiBusy.value = true;
   try {
     const result = await window.taskHub.ai.startNewSession();
     if (isFailure(result)) {
-      showFailure(result);
+      showAiFailure(result);
       return;
     }
     aiState.value = rendererAiStateSchema.parse({
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
-    setFeedback("success", "新しいAIセッションを開始しました。");
+    setAiFeedback("success", "新しいAIセッションを開始しました。");
   } catch {
-    showUnexpectedFailure();
+    showAiUnexpectedFailure();
   } finally {
     aiBusy.value = false;
   }
@@ -2110,8 +2128,9 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   if (!canSendAi.value) {
-    setFeedback(aiSendDisabledFeedbackKind(), aiSendDisabledReason.value);
+    setAiFeedback(aiSendDisabledFeedbackKind(), aiSendDisabledReason.value);
     return;
   }
   const pendingProposal = pendingAiProposal(aiState.value);
@@ -2125,7 +2144,6 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
     });
     const result = await window.taskHub.ai.startTurn(request);
     if (isFailure(result)) {
-      showFailure(result);
       aiState.value = rendererAiStateSchema.parse({
         kind: "unavailable",
         failure: displayFailure(result),
@@ -2204,17 +2222,18 @@ async function selectAiProposal(input: AiWorkflowSelectionRequest): Promise<void
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   aiBusy.value = true;
   try {
     const request = aiWorkflowSelectionRequestSchema.parse(input);
     const result = await window.taskHub.ai.select(request);
     if (isFailure(result)) {
-      showFailure(result);
+      showAiFailure(result);
       return;
     }
     proposalState(aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
-    showUnexpectedFailure();
+    showAiUnexpectedFailure();
   } finally {
     aiBusy.value = false;
   }
@@ -2224,17 +2243,18 @@ async function editAiOperation(input: AiWorkflowOperationEdit): Promise<void> {
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   aiBusy.value = true;
   try {
     const request = aiWorkflowOperationEditSchema.parse(input);
     const result = await window.taskHub.ai.editOperation(request);
     if (isFailure(result)) {
-      showFailure(result);
+      showAiFailure(result);
       return;
     }
     proposalState(aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
-    showUnexpectedFailure();
+    showAiUnexpectedFailure();
   } finally {
     aiBusy.value = false;
   }
@@ -2244,8 +2264,9 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   if (!canWrite.value) {
-    setFeedback(unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
+    setAiFeedback(unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
     return;
   }
   aiBusy.value = true;
@@ -2253,7 +2274,7 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
     const request = aiWorkflowApprovalRequestSchema.parse(input);
     const result = await window.taskHub.ai.approve(request);
     if (isFailure(result)) {
-      showFailure(result);
+      showAiFailure(result);
       return;
     }
     aiState.value = rendererAiStateSchema.parse({
@@ -2263,7 +2284,7 @@ async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void
     });
     await manualSync();
   } catch {
-    showUnexpectedFailure();
+    showAiUnexpectedFailure();
   } finally {
     aiBusy.value = false;
   }
@@ -2273,17 +2294,18 @@ async function rejectAiProposal(proposalId: string): Promise<void> {
   if (aiBusy.value) {
     return;
   }
+  clearAiFeedback();
   aiBusy.value = true;
   try {
     const result = await window.taskHub.ai.reject(proposalId);
     if (isFailure(result)) {
-      showFailure(result);
+      showAiFailure(result);
       return;
     }
     aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    setFeedback("warning", "変更案を却下しました。");
+    setAiFeedback("warning", "変更案を却下しました。");
   } catch {
-    showUnexpectedFailure();
+    showAiUnexpectedFailure();
   } finally {
     aiBusy.value = false;
   }
@@ -2611,17 +2633,27 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <AiPanel
-            :state="aiState"
-            :can-write="canWrite && !guiEditSaving && !aiBusy"
-            :can-send-ai="canSendAi"
-            :ai-send-disabled-reason="aiSendDisabledReason"
-            @start="startAiTurn"
-            @select="selectAiProposal"
-            @edit="editAiOperation"
-            @approve="approveAiProposal"
-            @reject="rejectAiProposal"
-          />
+          <div class="min-w-0 space-y-3">
+            <p
+              v-if="aiFeedback != null"
+              class="sticky top-3 rounded-md px-4 py-3 text-sm"
+              :class="feedbackClass(aiFeedback.kind)"
+              :role="feedbackRole(aiFeedback.kind)"
+            >
+              {{ aiFeedback.message }}
+            </p>
+            <AiPanel
+              :state="aiState"
+              :can-write="canWrite && !guiEditSaving && !aiBusy"
+              :can-send-ai="canSendAi"
+              :ai-send-disabled-reason="aiSendDisabledReason"
+              @start="startAiTurn"
+              @select="selectAiProposal"
+              @edit="editAiOperation"
+              @approve="approveAiProposal"
+              @reject="rejectAiProposal"
+            />
+          </div>
         </section>
         <div
           v-else
