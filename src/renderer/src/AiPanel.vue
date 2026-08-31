@@ -17,6 +17,8 @@ import type { RendererAiState } from "./state";
 const props = defineProps<{
   state: RendererAiState;
   canWrite: boolean;
+  canSendAi: boolean;
+  aiSendDisabledReason: string;
 }>();
 
 const emit = defineEmits<{
@@ -119,6 +121,9 @@ watch(
 );
 
 function sendMessage(): void {
+  if (!props.canSendAi) {
+    return;
+  }
   const value = message.value.trim();
   if (value.length === 0) {
     localError.value = "質問や依頼を入力してください。";
@@ -365,16 +370,24 @@ function applicationReasonLabel(reason: string): string {
             id="ai-message"
             v-model="message"
             class="text-input min-h-24"
-            :disabled="!props.canWrite"
+            :disabled="!props.canSendAi"
             placeholder="例: 今週着手すべきタスクを教えてください"
           /></label><button
             type="submit"
             class="primary-button"
-            :disabled="!props.canWrite"
+            :disabled="!props.canSendAi"
           >
             AIへ送信
           </button>
         </form>
+        <p
+          v-if="!props.canSendAi"
+          class="text-sm text-amber-800"
+          role="status"
+          aria-live="polite"
+        >
+          {{ props.aiSendDisabledReason }}
+        </p>
         <p
           v-if="proposal != null"
           class="text-xs text-slate-600"
@@ -432,7 +445,7 @@ function applicationReasonLabel(reason: string): string {
                 :key="option"
                 type="button"
                 class="choice-button"
-                :disabled="!props.canWrite"
+                :disabled="!props.canSendAi"
                 @click="message = option"
               >
                 {{ option }}

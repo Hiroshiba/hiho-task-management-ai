@@ -245,6 +245,32 @@ const canWrite = computed(() => {
     >= syncTimestamp(currentSyncState.synced_at);
 });
 const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
+const canSendAi = computed(() => codexState.value.kind === "ready"
+  && canWrite.value
+  && !guiEditSaving.value
+  && !aiBusy.value);
+const aiSendDisabledReason = computed(() => {
+  switch (codexState.value.kind) {
+    case "connecting":
+      return "Codexの接続を確認しています。";
+    case "authentication_required":
+      return "CodexへログインするとAIを利用できます。";
+    case "unavailable":
+      return codexUnavailableReason(codexState.value.reason_code);
+    case "ready":
+      break;
+  }
+  if (!canWrite.value) {
+    return "同期が完了するとAIを利用できます。";
+  }
+  if (guiEditSaving.value) {
+    return "タスクを保存しています。";
+  }
+  if (aiBusy.value) {
+    return "AIが回答を準備しています。";
+  }
+  return "";
+});
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
 const canReanalyzeObsidianNotes = computed(() => canWrite.value
   && !guiEditSaving.value
@@ -348,6 +374,25 @@ function showFailure(value: IpcFailure): void {
 
 function showUnexpectedFailure(): void {
   feedback.value = "予期しないエラーが発生しました。もう一度お試しください。";
+}
+
+function codexUnavailableReason(
+  reasonCode: Extract<RendererCodexState, { readonly kind: "unavailable" }>["reason_code"],
+): string {
+  switch (reasonCode) {
+    case "not_installed":
+      return "AIは利用できません。Codex CLIが見つかりません。";
+    case "incompatible":
+      return "AIは利用できません。対応していないCodex CLIです。";
+    case "permission_denied":
+      return "AIは利用できません。Codexの権限を確認できません。";
+    case "startup_failed":
+      return "AIは利用できません。Codexの起動に失敗しました。";
+    case "disabled":
+      return "AIは利用できません。Codexは安全確認により停止しています。";
+    case "stopped":
+      return "AIは利用できません。Codexは停止しています。";
+  }
 }
 
 function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の適用"): string {
@@ -1888,8 +1933,8 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
   if (aiBusy.value) {
     return;
   }
-  if (!canWrite.value) {
-    feedback.value = writeUnavailableText("AI利用");
+  if (!canSendAi.value) {
+    feedback.value = aiSendDisabledReason.value;
     return;
   }
   const pendingProposal = pendingAiProposal(aiState.value);
@@ -2391,6 +2436,8 @@ onUnmounted(() => {
           <AiPanel
             :state="aiState"
             :can-write="canWrite && !guiEditSaving && !aiBusy"
+            :can-send-ai="canSendAi"
+            :ai-send-disabled-reason="aiSendDisabledReason"
             @start="startAiTurn"
             @select="selectAiProposal"
             @edit="editAiOperation"
