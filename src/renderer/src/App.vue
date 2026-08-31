@@ -147,8 +147,28 @@ type SyncStateReadResult =
   | { readonly kind: "unavailable" };
 
 type GuiEditCompletion =
-  | { readonly kind: "settled"; readonly message: string }
-  | { readonly kind: "recovery_required"; readonly message: string };
+  | {
+      readonly kind: "settled";
+      readonly message: string;
+      readonly save: "succeeded" | "failed";
+    }
+  | {
+      readonly kind: "recovery_required";
+      readonly message: string;
+      readonly save: "succeeded" | "unknown";
+    };
+
+type GuiEditState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "saving"; readonly generation: number };
+
+type PendingTaskSelection =
+  | { readonly kind: "idle" }
+  | { readonly kind: "requested"; readonly taskGid: string };
+
+type GuiEditSelection =
+  | { readonly kind: "keep_current" }
+  | { readonly kind: "select_pending" };
 
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
 const asanaAuthenticationStateMaximumRetryCount = 3;
@@ -184,6 +204,8 @@ const obsidianStatuses = ref<ReadonlyMap<string, ObsidianLinkStatus>>(new Map())
 const obsidianBusy = ref(false);
 const registeredVaultIds = ref<readonly string[]>([]);
 const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
+const guiEditState = ref<GuiEditState>({ kind: "idle" });
+const pendingTaskSelection = ref<PendingTaskSelection>({ kind: "idle" });
 let removeSyncSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
@@ -205,15 +227,27 @@ const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
 const canManualSync = computed(() => configured.value
   && activeSyncMode.value === "idle"
+  && guiEditState.value.kind === "idle"
   && !asanaAuthenticationBusy.value
   && connectionState.value.kind === "online"
   && syncState.value.kind !== "syncing"
   && syncState.value.kind !== "authentication_required"
   && syncState.value.kind !== "recovery_pending");
-const canWrite = computed(() => connectionState.value.kind === "online"
-  && syncState.value.kind === "synced");
+const canWrite = computed(() => {
+  const currentOverview = overview.value;
+  const currentSyncState = syncState.value;
+  if (connectionState.value.kind !== "online"
+    || currentOverview == null
+    || currentSyncState.kind !== "synced") {
+    return false;
+  }
+  return syncTimestamp(currentOverview.last_successful_sync_at)
+    >= syncTimestamp(currentSyncState.synced_at);
+});
+const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
 const canReanalyzeObsidianNotes = computed(() => canWrite.value
+  && !guiEditSaving.value
   && codexState.value.kind === "ready"
   && !aiBusy.value
   && registeredVaultIds.value.length > 0);
@@ -1494,6 +1528,10 @@ async function fullSync(): Promise<void> {
 }
 
 async function selectTask(taskGid: string): Promise<void> {
+  if (guiEditState.value.kind === "saving") {
+    pendingTaskSelection.value = { kind: "requested", taskGid };
+    return;
+  }
   taskDetailGeneration += 1;
   obsidianStatusGeneration += 1;
   const detailGeneration = taskDetailGeneration;
@@ -1659,7 +1697,10 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
   }
 }
 
-async function reloadTaskDataAfterGuiEdit(message: string, generation: number): Promise<void> {
+async function reloadTaskDataAfterGuiEdit(
+  message: string,
+  generation: number,
+): Promise<void> {
   if (generation === guiEditGeneration) {
     feedback.value = message;
   }
@@ -1688,55 +1729,95 @@ async function reconcileSyncStateAfterGuiRecovery(
   }
 }
 
-async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
-  const currentOverview = overview.value;
-  if (currentOverview == null) {
-    feedback.value = "タスク状態を読み込むまで編集できません。";
+function finishGuiEdit(generation: number, selection: GuiEditSelection): void {
+  if (guiEditState.value.kind !== "saving" || guiEditState.value.generation !== generation) {
+    throw new Error("GUI保存状態が不正です。");
+  }
+  guiEditState.value = { kind: "idle" };
+  const pending = pendingTaskSelection.value;
+  pendingTaskSelection.value = { kind: "idle" };
+  if (selection.kind !== "select_pending" || pending.kind === "idle") {
     return;
+  }
+  void selectTask(pending.taskGid);
+}
+
+async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
+  if (guiEditState.value.kind === "saving") {
+    throw new Error("GUI保存中に別の保存要求を受け取りました。");
   }
   if (!canWrite.value) {
     feedback.value = writeUnavailableText("編集");
     return;
   }
-  guiEditGeneration += 1;
-  const generation = guiEditGeneration;
-  let completion: GuiEditCompletion;
-  try {
-    const validatedInput = ipcGuiEditInputSchema.parse({
-      task_gid: input.task_gid,
-      expected_sync_at: currentOverview.last_successful_sync_at,
-      operation: input.operation,
-    });
-    const result = await window.taskHub.gui.apply(validatedInput);
-    if (isFailure(result)) {
-      completion = {
-        kind: "settled",
-        message: displayFailure(result).message,
-      };
-    } else {
-      const validatedResult = ipcGuiEditResultSchema.parse(result.value);
-      completion = {
-        kind: validatedResult.outcome === "recovery_required"
-          ? "recovery_required"
-          : "settled",
-        message: guiEditResultFeedback(validatedResult),
-      };
-    }
-  } catch {
-    completion = {
-      kind: "settled",
-      message: "予期しないエラーが発生しました。もう一度お試しください。",
-    };
-  }
-  if (completion.kind === "recovery_required") {
-    try {
-      await reloadTaskDataAfterGuiEdit(completion.message, generation);
-    } finally {
-      await reconcileSyncStateAfterGuiRecovery(completion.message, generation);
-    }
+  const currentOverview = overview.value;
+  if (currentOverview == null) {
+    feedback.value = "タスク状態を読み込むまで編集できません。";
     return;
   }
-  await reloadTaskDataAfterGuiEdit(completion.message, generation);
+  guiEditGeneration += 1;
+  const generation = guiEditGeneration;
+  guiEditState.value = { kind: "saving", generation };
+  pendingTaskSelection.value = { kind: "idle" };
+  let selection: GuiEditSelection = { kind: "keep_current" };
+  try {
+    let completion: GuiEditCompletion;
+    try {
+      const validatedInput = ipcGuiEditInputSchema.parse({
+        task_gid: input.task_gid,
+        expected_sync_at: currentOverview.last_successful_sync_at,
+        operation: input.operation,
+      });
+      const result = await window.taskHub.gui.apply(validatedInput);
+      if (isFailure(result)) {
+        completion = {
+          kind: "settled",
+          message: displayFailure(result).message,
+          save: "failed",
+        };
+      } else {
+        const validatedResult = ipcGuiEditResultSchema.parse(result.value);
+        if (validatedResult.outcome === "recovery_required") {
+          completion = {
+            kind: "recovery_required",
+            message: guiEditResultFeedback(validatedResult),
+            save: validatedResult.write_outcome === "unknown" ? "unknown" : "succeeded",
+          };
+        } else {
+          completion = {
+            kind: "settled",
+            message: guiEditResultFeedback(validatedResult),
+            save: validatedResult.outcome === "applied" || validatedResult.outcome === "already_applied"
+              ? "succeeded"
+              : "failed",
+          };
+        }
+      }
+    } catch {
+      completion = {
+        kind: "settled",
+        message: "予期しないエラーが発生しました。もう一度お試しください。",
+        save: "failed",
+      };
+    }
+    if (completion.kind === "recovery_required") {
+      if (completion.save === "succeeded") {
+        selection = { kind: "select_pending" };
+      }
+      try {
+        await reloadTaskDataAfterGuiEdit(completion.message, generation);
+      } finally {
+        await reconcileSyncStateAfterGuiRecovery(completion.message, generation);
+      }
+      return;
+    }
+    if (completion.save === "succeeded") {
+      selection = { kind: "select_pending" };
+    }
+    await reloadTaskDataAfterGuiEdit(completion.message, generation);
+  } finally {
+    finishGuiEdit(generation, selection);
+  }
 }
 
 async function startAiSession(): Promise<void> {
@@ -2290,7 +2371,8 @@ onUnmounted(() => {
             /><TaskDetail
               :task="selectedTask"
               :areas="overview.areas"
-              :can-write="canWrite"
+              :can-write="canWrite && !guiEditSaving"
+              :saving="guiEditSaving"
               :read-available="canReadLocal"
               :obsidian-vault-ids="registeredVaultIds"
               :obsidian-notes="obsidianNotes"
@@ -2308,7 +2390,7 @@ onUnmounted(() => {
           </div>
           <AiPanel
             :state="aiState"
-            :can-write="canWrite && !aiBusy"
+            :can-write="canWrite && !guiEditSaving && !aiBusy"
             @start="startAiTurn"
             @select="selectAiProposal"
             @edit="editAiOperation"

@@ -32,6 +32,7 @@ const props = defineProps<{
   task: ViewModelTaskDetail | undefined;
   areas: readonly string[];
   canWrite: boolean;
+  saving: boolean;
   readAvailable: boolean;
   obsidianVaultIds: readonly string[];
   obsidianNotes: readonly IpcObsidianNoteSummary[];
@@ -152,6 +153,12 @@ function submitDue(): void {
     submitOperation({ kind: "set_due", value: { kind: "due_at", due_at: datetimeLocalToIso(dueValue.value) } });
   } catch {
     localError.value = "期限を確認してください。";
+  }
+}
+
+function submitDueKind(): void {
+  if (dueKind.value === "none") {
+    submitOperation({ kind: "clear_due" });
   }
 }
 
@@ -489,11 +496,20 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
         >
           {{ localError }}
         </p>
-        <div class="grid gap-4 sm:grid-cols-2">
-          <form
-            class="field-group"
-            @submit.prevent="submitTitle"
-          >
+        <p
+          class="text-sm text-slate-600"
+          role="status"
+          aria-live="polite"
+        >
+          <span v-if="props.saving">保存しています…</span>
+          <span v-else-if="props.canWrite">変更すると自動で保存されます。</span>
+          <span v-else>現在は編集できません。</span>
+        </p>
+        <div
+          class="grid gap-4 sm:grid-cols-2"
+          :aria-busy="props.saving"
+        >
+          <div class="field-group">
             <label
               class="field-label"
               for="detail-title-input"
@@ -502,18 +518,10 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model="title"
               class="text-input"
               :disabled="!props.canWrite"
-            ></label><button
-              type="submit"
-              class="secondary-button"
-              :disabled="!props.canWrite"
-            >
-              タイトルを保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitStatus"
-          >
+              @change="submitTitle"
+            ></label>
+          </div>
+          <div class="field-group">
             <label
               class="field-label"
               for="detail-status"
@@ -522,18 +530,10 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model="status"
               class="text-input"
               :disabled="!props.canWrite"
-            ><option value="not_started">未着手</option><option value="in_progress">進行中</option><option value="completed">完了</option><option value="withdrawn">取り下げ</option></select></label><button
-              type="submit"
-              class="secondary-button"
-              :disabled="!props.canWrite"
-            >
-              状態を保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitImportance"
-          >
+              @change="submitStatus"
+            ><option value="not_started">未着手</option><option value="in_progress">進行中</option><option value="completed">完了</option><option value="withdrawn">取り下げ</option></select></label>
+          </div>
+          <div class="field-group">
             <label
               class="field-label"
               for="detail-importance"
@@ -542,18 +542,10 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model.number="importance"
               class="text-input"
               :disabled="!props.canWrite"
-            ><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label><button
-              type="submit"
-              class="secondary-button"
-              :disabled="!props.canWrite"
-            >
-              重要度を保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitDue"
-          >
+              @change="submitImportance"
+            ><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label>
+          </div>
+          <div class="field-group">
             <label
               class="field-label"
               for="detail-due-kind"
@@ -562,6 +554,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model="dueKind"
               class="text-input"
               :disabled="!props.canWrite"
+              @change="submitDueKind"
             ><option value="none">期限なし</option><option value="due_on">日付</option><option value="due_at">日時</option></select></label><input
               v-if="dueKind === 'due_on'"
               v-model="dueValue"
@@ -569,6 +562,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               type="date"
               aria-label="期限日"
               :disabled="!props.canWrite"
+              @change="submitDue"
             ><input
               v-else-if="dueKind === 'due_at'"
               v-model="dueValue"
@@ -576,18 +570,10 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               type="datetime-local"
               aria-label="期限日時"
               :disabled="!props.canWrite"
-            ><button
-              type="submit"
-              class="secondary-button"
-              :disabled="!props.canWrite"
+              @change="submitDue"
             >
-              期限を保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitArea"
-          >
+          </div>
+          <div class="field-group">
             <label
               class="field-label"
               for="detail-area"
@@ -596,22 +582,14 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model="area"
               class="text-input"
               :disabled="!props.canWrite"
+              @change="submitArea"
             ><option
               v-for="candidate in props.areas"
               :key="candidate"
               :value="candidate"
-            >{{ candidate }}</option></select></label><button
-              type="submit"
-              class="secondary-button"
-              :disabled="!props.canWrite"
-            >
-              領域を保存
-            </button>
-          </form>
-          <form
-            class="field-group sm:col-span-2"
-            @submit.prevent="submitNotes"
-          >
+            >{{ candidate }}</option></select></label>
+          </div>
+          <div class="field-group sm:col-span-2">
             <label
               class="field-label"
               for="detail-notes"
@@ -620,14 +598,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               v-model="notes"
               class="text-input min-h-32"
               :disabled="!props.canWrite"
-            /></label><button
-              type="submit"
-              class="secondary-button self-start"
-              :disabled="!props.canWrite"
-            >
-              説明を保存
-            </button>
-          </form>
+              @change="submitNotes"
+            /></label>
+          </div>
         </div>
 
         <div class="grid gap-4 border-t border-slate-200 pt-5 sm:grid-cols-2">
