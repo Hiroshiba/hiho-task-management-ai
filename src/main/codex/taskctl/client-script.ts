@@ -366,6 +366,15 @@ function request(connectionInfo, command) {
   });
 }
 
+function writeJsonResponse(response) {
+  const serialized = JSON.stringify(response);
+  const asciiSerialized = serialized.replace(/[^\x00-\x7F]/g, (character) => {
+    const codeUnit = character.charCodeAt(0);
+    return "\\u" + codeUnit.toString(16).padStart(4, "0");
+  });
+  process.stdout.write(asciiSerialized + "\n");
+}
+
 function printFailure(error) {
   const code = error != null
     && typeof error.code === "string"
@@ -377,7 +386,7 @@ function printFailure(error) {
     error: { code, message: "taskctl要求に失敗しました。" },
     sync: { kind: "unavailable" },
   };
-  process.stdout.write(JSON.stringify(response) + "\n");
+  writeJsonResponse(response);
   process.exitCode = 1;
 }
 
@@ -386,7 +395,7 @@ async function main() {
     const command = parseCommand(process.argv.slice(2));
     const connectionInfo = readConnectionInfo();
     const response = await request(connectionInfo, command);
-    process.stdout.write(JSON.stringify(response) + "\n");
+    writeJsonResponse(response);
     if (!response.ok) {
       process.exitCode = 1;
     }
