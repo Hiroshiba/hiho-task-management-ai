@@ -46,6 +46,16 @@ type SetupAction =
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
 
+type SetupProgressStageNumber = 1 | 2 | 3 | 4;
+type SetupProgressStatus = "completed" | "current" | "upcoming";
+
+const setupProgressStages = [
+  { number: 1, label: "Codex" },
+  { number: 2, label: "Asana" },
+  { number: 3, label: "外部情報源" },
+  { number: 4, label: "同期と動作確認" },
+] satisfies readonly { number: SetupProgressStageNumber; label: string }[];
+
 const props = defineProps<{
   state: SetupState | undefined;
   busy: boolean;
@@ -114,7 +124,7 @@ function stateTitle(state: SetupState | undefined): string {
       return "必須リソースを確認します";
     case "resources_ready":
     case "asana_capability_failed":
-      return "Asanaの能力を確認します";
+      return "Asanaの接続と操作を確認します";
     case "vault_choice_required":
       return "Vaultを設定します";
     case "vault_skipped":
@@ -125,9 +135,72 @@ function stateTitle(state: SetupState | undefined): string {
     case "full_sync_required":
       return "初回同期を実行します";
     case "codex_capability_required":
-      return "Codexの能力を確認します";
+      return "Codexの接続と応答を確認します";
     case "ready":
       return "初回設定が完了しました";
+  }
+}
+
+function setupProgressStageNumber(state: SetupState | undefined): SetupProgressStageNumber {
+  if (state == null) {
+    return 1;
+  }
+  switch (state.step) {
+    case "codex_cli":
+    case "codex_authentication":
+      return 1;
+    case "credentials":
+    case "workspace":
+    case "project":
+    case "resources":
+    case "asana_capability":
+      return 2;
+    case "vault":
+    case "external_tool":
+      return 3;
+    case "full_sync":
+    case "codex_capability":
+    case "ready":
+      return 4;
+  }
+}
+
+function setupProgressStatus(
+  stageNumber: SetupProgressStageNumber,
+  state: SetupState | undefined,
+): SetupProgressStatus {
+  if (state?.kind === "ready") {
+    return "completed";
+  }
+  const currentStageNumber = setupProgressStageNumber(state);
+  if (stageNumber < currentStageNumber) {
+    return "completed";
+  }
+  if (stageNumber === currentStageNumber) {
+    return "current";
+  }
+  return "upcoming";
+}
+
+function setupProgressStatusLabel(status: SetupProgressStatus): string {
+  switch (status) {
+    case "completed":
+      return "完了";
+    case "current":
+      return "現在";
+    case "upcoming":
+      return "未着手";
+  }
+}
+
+function setupProgressStatusClass(status: SetupProgressStatus): string {
+  switch (status) {
+    case "completed":
+      return "border border-emerald-200 bg-emerald-50 text-emerald-900";
+    case "current":
+      return "border border-sky-300 bg-sky-50 text-sky-900 ring-1 ring-sky-200";
+    case "upcoming":
+      return "border border-slate-200 bg-slate-100 text-slate-500";
   }
 }
 
@@ -190,21 +263,21 @@ function projectReasonLabel(reason: "duplicate_project_name"): string {
 function capabilityReasonLabel(reason: "task_create_failed" | "task_update_failed" | "section_move_failed" | "tag_update_failed" | "external_data_failed" | "read_back_failed" | "cleanup_failed" | "unknown"): string {
   switch (reason) {
     case "task_create_failed":
-      return "タスク作成能力を確認できませんでした。";
+      return "タスクの作成を確認できませんでした。";
     case "task_update_failed":
-      return "タスク更新能力を確認できませんでした。";
+      return "タスクの更新を確認できませんでした。";
     case "section_move_failed":
-      return "セクション移動能力を確認できませんでした。";
+      return "セクションの移動を確認できませんでした。";
     case "tag_update_failed":
-      return "タグ更新能力を確認できませんでした。";
+      return "タグの更新を確認できませんでした。";
     case "external_data_failed":
-      return "外部データ能力を確認できませんでした。";
+      return "外部データの取得を確認できませんでした。";
     case "read_back_failed":
-      return "書き込み後の再取得能力を確認できませんでした。";
+      return "書き込み後の再取得を確認できませんでした。";
     case "cleanup_failed":
-      return "検査後の整理能力を確認できませんでした。";
+      return "検査後の整理を確認できませんでした。";
     case "unknown":
-      return "能力検査を完了できませんでした。";
+      return "接続と操作の確認を完了できませんでした。";
   }
 }
 
@@ -320,7 +393,7 @@ function submitVault(): void {
     const input = setupVaultChoiceInputSchema.parse({ kind: "configure", mapping });
     emit("action", { kind: "choose_vault", input });
   } catch {
-    localError.value = "Vault IDと絶対パスを確認してください。";
+    localError.value = "Vault IDとフォルダパスを確認してください。";
   }
 }
 
@@ -405,20 +478,22 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
     </div>
 
     <ol
-      class="mt-6 grid gap-2 text-sm text-slate-700 sm:grid-cols-4"
+      class="mt-6 grid grid-cols-1 items-stretch gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"
       aria-label="初回設定の手順"
     >
-      <li class="rounded-md bg-slate-100 px-3 py-2">
-        1. Codex
-      </li>
-      <li class="rounded-md bg-slate-100 px-3 py-2">
-        2. Asana
-      </li>
-      <li class="rounded-md bg-slate-100 px-3 py-2">
-        3. 外部情報源
-      </li>
-      <li class="rounded-md bg-slate-100 px-3 py-2">
-        4. 同期と能力検査
+      <li
+        v-for="stage in setupProgressStages"
+        :key="stage.number"
+        class="flex h-full flex-col justify-between rounded-md px-3 py-2"
+        :class="setupProgressStatusClass(setupProgressStatus(stage.number, props.state))"
+        :aria-current="setupProgressStatus(stage.number, props.state) === 'current' ? 'step' : undefined"
+      >
+        <span class="font-medium">
+          {{ stage.number }}. {{ stage.label }}
+        </span>
+        <span class="mt-1 text-xs font-semibold">
+          {{ setupProgressStatusLabel(setupProgressStatus(stage.number, props.state)) }}
+        </span>
       </li>
     </ol>
 
@@ -650,7 +725,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-3"
       >
         <p class="text-sm text-slate-600">
-          タスク、セクション、タグ、外部データの実操作能力を確認します。
+          タスク、セクション、タグ、外部データへの操作を確認します。
         </p>
         <p
           v-if="props.state.kind === 'asana_capability_failed'"
@@ -665,7 +740,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           :disabled="props.busy"
           @click="emit('action', { kind: 'run_capability' })"
         >
-          Asana能力を検査
+          接続と操作を確認
         </button>
       </div>
 
@@ -689,7 +764,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           <label
             class="field-label"
             for="vault-path"
-          >Vault絶対パス<input
+          >Vaultのフォルダパス<input
             id="vault-path"
             v-model="vaultPath"
             class="text-input"
@@ -774,7 +849,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           :disabled="props.busy"
           @click="emit('action', { kind: 'run_codex_capability' })"
         >
-          Codex能力を検査
+          接続と応答を確認
         </button>
       </div>
 
