@@ -1,0 +1,198 @@
+name: edge リリース
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: edge-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }} 向け生成物を作成
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            artifact_name: edge-macos
+            artifact_paths: |
+              release/*.dmg
+              release/*.zip
+          - name: Windows
+            os: windows-latest
+            artifact_name: edge-windows
+            artifact_paths: |
+              release/*.exe
+              release/*.zip
+    steps:
+      - name: ソースコードを取得
+        uses: actions/checkout@v4
+      - name: pnpm を設定
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+      - name: Node.js を設定
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+      - name: 依存パッケージをインストール
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+      - name: 配布用パッケージを作成
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          set -euo pipefail
+          pnpm run package
+      - name: 生成物を一時保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: edge リリースを更新
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 公開対象のコミットか確認
+        id: publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              | jq -er '.object.sha | select(type == "string" and length > 0)'
+          )"
+          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
+            echo "main ブランチに新しいコミットがあるため、この実行では公開しません。"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+      - name: 生成物を取得
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: edge-*
+          path: release-assets
+          merge-multiple: true
+      - name: 生成物を検証してリリースを更新
+        if: steps.publication.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(release-assets/*)
+          dmg_assets=(release-assets/*.dmg)
+          zip_assets=(release-assets/*.zip)
+          exe_assets=(release-assets/*.exe)
+
+          if (( ${#assets[@]} != 4 || ${#dmg_assets[@]} != 1 || ${#zip_assets[@]} != 2 || ${#exe_assets[@]} != 1 )); then
+            echo "生成物は dmg 1件、zip 2件、exe 1件の合計4件である必要があります。実際は dmg ${#dmg_assets[@]}件、zip ${#zip_assets[@]}件、exe ${#exe_assets[@]}件、合計 ${#assets[@]}件です。" >&2
+            exit 1
+          fi
+
+          release_matches_file="${RUNNER_TEMP}/edge-release-matches.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | jq -s '[.[][] | select(.tag_name == "edge")]' \
+            > "$release_matches_file"
+          release_count="$(jq -r 'length' "$release_matches_file")"
+          release_notes="main ブランチの最新コミットから自動生成した開発版です。"
+
+          case "$release_count" in
+            0)
+              gh release create edge "${assets[@]}" \
+                --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --title edge \
+                --notes "$release_notes" \
+                --prerelease \
+                --latest=false
+              ;;
+            1)
+              gh release edit edge \
+                --repo "$GITHUB_REPOSITORY" \
+                --title edge \
+                --notes "$release_notes" \
+                --draft=false \
+                --prerelease \
+                --latest=false
+              gh release upload edge "${assets[@]}" \
+                --repo "$GITHUB_REPOSITORY" \
+                --clobber
+              ;;
+            *)
+              echo "edge タグのリリースが複数存在するため更新できません。" >&2
+              exit 1
+              ;;
+          esac
+
+          local_asset_names="$(
+            printf '%s\n' "${assets[@]##*/}" \
+              | jq -Rsc 'split("\n")[:-1]'
+          )"
+          release_file="${RUNNER_TEMP}/edge-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/edge" > "$release_file"
+          jq -e --argjson local_names "$local_asset_names" '
+            .assets as $assets
+            | if all(
+                $local_names[];
+                . as $name
+                | ([$assets[] | select(.name == $name)] | length) == 1
+              )
+              then true
+              else error("今回の生成物がリリース上にそれぞれ1件ずつ存在しません。")
+              end
+          ' "$release_file" > /dev/null
+
+          stale_asset_ids_file="${RUNNER_TEMP}/edge-stale-asset-ids.txt"
+          jq -r --argjson local_names "$local_asset_names" '
+            .assets[]
+            | select(.name as $name | ($local_names | index($name)) == null)
+            | .id
+          ' "$release_file" > "$stale_asset_ids_file"
+          mapfile -t stale_asset_ids < "$stale_asset_ids_file"
+          for asset_id in "${stale_asset_ids[@]}"; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
+          done
+      - name: edge タグを最新コミットへ移動
+        if: steps.publication.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              | jq -er '.object.sha | select(type == "string" and length > 0)'
+          )"
+          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
+            echo "公開処理中に main ブランチへ新しいコミットが追加されたため、edge タグは移動しません。後続の実行に更新を任せます。"
+            exit 0
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/edge" \
+            -f sha="$GITHUB_SHA" \
+            -F force=true \
+            > /dev/null
