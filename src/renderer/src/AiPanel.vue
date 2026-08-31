@@ -387,10 +387,25 @@ function applicationReasonLabel(reason: string): string {
         v-if="props.state.kind === 'streaming'"
         class="space-y-3"
         aria-live="polite"
+        aria-busy="true"
       >
-        <p class="text-sm font-medium text-slate-800">
-          Codexの応答
-        </p><pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm leading-6 text-slate-800">{{ props.state.text }}</pre>
+        <div
+          v-if="props.state.text.length === 0"
+          class="flex items-center gap-3 rounded-md bg-slate-50 p-4"
+          role="status"
+        >
+          <span
+            class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600"
+            aria-hidden="true"
+          /><p class="text-sm font-medium text-slate-800">
+            AIが回答を準備しています
+          </p>
+        </div>
+        <template v-else>
+          <p class="text-sm font-medium text-slate-800">
+            Codexの応答
+          </p><pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm leading-6 text-slate-800">{{ props.state.text }}</pre>
+        </template>
       </div>
 
       <div
