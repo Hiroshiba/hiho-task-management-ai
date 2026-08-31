@@ -20,7 +20,6 @@ import {
   PersistentErrorLog,
   type PersistentErrorLogContext,
   type PersistentErrorLogSource,
-  type PersistentLifecycleEvent,
   writePersistentErrorLogFailure,
 } from "./persistent-error-log";
 import {
@@ -67,11 +66,10 @@ let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
 let persistentErrorLog: PersistentErrorLog | undefined;
-let persistentErrorLogInitialized = false;
 let uncaughtExceptionMonitorRegistered = false;
 
+registerUncaughtExceptionMonitor();
 const singleInstanceLockAcquired = app.requestSingleInstanceLock();
-recordLifecycleEvent(singleInstanceLockAcquired ? "lock_acquired" : "lock_rejected");
 
 function createPersistentErrorLog(): PersistentErrorLog | undefined {
   try {
@@ -108,25 +106,8 @@ function recordPersistentError(
   logger.record(source, diagnosticCode, context, error);
 }
 
-function recordLifecycleEvent(event: PersistentLifecycleEvent): void {
-  const logger = getPersistentErrorLog();
-  if (logger == null) {
-    return;
-  }
-  logger.recordLifecycleEvent(event);
-}
-
-function initializePersistentErrorLog(): void {
-  const logger = getPersistentErrorLog();
-  if (logger == null || persistentErrorLogInitialized) {
-    return;
-  }
-  persistentErrorLogInitialized = true;
-  logger.recordLifecycleEvent("persistent_logger_ready");
-}
-
 function registerUncaughtExceptionMonitor(): void {
-  if (uncaughtExceptionMonitorRegistered || persistentErrorLog == null) {
+  if (uncaughtExceptionMonitorRegistered) {
     return;
   }
   process.on("uncaughtExceptionMonitor", (error) => {
@@ -605,7 +586,6 @@ async function createMainWindow(
       preload: join(__dirname, "../preload/index.cjs"),
     },
   });
-  recordLifecycleEvent("main_window_created");
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,
@@ -709,9 +689,6 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
-  recordLifecycleEvent("when_ready");
-  initializePersistentErrorLog();
-  registerUncaughtExceptionMonitor();
   configureContentSecurityPolicy();
   configurePermissionPolicy();
   const rendererUrl = getRendererUrl();
@@ -735,7 +712,6 @@ async function bootstrap(): Promise<void> {
 }
 
 app.on("window-all-closed", () => {
-  recordLifecycleEvent("window_all_closed");
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -749,7 +725,6 @@ app.on("before-quit", (event) => {
   if (shutdownState.kind === "stopping") {
     return;
   }
-  recordLifecycleEvent("before_quit");
   shutdownState = { kind: "stopping" };
   void stopApplication().then(() => {
     shutdownState = { kind: "stopped" };
@@ -768,10 +743,8 @@ if (!singleInstanceLockAcquired) {
   app.quit();
 } else {
   app.on("second-instance", showAndFocusMainWindow);
-  recordLifecycleEvent("bootstrap_started");
   void bootstrap().catch((error) => {
     recordPersistentError("main", "app.error", "bootstrap", error);
-    recordLifecycleEvent("bootstrap_failure");
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの起動に失敗しました。");
     app.quit();
