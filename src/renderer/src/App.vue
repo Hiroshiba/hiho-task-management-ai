@@ -125,6 +125,11 @@ type TaskDataRefreshRequest = {
 
 type TaskObsidianLink = ViewModelTaskDetail["obsidian_links"][number];
 
+type TaskDetailContext = {
+  readonly generation: number;
+  readonly taskGid: string;
+};
+
 type PendingAiProposal = {
   readonly message: string;
   readonly proposal: AiWorkflowProposalView;
@@ -205,6 +210,7 @@ const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
+const taskFeedback = ref<Feedback | undefined>();
 const aiBusy = ref(false);
 const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
 const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
@@ -237,6 +243,14 @@ function setFeedback(kind: FeedbackKind, message: string): void {
 
 function clearFeedback(): void {
   feedback.value = undefined;
+}
+
+function setTaskFeedback(kind: FeedbackKind, message: string): void {
+  taskFeedback.value = { kind, message };
+}
+
+function clearTaskFeedback(): void {
+  taskFeedback.value = undefined;
 }
 
 function feedbackClass(kind: FeedbackKind): string {
@@ -414,6 +428,14 @@ function showFailure(value: IpcFailure): void {
 
 function showUnexpectedFailure(): void {
   setFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
+}
+
+function showTaskFailure(value: IpcFailure): void {
+  setTaskFeedback("failure", displayFailure(value).message);
+}
+
+function showTaskUnexpectedFailure(): void {
+  setTaskFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
 }
 
 function codexUnavailableReason(
@@ -886,6 +908,26 @@ function clearTaskSelection(): void {
   obsidianStatuses.value = new Map();
 }
 
+function captureTaskDetailContext(): TaskDetailContext {
+  const taskGid = selectedTaskGid.value;
+  if (taskGid == null) {
+    throw new Error("タスクが選択されていません。");
+  }
+  return {
+    generation: taskDetailGeneration,
+    taskGid,
+  };
+}
+
+function isCurrentTaskDetailContext(context: TaskDetailContext): boolean {
+  return context.generation === taskDetailGeneration
+    && selectedTaskGid.value === context.taskGid;
+}
+
+function isTaskDataRefreshSuccessful(result: TaskDataRefreshResult): boolean {
+  return result.kind === "applied" || result.kind === "unchanged";
+}
+
 function commitOverview(value: ViewModelOverview): void {
   overview.value = value;
   lastLoadedSuccessfulSyncAt = value.last_successful_sync_at;
@@ -954,40 +996,53 @@ async function executeTaskDataRefresh(
       }
       commitOverview(nextOverview);
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
+        clearTaskFeedback();
         clearTaskSelection();
       }
       return { kind: "applied" };
     }
-    const detailResult = await window.taskHub.readModel.getTaskDetail(taskGid);
-    if (isFailure(detailResult)) {
-      if (detailResult.code === "not_found") {
-        if (generation !== taskDataGeneration) {
-          return { kind: "superseded" };
+    try {
+      const detailResult = await window.taskHub.readModel.getTaskDetail(taskGid);
+      if (isFailure(detailResult)) {
+        if (detailResult.code === "not_found") {
+          if (generation !== taskDataGeneration) {
+            return { kind: "superseded" };
+          }
+          commitOverview(nextOverview);
+          if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
+            clearTaskFeedback();
+            clearTaskSelection();
+          }
+          return { kind: "applied" };
         }
-        commitOverview(nextOverview);
-        if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-          clearTaskSelection();
+        if (generation === taskDataGeneration
+          && detailGeneration === taskDetailGeneration
+          && selectedTaskGid.value === taskGid) {
+          showTaskFailure(detailResult);
         }
-        return { kind: "applied" };
+        return { kind: "failed" };
       }
-      if (generation === taskDataGeneration) {
-        showFailure(detailResult);
+      const nextTask = viewModelTaskDetailSchema.parse(detailResult.value);
+      const nextStatuses = await collectObsidianStatuses(nextTask.obsidian_links, registeredVaultIds.value);
+      if (generation !== taskDataGeneration) {
+        return { kind: "superseded" };
+      }
+      commitOverview(nextOverview);
+      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
+        selectedTask.value = nextTask;
+        if (statusGeneration === obsidianStatusGeneration) {
+          obsidianStatuses.value = nextStatuses;
+        }
+      }
+      return { kind: "applied" };
+    } catch {
+      if (generation === taskDataGeneration
+        && detailGeneration === taskDetailGeneration
+        && selectedTaskGid.value === taskGid) {
+        showTaskUnexpectedFailure();
       }
       return { kind: "failed" };
     }
-    const nextTask = viewModelTaskDetailSchema.parse(detailResult.value);
-    const nextStatuses = await collectObsidianStatuses(nextTask.obsidian_links, registeredVaultIds.value);
-    if (generation !== taskDataGeneration) {
-      return { kind: "superseded" };
-    }
-    commitOverview(nextOverview);
-    if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-      selectedTask.value = nextTask;
-      if (statusGeneration === obsidianStatusGeneration) {
-        obsidianStatuses.value = nextStatuses;
-      }
-    }
-    return { kind: "applied" };
   } catch {
     if (generation === taskDataGeneration) {
       showUnexpectedFailure();
@@ -1662,6 +1717,7 @@ async function selectTask(taskGid: string): Promise<void> {
     pendingTaskSelection.value = { kind: "requested", taskGid };
     return;
   }
+  clearTaskFeedback();
   taskDetailGeneration += 1;
   obsidianStatusGeneration += 1;
   const detailGeneration = taskDetailGeneration;
@@ -1673,7 +1729,7 @@ async function selectTask(taskGid: string): Promise<void> {
     const result = await window.taskHub.readModel.getTaskDetail(taskGid);
     if (isFailure(result)) {
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        showFailure(result);
+        showTaskFailure(result);
         if (result.code === "not_found") {
           clearTaskSelection();
         }
@@ -1691,7 +1747,7 @@ async function selectTask(taskGid: string): Promise<void> {
     }
   } catch {
     if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-      showUnexpectedFailure();
+      showTaskUnexpectedFailure();
     }
   }
 }
@@ -1730,32 +1786,43 @@ async function loadObsidianVaults(): Promise<void> {
 }
 
 async function listObsidian(vaultId: string): Promise<void> {
+  const context = captureTaskDetailContext();
   const trimmedVaultId = vaultId.trim();
   if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    setFeedback("warning", "登録済みのVaultだけを指定してください。");
+    if (isCurrentTaskDetailContext(context)) {
+      setTaskFeedback("warning", "登録済みのVaultだけを指定してください。");
+    }
     return;
   }
   obsidianBusy.value = true;
   try {
     const input = ipcObsidianValidateInputSchema.parse({ vault_id: trimmedVaultId });
     const result = await window.taskHub.obsidian.listNotes(input.vault_id);
+    if (!isCurrentTaskDetailContext(context)) {
+      return;
+    }
     if (isFailure(result)) {
-      showFailure(result);
+      showTaskFailure(result);
       return;
     }
     obsidianNotes.value = result.value;
     obsidianSearchResults.value = [];
   } catch {
-    showUnexpectedFailure();
+    if (isCurrentTaskDetailContext(context)) {
+      showTaskUnexpectedFailure();
+    }
   } finally {
     obsidianBusy.value = false;
   }
 }
 
 async function searchObsidian(input: { readonly vaultId: string; readonly query: string }): Promise<void> {
+  const context = captureTaskDetailContext();
   const trimmedVaultId = input.vaultId.trim();
   if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    setFeedback("warning", "登録済みのVaultだけを指定してください。");
+    if (isCurrentTaskDetailContext(context)) {
+      setTaskFeedback("warning", "登録済みのVaultだけを指定してください。");
+    }
     return;
   }
   obsidianBusy.value = true;
@@ -1765,14 +1832,19 @@ async function searchObsidian(input: { readonly vaultId: string; readonly query:
       query: input.query,
     });
     const result = await window.taskHub.obsidian.search(validated);
+    if (!isCurrentTaskDetailContext(context)) {
+      return;
+    }
     if (isFailure(result)) {
-      showFailure(result);
+      showTaskFailure(result);
       return;
     }
     obsidianSearchResults.value = result.value;
     obsidianNotes.value = [];
   } catch {
-    showUnexpectedFailure();
+    if (isCurrentTaskDetailContext(context)) {
+      showTaskUnexpectedFailure();
+    }
   } finally {
     obsidianBusy.value = false;
   }
@@ -1796,7 +1868,7 @@ async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][num
       return;
     }
     if (isFailure(result)) {
-      showFailure(result);
+      showTaskFailure(result);
       return;
     }
     const statuses = new Map(obsidianStatuses.value);
@@ -1804,26 +1876,34 @@ async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][num
     obsidianStatuses.value = statuses;
   } catch {
     if (generation === obsidianStatusGeneration) {
-      showUnexpectedFailure();
+      showTaskUnexpectedFailure();
     }
   }
 }
 
 async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
+  const context = captureTaskDetailContext();
   if (!registeredVaultIds.value.includes(link.vault_id)) {
-    setFeedback("warning", "このVaultは登録されていません。");
+    if (isCurrentTaskDetailContext(context)) {
+      setTaskFeedback("warning", "このVaultは登録されていません。");
+    }
     return;
   }
   try {
     const input = ipcObsidianOpenNoteInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
     const result = await window.taskHub.obsidian.openNote(input);
-    if (isFailure(result)) {
-      showFailure(result);
+    if (!isCurrentTaskDetailContext(context)) {
       return;
     }
-    setFeedback("success", "Obsidianでノートを開きました。");
+    if (isFailure(result)) {
+      showTaskFailure(result);
+      return;
+    }
+    setTaskFeedback("success", "Obsidianでノートを開きました。");
   } catch {
-    showUnexpectedFailure();
+    if (isCurrentTaskDetailContext(context)) {
+      showTaskUnexpectedFailure();
+    }
   }
 }
 
@@ -1831,23 +1911,19 @@ async function reloadTaskDataAfterGuiEdit(
   message: string,
   feedbackKind: FeedbackKind,
   generation: number,
-): Promise<void> {
-  if (generation === guiEditGeneration) {
-    setFeedback(feedbackKind, message);
+): Promise<TaskDataRefreshResult> {
+  const result = await reloadTaskData();
+  if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(result)) {
+    setTaskFeedback(feedbackKind, message);
   }
-  try {
-    await reloadTaskData();
-  } finally {
-    if (generation === guiEditGeneration) {
-      setFeedback(feedbackKind, message);
-    }
-  }
+  return result;
 }
 
 async function reconcileSyncStateAfterGuiRecovery(
   message: string,
   feedbackKind: FeedbackKind,
   generation: number,
+  reloadResult: TaskDataRefreshResult,
 ): Promise<void> {
   try {
     const result = await readCurrentSyncState();
@@ -1855,8 +1931,8 @@ async function reconcileSyncStateAfterGuiRecovery(
       applySyncStateDisplay(result.value);
     }
   } finally {
-    if (generation === guiEditGeneration) {
-      setFeedback(feedbackKind, message);
+    if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(reloadResult)) {
+      setTaskFeedback(feedbackKind, message);
     }
   }
 }
@@ -1879,12 +1955,12 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
     throw new Error("GUI保存中に別の保存要求を受け取りました。");
   }
   if (!canWrite.value) {
-    setFeedback(unavailableFeedbackKind(), writeUnavailableText("編集"));
+    setTaskFeedback(unavailableFeedbackKind(), writeUnavailableText("編集"));
     return;
   }
   const currentOverview = overview.value;
   if (currentOverview == null) {
-    setFeedback("warning", "タスク状態を読み込むまで編集できません。");
+    setTaskFeedback("warning", "タスク状態を読み込むまで編集できません。");
     return;
   }
   guiEditGeneration += 1;
@@ -1940,19 +2016,17 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
       if (completion.save === "succeeded") {
         selection = { kind: "select_pending" };
       }
-      try {
-        await reloadTaskDataAfterGuiEdit(
-          completion.message,
-          completion.feedbackKind,
-          generation,
-        );
-      } finally {
-        await reconcileSyncStateAfterGuiRecovery(
-          completion.message,
-          completion.feedbackKind,
-          generation,
-        );
-      }
+      const reloadResult = await reloadTaskDataAfterGuiEdit(
+        completion.message,
+        completion.feedbackKind,
+        generation,
+      );
+      await reconcileSyncStateAfterGuiRecovery(
+        completion.message,
+        completion.feedbackKind,
+        generation,
+        reloadResult,
+      );
       return;
     }
     if (completion.save === "succeeded") {
@@ -2092,7 +2166,7 @@ async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
 
 async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   if (!canReanalyzeObsidianNotes.value) {
-    setFeedback("warning", "関連ノートの再解析は現在利用できません。");
+    setTaskFeedback("warning", "関連ノートの再解析は現在利用できません。");
     return;
   }
   const request = aiWorkflowTurnRequestSchema.parse({
@@ -2507,25 +2581,35 @@ onUnmounted(() => {
               :selected-task-gid="selectedTaskGid"
               :as-of="currentAsOf"
               @select="selectTask"
-            /><TaskDetail
-              :task="selectedTask"
-              :areas="overview.areas"
-              :can-write="canWrite && !guiEditSaving"
-              :saving="guiEditSaving"
-              :read-available="canReadLocal"
-              :obsidian-vault-ids="registeredVaultIds"
-              :obsidian-notes="obsidianNotes"
-              :obsidian-search-results="obsidianSearchResults"
-              :obsidian-statuses="obsidianStatuses"
-              :obsidian-busy="obsidianBusy"
-              :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
-              @edit="applyGuiEdit"
-              @list-obsidian="listObsidian"
-              @search-obsidian="searchObsidian"
-              @check-obsidian="checkObsidianLink"
-              @open-obsidian="openObsidianLink"
-              @reanalyze-obsidian-notes="reanalyzeObsidianNotes"
-            />
+            /><div class="min-w-0 space-y-3">
+              <p
+                v-if="taskFeedback != null"
+                class="sticky top-3 rounded-md px-4 py-3 text-sm"
+                :class="feedbackClass(taskFeedback.kind)"
+                :role="feedbackRole(taskFeedback.kind)"
+              >
+                {{ taskFeedback.message }}
+              </p>
+              <TaskDetail
+                :task="selectedTask"
+                :areas="overview.areas"
+                :can-write="canWrite && !guiEditSaving"
+                :saving="guiEditSaving"
+                :read-available="canReadLocal"
+                :obsidian-vault-ids="registeredVaultIds"
+                :obsidian-notes="obsidianNotes"
+                :obsidian-search-results="obsidianSearchResults"
+                :obsidian-statuses="obsidianStatuses"
+                :obsidian-busy="obsidianBusy"
+                :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
+                @edit="applyGuiEdit"
+                @list-obsidian="listObsidian"
+                @search-obsidian="searchObsidian"
+                @check-obsidian="checkObsidianLink"
+                @open-obsidian="openObsidianLink"
+                @reanalyze-obsidian-notes="reanalyzeObsidianNotes"
+              />
+            </div>
           </div>
           <AiPanel
             :state="aiState"
