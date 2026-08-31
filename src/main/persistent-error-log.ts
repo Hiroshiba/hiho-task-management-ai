@@ -167,10 +167,43 @@ const safeZodIssueSchema = z
   })
   .strict();
 
+const safeCodexTurnFailureSchema = z.enum([
+  "contextWindowExceeded",
+  "sessionBudgetExceeded",
+  "usageLimitExceeded",
+  "serverOverloaded",
+  "cyberPolicy",
+  "misalignmentPolicyViolation",
+  "internalServerError",
+  "unauthorized",
+  "badRequest",
+  "threadRollbackFailed",
+  "sandboxError",
+  "other",
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts",
+  "activeTurnNotSteerable",
+]);
+const codexTurnFailureInfoEnvelopeSchema = z
+  .object({
+    codexErrorInfo: z.unknown().optional(),
+  })
+  .strip();
+const safeCodexTurnFailureObjectKeys: readonly string[] = [
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts",
+  "activeTurnNotSteerable",
+];
+
 type SafeZodIssue = z.infer<typeof safeZodIssueSchema>;
 type SafeZodIssuePathSegment = z.infer<typeof safeZodIssuePathSegmentSchema>;
 type SafeZodIssueCode = z.infer<typeof safeZodIssueCodeSchema>;
 type SafeZodIssueExpected = z.infer<typeof safeZodIssueExpectedSchema>;
+type SafeCodexTurnFailure = z.infer<typeof safeCodexTurnFailureSchema>;
 
 export type PersistentErrorLogSource = z.infer<
   typeof persistentErrorLogSourceSchema
@@ -185,6 +218,7 @@ type SafeErrorDetail = {
   cause_chain: SafeErrorDetail[];
   aggregate_errors: SafeErrorDetail[];
   zod_issues?: SafeZodIssue[] | undefined;
+  codex_turn_failure?: SafeCodexTurnFailure | undefined;
   capability_failure?: CodexThreadStartCapabilityFailureCode | undefined;
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
@@ -203,6 +237,7 @@ const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
         .array(safeErrorDetailSchema)
         .max(maximumAggregateErrors),
       zod_issues: z.array(safeZodIssueSchema).max(maximumZodIssues).optional(),
+      codex_turn_failure: safeCodexTurnFailureSchema.optional(),
       capability_failure: codexThreadStartCapabilityFailureCodeSchema.optional(),
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
@@ -625,6 +660,41 @@ function getSafeZodDetail(value: unknown): Pick<SafeErrorDetail, "zod_issues"> {
   return issues.length === 0 ? {} : { zod_issues: issues };
 }
 
+function getSafeCodexTurnFailure(value: unknown): SafeCodexTurnFailure | undefined {
+  const parsedEnvelope = codexTurnFailureInfoEnvelopeSchema.safeParse(value);
+  if (!parsedEnvelope.success) {
+    return undefined;
+  }
+  const codexErrorInfo = parsedEnvelope.data.codexErrorInfo;
+  const parsedString = safeCodexTurnFailureSchema.safeParse(codexErrorInfo);
+  if (parsedString.success) {
+    return parsedString.data;
+  }
+  if (
+    typeof codexErrorInfo !== "object"
+    || codexErrorInfo == null
+    || Array.isArray(codexErrorInfo)
+  ) {
+    return undefined;
+  }
+  for (const key of safeCodexTurnFailureObjectKeys) {
+    if (Object.prototype.hasOwnProperty.call(codexErrorInfo, key)) {
+      const parsedKey = safeCodexTurnFailureSchema.safeParse(key);
+      if (parsedKey.success) {
+        return parsedKey.data;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getSafeCodexTurnFailureDetail(
+  value: unknown,
+): Pick<SafeErrorDetail, "codex_turn_failure"> {
+  const failure = getSafeCodexTurnFailure(value);
+  return failure == null ? {} : { codex_turn_failure: failure };
+}
+
 function getSafeCodexThreadStartCapabilityDetail(
   value: unknown,
 ): Pick<SafeErrorDetail, "capability_failure"> {
@@ -673,6 +743,7 @@ function createSafeErrorDetail(
     cause_chain: [],
     aggregate_errors: [],
     ...getSafeZodDetail(value),
+    ...getSafeCodexTurnFailureDetail(value),
     ...getSafeCodexThreadStartCapabilityDetail(value),
     ...getSafeCodexRpcDetail(value),
   };
