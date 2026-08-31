@@ -658,11 +658,12 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
             v-for="workspace in workspaceOptions(props.state)"
             :key="workspace.gid"
             type="button"
-            class="choice-button"
+            class="choice-button min-w-0"
             :disabled="props.busy"
             @click="selectWorkspace(workspace.gid)"
           >
-            {{ workspace.name }} <span class="text-xs text-slate-500">{{ workspace.gid }}</span>
+            <span class="min-w-0 whitespace-normal break-words">{{ workspace.name }}</span>
+            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500">{{ workspace.gid }}</span>
           </button>
         </div>
       </div>
@@ -683,11 +684,12 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
             v-for="project in projectOptions(props.state)"
             :key="project.gid"
             type="button"
-            class="choice-button"
+            class="choice-button min-w-0"
             :disabled="props.busy"
             @click="selectProject(project.gid)"
           >
-            {{ project.name }} <span class="text-xs text-slate-500">{{ project.gid }}</span>
+            <span class="min-w-0 whitespace-normal break-words">{{ project.name }}</span>
+            <span class="min-w-0 whitespace-normal break-words text-xs text-slate-500">{{ project.gid }}</span>
           </button>
         </div>
         <form
