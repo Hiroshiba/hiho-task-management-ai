@@ -663,7 +663,7 @@ export const dynamicToolCallParamsSchema = z
     threadId: threadIdSchema,
     turnId: turnIdSchema,
     callId: nonEmptyTextSchema.max(200),
-    namespace: nonEmptyTextSchema.max(200).nullable(),
+    namespace: nonEmptyTextSchema.max(200).nullable().optional(),
     tool: nonEmptyTextSchema.max(200),
     arguments: jsonValueSchema,
   })

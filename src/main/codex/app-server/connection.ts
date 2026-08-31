@@ -560,7 +560,6 @@ export class CodexAppServerConnection {
         return;
       }
       this.dynamicToolHandler = undefined;
-      this.abortDynamicToolRequests();
     };
   }
 
