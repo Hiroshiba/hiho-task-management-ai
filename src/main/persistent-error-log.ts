@@ -26,6 +26,11 @@ import {
   codexRpcOperationSchema,
   type CodexRpcOperation,
 } from "./codex/app-server/errors";
+import {
+  CodexThreadStartCapabilityError,
+  codexThreadStartCapabilityFailureCodeSchema,
+  type CodexThreadStartCapabilityFailureCode,
+} from "./codex/session/errors";
 
 const maximumLogBytes = 1 * 1024 * 1024;
 const maximumStackFrames = 32;
@@ -102,6 +107,7 @@ type SafeErrorDetail = {
   stack_frames: string[];
   cause_chain: SafeErrorDetail[];
   aggregate_errors: SafeErrorDetail[];
+  capability_failure?: CodexThreadStartCapabilityFailureCode | undefined;
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
   rpc_message?: string | undefined;
@@ -118,6 +124,7 @@ const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
       aggregate_errors: z
         .array(safeErrorDetailSchema)
         .max(maximumAggregateErrors),
+      capability_failure: codexThreadStartCapabilityFailureCodeSchema.optional(),
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
       rpc_message: z.string().min(1).max(maximumRpcMessageCharacters).optional(),
@@ -489,6 +496,19 @@ function getSafeCodexRpcDetail(value: unknown): SafeCodexRpcDetail {
   };
 }
 
+function getSafeCodexThreadStartCapabilityDetail(
+  value: unknown,
+): Pick<SafeErrorDetail, "capability_failure"> {
+  if (!(value instanceof CodexThreadStartCapabilityError)) {
+    return {};
+  }
+  return {
+    capability_failure: codexThreadStartCapabilityFailureCodeSchema.parse(
+      value.failureCode,
+    ),
+  };
+}
+
 function createSafeErrorDetail(
   value: unknown,
   stackSanitizer: StackSanitizer,
@@ -523,6 +543,7 @@ function createSafeErrorDetail(
     stack_frames: getStackFrames(value, stackSanitizer),
     cause_chain: [],
     aggregate_errors: [],
+    ...getSafeCodexThreadStartCapabilityDetail(value),
     ...getSafeCodexRpcDetail(value),
   };
 

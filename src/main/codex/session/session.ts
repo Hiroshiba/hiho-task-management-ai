@@ -55,6 +55,7 @@ import {
   CodexSessionStateError,
   CodexSessionSyncError,
   CodexSessionTurnError,
+  CodexThreadStartCapabilityError,
 } from "./errors";
 import {
   codexSessionDeltaSchema,
@@ -1661,9 +1662,10 @@ export class CodexSessionService {
     if (this.threadConfigurationChanged) {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
+    const expectedModel = this.requireSelectedModel();
     const config = this.createThreadConfiguration();
     const params = {
-      model: this.requireSelectedModel(),
+      model: expectedModel,
       cwd: this.options.workspacePath,
       approvalPolicy: "never",
       ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
@@ -1674,21 +1676,23 @@ export class CodexSessionService {
     const result = threadStartResultSchema.parse(
       await connection.startThread(validatedParams, signal),
     );
-    const hasUnexpectedInstructionSource = result.instructionSources.some(
-      (source) => source !== this.options.agentsFilePath,
-    );
-    if (
-      result.model !== this.requireSelectedModel()
-      || result.cwd !== this.options.workspacePath
-      || result.approvalPolicy !== "never"
-      || !result.instructionSources.includes(this.options.agentsFilePath)
-      || hasUnexpectedInstructionSource
-      || !hasWorkspaceWriteSandbox(
-        result.sandbox,
-        this.options.tmpDirectoryPath,
-      )
-    ) {
-      throw new CodexSessionCapabilityError("Codexスレッドの権限制約を確認できません。");
+    if (result.model !== expectedModel) {
+      throw new CodexThreadStartCapabilityError("model_mismatch");
+    }
+    if (result.cwd !== this.options.workspacePath) {
+      throw new CodexThreadStartCapabilityError("cwd_mismatch");
+    }
+    if (result.approvalPolicy !== "never") {
+      throw new CodexThreadStartCapabilityError("approval_policy_mismatch");
+    }
+    if (!result.instructionSources.includes(this.options.agentsFilePath)) {
+      throw new CodexThreadStartCapabilityError("instruction_source_missing");
+    }
+    if (result.instructionSources.some((source) => source !== this.options.agentsFilePath)) {
+      throw new CodexThreadStartCapabilityError("instruction_source_unexpected");
+    }
+    if (!hasWorkspaceWriteSandbox(result.sandbox, this.options.tmpDirectoryPath)) {
+      throw new CodexThreadStartCapabilityError("sandbox_invalid");
     }
     this.threadId = result.thread.id;
     this.validateStoredThreadSettingsNotification(result.thread.id);

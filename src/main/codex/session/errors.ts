@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /** Codexセッション処理の基底エラーです。 */
 export class CodexSessionError extends Error {
   public constructor(message: string, cause?: unknown) {
@@ -35,6 +37,30 @@ export class CodexSessionCapabilityError extends CodexSessionError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);
     this.name = "CodexSessionCapabilityError";
+  }
+}
+
+export const codexThreadStartCapabilityFailureCodeSchema = z.enum([
+  "model_mismatch",
+  "cwd_mismatch",
+  "approval_policy_mismatch",
+  "instruction_source_missing",
+  "instruction_source_unexpected",
+  "sandbox_invalid",
+]);
+
+export type CodexThreadStartCapabilityFailureCode = z.infer<
+  typeof codexThreadStartCapabilityFailureCodeSchema
+>;
+
+/** Codexスレッド開始後の能力検査に失敗したことを表します。 */
+export class CodexThreadStartCapabilityError extends CodexSessionCapabilityError {
+  public readonly failureCode: CodexThreadStartCapabilityFailureCode;
+
+  public constructor(failureCode: CodexThreadStartCapabilityFailureCode) {
+    super("Codexスレッドの権限制約を確認できません。");
+    this.name = "CodexThreadStartCapabilityError";
+    this.failureCode = codexThreadStartCapabilityFailureCodeSchema.parse(failureCode);
   }
 }
 
