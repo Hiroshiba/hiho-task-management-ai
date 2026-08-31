@@ -475,47 +475,55 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
       v-if="props.task == null"
       class="px-5 py-10 text-center text-sm text-slate-600"
     >
-      タスクを選択してください。
+      <h2
+        id="task-detail-title"
+        class="text-lg font-semibold text-slate-900"
+      >
+        タスク詳細
+      </h2>
+      <p class="mt-2">
+        一覧からタスクを選択してください。
+      </p>
     </div>
     <template v-else>
       <div class="border-b border-slate-200 px-5 py-4">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
+        <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
             <p class="text-xs text-slate-500">
-              {{ props.task.gid }}
+              タスク詳細
             </p>
             <h2
               id="task-detail-title"
-              class="mt-1 text-xl font-semibold text-slate-900"
+              class="mt-1 break-words text-xl font-semibold text-slate-900"
             >
               {{ props.task.title }}
             </h2>
           </div>
           <a
-            class="secondary-button inline-flex"
+            class="secondary-button inline-flex shrink-0"
             :href="props.task.asana_url"
             target="_blank"
             rel="noreferrer"
           >Asanaで開く</a>
         </div>
-        <p
+        <details
           v-if="hasCleanupWarnings(props.task)"
-          class="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
-          role="alert"
+          class="mt-3 rounded-md border border-amber-200 bg-amber-50 text-amber-900"
         >
-          要整理項目があります。
-        </p>
-        <ul
-          v-if="props.task.cleanup_warnings.length > 0"
-          class="mt-2 list-disc pl-5 text-xs text-amber-900"
-        >
-          <li
-            v-for="warning in props.task.cleanup_warnings"
-            :key="`${warning.kind}-${warning.message}`"
+          <summary
+            class="cursor-pointer px-3 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset"
           >
-            {{ warning.message }}
-          </li>
-        </ul>
+            要整理 {{ props.task.cleanup_warnings.length }}件
+          </summary>
+          <ul class="list-disc space-y-1 border-t border-amber-200 p-3 pl-8 text-xs text-amber-900">
+            <li
+              v-for="warning in props.task.cleanup_warnings"
+              :key="`${warning.kind}-${warning.message}`"
+            >
+              {{ warning.message }}
+            </li>
+          </ul>
+        </details>
       </div>
 
       <div class="space-y-6 p-5">
