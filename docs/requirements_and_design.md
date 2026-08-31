@@ -897,7 +897,7 @@ Codex app-server自体は全OSで認証のため専用 `CODEX_HOME` へアクセ
 3. app-serverの `initialize` / `initialized` が成功する。
 4. モデル一覧またはモデル情報を取得できる。
 5. `thread/start` がTaskHub専用ワークスペース、プラットフォーム別の制限付きサンドボックスを受理し、Web検索を無効として開始できる。Windows以外ではTaskHub専用権限プロファイルも確認する。
-6. 構造化出力スキーマを指定できる。
+6. Structured Outputs互換の外側スキーマを指定し、返された `response_json` を既存のTaskHub応答スキーマで検証できる。[R24]
 7. `instructionSources` からTaskHub専用ワークスペースの `AGENTS.md` を確認できる。
 8. TaskHub専用ワークスペースのスキル一覧取得またはスキル読込が利用できる。
 9. ChatGPTアカウントで認証済みであることを確認できる。
@@ -939,27 +939,17 @@ AIターン開始前にオンライン同期を行う。同期に失敗した場
 
 ### 13.1 基本方針
 
-Codexの最終出力は自由文だけにせず、app-serverの出力スキーマを使って構造化する。
+Codexの最終出力は自由文だけにせず、app-serverのStructured Outputs互換スキーマを使って構造化する。外側は必須の文字列 `response_json` だけを持つオブジェクトとする。CodexにはTaskHub応答スキーマを形式指示として渡し、`response_json` をJSONとして復号した後、既存のZodスキーマで厳格に検証する。これにより、Structured Outputsのルートオブジェクトと全項目必須の制約を満たしながら、TaskHub内部の複雑な変更案を検証する。[R24]
 
 概念形:
 
 ```json
 {
-  "message": "利用者への説明",
-  "questions": [],
-  "proposal": {
-    "title": "3件のタスク変更案",
-    "groups": [
-      {
-        "atomic": true,
-        "operations": []
-      }
-    ]
-  }
+  "response_json": "{\"kind\":\"no_proposal\",\"message\":\"利用者への説明\",\"questions\":[]}"
 }
 ```
 
-自由文 `message` は説明だけであり、変更の正本ではない。アプリが適用するのは、検証済み `operations` だけとする。
+復号後の自由文 `message` は説明だけであり、変更の正本ではない。アプリが適用するのは、検証済み `operations` だけとする。
 
 ### 13.2 許可操作
 
@@ -1733,7 +1723,7 @@ Asanaの秘密値を次へ渡さない。
 - プロセスクラッシュ: 1回だけ再起動し、新しいスレッドを作る。
 - 必要な能力またはプラットフォーム別のサンドボックスを確認できない: AI機能だけを停止する。
 - Apps、Pluginsの無効設定を指定した接続、Web検索の無効設定を指定した `thread/start` に失敗: AI機能だけを停止する。
-- 構造化出力不正: 変更案を破棄し、会話本文だけ表示するか再生成を1回試す。
+- 構造化出力不正: 応答と変更案を破棄し、再生成を1回だけ試す。それでも失敗する場合はエラーを表示する。
 - TaskHub専用ワークスペースの `AGENTS.md` またはスキル未読込: AI機能を開始しない。
 
 Codexクラッシュ時も、既にRendererに存在する未承認案は残してよい。アプリ終了時には破棄する。
@@ -1933,6 +1923,7 @@ Custom external dataが利用できない場合、依存・Obsidian関連・停�
 - TaskHub専用ワークスペースの `AGENTS.md` とスキルが読み込まれる。
 - モデル取得とプラットフォーム別の制限付き `thread/start` を確認できる。Windows以外ではTaskHub専用権限プロファイルも確認できる。
 - AppsとPluginsの無効設定を指定した接続、Web検索の無効設定を指定した `thread/start` が成功する。
+- Structured Outputs互換の外側スキーマでCodexターンが完了し、`response_json` の復号結果をTaskHub応答スキーマで検証できる。
 - 必要な能力やプラットフォーム別のサンドボックスを確認できない場合は、AIだけが安全に停止する。
 
 ### 24.7 Obsidian・外部ツール
@@ -2066,6 +2057,7 @@ Discord等の情報取得可否は、各ローカルツールの認証・API・�
 - [R21] Asana Developers: Get tasks from a project — https://developers.asana.com/reference/gettasksforproject
 - [R22] Asana Developers: Update a task — https://developers.asana.com/reference/updatetask
 - [R23] OpenAI Codex: Windows sandbox — https://learn.chatgpt.com/docs/windows/windows-sandbox
+- [R24] OpenAI: Structured Outputs — https://developers.openai.com/api/docs/guides/structured-outputs
 
 ---
 
@@ -2087,6 +2079,7 @@ Discord等の情報取得可否は、各ローカルツールの認証・API・�
 - 接続時にAppsとPluginsを無効化し、スレッドのWeb検索を無効化する。通常設定のMCP二段階探索、実行時のMCP名変換、未知機能の許可リストは行わない。
 - CodexにAsana認証・書き込み手段を渡さない。
 - AI変更はすべて構造化案、検証、利用者承認を経て反映。
+- Codex出力はStructured Outputs互換の外側オブジェクトで受け取り、内側の `response_json` を既存のTaskHub応答スキーマで検証する。
 - GUI直接変更はオンライン時に即時反映。
 - AIによる完了・取り下げは明示的根拠がある場合だけ。
 - タスク分割は明示依頼時だけ。
