@@ -107,7 +107,7 @@ const eventSchema = z
     parent: eventResourceSchema.nullable(),
     user: eventResourceSchema.nullable(),
     created_at: isoDateTimeSchema,
-    change: eventChangeSchema.nullable(),
+    change: eventChangeSchema.nullable().optional(),
   })
   .strip();
 
