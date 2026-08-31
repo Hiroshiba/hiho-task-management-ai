@@ -2328,7 +2328,7 @@ onUnmounted(() => {
             class="mt-3 flex flex-wrap items-end gap-2"
             @submit.prevent="completeAsanaReauthentication"
           >
-            <label class="min-w-[20rem] flex-1 text-sm font-medium text-amber-950">
+            <label class="w-full min-w-0 max-w-xl flex-1 text-sm font-medium text-amber-950">
               認可コード
               <input
                 ref="asanaAuthorizationCodeInput"
