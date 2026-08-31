@@ -633,115 +633,128 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </div>
 
-        <div class="grid gap-4 border-t border-slate-200 pt-5 sm:grid-cols-2">
-          <form
-            class="field-group"
-            @submit.prevent="submitDependencies"
-          >
-            <label
-              class="field-label"
-              for="detail-dependencies"
-            >依存先GIDと範囲 <input
-              id="detail-dependencies"
-              v-model="dependencyText"
-              class="text-input"
-              :disabled="!props.canWrite"
-            ></label><p class="text-xs text-slate-500">
-              複数はカンマ区切りで、追加時はGID:fullまたはGID:partialを指定します。
-            </p><button
-              type="submit"
-              class="secondary-button self-start"
-              :disabled="!props.canWrite"
-            >
-              依存関係を保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitParent"
-          >
-            <label
-              class="field-label"
-              for="detail-parent"
-            >親タスクGID<input
-              id="detail-parent"
-              v-model="parentGid"
-              class="text-input"
-              :disabled="!props.canWrite"
-            ></label><p class="text-xs text-slate-500">
-              空欄で親を解除します。
-            </p><button
-              type="submit"
-              class="secondary-button self-start"
-              :disabled="!props.canWrite"
-            >
-              親子関係を保存
-            </button>
-          </form>
-          <form
-            class="field-group"
-            @submit.prevent="submitParentWorkMode"
-          >
-            <label
-              class="field-label"
-              for="detail-parent-mode"
-            >parent_work_mode<select
-              id="detail-parent-mode"
-              v-model="parentWorkMode"
-              class="text-input"
-              :disabled="!props.canWrite"
-            ><option value="children_only">子タスクのみ</option><option value="has_own_work">親自身の作業あり</option><option value="unknown">不明</option></select></label><button
-              type="submit"
-              class="secondary-button self-start"
-              :disabled="!props.canWrite"
-            >
-              親作業モードを保存
-            </button>
-          </form>
-          <div class="field-group">
-            <p class="field-label">
-              状態操作
-            </p>
-            <div class="flex flex-wrap gap-2">
+        <div class="field-group border-t border-slate-200 pt-5">
+          <p class="field-label">
+            状態操作
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <template v-if="props.task.status === 'not_started' || props.task.status === 'in_progress'">
               <button
                 type="button"
                 class="secondary-button"
                 :disabled="!props.canWrite"
                 @click="submitOperation({ kind: 'complete' })"
               >
-                完了
+                完了にする
               </button><button
                 type="button"
-                class="secondary-button"
+                class="secondary-button border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 focus:ring-amber-600"
                 :disabled="!props.canWrite"
                 @click="submitOperation({ kind: 'withdraw' })"
               >
-                取り下げ
-              </button><button
-                type="button"
-                class="secondary-button"
-                :disabled="!props.canWrite"
-                @click="submitOperation({ kind: 'restore', value: 'not_started' })"
-              >
-                未着手へ復帰
-              </button><button
-                type="button"
-                class="secondary-button"
-                :disabled="!props.canWrite"
-                @click="submitOperation({ kind: 'restore', value: 'in_progress' })"
-              >
-                進行中へ復帰
+                取り下げる
               </button><button
                 type="button"
                 class="secondary-button"
                 :disabled="!props.canWrite"
                 @click="submitOperation({ kind: 'mark_activity' })"
               >
-                活動あり
+                活動を記録
               </button>
-            </div>
+            </template>
+            <template v-else>
+              <button
+                type="button"
+                class="secondary-button"
+                :disabled="!props.canWrite"
+                @click="submitOperation({ kind: 'restore', value: 'not_started' })"
+              >
+                未着手に戻す
+              </button><button
+                type="button"
+                class="secondary-button"
+                :disabled="!props.canWrite"
+                @click="submitOperation({ kind: 'restore', value: 'in_progress' })"
+              >
+                進行中に戻す
+              </button>
+            </template>
           </div>
         </div>
+
+        <details class="min-w-0 border-t border-slate-200 pt-5">
+          <summary
+            class="cursor-pointer rounded-md px-3 py-3 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+          >
+            依存関係と親子関係を編集
+          </summary>
+          <div class="mt-4 grid min-w-0 gap-4 lg:grid-cols-2">
+            <form
+              class="field-group min-w-0"
+              @submit.prevent="submitDependencies"
+            >
+              <label
+                class="field-label min-w-0"
+                for="detail-dependencies"
+              >依存するタスク<input
+                id="detail-dependencies"
+                v-model="dependencyText"
+                class="text-input min-w-0"
+                :disabled="!props.canWrite"
+              ></label><p class="break-words text-xs text-slate-500">
+                複数はカンマ区切りで入力します。新しい依存先は GID:full または GID:partial の形式で指定します。
+              </p><button
+                type="submit"
+                class="secondary-button self-start"
+                :disabled="!props.canWrite"
+              >
+                依存先を保存
+              </button>
+            </form>
+            <form
+              class="field-group min-w-0"
+              @submit.prevent="submitParent"
+            >
+              <label
+                class="field-label min-w-0"
+                for="detail-parent"
+              >親タスク<input
+                id="detail-parent"
+                v-model="parentGid"
+                class="text-input min-w-0"
+                :disabled="!props.canWrite"
+              ></label><p class="break-words text-xs text-slate-500">
+                空欄で親を解除します。
+              </p><button
+                type="submit"
+                class="secondary-button self-start"
+                :disabled="!props.canWrite"
+              >
+                親タスクを保存
+              </button>
+            </form>
+            <form
+              class="field-group min-w-0"
+              @submit.prevent="submitParentWorkMode"
+            >
+              <label
+                class="field-label min-w-0"
+                for="detail-parent-mode"
+              >親タスクの作業範囲<select
+                id="detail-parent-mode"
+                v-model="parentWorkMode"
+                class="text-input min-w-0"
+                :disabled="!props.canWrite"
+              ><option value="children_only">子タスクのみ</option><option value="has_own_work">親自身の作業あり</option><option value="unknown">不明</option></select></label><button
+                type="submit"
+                class="secondary-button self-start"
+                :disabled="!props.canWrite"
+              >
+                作業範囲を保存
+              </button>
+            </form>
+          </div>
+        </details>
 
         <div class="grid gap-6 border-t border-slate-200 pt-5 lg:grid-cols-2">
           <div>
