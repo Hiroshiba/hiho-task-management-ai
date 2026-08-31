@@ -216,6 +216,19 @@ function isoToDatetimeLocal(value: string): string {
   return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
+function jstDateTimeLabel(value: string): string {
+  const validated = isoDateTimeSchema.parse(value);
+  const timestamp = Date.parse(validated);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("順位計算日時を表示できません。");
+  }
+  return new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(timestamp));
+}
+
 function submitArea(): void {
   try {
     submitOperation({ kind: "set_area", value: areaSchema.parse(area.value) });
@@ -398,7 +411,10 @@ function tieBreakEntries(task: ViewModelTaskDetail): readonly { label: string; v
     return [];
   }
   return [
-    { label: "実効期限", value: tieBreak.effective_due_at ?? "期限なし" },
+    {
+      label: "実効期限",
+      value: tieBreak.effective_due_at == null ? "期限なし" : jstDateTimeLabel(tieBreak.effective_due_at),
+    },
     { label: "重要度", value: String(tieBreak.importance) },
     { label: "解放点", value: String(tieBreak.release_points) },
     { label: "活動基準日", value: tieBreak.activity_anchor_on },
@@ -819,7 +835,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   v-if="props.task.ranking.calculated_at != null"
                   class="text-xs text-slate-500"
                 >
-                  計算日時: {{ props.task.ranking.calculated_at }}
+                  計算日時: {{ jstDateTimeLabel(props.task.ranking.calculated_at) }}
                 </p>
                 <dl class="grid grid-cols-2 gap-2 text-sm">
                   <template
