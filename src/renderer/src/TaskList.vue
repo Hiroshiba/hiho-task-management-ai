@@ -80,7 +80,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
         :aria-pressed="props.selectedTaskGid === row.gid"
         @click="emit('select', row.gid)"
       >
-        <div class="grid gap-3 xl:grid-cols-[3rem_minmax(14rem,2fr)_repeat(5,minmax(5rem,1fr))] xl:items-center">
+        <div class="grid gap-3 2xl:grid-cols-[3rem_minmax(14rem,2fr)_repeat(5,minmax(5rem,1fr))] 2xl:items-center">
           <div
             class="text-center text-lg font-semibold text-sky-800"
             aria-label="順位"

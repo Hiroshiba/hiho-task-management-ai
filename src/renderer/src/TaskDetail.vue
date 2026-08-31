@@ -696,7 +696,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           >
             依存関係と親子関係を編集
           </summary>
-          <div class="mt-4 grid min-w-0 gap-4 lg:grid-cols-2">
+          <div class="mt-4 grid min-w-0 gap-4 2xl:grid-cols-2">
             <form
               class="field-group min-w-0"
               @submit.prevent="submitDependencies"
@@ -764,7 +764,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           </div>
         </details>
 
-        <div class="grid gap-6 border-t border-slate-200 pt-5 lg:grid-cols-2">
+        <div class="grid gap-6 border-t border-slate-200 pt-5 2xl:grid-cols-2">
           <div>
             <h3 class="section-heading">
               順位の要約
@@ -921,30 +921,32 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           <div>
             <h3 class="section-heading">
               タスク関係
-            </h3><p class="mt-2 text-sm text-slate-700">
+            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700">
               親: {{ props.task.parent == null ? "なし" : relationLabel(props.task.parent) }}
-            </p><p class="mt-1 text-sm text-slate-700">
+            </p><p class="mt-1 min-w-0 break-words text-sm text-slate-700">
               親作業モード: {{ parentWorkModeLabel(props.task.parent_work_mode) }}
-            </p><div class="mt-3">
+            </p><div class="mt-3 min-w-0">
               <p class="text-sm font-medium text-slate-800">
                 依存先
-              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600">
                 <li
                   v-for="dependency in props.task.dependencies"
                   :key="`${dependency.gid}-${dependency.source}`"
+                  class="min-w-0 break-words"
                 >
                   {{ relationLabel(dependency) }} {{ dependencyScopeLabel(dependency.scope) }}
                 </li><li v-if="props.task.dependencies.length === 0">
                   なし
                 </li>
               </ul>
-            </div><div class="mt-3">
+            </div><div class="mt-3 min-w-0">
               <p class="text-sm font-medium text-slate-800">
                 依存元
-              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+              </p><ul class="mt-1 min-w-0 space-y-1 text-sm text-slate-600">
                 <li
                   v-for="dependent in props.task.dependents"
                   :key="`${dependent.gid}-${dependent.source}`"
+                  class="min-w-0 break-words"
                 >
                   {{ relationLabel(dependent) }}<span
                     v-if="dependent.kind === 'found'"
@@ -962,12 +964,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           <div>
             <h3 class="section-heading">
               子タスク
-            </h3><p class="mt-2 text-sm text-slate-700">
+            </h3><p class="mt-2 min-w-0 break-words text-sm text-slate-700">
               進捗 {{ props.task.child_progress.completed_count }}/{{ props.task.child_progress.total_count }}
-            </p><ul class="mt-2 space-y-1 text-sm text-slate-600">
+            </p><ul class="mt-2 min-w-0 space-y-1 text-sm text-slate-600">
               <li
                 v-for="child in props.task.children"
                 :key="child.gid"
+                class="min-w-0 break-words"
               >
                 {{ relationLabel(child) }}
               </li><li v-if="props.task.children.length === 0">
