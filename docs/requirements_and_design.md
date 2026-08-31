@@ -884,7 +884,7 @@ Codexターンは次の権限で開始する。
 
 Windows以外ではTaskHub専用権限プロファイルを使用する。書き込みは専用作業ディレクトリの一時領域だけに許可し、専用作業ディレクトリと登録済みObsidian Vaultを読み取れるようにする。Obsidian Vaultは読み取り専用とし、モデルが実行するシェルコマンドから `CODEX_HOME` を読み取れないようにする。
 
-WindowsではCodex標準の `workspace-write` を使用する。非昇格WindowsサンドボックスはTaskHubが必要とする分割読取制限を強制できないため、TaskHub専用権限プロファイルを使用しない。専用作業ディレクトリ全体が書き込み可能になり、モデル側コマンドから専用 `CODEX_HOME` や登録済みVaultを読み取れないことも保証しない。ネットワーク無効とAsana資格情報の非共有は維持する。この制約はWindows版を実用可能にする残余リスクとして受け入れる。[R23]
+WindowsではCodex標準の `workspace-write` を要求する。非昇格WindowsサンドボックスはTaskHubが必要とする分割読取制限を強制できないため、TaskHub専用権限プロファイルを使用しない。実効サンドボックスはネットワーク無効の `workspaceWrite` または、より制限の強い `readOnly` だけを許可する。`dangerFullAccess` と `externalSandbox` は許可しない。`workspaceWrite` が適用された場合は専用作業ディレクトリ全体が書き込み可能になる。どちらの場合も、モデル側コマンドから専用 `CODEX_HOME` や登録済みVaultを読み取れないことは保証しない。Asana資格情報の非共有は維持する。この制約はWindows版を実用可能にする残余リスクとして受け入れる。[R23]
 
 Codex app-server自体は全OSで認証のため専用 `CODEX_HOME` へアクセスできる。検出したCodexでプラットフォーム別のサンドボックスを構成できない場合は、AI機能を無効化する。
 
@@ -1995,7 +1995,7 @@ Asana APIに一般的な原子的CASがないため、完全に同時の同一�
 
 Codex app-serverはリッチクライアント向け公式インターフェースである一方、Codex版ごとの未公開機能を完全には監査しない。版文字列で事前拒否せず、検出したCodexを起動して必要な能力とプラットフォーム別のサンドボックスを確認する。必要な能力またはサンドボックスを確認できない場合はAI機能だけを停止する。
 
-Windowsの非昇格サンドボックスでは、専用作業ディレクトリ全体が書き込み可能になり、モデル側コマンドの読取範囲から専用 `CODEX_HOME` とVaultを除外できない。これはWindows版をまず動作させるために受け入れる制約である。Asana資格情報と書き込み手段はCodexへ渡さず、Codexシェルのネットワークも無効にする。[R23]
+Windowsの非昇格サンドボックスでは、実効ポリシーが `workspaceWrite` の場合に専用作業ディレクトリ全体が書き込み可能になり、`readOnly` の場合もモデル側コマンドの読取範囲から専用 `CODEX_HOME` とVaultを除外できない。これはWindows版をまず動作させるために受け入れる制約である。Asana資格情報と書き込み手段はCodexへ渡さず、Codexシェルのネットワークも無効にする。`dangerFullAccess` と `externalSandbox` が返された場合はAI機能を停止する。[R23]
 
 ### 25.8 サブスクリプション利用上限
 
@@ -2024,7 +2024,7 @@ Discord等の情報取得可否は、各ローカルツールの認証・API・�
 | AI接続 | `codex app-server` とTaskHub専用 `CODEX_HOME` | OpenAI API、擬似CLI、通常のCodexホームの継承 | ChatGPTサブスクリプション認証を専用環境で使うため。 |
 | Codex版の扱い | 検出した版を起動して能力確認 | 版文字列による事前拒否 | 実際に利用できる能力と権限を基準にするため。 |
 | Codex外部機能 | 接続時にAppsとPluginsを無効化し、スレッドのWeb検索を無効化 | 通常設定のMCP探索、実行時の名前変換、未知機能の許可 | TaskHubが必要とする専用ワークスペースと権限境界を保つため。 |
-| Windowsサンドボックス | Codex標準の `workspace-write` | TaskHub専用の分割読取制限 | 非昇格サンドボックスが分割読取制限を強制できず、無保護での続行を拒否するため。 |
+| Windowsサンドボックス | Codex標準の `workspace-write` を要求し、ネットワーク無効の `workspaceWrite` または `readOnly` だけを許可 | TaskHub専用の分割読取制限、`dangerFullAccess`、`externalSandbox` | 非昇格サンドボックスが分割読取制限を強制できず、標準サンドボックスの範囲で動作させるため。 |
 | AI書き込み | 構造化案→承認→アプリ適用 | CodexへAsanaツール付与 | 誤変更と資格情報露出を防ぐため。 |
 | 順位 | 固定式 | AI順位、手動順位 | 再現性・説明可能性・複数PC一致のため。 |
 | 所要時間 | 保存しない | 見積・スコア利用 | 明示要件。 |
