@@ -42,6 +42,8 @@ const maximumAggregateErrors = 8;
 const maximumErrorNodes = 16;
 const maximumRpcMessageBytes = 1 * 1024;
 const maximumRpcMessageCharacters = 2_000;
+const maximumZodIssues = 10;
+const maximumZodIssuePathElements = 10;
 const persistentErrorLogFileName = "taskhub-error.log";
 const persistentErrorLogFailureMessage = "永続エラーログの書き込みに失敗しました。";
 const safeErrorNamePattern = /^[A-Za-z][A-Za-z0-9]*(?:Error|Exception)$/u;
@@ -95,6 +97,81 @@ const persistentErrorLogContextSchema = z.enum([
   "uncaught_exception",
 ]);
 
+const safeZodIssuePathFieldSchema = z.enum([
+  "data",
+  "sync",
+  "has_more",
+  "action",
+  "resource",
+  "parent",
+  "user",
+  "created_at",
+  "change",
+  "gid",
+  "resource_type",
+  "field",
+  "new_value",
+  "other",
+]);
+const safeZodIssuePathIndexSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .refine(Number.isSafeInteger);
+const safeZodIssuePathSegmentSchema = z.union([
+  safeZodIssuePathFieldSchema,
+  safeZodIssuePathIndexSchema,
+]);
+const safeZodIssueCodeSchema = z.enum([
+  "invalid_type",
+  "too_big",
+  "too_small",
+  "invalid_format",
+  "not_multiple_of",
+  "unrecognized_keys",
+  "invalid_union",
+  "invalid_key",
+  "invalid_element",
+  "invalid_value",
+  "custom",
+  "other",
+]);
+const safeZodIssueExpectedSchema = z.enum([
+  "string",
+  "number",
+  "int",
+  "boolean",
+  "bigint",
+  "symbol",
+  "undefined",
+  "null",
+  "never",
+  "void",
+  "date",
+  "array",
+  "object",
+  "tuple",
+  "record",
+  "map",
+  "set",
+  "file",
+  "nonoptional",
+  "nan",
+  "function",
+]);
+const safeZodIssueSchema = z
+  .object({
+    path: z.array(safeZodIssuePathSegmentSchema).max(maximumZodIssuePathElements),
+    code: safeZodIssueCodeSchema,
+    expected: safeZodIssueExpectedSchema.optional(),
+  })
+  .strict();
+
+type SafeZodIssue = z.infer<typeof safeZodIssueSchema>;
+type SafeZodIssuePathSegment = z.infer<typeof safeZodIssuePathSegmentSchema>;
+type SafeZodIssueCode = z.infer<typeof safeZodIssueCodeSchema>;
+type SafeZodIssueExpected = z.infer<typeof safeZodIssueExpectedSchema>;
+
 export type PersistentErrorLogSource = z.infer<
   typeof persistentErrorLogSourceSchema
 >;
@@ -107,6 +184,7 @@ type SafeErrorDetail = {
   stack_frames: string[];
   cause_chain: SafeErrorDetail[];
   aggregate_errors: SafeErrorDetail[];
+  zod_issues?: SafeZodIssue[] | undefined;
   capability_failure?: CodexThreadStartCapabilityFailureCode | undefined;
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
@@ -124,6 +202,7 @@ const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
       aggregate_errors: z
         .array(safeErrorDetailSchema)
         .max(maximumAggregateErrors),
+      zod_issues: z.array(safeZodIssueSchema).max(maximumZodIssues).optional(),
       capability_failure: codexThreadStartCapabilityFailureCodeSchema.optional(),
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
@@ -496,6 +575,56 @@ function getSafeCodexRpcDetail(value: unknown): SafeCodexRpcDetail {
   };
 }
 
+function sanitizeZodIssuePathSegment(value: PropertyKey): SafeZodIssuePathSegment {
+  if (typeof value === "number") {
+    const parsedIndex = safeZodIssuePathIndexSchema.safeParse(value);
+    return parsedIndex.success ? parsedIndex.data : "other";
+  }
+  if (typeof value !== "string") {
+    return "other";
+  }
+  const parsedField = safeZodIssuePathFieldSchema.safeParse(value);
+  return parsedField.success ? parsedField.data : "other";
+}
+
+function getSafeZodIssuePath(path: readonly PropertyKey[]): SafeZodIssuePathSegment[] {
+  return path
+    .slice(0, maximumZodIssuePathElements)
+    .map((segment) => sanitizeZodIssuePathSegment(segment));
+}
+
+function getSafeZodIssueCode(issue: z.ZodIssue): SafeZodIssueCode {
+  const parsedCode = safeZodIssueCodeSchema.safeParse(issue.code);
+  return parsedCode.success ? parsedCode.data : "other";
+}
+
+function getSafeZodIssueExpected(issue: z.ZodIssue): SafeZodIssueExpected | undefined {
+  if (!("expected" in issue)) {
+    return undefined;
+  }
+  const parsedExpected = safeZodIssueExpectedSchema.safeParse(issue.expected);
+  return parsedExpected.success ? parsedExpected.data : undefined;
+}
+
+function getSafeZodIssues(value: unknown): SafeZodIssue[] {
+  if (!(value instanceof z.ZodError)) {
+    return [];
+  }
+  return value.issues.slice(0, maximumZodIssues).map((issue) => {
+    const expected = getSafeZodIssueExpected(issue);
+    return safeZodIssueSchema.parse({
+      path: getSafeZodIssuePath(issue.path),
+      code: getSafeZodIssueCode(issue),
+      ...(expected === undefined ? {} : { expected }),
+    });
+  });
+}
+
+function getSafeZodDetail(value: unknown): Pick<SafeErrorDetail, "zod_issues"> {
+  const issues = getSafeZodIssues(value);
+  return issues.length === 0 ? {} : { zod_issues: issues };
+}
+
 function getSafeCodexThreadStartCapabilityDetail(
   value: unknown,
 ): Pick<SafeErrorDetail, "capability_failure"> {
@@ -543,6 +672,7 @@ function createSafeErrorDetail(
     stack_frames: getStackFrames(value, stackSanitizer),
     cause_chain: [],
     aggregate_errors: [],
+    ...getSafeZodDetail(value),
     ...getSafeCodexThreadStartCapabilityDetail(value),
     ...getSafeCodexRpcDetail(value),
   };
