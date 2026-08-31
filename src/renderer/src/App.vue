@@ -2366,27 +2366,24 @@ onUnmounted(() => {
           class="space-y-5"
           aria-label="タスク管理画面"
         >
-          <div class="flex flex-wrap items-end justify-between gap-4">
-            <TaskFilters
-              v-model="filter"
-              :areas="overview.areas"
-              :disabled="false"
-            /><p class="text-sm text-slate-600">
-              {{ visibleRows.length }}件を表示
-            </p>
-          </div>
-          <section
+          <TaskFilters
+            v-model="filter"
+            :areas="overview.areas"
+            :disabled="false"
+          />
+          <details
             v-if="overview.cleanup_items.length > 0"
-            class="rounded-xl border border-amber-200 bg-amber-50 p-4"
+            :open="filter.kind === 'cleanup'"
+            class="rounded-xl border border-amber-200 bg-amber-50"
             aria-labelledby="cleanup-title"
           >
-            <h2
+            <summary
               id="cleanup-title"
-              class="text-lg font-semibold text-amber-950"
+              class="cursor-pointer px-4 py-4 text-lg font-semibold text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-inset"
             >
-              要整理項目
-            </h2>
-            <ul class="mt-3 grid gap-2 text-sm text-amber-950 lg:grid-cols-2">
+              要整理 {{ overview.cleanup_items.length }}件
+            </summary>
+            <ul class="grid gap-2 border-t border-amber-200 p-4 text-sm text-amber-950 lg:grid-cols-2">
               <li
                 v-for="item in overview.cleanup_items"
                 :key="`${item.kind}-${item.message}-${cleanupScopeLabel(item)}`"
@@ -2406,7 +2403,7 @@ onUnmounted(() => {
                 </p>
               </li>
             </ul>
-          </section>
+          </details>
           <div class="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
             <TaskList
               :rows="visibleRows"
