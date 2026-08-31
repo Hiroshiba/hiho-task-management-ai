@@ -23,7 +23,6 @@ const props = defineProps<{
   asanaAuthenticationStateNeedsRecheck: boolean;
   asanaAuthenticationStateRequestBusy: boolean;
   asanaAuthenticationState: IpcAsanaAuthenticationState;
-  appVersion: string;
   cleanupCount: number;
 }>();
 
@@ -212,7 +211,7 @@ function jstDateTimeLabel(value: string | undefined): string {
     class="border-b border-slate-200 bg-white"
     aria-label="アプリケーションヘッダー"
   >
-    <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-4 lg:px-6">
+    <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 lg:grid-cols-[auto_minmax(0,1fr)] lg:px-6 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-4">
       <div
         class="flex min-w-0 max-w-full flex-col px-1 py-1"
         role="group"
@@ -224,9 +223,6 @@ function jstDateTimeLabel(value: string | undefined): string {
         <h1 class="text-lg font-semibold text-slate-900">
           Asanaタスク管理
         </h1>
-        <p class="mt-2 text-xs text-slate-500">
-          アプリ {{ appVersion }}
-        </p>
       </div>
       <div
         class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 xl:justify-center"
@@ -234,83 +230,95 @@ function jstDateTimeLabel(value: string | undefined): string {
         aria-label="状態"
       >
         <span
-          class="rounded-full bg-slate-100 px-3 py-1"
+          class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1"
           aria-live="polite"
           aria-atomic="true"
         >同期: {{ syncLabel(connectionState.sync) }}</span>
-        <span class="rounded-full bg-slate-100 px-3 py-1">
+        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">
           最終同期: {{ jstDateTimeLabel(lastSyncAt) }}
         </span>
         <span
-          class="rounded-full px-3 py-1"
+          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
           :class="networkClass(connectionState)"
         >
           ネットワーク: {{ networkLabel(connectionState) }}
         </span>
-        <span class="rounded-full bg-slate-100 px-3 py-1">Codex: {{ codexLabel(codexState) }}</span>
-        <span class="rounded-full bg-slate-100 px-3 py-1">編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
-        <span class="rounded-full bg-slate-100 px-3 py-1">要整理: {{ cleanupCount }}件</span>
+        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">Codex: {{ codexLabel(codexState) }}</span>
+        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
+        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">要整理: {{ cleanupCount }}件</span>
       </div>
       <div
-        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-3 xl:justify-end"
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-3 lg:col-span-2 xl:col-span-1 xl:justify-end"
         role="group"
         aria-label="操作"
       >
-        <button
-          v-if="configured && (connectionState.sync.kind === 'authentication_required' || asanaAuthenticationState.kind !== 'idle' || asanaAuthenticationStateNeedsRecheck)"
-          type="button"
-          class="primary-button"
-          :disabled="asanaAuthenticationBusy || asanaAuthenticationStateRequestBusy || (!asanaAuthenticationStateNeedsRecheck && (!asanaAuthenticationStateLoaded || asanaAuthenticationState.kind !== 'idle'))"
-          :aria-label="asanaAuthenticationStateNeedsRecheck ? 'Asana認証状態を再確認' : 'Asanaを再認証'"
-          @click="handleAsanaAuthenticationAction"
+        <div
+          class="flex min-w-0 max-w-full flex-wrap items-center gap-3"
+          role="group"
+          aria-label="Asanaと同期の操作"
         >
-          {{ asanaAuthenticationButtonLabel(asanaAuthenticationState, asanaAuthenticationBusy, asanaAuthenticationStateNeedsRecheck, asanaAuthenticationStateRequestBusy) }}
-        </button>
-        <button
-          v-if="configured"
-          type="button"
-          class="secondary-button"
-          :disabled="!canManualSync"
-          aria-label="手動同期を実行"
-          @click="emit('sync')"
+          <button
+            v-if="configured && (connectionState.sync.kind === 'authentication_required' || asanaAuthenticationState.kind !== 'idle' || asanaAuthenticationStateNeedsRecheck)"
+            type="button"
+            class="primary-button"
+            :disabled="asanaAuthenticationBusy || asanaAuthenticationStateRequestBusy || (!asanaAuthenticationStateNeedsRecheck && (!asanaAuthenticationStateLoaded || asanaAuthenticationState.kind !== 'idle'))"
+            :aria-label="asanaAuthenticationStateNeedsRecheck ? 'Asana認証状態を再確認' : 'Asanaを再認証'"
+            @click="handleAsanaAuthenticationAction"
+          >
+            {{ asanaAuthenticationButtonLabel(asanaAuthenticationState, asanaAuthenticationBusy, asanaAuthenticationStateNeedsRecheck, asanaAuthenticationStateRequestBusy) }}
+          </button>
+          <button
+            v-if="configured"
+            type="button"
+            class="secondary-button"
+            :disabled="!canManualSync"
+            aria-label="手動同期を実行"
+            @click="emit('sync')"
+          >
+            手動同期
+          </button>
+          <button
+            v-if="configured && !fullSyncConfirmationOpen"
+            type="button"
+            class="secondary-button"
+            :disabled="!canFullSync"
+            aria-label="完全同期を確認"
+            title="Asanaから全件を取得して完全同期します"
+            @click="requestFullSyncConfirmation"
+          >
+            {{ fullSyncRunning ? "完全同期中" : "完全同期" }}
+          </button>
+        </div>
+        <div
+          class="flex min-w-0 max-w-full flex-wrap items-center gap-3"
+          role="group"
+          aria-label="CodexとAIセッションの操作"
         >
-          手動同期
-        </button>
-        <button
-          v-if="configured && !fullSyncConfirmationOpen"
-          type="button"
-          class="secondary-button"
-          :disabled="!canFullSync"
-          aria-label="完全同期を確認"
-          title="Asanaから全件を取得して完全同期します"
-          @click="requestFullSyncConfirmation"
-        >
-          {{ fullSyncRunning ? "完全同期中" : "完全同期" }}
-        </button>
-        <button
-          v-if="codexState.kind === 'authentication_required'"
-          type="button"
-          class="primary-button"
-          :disabled="codexAuthenticationBusy"
-          aria-label="Codex認証を完了"
-          @click="emit('complete-codex-authentication')"
-        >
-          Codex認証を完了
-        </button>
-        <button
-          v-else-if="codexState.kind === 'ready'"
-          type="button"
-          class="secondary-button"
-          :disabled="!canWrite"
-          aria-label="新しいAIセッションを開始"
-          @click="emit('new-ai-session')"
-        >
-          新しいAIセッション
-        </button>
+          <button
+            v-if="codexState.kind === 'authentication_required'"
+            type="button"
+            class="primary-button"
+            :disabled="codexAuthenticationBusy"
+            aria-label="Codex認証を完了"
+            @click="emit('complete-codex-authentication')"
+          >
+            Codex認証を完了
+          </button>
+          <button
+            v-else-if="codexState.kind === 'ready'"
+            type="button"
+            class="secondary-button"
+            :disabled="!canWrite"
+            aria-label="新しいAIセッションを開始"
+            @click="emit('new-ai-session')"
+          >
+            新しいAIセッション
+          </button>
+        </div>
       </div>
       <div
         v-if="configured && fullSyncConfirmationOpen"
-        class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 xl:col-span-3"
+        class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 lg:col-span-2 xl:col-span-3"
         role="group"
         aria-label="完全同期の確認"
       >

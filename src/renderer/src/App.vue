@@ -194,7 +194,6 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
-const appVersion = ref("取得中");
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref("");
 const aiBusy = ref(false);
@@ -2146,11 +2145,6 @@ async function loadInitialCodexStatus(): Promise<void> {
 
 async function initialize(): Promise<void> {
   try {
-    appVersion.value = await window.taskHub.app.getVersion();
-  } catch {
-    appVersion.value = "取得不可";
-  }
-  try {
     removeSyncSubscription = window.taskHub.sync.onState((value) => {
       try {
         handleSyncState(value);
@@ -2256,7 +2250,6 @@ onUnmounted(() => {
       :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
       :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
       :asana-authentication-state="asanaAuthenticationState"
-      :app-version="appVersion"
       :cleanup-count="cleanupCount"
       @sync="manualSync"
       @full-sync="fullSync"
