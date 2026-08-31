@@ -26,9 +26,18 @@ function rowWarnings(row: ViewModelTaskRow): string {
   return `${row.warning_count}件の警告`;
 }
 
-function rowStateText(row: ViewModelTaskRow): string {
-  return `${statusLabel(row.status)}、${blockLabel(row.block_state)}`;
+function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
+  return (
+    row.child_progress.total_count > 0 ||
+    row.has_dependencies ||
+    row.has_children ||
+    rowWarnings(row).length > 0 ||
+    row.block_reason != null ||
+    row.kind === "excluded" ||
+    row.kind === "unavailable"
+  );
 }
+
 </script>
 
 <template>
@@ -45,7 +54,7 @@ function rowStateText(row: ViewModelTaskRow): string {
           タスク一覧
         </h2>
         <p class="mt-1 text-sm text-slate-600">
-          順位対象を上から表示しています。完全ブロックは通常表示から除外されます。
+          今取り組みたい順に表示しています。完全にブロックされたタスクは通常表示から除外されます。
         </p>
       </div>
       <span class="text-sm text-slate-500">{{ props.rows.length }}件</span>
@@ -71,7 +80,7 @@ function rowStateText(row: ViewModelTaskRow): string {
         :aria-pressed="props.selectedTaskGid === row.gid"
         @click="emit('select', row.gid)"
       >
-        <div class="grid gap-3 lg:grid-cols-[3rem_minmax(14rem,2fr)_repeat(5,minmax(5rem,1fr))] lg:items-center">
+        <div class="grid gap-3 xl:grid-cols-[3rem_minmax(14rem,2fr)_repeat(5,minmax(5rem,1fr))] xl:items-center">
           <div
             class="text-center text-lg font-semibold text-sky-800"
             aria-label="順位"
@@ -81,9 +90,6 @@ function rowStateText(row: ViewModelTaskRow): string {
           <div class="min-w-0">
             <p class="truncate font-medium text-slate-900">
               {{ row.title }}
-            </p>
-            <p class="mt-1 text-xs text-slate-500">
-              {{ row.gid }}
             </p>
             <div
               class="mt-2 flex flex-wrap gap-1"
@@ -107,9 +113,11 @@ function rowStateText(row: ViewModelTaskRow): string {
           <div><span class="table-label">ブロック</span><span class="table-value">{{ blockLabel(row.block_state) }}</span></div>
           <div><span class="table-label">領域</span><span class="table-value truncate">{{ row.area }}</span></div>
         </div>
-        <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-          <span>{{ rowStateText(row) }}</span>
-          <span>子タスク {{ row.child_progress.completed_count }}/{{ row.child_progress.total_count }}</span>
+        <div
+          v-if="hasSupplementaryInfo(row)"
+          class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600"
+        >
+          <span v-if="row.child_progress.total_count > 0">子タスク {{ row.child_progress.completed_count }}/{{ row.child_progress.total_count }}</span>
           <span v-if="row.has_dependencies">依存先あり</span>
           <span v-if="row.has_children">子タスクあり</span>
           <span
