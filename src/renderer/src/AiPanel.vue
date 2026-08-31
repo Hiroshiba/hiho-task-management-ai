@@ -14,6 +14,17 @@ import {
 import type { ProposalOperation } from "../../shared/ai";
 import type { RendererAiState } from "./state";
 
+type ApplicationOutcome = Extract<RendererAiState, { kind: "applied" }>["result"]["application"]["outcome"];
+
+type ApplicationOutcomePresentation = {
+  readonly backgroundClass: string;
+  readonly borderClass: string;
+  readonly detailTextClass: string;
+  readonly focusClass: string;
+  readonly role: "status" | "alert";
+  readonly textClass: string;
+};
+
 const props = defineProps<{
   state: RendererAiState;
   canWrite: boolean;
@@ -37,6 +48,40 @@ const editingOperationId = ref<string | undefined>();
 const editValue = ref("");
 const editEvidence = ref("");
 const localError = ref("");
+
+function applicationOutcomePresentation(outcome: ApplicationOutcome): ApplicationOutcomePresentation {
+  switch (outcome) {
+    case "applied":
+    case "already_applied":
+      return {
+        backgroundClass: "bg-emerald-50",
+        borderClass: "border-emerald-200",
+        detailTextClass: "text-emerald-950",
+        focusClass: "focus:ring-emerald-600",
+        role: "status",
+        textClass: "text-emerald-900",
+      };
+    case "partially_applied":
+    case "unknown":
+      return {
+        backgroundClass: "bg-amber-50",
+        borderClass: "border-amber-200",
+        detailTextClass: "text-amber-950",
+        focusClass: "focus:ring-amber-600",
+        role: "alert",
+        textClass: "text-amber-900",
+      };
+    case "not_applied":
+      return {
+        backgroundClass: "bg-rose-50",
+        borderClass: "border-rose-200",
+        detailTextClass: "text-rose-950",
+        focusClass: "focus:ring-rose-600",
+        role: "alert",
+        textClass: "text-rose-900",
+      };
+  }
+}
 
 const proposal = computed(() => {
   switch (props.state.kind) {
@@ -122,18 +167,15 @@ function saveCurrentEdit(operation: ProposalOperation): void {
   saveEdit(requireProposal(), operation);
 }
 
-watch(
-  () => proposal.value?.proposal_id,
-  () => {
-    selectionMode.value = "all";
-    selectedGroupIds.value = [];
-    selectedOperationIds.value = [];
-    editingOperationId.value = undefined;
-    editValue.value = "";
-    editEvidence.value = "";
-    localError.value = "";
-  },
-);
+function resetProposalState(): void {
+  selectionMode.value = "all";
+  selectedGroupIds.value = [];
+  selectedOperationIds.value = [];
+  editingOperationId.value = undefined;
+  editValue.value = "";
+  editEvidence.value = "";
+  localError.value = "";
+}
 
 function sendMessage(): void {
   if (!props.canSendAi) {
@@ -297,13 +339,93 @@ function saveEdit(proposal: AiWorkflowProposalView, operation: ProposalOperation
   }
 }
 
-function operationValidation(proposal: AiWorkflowProposalView, operationId: string): string {
+function operationIsApplicable(proposal: AiWorkflowProposalView, operationId: string): boolean {
   const basic = proposal.basic_validation.operations.find((item) => item.operation_id === operationId);
-  const graph = proposal.graph_validation.operations.find((item) => item.operation_id === operationId);
-  if (basic?.kind === "invalid" || graph?.kind === "invalid") {
-    return "適用不可";
+  if (basic == null) {
+    throw new Error("basic validationに操作の検証結果がありません。");
   }
-  return "適用候補";
+  const graph = proposal.graph_validation.operations.find((item) => item.operation_id === operationId);
+  if (graph == null) {
+    throw new Error("graph validationに操作の検証結果がありません。");
+  }
+  return basic.kind === "valid" && graph.kind === "valid";
+}
+
+function operationIsSelectableInOperationsMode(
+  proposal: AiWorkflowProposalView,
+  operationId: string,
+): boolean {
+  const group = proposal.proposal.groups.find((candidate) =>
+    candidate.operations.some((operation) => operation.operation_id === operationId));
+  if (group == null || group.atomic) {
+    return false;
+  }
+  return operationIsApplicable(proposal, operationId);
+}
+
+function synchronizeProposalSelections(proposal: AiWorkflowProposalView): void {
+  const selectedOperationIdsFromServer = new Set(proposal.selected_operation_ids);
+  selectedGroupIds.value = proposal.proposal.groups
+    .filter((group) =>
+      groupIsApplicable(proposal, group.group_id)
+      && group.operations.every((operation) => selectedOperationIdsFromServer.has(operation.operation_id)))
+    .map((group) => group.group_id);
+  selectedOperationIds.value = proposal.selected_operation_ids.filter((operationId) => {
+    const group = proposal.proposal.groups.find((candidate) =>
+      candidate.operations.some((operation) => operation.operation_id === operationId));
+    if (group == null || !operationIsApplicable(proposal, operationId)) {
+      return false;
+    }
+    return selectionMode.value !== "operations" || !group.atomic;
+  });
+}
+
+watch(
+  () => proposal.value,
+  (currentProposal, previousProposal) => {
+    if (
+      currentProposal == null
+      || previousProposal == null
+      || previousProposal.proposal_id !== currentProposal.proposal_id
+    ) {
+      resetProposalState();
+      return;
+    }
+    synchronizeProposalSelections(currentProposal);
+  },
+);
+
+watch(selectionMode, (mode) => {
+  if (mode !== "operations") {
+    return;
+  }
+  const currentProposal = proposal.value;
+  if (currentProposal == null) {
+    return;
+  }
+  selectedOperationIds.value = selectedOperationIds.value.filter((operationId) =>
+    operationIsSelectableInOperationsMode(currentProposal, operationId));
+});
+
+function operationValidation(proposal: AiWorkflowProposalView, operationId: string): string {
+  return operationIsApplicable(proposal, operationId) ? "適用候補" : "適用不可";
+}
+
+function confidenceLabel(confidence: number): string {
+  return `${Math.round(confidence * 100)}%`;
+}
+
+function groupIsApplicable(proposal: AiWorkflowProposalView, groupId: string): boolean {
+  const group = proposal.proposal.groups.find((candidate) => candidate.group_id === groupId);
+  if (group == null) {
+    throw new Error("変更グループが変更案にありません。");
+  }
+  return group.operations.every((operation) => operationIsApplicable(proposal, operation.operation_id));
+}
+
+function proposalHasInapplicableOperation(proposal: AiWorkflowProposalView): boolean {
+  return proposal.proposal.groups.some((group) =>
+    group.operations.some((operation) => !operationIsApplicable(proposal, operation.operation_id)));
 }
 
 function selectedGroup(groupId: string): boolean {
@@ -314,8 +436,31 @@ function selectedOperation(operationId: string): boolean {
   return selectedOperationIds.value.includes(operationId);
 }
 
+const hasInapplicableOperation = computed(() => {
+  const currentProposal = proposal.value;
+  return currentProposal != null && proposalHasInapplicableOperation(currentProposal);
+});
+
+const selectionCanBeSubmitted = computed(() => {
+  const currentProposal = proposal.value;
+  if (currentProposal == null) {
+    return false;
+  }
+  switch (selectionMode.value) {
+    case "all":
+      return !hasInapplicableOperation.value;
+    case "groups":
+      return selectedGroupIds.value.length > 0
+        && selectedGroupIds.value.every((groupId) => groupIsApplicable(currentProposal, groupId));
+    case "operations":
+      return selectedOperationIds.value.length > 0
+        && selectedOperationIds.value.every((operationId) =>
+          operationIsSelectableInOperationsMode(currentProposal, operationId));
+  }
+});
+
 function applicationOutcomeLabel(
-  outcome: "applied" | "already_applied" | "not_applied" | "partially_applied" | "unknown",
+  outcome: ApplicationOutcome,
 ): string {
   switch (outcome) {
     case "applied":
@@ -332,7 +477,7 @@ function applicationOutcomeLabel(
 }
 
 function applicationDetailsShouldOpen(
-  outcome: "applied" | "already_applied" | "not_applied" | "partially_applied" | "unknown",
+  outcome: ApplicationOutcome,
 ): boolean {
   switch (outcome) {
     case "applied":
@@ -508,7 +653,7 @@ function applicationReasonLabel(reason: string): string {
           </p><p class="mt-1 text-xs text-slate-600">
             承認するまでAsanaには反映されません。
           </p><p class="mt-1 text-xs text-slate-600">
-            影響タスク: {{ requireProposal().impact.impacted_task_count }}件
+            影響を受けるタスク: {{ requireProposal().impact.impacted_task_count }}件
           </p>
         </div>
         <div class="space-y-3">
@@ -523,6 +668,7 @@ function applicationReasonLabel(reason: string): string {
               <input
                 v-if="selectionMode === 'groups'"
                 :checked="selectedGroup(group.group_id)"
+                :disabled="!groupIsApplicable(requireProposal(), group.group_id)"
                 type="checkbox"
                 :aria-label="`変更グループ ${groupIndex + 1}を選択`"
                 @change="selectedGroupIds = toggleValue(selectedGroupIds, group.group_id)"
@@ -534,20 +680,22 @@ function applicationReasonLabel(reason: string): string {
               <article
                 v-for="operation in group.operations"
                 :key="operation.operation_id"
-                class="rounded-md bg-slate-50 p-3"
+                class="rounded-md p-3"
+                :class="operationIsApplicable(requireProposal(), operation.operation_id) ? 'bg-slate-50' : 'border border-rose-200 bg-rose-50'"
               >
                 <div class="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p class="font-medium text-slate-900">
                       {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600">{{ targetLabel(operation) }}</span>
                     </p><p class="mt-1 text-xs text-slate-600">
-                      {{ operationValidation(requireProposal(), operation.operation_id) }}・{{ operation.basis === 'explicit' ? '明示' : '推測' }}・信頼度 {{ operation.confidence }}
+                      {{ operationValidation(requireProposal(), operation.operation_id) }}・{{ operation.basis === 'explicit' ? '明示' : '推測' }}・信頼度 {{ confidenceLabel(operation.confidence) }}
                     </p>
                   </div><label
                     v-if="selectionMode === 'operations' && !group.atomic"
                     class="inline-flex items-center gap-2 text-xs text-slate-700"
                   ><input
                     :checked="selectedOperation(operation.operation_id)"
+                    :disabled="!operationIsApplicable(requireProposal(), operation.operation_id)"
                     type="checkbox"
                     :aria-label="`${operationLabel(operation)}を選択`"
                     @change="selectedOperationIds = toggleValue(selectedOperationIds, operation.operation_id)"
@@ -660,6 +808,13 @@ function applicationReasonLabel(reason: string): string {
             </div>
           </div>
         </details>
+        <p
+          v-if="selectionMode === 'all' && hasInapplicableOperation"
+          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800"
+          role="alert"
+        >
+          適用できない変更があります。適用範囲を選び直すか、変更案を修正してください。
+        </p>
         <div class="flex flex-wrap gap-2">
           <label class="inline-flex items-center gap-2 text-sm text-slate-700"><input
             v-model="selectionMode"
@@ -676,14 +831,14 @@ function applicationReasonLabel(reason: string): string {
           >非一括操作単位</label><button
             type="button"
             class="secondary-button"
-            :disabled="!props.canWrite"
+            :disabled="!props.canWrite || !selectionCanBeSubmitted"
             @click="selectCurrentProposal"
           >
             選択範囲を更新
           </button><button
             type="button"
             class="primary-button"
-            :disabled="!props.canWrite"
+            :disabled="!props.canWrite || !selectionCanBeSubmitted"
             @click="approveCurrentProposal"
           >
             選択した変更案を承認
@@ -699,36 +854,64 @@ function applicationReasonLabel(reason: string): string {
         <div>
           <h3 class="section-heading">
             順位への予測影響
-          </h3><ul class="mt-2 space-y-1 text-sm text-slate-700">
+          </h3><ul
+            v-if="requireProposal().impact.rank_changes.length > 0"
+            class="mt-2 space-y-1 text-sm text-slate-700"
+          >
             <li
               v-for="change in requireProposal().impact.rank_changes"
               :key="change.task_gid"
             >
               {{ change.task_gid }}: {{ change.before_rank == null ? '順位なし' : `順位${change.before_rank}` }} → {{ change.after_rank == null ? '順位なし' : `順位${change.after_rank}` }}
             </li>
-          </ul>
+          </ul><p
+            v-else
+            class="mt-2 text-sm text-slate-700"
+          >
+            順位への影響はありません。
+          </p>
         </div>
       </template>
 
       <div
         v-if="props.state.kind === 'applied'"
-        class="rounded-md bg-emerald-50 p-4"
-        role="status"
+        class="rounded-md p-4"
+        :class="applicationOutcomePresentation(props.state.result.application.outcome).backgroundClass"
+        :role="applicationOutcomePresentation(props.state.result.application.outcome).role"
       >
-        <p class="font-medium text-emerald-900">
+        <p
+          class="font-medium"
+          :class="applicationOutcomePresentation(props.state.result.application.outcome).textClass"
+        >
           {{ props.state.message }}
-        </p><p class="mt-2 text-sm text-emerald-900">
+        </p><p
+          class="mt-2 text-sm"
+          :class="applicationOutcomePresentation(props.state.result.application.outcome).textClass"
+        >
           結果: {{ applicationOutcomeLabel(props.state.result.application.outcome) }}
-        </p><p class="mt-1 text-sm text-emerald-900">
+        </p><p
+          class="mt-1 text-sm"
+          :class="applicationOutcomePresentation(props.state.result.application.outcome).textClass"
+        >
           グループ {{ props.state.result.application.groups.length }}件・操作 {{ props.state.result.application.operations.length }}件
         </p><details
           :open="applicationDetailsShouldOpen(props.state.result.application.outcome)"
-          class="mt-3 rounded-md border border-emerald-200 p-3"
+          class="mt-3 rounded-md border p-3"
+          :class="applicationOutcomePresentation(props.state.result.application.outcome).borderClass"
         >
-          <summary class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-emerald-950 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2">
+          <summary
+            class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2"
+            :class="[
+              applicationOutcomePresentation(props.state.result.application.outcome).detailTextClass,
+              applicationOutcomePresentation(props.state.result.application.outcome).focusClass,
+            ]"
+          >
             反映結果の詳細
           </summary>
-          <div class="mt-3 grid gap-3 text-sm text-emerald-950 sm:grid-cols-2">
+          <div
+            class="mt-3 grid gap-3 text-sm sm:grid-cols-2"
+            :class="applicationOutcomePresentation(props.state.result.application.outcome).detailTextClass"
+          >
             <div>
               <h3 class="font-medium">
                 グループ別
