@@ -376,6 +376,18 @@ function rankingReasons(task: ViewModelTaskDetail): readonly string[] {
   return task.ranking.reason_chips ?? [];
 }
 
+function rankingReasonSummary(task: ViewModelTaskDetail): {
+  readonly visible: readonly string[];
+  readonly remaining: number;
+} {
+  const reasons = rankingReasons(task);
+  const visible = reasons.slice(0, 3);
+  return {
+    visible,
+    remaining: reasons.length - visible.length,
+  };
+}
+
 function releaseTargetGids(task: ViewModelTaskDetail): readonly string[] {
   return task.ranking.release_target_gids ?? [];
 }
@@ -429,6 +441,24 @@ function rankingLabel(task: ViewModelTaskDetail): string {
     return "順位対象外";
   }
   return "順位を確認できません";
+}
+
+function executionPoints(task: ViewModelTaskDetail): number | undefined {
+  const breakdown = task.ranking.score_breakdown;
+  if (breakdown == null) {
+    return undefined;
+  }
+  return breakdown.execution_points;
+}
+
+function rankingDetailsOpen(task: ViewModelTaskDetail): boolean {
+  switch (task.ranking.kind) {
+    case "ranked":
+      return false;
+    case "excluded":
+    case "unavailable":
+      return true;
+  }
 }
 
 function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
@@ -716,9 +746,14 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
         <div class="grid gap-6 border-t border-slate-200 pt-5 lg:grid-cols-2">
           <div>
             <h3 class="section-heading">
-              順位とブロック
+              順位の要約
             </h3><p class="mt-2 text-sm font-medium text-sky-800">
               {{ rankingLabel(props.task) }}
+            </p><p
+              v-if="executionPoints(props.task) != null"
+              class="mt-2 text-sm text-slate-700"
+            >
+              実行点: {{ executionPoints(props.task) }}
             </p><p class="mt-2 text-sm text-slate-700">
               ブロック: {{ blockLabel(props.task.block_state) }}
             </p><p
@@ -726,100 +761,141 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               class="mt-1 text-sm text-amber-800"
             >
               {{ props.task.block_reason.summary }}
-            </p><p
-              v-if="props.task.ranking.calculated_at != null"
-              class="mt-1 text-xs text-slate-500"
-            >
-              順位計算時点 {{ props.task.ranking.calculated_at }}
-            </p><dl class="mt-3 grid grid-cols-2 gap-2 text-sm">
-              <template
-                v-for="entry in scoreEntries(props.task)"
-                :key="entry.label"
-              >
-                <dt class="text-slate-600">
-                  {{ entry.label }}
-                </dt><dd class="text-right font-medium text-slate-900">
-                  {{ entry.value }}
-                </dd>
-              </template>
-            </dl><div class="mt-4">
+            </p><div class="mt-4">
               <p class="text-sm font-medium text-slate-800">
                 順位理由
               </p><div
-                v-if="rankingReasons(props.task).length > 0"
+                v-if="rankingReasonSummary(props.task).visible.length > 0"
                 class="mt-2 flex flex-wrap gap-1"
               >
                 <span
-                  v-for="reason in rankingReasons(props.task)"
+                  v-for="reason in rankingReasonSummary(props.task).visible"
                   :key="reason"
-                  class="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
                 >{{ reason }}</span>
+                <span
+                  v-if="rankingReasonSummary(props.task).remaining > 0"
+                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                >ほか{{ rankingReasonSummary(props.task).remaining }}件</span>
               </div><p
                 v-else
                 class="mt-1 text-sm text-slate-600"
               >
                 なし
               </p>
-            </div><div class="mt-4">
-              <p class="text-sm font-medium text-slate-800">
-                解放対象
-              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
-                <li
-                  v-for="gid in releaseTargetGids(props.task)"
-                  :key="gid"
-                  class="break-all"
-                >
-                  {{ gid }}
-                </li><li v-if="releaseTargetGids(props.task).length === 0">
-                  なし
-                </li>
-              </ul>
-            </div><div class="mt-4">
-              <p class="text-sm font-medium text-slate-800">
-                除外理由
-              </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
-                <li
-                  v-for="reason in exclusionReasons(props.task)"
-                  :key="reason"
-                >
-                  {{ reason }}
-                </li><li v-if="exclusionReasons(props.task).length === 0">
-                  なし
-                </li>
-              </ul>
-            </div><div class="mt-4">
-              <p class="text-sm font-medium text-slate-800">
-                タイブレーク値
-              </p><p class="mt-1 text-xs text-slate-500">
-                実効期限、重要度、解放点、活動基準日、タスクGIDの順で比較します。
-              </p><dl
-                v-if="tieBreakEntries(props.task).length > 0"
-                class="mt-2 grid grid-cols-2 gap-2 text-sm"
-              >
-                <template
-                  v-for="entry in tieBreakEntries(props.task)"
-                  :key="entry.label"
-                >
-                  <dt class="text-slate-600">
-                    {{ entry.label }}
-                  </dt><dd class="break-all text-right font-medium text-slate-900">
-                    {{ entry.value }}
-                  </dd>
-                </template>
-              </dl><p
-                v-else
-                class="mt-1 text-sm text-slate-600"
-              >
-                順位キャッシュがないため確認できません。
-              </p>
-            </div><div
-              v-if="props.task.ranking.detail_text != null"
-              class="mt-4"
-            >
-              <p class="text-sm font-medium text-slate-800">
-                順位計算の詳細
-              </p><pre class="mt-2 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-700">{{ props.task.ranking.detail_text }}</pre>
             </div>
+            <details
+              class="mt-4 border-t border-slate-200 pt-3"
+              :open="rankingDetailsOpen(props.task)"
+            >
+              <summary
+                class="cursor-pointer rounded-md px-2 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2"
+              >
+                順位の計算根拠
+              </summary>
+              <div class="mt-3 space-y-4 border-l border-slate-200 pl-3">
+                <p
+                  v-if="props.task.ranking.calculated_at != null"
+                  class="text-xs text-slate-500"
+                >
+                  計算日時: {{ props.task.ranking.calculated_at }}
+                </p>
+                <dl class="grid grid-cols-2 gap-2 text-sm">
+                  <template
+                    v-for="entry in scoreEntries(props.task)"
+                    :key="entry.label"
+                  >
+                    <dt class="text-slate-600">
+                      {{ entry.label }}
+                    </dt><dd class="break-words text-right font-medium text-slate-900">
+                      {{ entry.value }}
+                    </dd>
+                  </template>
+                </dl>
+                <div>
+                  <p class="text-sm font-medium text-slate-800">
+                    全理由
+                  </p><div
+                    v-if="rankingReasons(props.task).length > 0"
+                    class="mt-2 flex flex-wrap gap-1"
+                  >
+                    <span
+                      v-for="reason in rankingReasons(props.task)"
+                      :key="reason"
+                      class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                    >{{ reason }}</span>
+                  </div><p
+                    v-else
+                    class="mt-1 text-sm text-slate-600"
+                  >
+                    なし
+                  </p>
+                </div>
+                <div>
+                  <p class="text-sm font-medium text-slate-800">
+                    完了すると進むタスク
+                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                    <li
+                      v-for="gid in releaseTargetGids(props.task)"
+                      :key="gid"
+                      class="break-all"
+                    >
+                      {{ gid }}
+                    </li><li v-if="releaseTargetGids(props.task).length === 0">
+                      なし
+                    </li>
+                  </ul>
+                </div>
+                <div>
+                  <p class="text-sm font-medium text-slate-800">
+                    除外理由
+                  </p><ul class="mt-1 space-y-1 text-sm text-slate-600">
+                    <li
+                      v-for="reason in exclusionReasons(props.task)"
+                      :key="reason"
+                      class="break-words"
+                    >
+                      {{ reason }}
+                    </li><li v-if="exclusionReasons(props.task).length === 0">
+                      なし
+                    </li>
+                  </ul>
+                </div>
+                <div>
+                  <p class="text-sm font-medium text-slate-800">
+                    同点時の比較値
+                  </p><p class="mt-1 text-xs text-slate-500">
+                    同点の場合は、実効期限、重要度、解放点、活動基準日、タスクGIDの順に比較します。
+                  </p><dl
+                    v-if="tieBreakEntries(props.task).length > 0"
+                    class="mt-2 grid grid-cols-2 gap-2 text-sm"
+                  >
+                    <template
+                      v-for="entry in tieBreakEntries(props.task)"
+                      :key="entry.label"
+                    >
+                      <dt class="text-slate-600">
+                        {{ entry.label }}
+                      </dt><dd class="break-all text-right font-medium text-slate-900">
+                        {{ entry.value }}
+                      </dd>
+                    </template>
+                  </dl><p
+                    v-else
+                    class="mt-1 text-sm text-slate-600"
+                  >
+                    順位キャッシュがないため確認できません。
+                  </p>
+                </div>
+                <div
+                  v-if="props.task.ranking.detail_text != null"
+                >
+                  <p class="text-sm font-medium text-slate-800">
+                    順位計算の詳細
+                  </p><pre class="mt-2 whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-700">{{ props.task.ranking.detail_text }}</pre>
+                </div>
+              </div>
+            </details>
           </div>
           <div>
             <h3 class="section-heading">
