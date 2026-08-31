@@ -327,7 +327,7 @@ const lastSyncAt = computed(() => {
   }
   return undefined;
 });
-const cleanupCount = computed(() => overview.value?.cleanup_count ?? 0);
+const cleanupCount = computed(() => overview.value?.cleanup_count);
 const visibleRows = computed(() => {
   const currentOverview = overview.value;
   if (currentOverview == null) {

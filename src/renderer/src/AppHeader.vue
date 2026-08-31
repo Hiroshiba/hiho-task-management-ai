@@ -23,7 +23,7 @@ const props = defineProps<{
   asanaAuthenticationStateNeedsRecheck: boolean;
   asanaAuthenticationStateRequestBusy: boolean;
   asanaAuthenticationState: IpcAsanaAuthenticationState;
-  cleanupCount: number;
+  cleanupCount: number | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -294,6 +294,7 @@ function jstDateTimeLabel(value: string | undefined): string {
           :class="writeClass(canWrite)"
         >編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
         <span
+          v-if="cleanupCount != null"
           class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
           :class="cleanupClass(cleanupCount)"
         >要整理: {{ cleanupCount }}件</span>
