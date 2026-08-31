@@ -62,8 +62,11 @@ description: 同期済みTaskHubタスク情報を必要時だけ読み取る手
 - 出力をファイルへ保存せず、その場の判断材料として使用してください。
 - Unix系では必要なときだけ ./bin/taskctl list --json、./bin/taskctl get <task-gid> --json、./bin/taskctl rank --json、./bin/taskctl graph --json、./bin/taskctl areas --json、./bin/taskctl search-local --query <text> --json を使用してください。
 - Windowsでは必要なときだけ .\\bin\\taskctl.cmd list --json、.\\bin\\taskctl.cmd get <task-gid> --json、.\\bin\\taskctl.cmd rank --json、.\\bin\\taskctl.cmd graph --json、.\\bin\\taskctl.cmd areas --json、.\\bin\\taskctl.cmd search-local --query <text> --json を使用してください。
-- list は同期状態とGID順のタスク配列、get は指定タスクまたは構造化された不存在エラーを返します。
-- rank は同期状態と保存済み順位、graph はタスクと依存、親子の辺、areas は領域名の配列を返します。
+- list は完了・取り下げを含む管理対象全件を同期状態とGID順で返し、get は指定タスクまたは構造化された不存在エラーを返します。
+- rank は同期状態と保存済み順位を返し、ranking.cache.ranked_tasks が画面の通常一覧に表示される現在のタスクです。
+- ユーザーが単に「タスク何個」「現在のタスク数」と尋ねたときは rank --json を実行して ranking.cache.ranked_tasks.length を答え、順位情報が利用不能なら件数を推測せず、その状態を伝えてください。
+- ユーザーが全管理対象、完了、取り下げを含む件数を明示したときだけ list --json を実行して件数を数えてください。
+- graph はタスクと依存、親子の辺、areas は領域名の配列を返します。
 - search-local --query は同期状態、検索文字列、タイトルや本文、領域に一致したGID順のタスク配列を返します。
 - 成功応答と失敗応答の両方に最新同期状態が含まれます。同期状態がunavailableでもデータ不存在とはみなさず、変更案の根拠に使わないでください。
 - 失敗応答は ok:false と固定エラーコードを持ち、コマンドの終了状態も失敗になります。
