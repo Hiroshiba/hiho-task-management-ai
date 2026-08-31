@@ -56,6 +56,7 @@ import {
   CodexSessionSyncError,
   CodexSessionTurnError,
   CodexThreadStartCapabilityError,
+  type CodexThreadStartCapabilityFailureCode,
 } from "./errors";
 import {
   codexSessionDeltaSchema,
@@ -95,8 +96,22 @@ type ThreadSettingsNotification = {
   readonly threadId: string;
   readonly profileId: string | undefined;
   readonly profileExtends: string | null | undefined;
-  readonly sandboxValid: boolean;
+  readonly sandboxValidation: SandboxValidationResult;
 };
+
+type SandboxValidationResult =
+  | { readonly kind: "valid" }
+  | {
+      readonly kind: "invalid";
+      readonly failureCode: Extract<
+        CodexThreadStartCapabilityFailureCode,
+        | "sandbox_invalid"
+        | "sandbox_danger_full_access"
+        | "sandbox_read_only_network_enabled"
+        | "sandbox_external_restricted"
+        | "sandbox_external_enabled"
+      >;
+    };
 
 type AccountInspectionResult =
   | { readonly kind: "authenticated" }
@@ -556,31 +571,69 @@ function validateTurnSkills(
   }
 }
 
-function hasWorkspaceWriteSandbox(
+function validateSandboxPolicy(
   sandbox: ThreadStartResult["sandbox"],
   tmpDirectoryPath: string,
-): boolean {
-  if (sandbox.type !== "workspaceWrite") {
-    return false;
+): SandboxValidationResult {
+  switch (sandbox.type) {
+    case "dangerFullAccess":
+      return {
+        kind: "invalid",
+        failureCode: process.platform === "win32"
+          ? "sandbox_danger_full_access"
+          : "sandbox_invalid",
+      };
+    case "readOnly":
+      if (sandbox.networkAccess) {
+        return {
+          kind: "invalid",
+          failureCode: process.platform === "win32"
+            ? "sandbox_read_only_network_enabled"
+            : "sandbox_invalid",
+        };
+      }
+      if (process.platform === "win32") {
+        return { kind: "valid" };
+      }
+      return { kind: "invalid", failureCode: "sandbox_invalid" };
+    case "externalSandbox":
+      if (process.platform === "win32") {
+        return {
+          kind: "invalid",
+          failureCode: sandbox.networkAccess === "restricted"
+            ? "sandbox_external_restricted"
+            : "sandbox_external_enabled",
+        };
+      }
+      return { kind: "invalid", failureCode: "sandbox_invalid" };
+    case "workspaceWrite":
+      if (process.platform === "win32") {
+        return sandbox.networkAccess === false
+          ? { kind: "valid" }
+          : { kind: "invalid", failureCode: "sandbox_invalid" };
+      }
+      {
+        const roots = new Set(sandbox.writableRoots);
+        const isValid =
+          sandbox.writableRoots.length === 1
+          && roots.size === 1
+          && roots.has(tmpDirectoryPath)
+          && sandbox.networkAccess === false
+          && sandbox.excludeTmpdirEnvVar === true
+          && sandbox.excludeSlashTmp === true;
+        return isValid
+          ? { kind: "valid" }
+          : { kind: "invalid", failureCode: "sandbox_invalid" };
+      }
+    default:
+      throw new Error("sandbox種別が想定外です。");
   }
-  if (process.platform === "win32") {
-    return sandbox.networkAccess === false;
-  }
-  const roots = new Set(sandbox.writableRoots);
-  return (
-    sandbox.writableRoots.length === 1
-    && roots.size === 1
-    && roots.has(tmpDirectoryPath)
-    && sandbox.networkAccess === false
-    && sandbox.excludeTmpdirEnvVar === true
-    && sandbox.excludeSlashTmp === true
-  );
 }
 
 function isValidThreadSettingsNotification(
   notification: ThreadSettingsNotification,
 ): boolean {
-  if (!notification.sandboxValid) {
+  if (notification.sandboxValidation.kind !== "valid") {
     return false;
   }
   if (process.platform === "win32") {
@@ -1691,8 +1744,12 @@ export class CodexSessionService {
     if (result.instructionSources.some((source) => source !== this.options.agentsFilePath)) {
       throw new CodexThreadStartCapabilityError("instruction_source_unexpected");
     }
-    if (!hasWorkspaceWriteSandbox(result.sandbox, this.options.tmpDirectoryPath)) {
-      throw new CodexThreadStartCapabilityError("sandbox_invalid");
+    const sandboxValidation = validateSandboxPolicy(
+      result.sandbox,
+      this.options.tmpDirectoryPath,
+    );
+    if (sandboxValidation.kind !== "valid") {
+      throw new CodexThreadStartCapabilityError(sandboxValidation.failureCode);
     }
     this.threadId = result.thread.id;
     this.validateStoredThreadSettingsNotification(result.thread.id);
@@ -1709,9 +1766,15 @@ export class CodexSessionService {
       return;
     }
     if (!isValidThreadSettingsNotification(notification)) {
-      this.markSafetyViolation(
-        new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
-      );
+      if (notification.sandboxValidation.kind !== "valid") {
+        this.markSafetyViolation(
+          new CodexThreadStartCapabilityError(notification.sandboxValidation.failureCode),
+        );
+      } else {
+        this.markSafetyViolation(
+          new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
+        );
+      }
     }
   }
 
@@ -1942,7 +2005,7 @@ export class CodexSessionService {
       const activeProfile = notification.params.threadSettings.activePermissionProfile;
       const profileId = activeProfile == null ? undefined : activeProfile.id;
       const profileExtends = activeProfile == null ? undefined : activeProfile.extends;
-      const sandboxValid = hasWorkspaceWriteSandbox(
+      const sandboxValidation = validateSandboxPolicy(
         notification.params.threadSettings.sandboxPolicy,
         this.options.tmpDirectoryPath,
       );
@@ -1950,7 +2013,7 @@ export class CodexSessionService {
         threadId: notification.params.threadId,
         profileId,
         profileExtends,
-        sandboxValid,
+        sandboxValidation,
       };
       this.threadSettingsNotification = threadSettingsNotification;
       const currentThreadId = this.threadId;
@@ -1959,9 +2022,15 @@ export class CodexSessionService {
         && isSafetyCriticalState(this.state)
         && !isValidThreadSettingsNotification(threadSettingsNotification)
       ) {
-        this.markSafetyViolation(
-          new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
-        );
+        if (sandboxValidation.kind !== "valid") {
+          this.markSafetyViolation(
+            new CodexThreadStartCapabilityError(sandboxValidation.failureCode),
+          );
+        } else {
+          this.markSafetyViolation(
+            new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
+          );
+        }
       }
       return;
     }

@@ -47,6 +47,10 @@ export const codexThreadStartCapabilityFailureCodeSchema = z.enum([
   "instruction_source_missing",
   "instruction_source_unexpected",
   "sandbox_invalid",
+  "sandbox_danger_full_access",
+  "sandbox_read_only_network_enabled",
+  "sandbox_external_restricted",
+  "sandbox_external_enabled",
 ]);
 
 export type CodexThreadStartCapabilityFailureCode = z.infer<
