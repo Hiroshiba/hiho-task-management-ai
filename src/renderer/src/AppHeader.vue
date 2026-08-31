@@ -102,6 +102,22 @@ function syncErrorLabel(
   }
 }
 
+function syncClass(state: RendererSyncState): string {
+  switch (state.kind) {
+    case "waiting":
+      return "bg-slate-100 text-slate-700";
+    case "syncing":
+      return "bg-sky-100 text-sky-800";
+    case "synced":
+      return "bg-emerald-100 text-emerald-800";
+    case "authentication_required":
+    case "recovery_pending":
+      return "bg-amber-100 text-amber-900";
+    case "error":
+      return "bg-rose-100 text-rose-800";
+  }
+}
+
 function networkLabel(state: RendererConnectionState): string {
   switch (state.kind) {
     case "checking":
@@ -116,11 +132,11 @@ function networkLabel(state: RendererConnectionState): string {
 function networkClass(state: RendererConnectionState): string {
   switch (state.kind) {
     case "checking":
-      return "bg-slate-100 text-slate-700";
+      return "bg-sky-100 text-sky-800";
     case "online":
       return "bg-emerald-100 text-emerald-800";
     case "offline":
-      return "bg-amber-100 text-amber-900";
+      return "bg-rose-100 text-rose-800";
   }
 }
 
@@ -154,6 +170,31 @@ function codexLabel(state: RendererCodexState): string {
     case "unavailable":
       return `利用不可・${codexUnavailableLabel(state.reason_code)}`;
   }
+}
+
+function codexClass(state: RendererCodexState): string {
+  switch (state.kind) {
+    case "connecting":
+      return "bg-sky-100 text-sky-800";
+    case "ready":
+      return "bg-emerald-100 text-emerald-800";
+    case "authentication_required":
+      return "bg-amber-100 text-amber-900";
+    case "unavailable":
+      return "bg-rose-100 text-rose-800";
+  }
+}
+
+function writeClass(canWrite: boolean): string {
+  return canWrite
+    ? "bg-emerald-100 text-emerald-800"
+    : "bg-amber-100 text-amber-900";
+}
+
+function cleanupClass(cleanupCount: number): string {
+  return cleanupCount > 0
+    ? "bg-amber-100 text-amber-900"
+    : "bg-slate-100 text-slate-700";
 }
 
 function asanaAuthenticationButtonLabel(
@@ -230,7 +271,8 @@ function jstDateTimeLabel(value: string | undefined): string {
         aria-label="状態"
       >
         <span
-          class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1"
+          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
+          :class="syncClass(connectionState.sync)"
           aria-live="polite"
           aria-atomic="true"
         >同期: {{ syncLabel(connectionState.sync) }}</span>
@@ -243,9 +285,18 @@ function jstDateTimeLabel(value: string | undefined): string {
         >
           ネットワーク: {{ networkLabel(connectionState) }}
         </span>
-        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">Codex: {{ codexLabel(codexState) }}</span>
-        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
-        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1">要整理: {{ cleanupCount }}件</span>
+        <span
+          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
+          :class="codexClass(codexState)"
+        >Codex: {{ codexLabel(codexState) }}</span>
+        <span
+          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
+          :class="writeClass(canWrite)"
+        >編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
+        <span
+          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
+          :class="cleanupClass(cleanupCount)"
+        >要整理: {{ cleanupCount }}件</span>
       </div>
       <div
         class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-3 lg:col-span-2 xl:col-span-1 xl:justify-end"
