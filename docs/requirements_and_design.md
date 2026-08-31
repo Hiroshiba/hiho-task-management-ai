@@ -905,19 +905,16 @@ Codex app-server自体は全OSで認証のため専用 `CODEX_HOME` へアクセ
 
 通常設定に由来するMCPの二段階探索、実行時のMCP名変換、実験的機能の全件監査、未知の機能に対する肯定的な許可リストは行わない。検出したCodex版ごとの未公開機能を完全に監査しないことは残余リスクとして受け入れる。
 
-### 12.7 タスク参照コマンド
+### 12.7 taskctl読み取りツール
 
-CodexへAsana APIを渡す代わりに、同期済みローカルキャッシュを読む専用コマンド `taskctl` を提供する。
+CodexへAsana APIやシェル実行権限を渡す代わりに、同期済みローカルキャッシュを読むdynamic tool `taskctl` を提供する。Codexは許可されたcommandと必要な引数だけを渡し、メインプロセス内の読み取り専用ローカルブローカーが処理する。AIの標準経路ではshellやCLIからtaskctlを実行しない。
 
 例:
 
-```text
-taskctl list --json
-taskctl get <task-gid> --json
-taskctl rank --json
-taskctl graph --json
-taskctl areas --json
-taskctl search-local --query <text> --json
+```json
+{"command":"rank"}
+{"command":"get","gid":"<task-gid>"}
+{"command":"search-local","query":"<text>"}
 ```
 
 性質:
@@ -925,9 +922,10 @@ taskctl search-local --query <text> --json
 - 読み取り専用。
 - Asana認証情報を持たない。
 - 最新同期時刻を必ず出力する。
-- JSONまたはJSONLだけを標準出力する。
+- 応答は既定のZodスキーマで検証したJSONとする。
 - タスク変更コマンドを一切提供しない。
 - 取得件数、出力サイズ、実行時間に上限を設ける。
+- app-serverから開始される要求はtaskctl dynamic toolだけを受理し、それ以外は拒否する。
 
 AIターン開始前にオンライン同期を行う。同期に失敗した場合は、古い情報であることを明示した質問応答だけを許可するか、変更案生成を停止する。初期版では安全側に倒し、同期失敗時は変更案生成を停止する。
 
@@ -1151,7 +1149,7 @@ AI由来のリンク追加もタスク変更であるため、承認が必要で
 
 ## 15. Discord等の外部情報源
 
-初期版ではDiscord Bot、Discordログ、その他の外部情報源との連携を提供しない。外部資格情報、外部ツールレジストリ、ローカル連携ブローカーも持たない。
+初期版ではDiscord Bot、Discordログ、その他の外部情報源との連携を提供しない。外部資格情報と外部ツールレジストリは持たない。同期済みキャッシュを読むtaskctlのローカルブローカーだけを提供する。
 
 ---
 
@@ -1736,7 +1734,7 @@ Custom external dataが利用できない場合、依存・Obsidian関連・停�
 
 1. アプリが同期する。
 2. 順位計算器が一意の順位と理由を返す。
-3. Codexは `taskctl rank --json` を読み、利用者の質問に沿って説明する。
+3. Codexは `taskctl` dynamic toolを `command=rank` で呼び出し、利用者の質問に沿って説明する。
 4. AIが順位を独自に変更しない。
 
 ### 23.3 タスクをAsanaから直接編集する
