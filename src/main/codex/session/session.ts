@@ -32,6 +32,7 @@ import {
   type ThreadStartResult,
 } from "../app-server";
 import {
+  createTaskHubConnectionFeatureOverrides,
   createTaskHubConnectionOverridesFromVerifiedPaths,
 } from "../app-server/schemas";
 import {
@@ -89,7 +90,7 @@ const accountReadRetryDelaysMilliseconds: readonly [number, number, number, numb
   750,
   1_000,
 ];
-type PermissionProfileNotification = {
+type ThreadSettingsNotification = {
   readonly threadId: string;
   readonly profileId: string | undefined;
   readonly profileExtends: string | null | undefined;
@@ -561,6 +562,9 @@ function hasWorkspaceWriteSandbox(
   if (sandbox.type !== "workspaceWrite") {
     return false;
   }
+  if (process.platform === "win32") {
+    return sandbox.networkAccess === false;
+  }
   const roots = new Set(sandbox.writableRoots);
   return (
     sandbox.writableRoots.length === 1
@@ -572,13 +576,18 @@ function hasWorkspaceWriteSandbox(
   );
 }
 
-function isValidPermissionProfileNotification(
-  notification: PermissionProfileNotification,
+function isValidThreadSettingsNotification(
+  notification: ThreadSettingsNotification,
 ): boolean {
+  if (!notification.sandboxValid) {
+    return false;
+  }
+  if (process.platform === "win32") {
+    return true;
+  }
   return (
     notification.profileId === permissionProfileId
     && notification.profileExtends === null
-    && notification.sandboxValid
   );
 }
 
@@ -646,7 +655,7 @@ export class CodexSessionService {
   private frozenTaskctlSnapshot: TaskctlSnapshot | undefined;
   private threadId: string | undefined;
   private selectedModel: string | undefined;
-  private permissionProfileNotification: PermissionProfileNotification | undefined;
+  private threadSettingsNotification: ThreadSettingsNotification | undefined;
   private skillConfiguration: Array<{ path: string; enabled: boolean }> = [];
   private threadConfigurationChanged = false;
   private connectionConfigurationChanged = false;
@@ -818,7 +827,9 @@ export class CodexSessionService {
       }
       await this.inspectModel(connection, signal);
       await this.inspectSkills(connection, signal);
-      await this.inspectPermissionProfile(connection, signal);
+      if (process.platform !== "win32") {
+        await this.inspectPermissionProfile(connection, signal);
+      }
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
       this.state = "ready";
@@ -869,7 +880,9 @@ export class CodexSessionService {
         return this.createStartResult();
       }
       await this.inspectSkills(connection, signal);
-      await this.inspectPermissionProfile(connection, signal);
+      if (process.platform !== "win32") {
+        await this.inspectPermissionProfile(connection, signal);
+      }
       await this.inspectModel(connection, signal);
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
@@ -1337,7 +1350,9 @@ export class CodexSessionService {
       this.assertSafetyIntact();
       await this.inspectSkills(candidate, signal);
       this.assertSafetyIntact();
-      await this.inspectPermissionProfile(candidate, signal);
+      if (process.platform !== "win32") {
+        await this.inspectPermissionProfile(candidate, signal);
+      }
       this.assertSafetyIntact();
       await this.startThreadOnCurrentConnection(signal);
       this.assertSafetyIntact();
@@ -1545,6 +1560,11 @@ export class CodexSessionService {
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<void> {
+    if (process.platform === "win32") {
+      throw new CodexSessionCapabilityError(
+        "WindowsではTaskHub用権限プロファイルを検査できません。",
+      );
+    }
     const params = permissionProfileListParamsSchema.parse({
       cwd: this.options.workspacePath,
       limit: 1_000,
@@ -1579,6 +1599,14 @@ export class CodexSessionService {
       || isPathWithin(codexHomePath, realWorkspacePath)
     ) {
       throw new CodexSessionCapabilityError("Codex認証領域と専用ワークスペースの範囲が重なっています。");
+    }
+    if (process.platform === "win32") {
+      validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
+      validateAdditionalLocalSocketPaths(
+        this.additionalLocalSocketPaths,
+        realTmpDirectoryPath,
+      );
+      return createTaskHubConnectionFeatureOverrides();
     }
     const socketPath = validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
     const additionalSocketPaths = validateAdditionalLocalSocketPaths(
@@ -1617,7 +1645,7 @@ export class CodexSessionService {
 
   private createThreadConfiguration(): Record<string, unknown> {
     return {
-      default_permissions: permissionProfileId,
+      ...(process.platform === "win32" ? {} : { default_permissions: permissionProfileId }),
       features: { apps: false, plugins: false },
       web_search: "disabled",
       tools: { web_search: false },
@@ -1638,10 +1666,11 @@ export class CodexSessionService {
       model: this.requireSelectedModel(),
       cwd: this.options.workspacePath,
       approvalPolicy: "never",
+      ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
       config,
     };
     const validatedParams = threadStartParamsSchema.parse(params);
-    this.permissionProfileNotification = undefined;
+    this.threadSettingsNotification = undefined;
     const result = threadStartResultSchema.parse(
       await connection.startThread(validatedParams, signal),
     );
@@ -1662,7 +1691,7 @@ export class CodexSessionService {
       throw new CodexSessionCapabilityError("Codexスレッドの権限制約を確認できません。");
     }
     this.threadId = result.thread.id;
-    this.validateStoredPermissionProfileNotification(result.thread.id);
+    this.validateStoredThreadSettingsNotification(result.thread.id);
     this.assertSafetyIntact();
     if (this.threadConfigurationChanged) {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
@@ -1670,12 +1699,12 @@ export class CodexSessionService {
     this.assertSafetyIntact();
   }
 
-  private validateStoredPermissionProfileNotification(threadId: string): void {
-    const notification = this.permissionProfileNotification;
+  private validateStoredThreadSettingsNotification(threadId: string): void {
+    const notification = this.threadSettingsNotification;
     if (notification == null || notification.threadId !== threadId) {
       return;
     }
-    if (!isValidPermissionProfileNotification(notification)) {
+    if (!isValidThreadSettingsNotification(notification)) {
       this.markSafetyViolation(
         new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
       );
@@ -1913,18 +1942,18 @@ export class CodexSessionService {
         notification.params.threadSettings.sandboxPolicy,
         this.options.tmpDirectoryPath,
       );
-      const permissionProfileNotification: PermissionProfileNotification = {
+      const threadSettingsNotification: ThreadSettingsNotification = {
         threadId: notification.params.threadId,
         profileId,
         profileExtends,
         sandboxValid,
       };
-      this.permissionProfileNotification = permissionProfileNotification;
+      this.threadSettingsNotification = threadSettingsNotification;
       const currentThreadId = this.threadId;
       if (
         currentThreadId === notification.params.threadId
         && isSafetyCriticalState(this.state)
-        && !isValidPermissionProfileNotification(permissionProfileNotification)
+        && !isValidThreadSettingsNotification(threadSettingsNotification)
       ) {
         this.markSafetyViolation(
           new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
@@ -2122,7 +2151,7 @@ export class CodexSessionService {
     const connection = this.connection;
     this.connection = undefined;
     this.threadId = undefined;
-    this.permissionProfileNotification = undefined;
+    this.threadSettingsNotification = undefined;
     this.skillConfiguration = [];
     this.threadConfigurationChanged = false;
     this.connectionConfigurationChanged = false;

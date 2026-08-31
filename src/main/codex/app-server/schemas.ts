@@ -323,6 +323,15 @@ export function createTaskHubConnectionOverridesFromVerifiedPaths(
   return Object.freeze(overrides);
 }
 
+/** Codex接続でAppsとPluginsを無効化する上書きを作成します。 */
+export function createTaskHubConnectionFeatureOverrides(): readonly CodexConfigOverrideValue[] {
+  const overrides = codexConfigOverridesSchema.parse([
+    CodexConfigOverride.create("features.apps=false"),
+    CodexConfigOverride.create("features.plugins=false"),
+  ]);
+  return Object.freeze(overrides);
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value == null || Array.isArray(value)) {
     return false;
