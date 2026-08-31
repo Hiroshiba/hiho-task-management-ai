@@ -22,6 +22,7 @@ import type { DiagnosticRecord } from "./application/diagnostics";
 import {
   CodexRpcError,
   codexRpcCodeSchema,
+  codexRpcMessageSchema,
   codexRpcOperationSchema,
   type CodexRpcOperation,
 } from "./codex/app-server/errors";
@@ -34,6 +35,8 @@ const maximumErrorNameCharacters = 64;
 const maximumErrorDepth = 4;
 const maximumAggregateErrors = 8;
 const maximumErrorNodes = 16;
+const maximumRpcMessageBytes = 1 * 1024;
+const maximumRpcMessageCharacters = 2_000;
 const persistentErrorLogFileName = "taskhub-error.log";
 const persistentErrorLogFailureMessage = "永続エラーログの書き込みに失敗しました。";
 const safeErrorNamePattern = /^[A-Za-z][A-Za-z0-9]*(?:Error|Exception)$/u;
@@ -43,6 +46,27 @@ const directStackFramePattern =
   /^\s{2,}at\s+([^()\r\n]+):([0-9]{1,6}):([0-9]{1,6})\s*$/u;
 const nodeStackSourcePattern = /^node:[A-Za-z0-9._/-]+$/u;
 const safeRelativeCodePathPattern = /^[A-Za-z0-9._+@~-]+(?:[\\/][A-Za-z0-9._+@~-]+)*$/u;
+const rpcDiagnosticMessageOperations: readonly CodexRpcOperation[] = [
+  "initialize",
+  "account/read",
+  "model/list",
+  "skills/list",
+  "permissionProfile/list",
+  "experimentalFeature/list",
+  "thread/start",
+  "turn/interrupt",
+];
+const rpcCredentialAssignmentPattern =
+  /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization|password|secret|credential)\b(\s*[:=])\s*(?:bearer\s+)?(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}\]&#?]+)/giu;
+const rpcJsonCredentialPattern =
+  /((?:["'])(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization|password|secret|credential)(?:["'])\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')/giu;
+const rpcBearerPattern = /\b(bearer\s+)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}\]]+)/giu;
+const rpcCredentialQueryPattern =
+  /([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|password|secret|token|code)=)[^&#\s]+/giu;
+const rpcObviousCredentialPattern =
+  /\b(?:sk|rk|gh[pousr]|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/giu;
+const rpcJwtPattern =
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu;
 let persistentErrorLogFailureOutputEnabled = true;
 
 const persistentErrorLogSourceSchema = z.enum([
@@ -95,6 +119,7 @@ type SafeErrorDetail = {
   aggregate_errors: SafeErrorDetail[];
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
+  rpc_message?: string | undefined;
 };
 
 const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
@@ -110,6 +135,7 @@ const safeErrorDetailSchema: z.ZodType<SafeErrorDetail> = z.lazy(() =>
         .max(maximumAggregateErrors),
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
+      rpc_message: z.string().min(1).max(maximumRpcMessageCharacters).optional(),
     })
     .strict(),
 );
@@ -347,7 +373,15 @@ function limitUtf8String(value: string, maximumBytes: number): string {
       upperBound = middle - 1;
     }
   }
-  return boundedValue.slice(0, lowerBound);
+  const truncatedValue = boundedValue.slice(0, lowerBound);
+  if (truncatedValue.length === 0) {
+    return truncatedValue;
+  }
+  const lastCodeUnit = truncatedValue.charCodeAt(truncatedValue.length - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+    return truncatedValue.slice(0, -1);
+  }
+  return truncatedValue;
 }
 
 function getStackFrames(
@@ -391,15 +425,90 @@ function getAggregateErrors(error: unknown): unknown[] {
 type SafeCodexRpcDetail = {
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
+  rpc_message?: string | undefined;
 };
+
+const safeRpcMessageSchema = z
+  .string()
+  .min(1)
+  .max(maximumRpcMessageCharacters)
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= maximumRpcMessageBytes,
+    "Codex RPCメッセージがサイズ上限を超えています。",
+  )
+  .refine(
+    (value) => !containsUnsafeRpcCharacter(value),
+    "Codex RPCメッセージに制御文字を含められません。",
+  );
+
+function isUnsafeRpcCharacter(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  if (codePoint == null) {
+    throw new Error("Codex RPCメッセージの文字を判定できません。");
+  }
+  return (
+    codePoint <= 0x1f
+    || (codePoint >= 0x7f && codePoint <= 0x9f)
+    || codePoint === 0x2028
+    || codePoint === 0x2029
+    || (codePoint >= 0x202a && codePoint <= 0x202e)
+    || (codePoint >= 0x2066 && codePoint <= 0x2069)
+  );
+}
+
+function containsUnsafeRpcCharacter(value: string): boolean {
+  for (const character of value) {
+    if (isUnsafeRpcCharacter(character)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function replaceUnsafeRpcCharacters(value: string): string {
+  return Array.from(
+    value,
+    (character) => isUnsafeRpcCharacter(character) ? " " : character,
+  ).join("");
+}
+
+function sanitizeRpcMessage(value: string): string | undefined {
+  const validatedMessage = codexRpcMessageSchema.parse(value);
+  const sanitizedMessage = limitUtf8String(
+    replaceUnsafeRpcCharacters(
+      validatedMessage
+        .replace(rpcCredentialQueryPattern, "$1<伏せ字>")
+        .replace(rpcJsonCredentialPattern, "$1<伏せ字>")
+        .replace(rpcBearerPattern, "$1<伏せ字>")
+        .replace(rpcCredentialAssignmentPattern, "$1$2<伏せ字>")
+        .replace(rpcObviousCredentialPattern, "<伏せ字>")
+        .replace(rpcJwtPattern, "<伏せ字>"),
+    )
+      .replace(/\s+/gu, " ")
+      .trim(),
+    maximumRpcMessageBytes,
+  );
+  if (sanitizedMessage.length === 0) {
+    return undefined;
+  }
+  return safeRpcMessageSchema.parse(sanitizedMessage);
+}
 
 function getSafeCodexRpcDetail(value: unknown): SafeCodexRpcDetail {
   if (!(value instanceof CodexRpcError)) {
     return {};
   }
+  if (!rpcDiagnosticMessageOperations.includes(value.operation)) {
+    return {
+      rpc_operation: codexRpcOperationSchema.parse(value.operation),
+      rpc_code: codexRpcCodeSchema.parse(value.rpcCode),
+    };
+  }
+  const rpcMessage = sanitizeRpcMessage(value.rpcMessage);
   return {
     rpc_operation: codexRpcOperationSchema.parse(value.operation),
     rpc_code: codexRpcCodeSchema.parse(value.rpcCode),
+    ...(rpcMessage == null ? {} : { rpc_message: rpcMessage }),
   };
 }
 

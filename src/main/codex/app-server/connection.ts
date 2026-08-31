@@ -1069,7 +1069,11 @@ export class CodexAppServerConnection {
     }
     this.pendingRequests.delete(key);
     this.cleanupPending(pending);
-    const rpcError = new CodexRpcError(pending.operation, response.error.code);
+    const rpcError = new CodexRpcError(
+      pending.operation,
+      response.error.code,
+      response.error.message,
+    );
     pending.reject(rpcError);
   }
 

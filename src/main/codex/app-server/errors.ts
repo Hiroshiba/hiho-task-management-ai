@@ -27,6 +27,8 @@ export const codexRpcCodeSchema = z
   .min(-2_147_483_648)
   .max(2_147_483_647);
 
+export const codexRpcMessageSchema = z.string().min(1).max(2_000);
+
 /** Codex CLI実行ファイルが見つからないことを表します。 */
 export class CodexExecutableNotFoundError extends Error {
   public constructor() {
@@ -66,12 +68,18 @@ export class CodexUnknownResponseIdError extends Error {
 export class CodexRpcError extends Error {
   public readonly operation: CodexRpcOperation;
   public readonly rpcCode: number;
+  public readonly rpcMessage: string;
 
-  public constructor(operation: CodexRpcOperation, rpcCode: number) {
+  public constructor(
+    operation: CodexRpcOperation,
+    rpcCode: number,
+    rpcMessage: string,
+  ) {
     super("Codex app-serverがRPCエラーを返しました。");
     this.name = "CodexRpcError";
     this.operation = codexRpcOperationSchema.parse(operation);
     this.rpcCode = codexRpcCodeSchema.parse(rpcCode);
+    this.rpcMessage = codexRpcMessageSchema.parse(rpcMessage);
   }
 }
 
