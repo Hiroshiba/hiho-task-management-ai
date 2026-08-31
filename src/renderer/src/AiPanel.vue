@@ -83,6 +83,21 @@ const questionResponseMessage = computed(() => {
   return undefined;
 });
 
+const panelTitle = computed(() => {
+  switch (props.state.kind) {
+    case "applied":
+      return "反映結果";
+    case "unavailable":
+      return "AIアシスタント";
+    case "proposal":
+      return "変更案を確認";
+    case "idle":
+    case "questions":
+    case "streaming":
+      return proposal.value != null ? "変更案を確認" : "タスクについて相談";
+  }
+});
+
 function requireProposal(): AiWorkflowProposalView {
   const current = proposal.value;
   if (current == null) {
@@ -231,6 +246,21 @@ function targetLabel(operation: ProposalOperation): string {
   return `一時参照 ${operation.target.ref}`;
 }
 
+function evidenceKindLabel(
+  kind: "user_message" | "task" | "obsidian" | "external_tool",
+): string {
+  switch (kind) {
+    case "user_message":
+      return "ユーザーの依頼";
+    case "task":
+      return "タスク";
+    case "obsidian":
+      return "Obsidian";
+    case "external_tool":
+      return "外部ツール";
+  }
+}
+
 function valueLabel(value: unknown): string {
   const serialized = JSON.stringify(value);
   if (serialized == null) {
@@ -263,7 +293,7 @@ function saveEdit(proposal: AiWorkflowProposalView, operation: ProposalOperation
     emit("edit", edit);
     editingOperationId.value = undefined;
   } catch {
-    localError.value = "操作後の値と根拠locatorを確認してください。";
+    localError.value = "操作後の値と根拠の場所を確認してください。";
   }
 }
 
@@ -298,6 +328,20 @@ function applicationOutcomeLabel(
       return "一部反映";
     case "unknown":
       return "確認不能";
+  }
+}
+
+function applicationDetailsShouldOpen(
+  outcome: "applied" | "already_applied" | "not_applied" | "partially_applied" | "unknown",
+): boolean {
+  switch (outcome) {
+    case "applied":
+    case "already_applied":
+      return false;
+    case "not_applied":
+    case "partially_applied":
+    case "unknown":
+      return true;
   }
 }
 
@@ -343,10 +387,9 @@ function applicationReasonLabel(reason: string): string {
             id="ai-panel-title"
             class="mt-1 text-xl font-semibold text-slate-900"
           >
-            変更案を安全に確認
+            {{ panelTitle }}
           </h2>
         </div>
-        <span class="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700">未承認案はメモリ上だけに保持</span>
       </div>
     </div>
 
@@ -362,7 +405,10 @@ function applicationReasonLabel(reason: string): string {
         v-if="props.state.kind === 'idle' || props.state.kind === 'questions' || props.state.kind === 'proposal'"
         class="space-y-3"
       >
-        <form @submit.prevent="sendMessage">
+        <form
+          class="space-y-3"
+          @submit.prevent="sendMessage"
+        >
           <label
             class="field-label"
             for="ai-message"
@@ -460,7 +506,7 @@ function applicationReasonLabel(reason: string): string {
           <p class="text-sm font-medium text-slate-900">
             {{ proposalMessage }}
           </p><p class="mt-1 text-xs text-slate-600">
-            基準スナップショット: {{ requireProposal().baseline_snapshot_hash }}
+            承認するまでAsanaには反映されません。
           </p><p class="mt-1 text-xs text-slate-600">
             影響タスク: {{ requireProposal().impact.impacted_task_count }}件
           </p>
@@ -469,7 +515,7 @@ function applicationReasonLabel(reason: string): string {
           <h3 class="section-heading">
             変更案
           </h3><div
-            v-for="group in requireProposal().proposal.groups"
+            v-for="(group, groupIndex) in requireProposal().proposal.groups"
             :key="group.group_id"
             class="rounded-md border border-slate-200 p-4"
           >
@@ -478,9 +524,9 @@ function applicationReasonLabel(reason: string): string {
                 v-if="selectionMode === 'groups'"
                 :checked="selectedGroup(group.group_id)"
                 type="checkbox"
-                :aria-label="`${group.group_id}を選択`"
+                :aria-label="`変更グループ ${groupIndex + 1}を選択`"
                 @change="selectedGroupIds = toggleValue(selectedGroupIds, group.group_id)"
-              ><span class="font-medium text-slate-900">{{ group.group_id }}</span><span class="text-xs text-slate-600">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
+              ><span class="font-medium text-slate-900">変更グループ {{ groupIndex + 1 }}</span><span class="text-xs text-slate-600">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
                 v-if="selectionMode === 'operations' && group.atomic"
                 class="text-xs text-slate-600"
               >一括選択で適用</span>
@@ -503,7 +549,7 @@ function applicationReasonLabel(reason: string): string {
                   ><input
                     :checked="selectedOperation(operation.operation_id)"
                     type="checkbox"
-                    :aria-label="`${operation.operation_id}を選択`"
+                    :aria-label="`${operationLabel(operation)}を選択`"
                     @change="selectedOperationIds = toggleValue(selectedOperationIds, operation.operation_id)"
                   >操作を選択</label>
                 </div><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
@@ -526,7 +572,7 @@ function applicationReasonLabel(reason: string): string {
                       v-for="evidence in operation.evidence_refs"
                       :key="`${evidence.kind}-${evidence.locator}`"
                       class="mr-2 inline-block"
-                    >{{ evidence.kind }}: {{ evidence.locator }}</span>
+                    >{{ evidenceKindLabel(evidence.kind) }}</span>
                   </dd>
                 </dl><button
                   type="button"
@@ -551,7 +597,7 @@ function applicationReasonLabel(reason: string): string {
                   /></label><label
                     class="field-label"
                     :for="`evidence-${operation.operation_id}`"
-                  >ユーザー編集の根拠locator<input
+                  >ユーザー編集の根拠の場所<input
                     :id="`evidence-${operation.operation_id}`"
                     v-model="editEvidence"
                     class="text-input"
@@ -568,6 +614,52 @@ function applicationReasonLabel(reason: string): string {
             </div>
           </div>
         </div>
+        <details class="rounded-md border border-slate-200 p-4">
+          <summary class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2">
+            変更案の詳細
+          </summary>
+          <div class="mt-3 space-y-4 text-xs text-slate-600">
+            <dl class="grid gap-1 sm:grid-cols-2">
+              <dt>変更案ID</dt><dd class="break-words text-slate-800">
+                {{ requireProposal().proposal_id }}
+              </dd><dt>基準データの識別子</dt><dd class="break-words text-slate-800">
+                {{ requireProposal().baseline_snapshot_hash }}
+              </dd>
+            </dl>
+            <div
+              v-for="group in requireProposal().proposal.groups"
+              :key="`detail-${group.group_id}`"
+              class="space-y-2 rounded-md bg-slate-50 p-3"
+            >
+              <p class="font-medium text-slate-800">
+                グループID: {{ group.group_id }}
+              </p>
+              <div
+                v-for="operation in group.operations"
+                :key="`detail-${operation.operation_id}`"
+                class="space-y-1 border-t border-slate-200 pt-2"
+              >
+                <p class="font-medium text-slate-800">
+                  操作ID: {{ operation.operation_id }}
+                </p>
+                <p>
+                  対象: {{ targetLabel(operation) }}
+                </p>
+                <p>
+                  基準データの識別子: {{ operation.baseline_snapshot_hash }}
+                </p>
+                <p>
+                  根拠の場所:
+                  <span
+                    v-for="evidence in operation.evidence_refs"
+                    :key="`detail-${evidence.kind}-${evidence.locator}`"
+                    class="mr-2 inline-block break-words text-slate-800"
+                  >{{ evidence.kind }}: {{ evidence.locator }}</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </details>
         <div class="flex flex-wrap gap-2">
           <label class="inline-flex items-center gap-2 text-sm text-slate-700"><input
             v-model="selectionMode"
@@ -583,11 +675,11 @@ function applicationReasonLabel(reason: string): string {
             value="operations"
           >非一括操作単位</label><button
             type="button"
-            class="primary-button"
+            class="secondary-button"
             :disabled="!props.canWrite"
             @click="selectCurrentProposal"
           >
-            選択を反映
+            選択範囲を更新
           </button><button
             type="button"
             class="primary-button"
@@ -627,31 +719,41 @@ function applicationReasonLabel(reason: string): string {
           {{ props.state.message }}
         </p><p class="mt-2 text-sm text-emerald-900">
           結果: {{ applicationOutcomeLabel(props.state.result.application.outcome) }}
-        </p><div class="mt-3 grid gap-3 text-sm text-emerald-950 sm:grid-cols-2">
-          <div>
-            <h3 class="font-medium">
-              グループ別
-            </h3><ul class="mt-1 space-y-1">
-              <li
-                v-for="group in props.state.result.application.groups"
-                :key="group.group_id"
-              >
-                {{ group.group_id }}: {{ applicationOutcomeLabel(group.outcome) }}・{{ group.operation_ids.length }}操作
-              </li>
-            </ul>
-          </div><div>
-            <h3 class="font-medium">
-              操作別
-            </h3><ul class="mt-1 space-y-1">
-              <li
-                v-for="operation in props.state.result.application.operations"
-                :key="operation.operation_id"
-              >
-                {{ operation.operation_id }}: {{ applicationOutcomeLabel(operation.outcome) }}・{{ applicationReasonLabel(operation.reason_code) }}
-              </li>
-            </ul>
+        </p><p class="mt-1 text-sm text-emerald-900">
+          グループ {{ props.state.result.application.groups.length }}件・操作 {{ props.state.result.application.operations.length }}件
+        </p><details
+          :open="applicationDetailsShouldOpen(props.state.result.application.outcome)"
+          class="mt-3 rounded-md border border-emerald-200 p-3"
+        >
+          <summary class="cursor-pointer rounded-md px-3 py-2 text-sm font-medium text-emerald-950 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2">
+            反映結果の詳細
+          </summary>
+          <div class="mt-3 grid gap-3 text-sm text-emerald-950 sm:grid-cols-2">
+            <div>
+              <h3 class="font-medium">
+                グループ別
+              </h3><ul class="mt-1 space-y-1">
+                <li
+                  v-for="group in props.state.result.application.groups"
+                  :key="group.group_id"
+                >
+                  {{ group.group_id }}: {{ applicationOutcomeLabel(group.outcome) }}・{{ group.operation_ids.length }}操作
+                </li>
+              </ul>
+            </div><div>
+              <h3 class="font-medium">
+                操作別
+              </h3><ul class="mt-1 space-y-1">
+                <li
+                  v-for="operation in props.state.result.application.operations"
+                  :key="operation.operation_id"
+                >
+                  {{ operation.operation_id }}: {{ applicationOutcomeLabel(operation.outcome) }}・{{ applicationReasonLabel(operation.reason_code) }}
+                </li>
+              </ul>
+            </div>
           </div>
-        </div>
+        </details>
       </div>
       <div
         v-if="props.state.kind === 'unavailable'"
