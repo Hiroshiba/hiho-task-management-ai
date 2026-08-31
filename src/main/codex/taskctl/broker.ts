@@ -25,6 +25,7 @@ import {
   taskctlBrokerStartResultSchema,
   taskctlConnectionInfoSchema,
   taskctlDiagnosticsSchema,
+  taskctlQuerySchema,
   taskctlProtocolVersion,
   taskctlRequestSchema,
   taskctlResponseSchema,
@@ -33,6 +34,7 @@ import {
   type TaskctlBrokerStartResult,
   type TaskctlConnectionInfo,
   type TaskctlDiagnostic,
+  type TaskctlQuery,
   type TaskctlRequest,
   type TaskctlResponse,
   type TaskctlSnapshot,
@@ -430,6 +432,25 @@ function serializeResponse(response: TaskctlResponse): string {
   return `${serialized}\n`;
 }
 
+function taskctlQueryFromRequest(request: TaskctlRequest): TaskctlQuery {
+  switch (request.command) {
+    case "list":
+      return { command: "list" };
+    case "get":
+      return { command: "get", gid: request.gid };
+    case "rank":
+      return { command: "rank" };
+    case "graph":
+      return { command: "graph" };
+    case "areas":
+      return { command: "areas" };
+    case "search-local":
+      return { command: "search-local", query: request.query };
+    default:
+      throw new TaskctlBrokerError("taskctl要求のコマンドが不正です。");
+  }
+}
+
 /** 読み取り専用スナップショットをtaskctlへ公開するローカルブローカーです。 */
 export class TaskctlBroker {
   private readonly tmpDirectoryPath: string;
@@ -516,6 +537,30 @@ export class TaskctlBroker {
       }
       throw error;
     }
+  }
+
+  /** taskctl要求を同期済みスナップショットへ適用します。 */
+  public executeQuery(query: unknown): Promise<TaskctlResponse> {
+    if (this.state !== "ready") {
+      return Promise.resolve(
+        createError(
+          "broker_stopped",
+          "taskctlブローカーを利用できません。",
+          createUnavailableSyncState(),
+        ),
+      );
+    }
+    const parsedQuery = taskctlQuerySchema.safeParse(query);
+    if (!parsedQuery.success) {
+      return Promise.resolve(
+        createError(
+          "invalid_request",
+          "taskctl要求の形式が不正です。",
+          createUnavailableSyncState(),
+        ),
+      );
+    }
+    return this.createQueryResponse(parsedQuery.data);
   }
 
   /** taskctlのローカルIPCサーバーと接続情報を停止します。 */
@@ -851,7 +896,7 @@ export class TaskctlBroker {
             createUnavailableSyncState(),
           );
         } else {
-          response = await this.createResponse(parsedRequest.data);
+          response = await this.executeQuery(taskctlQueryFromRequest(parsedRequest.data));
         }
       }
     } catch (error: unknown) {
@@ -883,7 +928,7 @@ export class TaskctlBroker {
     return expected.length === received.length && timingSafeEqual(expected, received);
   }
 
-  private async createResponse(request: TaskctlRequest): Promise<TaskctlResponse> {
+  private async createQueryResponse(query: TaskctlQuery): Promise<TaskctlResponse> {
     let suppliedSnapshot: TaskctlSnapshot;
     try {
       suppliedSnapshot = await withTimeout(
@@ -928,7 +973,7 @@ export class TaskctlBroker {
     }
     const snapshot = parsedSnapshot.data;
 
-    switch (request.command) {
+    switch (query.command) {
       case "list": {
         const tasks = sortedTasks(snapshot);
         if (tasks.length > 1_000) {
@@ -937,7 +982,7 @@ export class TaskctlBroker {
         return { ok: true, command: "list", sync: snapshot.sync, data: { tasks } };
       }
       case "get": {
-        const task = snapshot.tasks.find((candidate) => candidate.gid === request.gid);
+        const task = snapshot.tasks.find((candidate) => candidate.gid === query.gid);
         if (task == null) {
           return createError("task_not_found", "指定したタスクが見つかりません。", snapshot.sync);
         }
@@ -1004,7 +1049,7 @@ export class TaskctlBroker {
         return { ok: true, command: "areas", sync: snapshot.sync, data: { areas } };
       }
       case "search-local": {
-        const normalizedQuery = request.query.toLowerCase();
+        const normalizedQuery = query.query.toLowerCase();
         const tasks = sortedTasks(snapshot).filter((task) => (
           task.title.toLowerCase().includes(normalizedQuery)
           || task.notes.toLowerCase().includes(normalizedQuery)
@@ -1017,7 +1062,7 @@ export class TaskctlBroker {
           ok: true,
           command: "search-local",
           sync: snapshot.sync,
-          data: { query: request.query, tasks },
+          data: { query: query.query, tasks },
         };
       }
     }

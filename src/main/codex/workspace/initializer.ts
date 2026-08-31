@@ -57,21 +57,21 @@ description: 同期済みTaskHubタスク情報を必要時だけ読み取る手
 
 同期済みのTaskHubデータを必要なときだけ読み取ります。
 
-- taskctlは読み取り専用コマンドとして扱ってください。
+- taskctlは読み取り専用情報源として扱ってください。
 - 認証情報を引数、環境変数、出力から取得しないでください。
 - 出力をファイルへ保存せず、その場の判断材料として使用してください。
-- Unix系では必要なときだけ ./bin/taskctl list --json、./bin/taskctl get <task-gid> --json、./bin/taskctl rank --json、./bin/taskctl graph --json、./bin/taskctl areas --json、./bin/taskctl search-local --query <text> --json を使用してください。
-- Windowsでは必要なときだけ .\\bin\\taskctl.cmd list --json、.\\bin\\taskctl.cmd get <task-gid> --json、.\\bin\\taskctl.cmd rank --json、.\\bin\\taskctl.cmd graph --json、.\\bin\\taskctl.cmd areas --json、.\\bin\\taskctl.cmd search-local --query <text> --json を使用してください。
+- Codexのdynamic tool taskctl を必要なときだけ呼び出し、commandに list、get、rank、graph、areas、search-local のいずれかを指定してください。
+- get では gid、search-local では query を指定し、それ以外のcommandでは追加項目を指定しないでください。
 - list は完了・取り下げを含む管理対象全件を同期状態とGID順で返し、get は指定タスクまたは構造化された不存在エラーを返します。
 - rank は同期状態と保存済み順位を返し、ranking.cache.ranked_tasks が画面の通常一覧に表示される現在のタスクです。
-- ユーザーが単に「タスク何個」「現在のタスク数」と尋ねたときは rank --json を実行して ranking.cache.ranked_tasks.length を答え、順位情報が利用不能なら件数を推測せず、その状態を伝えてください。
-- ユーザーが全管理対象、完了、取り下げを含む件数を明示したときだけ list --json を実行して件数を数えてください。
+- ユーザーが単に「タスク何個」「現在のタスク数」と尋ねたときは taskctl の command rank を呼び出して data.ranking.cache.ranked_tasks.length を答え、順位情報が利用不能なら件数を推測せず、その状態を伝えてください。
+- ユーザーが全管理対象、完了、取り下げを含む件数を明示したときだけ taskctl の command list を呼び出して件数を数えてください。
 - graph はタスクと依存、親子の辺、areas は領域名の配列を返します。
-- search-local --query は同期状態、検索文字列、タイトルや本文、領域に一致したGID順のタスク配列を返します。
+- search-local は query に一致する同期済みタスクをGID順で返します。
 - 成功応答と失敗応答の両方に最新同期状態が含まれます。同期状態がunavailableでもデータ不存在とはみなさず、変更案の根拠に使わないでください。
-- 失敗応答は ok:false と固定エラーコードを持ち、コマンドの終了状態も失敗になります。
-- タスクを作成、更新、削除するコマンドは実行しないでください。
-- 読み取り質問では必要なtaskctlコマンドを実行してください。起動できないだけでデータアクセスが拒否されたと断定しないでください。
+- 失敗応答は ok:false と固定エラーコードを持ちます。
+- タスクを作成、更新、削除する操作は実行しないでください。
+- 読み取り質問では必要なtaskctl dynamic toolを呼び出してください。応答が失敗しただけでデータアクセスが拒否されたと断定しないでください。
 `,
   obsidian: `---
 name: obsidian

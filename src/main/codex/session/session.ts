@@ -11,6 +11,8 @@ import {
   codexConnectionOptionsSchema,
   codexDiagnosticSchema,
   codexNotificationSchema,
+  type DynamicToolCallParams,
+  type DynamicToolCallResponse,
   modelListParamsSchema,
   modelListResultSchema,
   permissionProfileListParamsSchema,
@@ -37,9 +39,13 @@ import {
 } from "../app-server/schemas";
 import {
   TaskctlBroker,
+  TaskctlAbortError,
   taskctlBrokerStartResultSchema,
+  taskctlQuerySchema,
+  taskctlResponseSchema,
   taskctlSnapshotSchema,
   type TaskctlBrokerStartResult,
+  type TaskctlResponse,
   type TaskctlSnapshot,
 } from "../taskctl";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
@@ -141,6 +147,46 @@ const structuredOutputEnvelopeJsonSchema = {
   required: ["response_json"],
   additionalProperties: false,
 } satisfies Record<string, unknown>;
+
+const maximumDynamicToolResponseBytes = 64 * 1024;
+const taskctlDynamicToolName = "taskctl";
+const taskctlDynamicToolSpec = {
+  type: "function",
+  name: taskctlDynamicToolName,
+  description: "同期済みTaskHubタスク情報を読み取るdynamic toolです。",
+  inputSchema: z.toJSONSchema(taskctlQuerySchema, { target: "draft-07" }),
+} satisfies Record<string, unknown>;
+
+function createDynamicToolResponseTooLarge(): TaskctlResponse {
+  return taskctlResponseSchema.parse({
+    ok: false,
+    error: {
+      code: "response_too_large",
+      message: "taskctl応答が大きすぎます。",
+    },
+    sync: { kind: "unavailable" },
+  });
+}
+
+function serializeDynamicToolResponse(response: TaskctlResponse): DynamicToolCallResponse {
+  const validatedResponse = taskctlResponseSchema.parse(response);
+  const serialized = z.string().parse(JSON.stringify(validatedResponse));
+  if (Buffer.byteLength(serialized, "utf8") <= maximumDynamicToolResponseBytes) {
+    return {
+      contentItems: [{ type: "inputText", text: serialized }],
+      success: validatedResponse.ok,
+    };
+  }
+  const fallback = createDynamicToolResponseTooLarge();
+  const serializedFallback = z.string().parse(JSON.stringify(fallback));
+  if (Buffer.byteLength(serializedFallback, "utf8") > maximumDynamicToolResponseBytes) {
+    throw new CodexSessionError("taskctl応答のサイズ上限を確認できません。");
+  }
+  return {
+    contentItems: [{ type: "inputText", text: serializedFallback }],
+    success: false,
+  };
+}
 
 const codexHomePathSchema = z
   .string()
@@ -752,6 +798,7 @@ function isConnectionShape(value: unknown): value is CodexSessionConnection {
     "interruptTurn",
     "onNotification",
     "onDiagnostic",
+    "onDynamicToolCall",
     "getDiagnostics",
     "stop",
   ];
@@ -796,6 +843,7 @@ export class CodexSessionService {
   private connection: CodexSessionConnection | undefined;
   private removeNotificationListener: (() => void) | undefined;
   private removeDiagnosticListener: (() => void) | undefined;
+  private removeDynamicToolListener: (() => void) | undefined;
   private taskctlStartResult: TaskctlBrokerStartResult | undefined;
   private frozenTaskctlSnapshot: TaskctlSnapshot | undefined;
   private threadId: string | undefined;
@@ -1475,6 +1523,9 @@ export class CodexSessionService {
       this.removeDiagnosticListener = candidate.onDiagnostic((diagnostic) => {
         this.receiveDiagnostic(diagnostic);
       });
+      this.removeDynamicToolListener = candidate.onDynamicToolCall(
+        (params, toolSignal) => this.handleTaskctlDynamicTool(params, toolSignal),
+      );
       await candidate.start(signal);
       this.assertSafetyIntact();
       const expectedCodexHomeRealPath = resolveVerifiedConfigurationDirectory(
@@ -1819,6 +1870,7 @@ export class CodexSessionService {
       approvalPolicy: "never",
       ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
       config,
+      dynamicTools: [taskctlDynamicToolSpec],
     };
     const validatedParams = threadStartParamsSchema.parse(params);
     this.threadSettingsNotification = undefined;
@@ -1854,6 +1906,42 @@ export class CodexSessionService {
       throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
     }
     this.assertSafetyIntact();
+  }
+
+  private async handleTaskctlDynamicTool(
+    params: DynamicToolCallParams,
+    signal: AbortSignal,
+  ): Promise<DynamicToolCallResponse> {
+    validateAbortSignal(signal);
+    if (signal.aborted) {
+      throw new TaskctlAbortError();
+    }
+    if (params.namespace != null) {
+      throw new CodexSessionError("taskctl dynamic toolのnamespaceが不正です。");
+    }
+    if (params.tool !== taskctlDynamicToolName) {
+      throw new CodexSessionError("taskctl dynamic toolの名前が不正です。");
+    }
+    const activeTurn = this.activeTurn;
+    if (activeTurn == null || activeTurn.phase !== "running") {
+      throw new CodexSessionStateError();
+    }
+    if (params.threadId !== activeTurn.threadId || params.turnId !== activeTurn.turnId) {
+      throw new CodexSessionError("taskctl dynamic toolのターンが不正です。");
+    }
+    const currentThreadId = this.threadId;
+    if (currentThreadId == null || params.threadId !== currentThreadId) {
+      throw new CodexSessionError("taskctl dynamic toolのスレッドが不正です。");
+    }
+    const assertNotAborted = (): void => {
+      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
+        throw new TaskctlAbortError();
+      }
+    };
+    assertNotAborted();
+    const response = await this.broker.executeQuery(params.arguments);
+    assertNotAborted();
+    return serializeDynamicToolResponse(response);
   }
 
   private validateStoredThreadSettingsNotification(threadId: string): void {
@@ -2293,8 +2381,10 @@ export class CodexSessionService {
     const errors: unknown[] = [];
     const removeNotificationListener = this.removeNotificationListener;
     const removeDiagnosticListener = this.removeDiagnosticListener;
+    const removeDynamicToolListener = this.removeDynamicToolListener;
     this.removeNotificationListener = undefined;
     this.removeDiagnosticListener = undefined;
+    this.removeDynamicToolListener = undefined;
     if (removeNotificationListener != null) {
       try {
         removeNotificationListener();
@@ -2305,6 +2395,13 @@ export class CodexSessionService {
     if (removeDiagnosticListener != null) {
       try {
         removeDiagnosticListener();
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+    }
+    if (removeDynamicToolListener != null) {
+      try {
+        removeDynamicToolListener();
       } catch (error: unknown) {
         errors.push(error);
       }

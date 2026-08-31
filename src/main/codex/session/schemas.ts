@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   type AccountReadParams,
   type AccountReadResult,
+  type CodexDynamicToolHandler,
   type CodexDiagnostic,
   type ChatGptLoginStartParams,
   type ChatGptLoginStartResult,
@@ -116,6 +117,7 @@ export interface CodexSessionConnection {
   interruptTurn(params: TurnInterruptParams, signal: AbortSignal): Promise<TurnInterruptResult>;
   onNotification(listener: CodexNotificationListener): () => void;
   onDiagnostic(listener: CodexDiagnosticListener): () => void;
+  onDynamicToolCall(handler: CodexDynamicToolHandler): () => void;
   getDiagnostics(): readonly CodexDiagnostic[];
   stop(): Promise<void>;
 }

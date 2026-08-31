@@ -182,6 +182,54 @@ const searchQuerySchema = z
     "検索文字数が上限を超えています。",
   );
 
+const listQuerySchema = z
+  .object({
+    command: z.literal("list"),
+  })
+  .strict();
+
+const getQuerySchema = z
+  .object({
+    command: z.literal("get"),
+    gid: gidSchema,
+  })
+  .strict();
+
+const rankQuerySchema = z
+  .object({
+    command: z.literal("rank"),
+  })
+  .strict();
+
+const graphQuerySchema = z
+  .object({
+    command: z.literal("graph"),
+  })
+  .strict();
+
+const areasQuerySchema = z
+  .object({
+    command: z.literal("areas"),
+  })
+  .strict();
+
+const searchQueryRequestSchema = z
+  .object({
+    command: z.literal("search-local"),
+    query: searchQuerySchema,
+  })
+  .strict();
+
+/** taskctl読み取り要求を検証するスキーマです。 */
+export const taskctlQuerySchema = z.discriminatedUnion("command", [
+  listQuerySchema,
+  getQuerySchema,
+  rankQuerySchema,
+  graphQuerySchema,
+  areasQuerySchema,
+  searchQueryRequestSchema,
+]);
+
 const listRequestSchema = z
   .object({
     version: z.literal(taskctlProtocolVersion),
@@ -410,6 +458,7 @@ export type TaskctlBrokerOptions = z.infer<typeof taskctlBrokerOptionsSchema>;
 export type TaskctlBrokerStartResult = z.infer<
   typeof taskctlBrokerStartResultSchema
 >;
+export type TaskctlQuery = z.infer<typeof taskctlQuerySchema>;
 export type TaskctlRequest = z.infer<typeof taskctlRequestSchema>;
 export type TaskctlResponse = z.infer<typeof taskctlResponseSchema>;
 export type TaskctlSnapshotProvider = () =>
