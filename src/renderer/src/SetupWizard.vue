@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { isoDateTimeSchema } from "../../shared/domain";
 import {
   setupAsanaAuthorizationBeginInputSchema,
   setupAsanaAuthorizationCancelInputSchema,
@@ -236,6 +237,19 @@ function stateDescription(state: SetupState | undefined): string {
     return `${externalToolUnavailableReasonLabel(state.reason_code)} 外部情報取得を無効にしたまま初回設定を続けられます。`;
   }
   return "現在の手順を完了して次へ進んでください。";
+}
+
+function jstDateTimeLabel(value: string): string {
+  const validated = isoDateTimeSchema.parse(value);
+  const timestamp = Date.parse(validated);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Asana認証期限を表示できません。");
+  }
+  return new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(timestamp));
 }
 
 function codexReasonLabel(reason: "not_installed" | "incompatible" | "permission_denied" | "startup_failed" | "disabled"): string {
@@ -581,7 +595,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-4"
       >
         <p class="text-sm leading-6 text-slate-600">
-          Asanaの認可画面に表示された認可コードを入力してください。認可コードの有効期限は{{ props.state.expires_at }}までです。
+          Asanaの認可画面に表示された認可コードを入力してください。認可コードの有効期限は{{ jstDateTimeLabel(props.state.expires_at) }}までです。
         </p>
         <form
           class="grid gap-4 sm:max-w-xl"
@@ -832,7 +846,7 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
           :disabled="props.busy"
           @click="emit('action', { kind: 'run_full_sync' })"
         >
-          フル同期を実行
+          完全同期を実行
         </button>
       </div>
 
