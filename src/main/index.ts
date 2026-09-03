@@ -577,6 +577,9 @@ async function createMainWindow(
   }
   const window = new BrowserWindow({
     show: false,
+    icon: app.isPackaged
+      ? join(process.resourcesPath, "icon.png")
+      : join(__dirname, "../../build/icon.png"),
     webPreferences: {
       devTools: !app.isPackaged,
       nodeIntegration: false,
