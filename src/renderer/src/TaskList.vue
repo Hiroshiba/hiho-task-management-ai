@@ -41,11 +41,11 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
 
 <template>
   <section
-    class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
+    class="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
     aria-labelledby="task-list-title"
   >
-    <div class="flex items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-5 dark:border-slate-700">
-      <div>
+    <div class="flex min-w-0 items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-5 dark:border-slate-700">
+      <div class="min-w-0 flex-1">
         <h2
           id="task-list-title"
           class="text-lg font-semibold text-slate-900 dark:text-slate-100"
@@ -56,7 +56,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
           今取り組みたい順に表示しています。完全にブロックされたタスクは通常表示から除外されます。
         </p>
       </div>
-      <span class="text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
+      <span class="shrink-0 text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
     </div>
 
     <div
@@ -68,18 +68,18 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
     </div>
     <div
       v-else
-      class="divide-y divide-slate-200 dark:divide-slate-700"
+      class="min-w-0 divide-y divide-slate-200 dark:divide-slate-700"
     >
       <button
         v-for="row in props.rows"
         :key="row.gid"
         type="button"
-        class="block w-full px-4 py-3 text-left hover:bg-slate-50 focus:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-600 sm:px-5 dark:hover:bg-slate-800 dark:focus:bg-slate-800 dark:focus:ring-sky-400"
+        class="block min-w-0 w-full px-4 py-3 text-left hover:bg-slate-50 focus:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-600 sm:px-5 dark:hover:bg-slate-800 dark:focus:bg-slate-800 dark:focus:ring-sky-400"
         :class="props.selectedTaskGid === row.gid ? 'bg-sky-50 dark:bg-sky-950' : ''"
         :aria-pressed="props.selectedTaskGid === row.gid"
         @click="emit('select', row.gid)"
       >
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
           <div
             class="w-8 shrink-0 text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
             aria-label="順位"
@@ -91,7 +91,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
               {{ row.title }}
             </p>
           </div>
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700 dark:text-slate-300">
+          <div class="min-w-0 basis-full flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700 dark:text-slate-300 sm:basis-auto">
             <span>状態 {{ statusLabel(row.status) }}</span>
             <span>{{ importanceLabel(row.importance) }}</span>
             <span v-if="row.due.kind !== 'none'">
@@ -106,7 +106,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
         </div>
         <div
           v-if="hasSupplementaryInfo(row)"
-          class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
+          class="mt-2 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
         >
           <span v-if="row.child_progress.total_count > 0">子タスク {{ row.child_progress.completed_count }}/{{ row.child_progress.total_count }}</span>
           <span v-if="row.has_dependencies">依存先あり</span>
