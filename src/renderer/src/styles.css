@@ -36,12 +36,4 @@
   .section-heading {
     @apply text-base font-semibold text-slate-900 dark:text-slate-100;
   }
-
-  .table-label {
-    @apply block text-xs font-medium text-slate-500 dark:text-slate-400;
-  }
-
-  .table-value {
-    @apply mt-1 block text-sm text-slate-800 dark:text-slate-300;
-  }
 }
