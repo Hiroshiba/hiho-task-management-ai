@@ -340,17 +340,6 @@ const canReanalyzeObsidianNotes = computed(() => canWrite.value
   && codexState.value.kind === "ready"
   && !aiBusy.value
   && registeredVaultIds.value.length > 0);
-const lastSyncAt = computed(() => {
-  const currentOverview = overview.value;
-  if (currentOverview != null) {
-    return currentOverview.last_successful_sync_at;
-  }
-  if (syncState.value.kind === "synced") {
-    return syncState.value.synced_at;
-  }
-  return undefined;
-});
-const cleanupCount = computed(() => overview.value?.cleanup_count);
 const visibleRows = computed(() => {
   const currentOverview = overview.value;
   if (currentOverview == null) {
@@ -2076,7 +2065,7 @@ async function startAiSession(): Promise<void> {
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
-    setAiFeedback("success", "新しいAIセッションを開始しました。");
+    setAiFeedback("success", "新しい会話を開始しました。");
   } catch {
     showAiUnexpectedFailure();
   } finally {
@@ -2437,7 +2426,6 @@ onUnmounted(() => {
   <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <AppHeader
       :connection-state="connectionState"
-      :last-sync-at="lastSyncAt"
       :configured="configured"
       :can-manual-sync="canManualSync"
       :can-full-sync="canManualSync"
@@ -2450,10 +2438,8 @@ onUnmounted(() => {
       :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
       :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
       :asana-authentication-state="asanaAuthenticationState"
-      :cleanup-count="cleanupCount"
       @sync="manualSync"
       @full-sync="fullSync"
-      @new-ai-session="startAiSession"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
@@ -2645,9 +2631,11 @@ onUnmounted(() => {
             <AiPanel
               :state="aiState"
               :can-write="canWrite && !guiEditSaving && !aiBusy"
+              :can-start-new-ai-session="codexState.kind === 'ready'"
               :can-send-ai="canSendAi"
               :ai-send-disabled-reason="aiSendDisabledReason"
               @start="startAiTurn"
+              @new-ai-session="startAiSession"
               @select="selectAiProposal"
               @edit="editAiOperation"
               @approve="approveAiProposal"
