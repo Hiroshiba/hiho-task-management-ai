@@ -26,7 +26,7 @@ jobs:
               release/*.dmg
               release/*.zip
           - name: Windows
-            os: windows-latest
+            os: windows-2022
             artifact_name: edge-windows
             artifact_paths: |
               release/*.exe
