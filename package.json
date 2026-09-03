@@ -20,7 +20,7 @@
     "typecheck": "pnpm run typecheck:node && pnpm run typecheck:web",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json",
-    "package": "pnpm run build && electron-builder",
+    "package": "pnpm run build && electron-builder --publish never",
     "package:dir": "pnpm run build && electron-builder --dir",
     "postinstall": "electron-builder install-app-deps"
   },
