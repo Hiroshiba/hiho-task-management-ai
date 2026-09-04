@@ -412,9 +412,10 @@ const codexDeltaSchema = z.object({
 }).strict();
 
 const ipcAiDeltaEventSchema = codexDeltaSchema;
-const aiNewSessionResultSchema = z.object({
-  kind: z.literal("started"),
-}).strict();
+const aiNewSessionResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("started") }).strict(),
+  z.object({ kind: z.literal("authentication_required") }).strict(),
+]);
 
 const relativeMarkdownPathSchema = z
   .string()

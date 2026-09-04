@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import {
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCancelReauthenticationInputSchema,
@@ -184,6 +184,10 @@ type Feedback = {
   readonly message: string;
 };
 
+type AiPanelApi = {
+  readonly focusMessageInput: () => "focused" | "unavailable";
+};
+
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
 const asanaAuthenticationStateMaximumRetryCount = 3;
 
@@ -208,6 +212,8 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
+const aiPanelVisible = ref(false);
+const aiPanelRef = ref<AiPanelApi | null>(null);
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
@@ -310,6 +316,9 @@ const canWrite = computed(() => {
 const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
 const canSendAi = computed(() => codexState.value.kind === "ready"
   && canWrite.value
+  && !guiEditSaving.value
+  && !aiBusy.value);
+const canStartNewAiSession = computed(() => canWrite.value
   && !guiEditSaving.value
   && !aiBusy.value);
 const aiSendDisabledReason = computed(() => {
@@ -442,6 +451,10 @@ function showAiFailure(value: IpcFailure): void {
 
 function showAiUnexpectedFailure(): void {
   setAiFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
+}
+
+function showAiFocusFailure(): void {
+  setAiFeedback("warning", "新しいAIセッションを開始しましたが、入力欄へ移動できませんでした。");
 }
 
 function codexUnavailableReason(
@@ -2052,6 +2065,7 @@ async function startAiSession(): Promise<void> {
   if (aiBusy.value) {
     return;
   }
+  aiPanelVisible.value = true;
   clearAiFeedback();
   const pendingProposal = pendingAiProposal(aiState.value);
   aiBusy.value = true;
@@ -2061,15 +2075,36 @@ async function startAiSession(): Promise<void> {
       showAiFailure(result);
       return;
     }
+    if (result.value.kind === "authentication_required") {
+      codexState.value = rendererCodexStateSchema.parse({ kind: "authentication_required" });
+      setAiFeedback("failure", "CodexへログインするとAIを利用できます。");
+      return;
+    }
     aiState.value = rendererAiStateSchema.parse({
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
-    setAiFeedback("success", "新しい会話を開始しました。");
+    setAiFeedback("success", "新しいAIセッションを開始しました。");
   } catch {
     showAiUnexpectedFailure();
+    return;
   } finally {
     aiBusy.value = false;
+  }
+  await nextTick();
+  const panel = aiPanelRef.value;
+  if (panel == null) {
+    showAiFocusFailure();
+    return;
+  }
+  switch (panel.focusMessageInput()) {
+    case "focused":
+      return;
+    case "unavailable":
+      showAiFocusFailure();
+      return;
+    default:
+      throw new Error("AI入力欄のフォーカス結果が不正です。");
   }
 }
 
@@ -2179,6 +2214,7 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
   });
+  aiPanelVisible.value = true;
   await startAiTurn(request);
 }
 
@@ -2431,6 +2467,7 @@ onUnmounted(() => {
       :can-full-sync="canManualSync"
       :full-sync-running="activeSyncMode === 'full'"
       :can-write="canWrite"
+      :can-start-new-ai-session="canStartNewAiSession"
       :codex-state="codexState"
       :codex-authentication-busy="setupBusy"
       :asana-authentication-busy="asanaAuthenticationBusy"
@@ -2440,6 +2477,7 @@ onUnmounted(() => {
       :asana-authentication-state="asanaAuthenticationState"
       @sync="manualSync"
       @full-sync="fullSync"
+      @new-ai-session="startAiSession"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
@@ -2590,6 +2628,31 @@ onUnmounted(() => {
               :as-of="currentAsOf"
               @select="selectTask"
             /><div class="min-w-0 space-y-3">
+              <div
+                v-show="aiPanelVisible"
+                class="min-w-0 space-y-3"
+              >
+                <p
+                  v-if="aiFeedback != null"
+                  class="sticky top-3 rounded-md px-4 py-3 text-sm"
+                  :class="feedbackClass(aiFeedback.kind)"
+                  :role="feedbackRole(aiFeedback.kind)"
+                >
+                  {{ aiFeedback.message }}
+                </p>
+                <AiPanel
+                  ref="aiPanelRef"
+                  :state="aiState"
+                  :can-write="canWrite && !guiEditSaving && !aiBusy"
+                  :can-send-ai="canSendAi"
+                  :ai-send-disabled-reason="aiSendDisabledReason"
+                  @start="startAiTurn"
+                  @select="selectAiProposal"
+                  @edit="editAiOperation"
+                  @approve="approveAiProposal"
+                  @reject="rejectAiProposal"
+                />
+              </div>
               <p
                 v-if="taskFeedback != null"
                 class="sticky top-3 rounded-md px-4 py-3 text-sm"
@@ -2618,29 +2681,6 @@ onUnmounted(() => {
                 @reanalyze-obsidian-notes="reanalyzeObsidianNotes"
               />
             </div>
-          </div>
-          <div class="min-w-0 space-y-3">
-            <p
-              v-if="aiFeedback != null"
-              class="sticky top-3 rounded-md px-4 py-3 text-sm"
-              :class="feedbackClass(aiFeedback.kind)"
-              :role="feedbackRole(aiFeedback.kind)"
-            >
-              {{ aiFeedback.message }}
-            </p>
-            <AiPanel
-              :state="aiState"
-              :can-write="canWrite && !guiEditSaving && !aiBusy"
-              :can-start-new-ai-session="codexState.kind === 'ready'"
-              :can-send-ai="canSendAi"
-              :ai-send-disabled-reason="aiSendDisabledReason"
-              @start="startAiTurn"
-              @new-ai-session="startAiSession"
-              @select="selectAiProposal"
-              @edit="editAiOperation"
-              @approve="approveAiProposal"
-              @reject="rejectAiProposal"
-            />
           </div>
         </section>
         <div
