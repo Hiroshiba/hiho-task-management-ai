@@ -28,12 +28,14 @@ type ApplicationOutcomePresentation = {
 const props = defineProps<{
   state: RendererAiState;
   canWrite: boolean;
+  canStartNewAiSession: boolean;
   canSendAi: boolean;
   aiSendDisabledReason: string;
 }>();
 
 const emit = defineEmits<{
   (event: "start", input: AiWorkflowTurnRequest): void;
+  (event: "new-ai-session"): void;
   (event: "select", input: AiWorkflowSelectionRequest): void;
   (event: "edit", input: AiWorkflowOperationEdit): void;
   (event: "approve", input: AiWorkflowApprovalRequest): void;
@@ -535,6 +537,16 @@ function applicationReasonLabel(reason: string): string {
             {{ panelTitle }}
           </h2>
         </div>
+        <button
+          v-if="props.canStartNewAiSession"
+          type="button"
+          class="secondary-button"
+          :disabled="!props.canWrite"
+          aria-label="新しい会話を開始"
+          @click="emit('new-ai-session')"
+        >
+          新しい会話
+        </button>
       </div>
     </div>
 

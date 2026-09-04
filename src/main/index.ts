@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   net,
   powerMonitor,
   session,
@@ -692,6 +693,7 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  Menu.setApplicationMenu(null);
   configureContentSecurityPolicy();
   configurePermissionPolicy();
   const rendererUrl = getRendererUrl();
