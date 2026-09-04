@@ -14,6 +14,7 @@ const props = defineProps<{
   canFullSync: boolean;
   fullSyncRunning: boolean;
   canWrite: boolean;
+  canStartNewAiSession: boolean;
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
   asanaAuthenticationBusy: boolean;
@@ -26,6 +27,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "sync"): void;
   (event: "full-sync"): void;
+  (event: "new-ai-session"): void;
   (event: "complete-codex-authentication"): void;
   (event: "begin-reauthentication"): void;
   (event: "recheck-authentication-state"): void;
@@ -341,6 +343,16 @@ function handleAsanaAuthenticationAction(): void {
           role="group"
           aria-label="Codexの操作"
         >
+          <button
+            v-if="codexState.kind === 'ready'"
+            type="button"
+            class="secondary-button"
+            :disabled="!props.canStartNewAiSession"
+            aria-label="新しいAIセッションを開始"
+            @click="emit('new-ai-session')"
+          >
+            新しいAIセッション
+          </button>
           <button
             v-if="codexState.kind === 'authentication_required'"
             type="button"

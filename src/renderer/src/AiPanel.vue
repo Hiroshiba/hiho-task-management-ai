@@ -28,14 +28,12 @@ type ApplicationOutcomePresentation = {
 const props = defineProps<{
   state: RendererAiState;
   canWrite: boolean;
-  canStartNewAiSession: boolean;
   canSendAi: boolean;
   aiSendDisabledReason: string;
 }>();
 
 const emit = defineEmits<{
   (event: "start", input: AiWorkflowTurnRequest): void;
-  (event: "new-ai-session"): void;
   (event: "select", input: AiWorkflowSelectionRequest): void;
   (event: "edit", input: AiWorkflowOperationEdit): void;
   (event: "approve", input: AiWorkflowApprovalRequest): void;
@@ -43,6 +41,7 @@ const emit = defineEmits<{
 }>();
 
 const message = ref("");
+const messageInput = ref<HTMLTextAreaElement | null>(null);
 const selectionMode = ref<"all" | "groups" | "operations">("all");
 const selectedGroupIds = ref<string[]>([]);
 const selectedOperationIds = ref<string[]>([]);
@@ -50,6 +49,20 @@ const editingOperationId = ref<string | undefined>();
 const editValue = ref("");
 const editEvidence = ref("");
 const localError = ref("");
+
+function focusMessageInput(): "focused" | "unavailable" {
+  const input = messageInput.value;
+  if (input == null) {
+    return "unavailable";
+  }
+  if (input.disabled) {
+    return "unavailable";
+  }
+  input.focus();
+  return "focused";
+}
+
+defineExpose({ focusMessageInput });
 
 function applicationOutcomePresentation(outcome: ApplicationOutcome): ApplicationOutcomePresentation {
   switch (outcome) {
@@ -537,16 +550,6 @@ function applicationReasonLabel(reason: string): string {
             {{ panelTitle }}
           </h2>
         </div>
-        <button
-          v-if="props.canStartNewAiSession"
-          type="button"
-          class="secondary-button"
-          :disabled="!props.canWrite"
-          aria-label="新しい会話を開始"
-          @click="emit('new-ai-session')"
-        >
-          新しい会話
-        </button>
       </div>
     </div>
 
@@ -571,6 +574,7 @@ function applicationReasonLabel(reason: string): string {
             for="ai-message"
           >質問や依頼<textarea
             id="ai-message"
+            ref="messageInput"
             v-model="message"
             class="text-input min-h-24"
             :disabled="!props.canSendAi"
