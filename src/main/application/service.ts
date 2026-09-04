@@ -3969,10 +3969,20 @@ export class TaskHubApplication {
       },
       startNewSession: async (signal) => {
         this.assertOperationalReady();
-        this.aiStartResult = await this.codexSession.startNewSession(signal);
-        this.codexAuthenticationRequired = false;
-        this.publishAiStatus();
-        return { kind: "started" };
+        const startResult = await this.codexSession.startNewSession(signal);
+        this.aiStartResult = startResult;
+        switch (startResult.state) {
+          case "ready":
+            this.codexAuthenticationRequired = false;
+            this.publishAiStatus();
+            return { kind: "started" };
+          case "authentication_required":
+            this.codexAuthenticationRequired = true;
+            this.publishAiStatus();
+            return { kind: "authentication_required" };
+          default:
+            throw new Error("新しいCodexセッションの起動結果が不正です。");
+        }
       },
       startTurn: async (input: IpcAiTurnInput, signal): Promise<IpcAiTurnResult> => {
         this.assertWritesAllowed();

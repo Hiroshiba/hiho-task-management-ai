@@ -2075,6 +2075,11 @@ async function startAiSession(): Promise<void> {
       showAiFailure(result);
       return;
     }
+    if (result.value.kind === "authentication_required") {
+      codexState.value = rendererCodexStateSchema.parse({ kind: "authentication_required" });
+      setAiFeedback("failure", "CodexへログインするとAIを利用できます。");
+      return;
+    }
     aiState.value = rendererAiStateSchema.parse({
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
