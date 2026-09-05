@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  canonicalizeJson,
   dateSchema,
   identifierSchema,
   isoDateTimeSchema,
@@ -561,7 +560,6 @@ function createDetail(evaluatedTask: EvaluatedTask): RankingDetail {
       : evaluatedTask.tie_break.effective_due_at;
   const tieBreakText = `タイブレーク: 実効期限${effectiveDueText}、重要度${evaluatedTask.tie_break.importance}、解放点${evaluatedTask.tie_break.release_points}、活動基準日${evaluatedTask.tie_break.activity_anchor_on}、GID${evaluatedTask.tie_break.gid}`;
   const text = [
-    `入力: ${canonicalizeJson(evaluatedTask.indexed_task.task)}`,
     scoreText,
     exclusionText,
     `理由チップ: ${evaluatedTask.reason_chips.join("、")}`,
