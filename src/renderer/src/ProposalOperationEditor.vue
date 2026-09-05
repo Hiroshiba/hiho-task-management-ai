@@ -39,7 +39,7 @@ type ObsidianDraft = {
   vaultId: string;
   path: string;
   title: string;
-  confidence: string;
+  confidence: number | string;
 };
 
 type FormState = {
@@ -118,12 +118,23 @@ function targetFromKey(value: string): ProposalTarget {
 function targetLabel(target: ProposalTarget): string {
   if (target.kind === "existing") {
     const task = props.tasks.find((candidate) => candidate.gid === target.gid);
-    return task == null ? `既存タスク ${target.gid}` : task.title;
+    if (task == null) {
+      return `既存タスク ${target.gid}`;
+    }
+    const duplicateTitle = props.tasks.filter((candidate) => candidate.title === task.title).length > 1;
+    return duplicateTitle
+      ? `既存タスク「${task.title}」 GID ${target.gid}`
+      : `既存タスク「${task.title}」`;
   }
   const creation = props.creations.find((candidate) => candidate.temporary_ref === target.ref);
-  return creation == null
-    ? `提案タスク ${target.ref}`
-    : creation.after.title;
+  if (creation == null) {
+    return `提案タスク ${target.ref}`;
+  }
+  const duplicateTitle = props.creations.filter((candidate) =>
+    candidate.after.title === creation.after.title).length > 1;
+  return duplicateTitle
+    ? `新規タスク「${creation.after.title}」 一時参照 ${target.ref}`
+    : `新規タスク「${creation.after.title}」`;
 }
 
 function addOperationTargets(operation: ProposalOperation, add: (target: ProposalTarget) => void): void {
@@ -319,7 +330,7 @@ function createObsidianDraft(link: ObsidianLink): ObsidianDraft {
     vaultId: link.vault_id,
     path: link.path,
     title: link.title,
-    confidence: String(link.confidence),
+    confidence: link.confidence,
   };
 }
 
@@ -387,11 +398,11 @@ function obsidianLinksAfter(): readonly ObsidianLink[] {
   }));
 }
 
-function confidenceValue(value: string): number {
-  if (value.trim().length === 0) {
+function confidenceValue(value: number | string): number {
+  if (typeof value === "string" && value.trim().length === 0) {
     throw new FormInputError("信頼度を入力してください。");
   }
-  const confidence = Number(value);
+  const confidence = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(confidence)) {
     throw new FormInputError("信頼度は数値で入力してください。");
   }
@@ -600,7 +611,7 @@ function isoToDatetimeLocal(value: string): string {
 
 <template>
   <form
-    class="space-y-4"
+    class="proposal-operation-editor min-w-0 space-y-4"
     @submit.prevent="save"
   >
     <p
@@ -613,7 +624,7 @@ function isoToDatetimeLocal(value: string): string {
 
     <div
       v-if="operation.operation === 'create_task'"
-      class="grid gap-4 sm:grid-cols-2"
+      class="grid min-w-0 gap-4 sm:grid-cols-2"
     >
       <label class="field-label sm:col-span-2">
         タイトル
@@ -839,7 +850,7 @@ function isoToDatetimeLocal(value: string): string {
           <div
             v-for="(dependency, index) in form.dependencies"
             :key="dependency.id"
-            class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_auto]"
+            class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,7rem)_minmax(0,1fr)_auto]"
           >
             <select
               v-model="dependency.targetKey"
@@ -919,7 +930,7 @@ function isoToDatetimeLocal(value: string): string {
           <div
             v-for="(link, index) in form.obsidianLinks"
             :key="link.id"
-            class="grid gap-2 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"
+            class="grid min-w-0 gap-2 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"
           >
             <label class="field-label">
               Vault ID
@@ -1120,7 +1131,7 @@ function isoToDatetimeLocal(value: string): string {
         <div
           v-for="(dependency, index) in form.dependencies"
           :key="dependency.id"
-          class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_auto]"
+          class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,7rem)_minmax(0,1fr)_auto]"
         >
           <select
             v-model="dependency.targetKey"
@@ -1225,7 +1236,7 @@ function isoToDatetimeLocal(value: string): string {
 
     <div
       v-else-if="operation.operation === 'link_obsidian'"
-      class="grid gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"
+      class="grid min-w-0 gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"
     >
       <template v-if="form.obsidianLinks[0] != null">
         <label class="field-label">
@@ -1324,3 +1335,18 @@ function isoToDatetimeLocal(value: string): string {
     </div>
   </form>
 </template>
+
+<style scoped>
+.proposal-operation-editor,
+.proposal-operation-editor .field-group,
+.proposal-operation-editor fieldset,
+.proposal-operation-editor .grid,
+.proposal-operation-editor .field-label {
+  min-width: 0;
+}
+
+.proposal-operation-editor .text-input {
+  width: 100%;
+  min-width: 0;
+}
+</style>

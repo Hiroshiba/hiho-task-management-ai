@@ -23,6 +23,9 @@ type TaskTitleReference = {
   readonly gid: string;
   readonly title: string;
 };
+type TaskLabelCandidate = {
+  readonly title: string;
+};
 
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
 type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
@@ -135,9 +138,7 @@ const creations = computed((): readonly CreateTaskOperation[] => {
   if (currentProposal == null) {
     return [];
   }
-  return currentProposal.proposal.groups
-    .flatMap((group) => group.operations)
-    .filter((operation): operation is CreateTaskOperation => operation.operation === "create_task");
+  return createTaskOperations(currentProposal);
 });
 
 const proposalMessage = computed(() => {
@@ -315,26 +316,61 @@ function operationLabel(operation: ProposalOperation): string {
   }
 }
 
-function taskLabel(gid: string): string {
+function taskReferenceLabel(
+  kind: "タスク" | "新規タスク",
+  title: string,
+  reference: string,
+  candidates: readonly TaskLabelCandidate[],
+  referenceKind: "ID" | "一時参照",
+  includeReference: boolean,
+): string {
+  const hasDuplicateTitle = candidates.filter((candidate) => candidate.title === title).length > 1;
+  let suffix = "";
+  if (includeReference || hasDuplicateTitle) {
+    suffix = `・${referenceKind} ${reference}`;
+  }
+  return `${kind}「${title}」${suffix}`;
+}
+
+function taskLabel(gid: string, includeReference: boolean): string {
   const task = props.tasks.find((candidate) => candidate.gid === gid);
   if (task == null) {
     return `タスク名未取得・ID ${gid}`;
   }
-  return `タスク「${task.title}」`;
+  return taskReferenceLabel("タスク", task.title, task.gid, props.tasks, "ID", includeReference);
+}
+
+function createTaskOperations(proposal: AiWorkflowProposalView): readonly CreateTaskOperation[] {
+  return proposal.proposal.groups
+    .flatMap((group) => group.operations)
+    .filter((operation): operation is CreateTaskOperation => operation.operation === "create_task");
 }
 
 function createTaskOperationForRef(
   proposal: AiWorkflowProposalView,
   temporaryRef: string,
 ): CreateTaskOperation {
-  const operation = proposal.proposal.groups
-    .flatMap((group) => group.operations)
-    .find((candidate): candidate is CreateTaskOperation =>
-      candidate.operation === "create_task" && candidate.temporary_ref === temporaryRef);
+  const operation = createTaskOperations(proposal)
+    .find((candidate) => candidate.temporary_ref === temporaryRef);
   if (operation == null) {
     throw new Error("一時参照に対応するタスク作成操作がありません。");
   }
   return operation;
+}
+
+function createTaskLabel(
+  proposal: AiWorkflowProposalView,
+  operation: CreateTaskOperation,
+  includeReference: boolean,
+): string {
+  return taskReferenceLabel(
+    "新規タスク",
+    operation.after.title,
+    operation.temporary_ref,
+    createTaskOperations(proposal).map((candidate) => candidate.after),
+    "一時参照",
+    includeReference,
+  );
 }
 
 function targetReferenceLabel(
@@ -342,10 +378,10 @@ function targetReferenceLabel(
   target: ProposalTarget,
 ): string {
   if (target.kind === "existing") {
-    return taskLabel(target.gid);
+    return taskLabel(target.gid, false);
   }
   const createOperation = createTaskOperationForRef(proposal, target.ref);
-  return `新規タスク「${createOperation.after.title}」`;
+  return createTaskLabel(proposal, createOperation, false);
 }
 
 function targetLabel(
@@ -353,7 +389,7 @@ function targetLabel(
   operation: ProposalOperation,
 ): string {
   if (operation.operation === "create_task") {
-    return `新規タスク「${operation.after.title}」`;
+    return createTaskLabel(proposal, operation, false);
   }
   return targetReferenceLabel(proposal, operation.target);
 }
@@ -363,25 +399,25 @@ function targetDetailLabel(
   operation: ProposalOperation,
 ): string {
   if (operation.operation === "create_task") {
-    return `${targetLabel(proposal, operation)}・一時参照 ${operation.temporary_ref}`;
+    return createTaskLabel(proposal, operation, true);
   }
   if (operation.target.kind === "existing") {
-    return `${targetLabel(proposal, operation)}・ID ${operation.target.gid}`;
+    return taskLabel(operation.target.gid, true);
   }
-  return `${targetLabel(proposal, operation)}・一時参照 ${operation.target.ref}`;
+  return createTaskLabel(proposal, createTaskOperationForRef(proposal, operation.target.ref), true);
 }
 
 function rankTaskLabel(proposal: AiWorkflowProposalView, gid: string): string {
   const temporaryPrefix = "temporary:";
   if (!gid.startsWith(temporaryPrefix)) {
-    return taskLabel(gid);
+    return taskLabel(gid, false);
   }
   const temporaryRef = gid.slice(temporaryPrefix.length);
   if (temporaryRef.length === 0) {
     throw new Error("順位影響の一時参照が空です。");
   }
   const createOperation = createTaskOperationForRef(proposal, temporaryRef);
-  return `新規タスク「${createOperation.after.title}」`;
+  return createTaskLabel(proposal, createOperation, false);
 }
 
 function notesValueLabel(value: string): string {
