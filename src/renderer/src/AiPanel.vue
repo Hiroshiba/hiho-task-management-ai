@@ -2,7 +2,6 @@
 import { computed, ref, watch } from "vue";
 import {
   aiWorkflowApprovalRequestSchema,
-  aiWorkflowOperationEditSchema,
   aiWorkflowSelectionRequestSchema,
   aiWorkflowTurnRequestSchema,
   type AiWorkflowApprovalRequest,
@@ -18,6 +17,7 @@ import {
   statusLabel,
   type RendererAiState,
 } from "./state";
+import ProposalOperationEditor from "./ProposalOperationEditor.vue";
 
 type TaskTitleReference = {
   readonly gid: string;
@@ -65,8 +65,6 @@ const selectionMode = ref<"all" | "groups" | "operations">("all");
 const selectedGroupIds = ref<string[]>([]);
 const selectedOperationIds = ref<string[]>([]);
 const editingOperationId = ref<string | undefined>();
-const editValue = ref("");
-const editEvidence = ref("");
 const localError = ref("");
 
 function applicationOutcomePresentation(outcome: ApplicationOutcome): ApplicationOutcomePresentation {
@@ -115,6 +113,16 @@ const proposal = computed(() => {
     case "applied":
       return undefined;
   }
+});
+
+const creations = computed((): readonly CreateTaskOperation[] => {
+  const currentProposal = proposal.value;
+  if (currentProposal == null) {
+    return [];
+  }
+  return currentProposal.proposal.groups
+    .flatMap((group) => group.operations)
+    .filter((operation): operation is CreateTaskOperation => operation.operation === "create_task");
 });
 
 const proposalMessage = computed(() => {
@@ -183,17 +191,11 @@ function rejectCurrentProposal(): void {
   emit("reject", requireProposal().proposal_id);
 }
 
-function saveCurrentEdit(operation: ProposalOperation): void {
-  saveEdit(requireProposal(), operation);
-}
-
 function resetProposalState(): void {
   selectionMode.value = "all";
   selectedGroupIds.value = [];
   selectedOperationIds.value = [];
   editingOperationId.value = undefined;
-  editValue.value = "";
-  editEvidence.value = "";
   localError.value = "";
 }
 
@@ -544,40 +546,18 @@ function evidenceKindLabel(
   }
 }
 
-function serializeEditValue(value: unknown): string {
-  const serialized = JSON.stringify(value);
-  if (serialized == null) {
-    throw new Error("編集値をJSONへ変換できません。");
-  }
-  return serialized;
-}
-
 function startEditing(operation: ProposalOperation): void {
   editingOperationId.value = operation.operation_id;
-  editValue.value = serializeEditValue(operation.after);
-  editEvidence.value = "user_message";
   localError.value = "";
 }
 
-function saveEdit(proposal: AiWorkflowProposalView, operation: ProposalOperation): void {
-  let parsedValue: unknown = editValue.value;
-  try {
-    parsedValue = JSON.parse(editValue.value);
-  } catch {
-    parsedValue = editValue.value;
-  }
-  try {
-    const edit = aiWorkflowOperationEditSchema.parse({
-      proposal_id: proposal.proposal_id,
-      operation_id: operation.operation_id,
-      after: parsedValue,
-      evidence_locator: editEvidence.value,
-    });
-    emit("edit", edit);
-    editingOperationId.value = undefined;
-  } catch {
-    localError.value = "操作後の値と根拠の場所を確認してください。";
-  }
+function saveEditedOperation(input: AiWorkflowOperationEdit): void {
+  emit("edit", input);
+  editingOperationId.value = undefined;
+}
+
+function cancelEditing(): void {
+  editingOperationId.value = undefined;
 }
 
 function operationIsApplicable(proposal: AiWorkflowProposalView, operationId: string): boolean {
@@ -984,35 +964,18 @@ function applicationReasonLabel(reason: string): string {
                   @click="startEditing(operation)"
                 >
                   変更後を編集
-                </button><form
+                </button><ProposalOperationEditor
                   v-if="editingOperationId === operation.operation_id"
-                  class="mt-3 grid gap-2 border-t border-slate-200 pt-3 dark:border-slate-700"
-                  @submit.prevent="saveCurrentEdit(operation)"
-                >
-                  <label
-                    class="field-label"
-                    :for="`edit-${operation.operation_id}`"
-                  >変更後の値<textarea
-                    :id="`edit-${operation.operation_id}`"
-                    v-model="editValue"
-                    class="text-input min-h-20"
-                    :disabled="!props.canWrite"
-                  /></label><label
-                    class="field-label"
-                    :for="`evidence-${operation.operation_id}`"
-                  >ユーザー編集の根拠の場所<input
-                    :id="`evidence-${operation.operation_id}`"
-                    v-model="editEvidence"
-                    class="text-input"
-                    :disabled="!props.canWrite"
-                  ></label><button
-                    type="submit"
-                    class="secondary-button self-start"
-                    :disabled="!props.canWrite"
-                  >
-                    編集を再検証
-                  </button>
-                </form>
+                  :key="operation.operation_id"
+                  class="mt-3"
+                  :operation="operation"
+                  :proposal-id="requireProposal().proposal_id"
+                  :tasks="props.tasks"
+                  :creations="creations"
+                  :disabled="!props.canWrite"
+                  @save="saveEditedOperation"
+                  @cancel="cancelEditing"
+                />
               </article>
             </div>
           </div>
