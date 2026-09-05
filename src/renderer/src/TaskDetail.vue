@@ -586,33 +586,44 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               @change="submitImportance"
             ><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label>
           </div>
-          <div class="field-group">
+          <div class="field-group min-w-0">
             <label
               class="field-label"
               for="detail-due-kind"
-            >期限<select
-              id="detail-due-kind"
-              v-model="dueKind"
-              class="text-input"
-              :disabled="!props.canWrite"
-              @change="submitDueKind"
-            ><option value="none">期限なし</option><option value="due_on">日付</option><option value="due_at">日時</option></select></label><input
-              v-if="dueKind === 'due_on'"
-              v-model="dueValue"
-              class="text-input"
-              type="date"
-              aria-label="期限日"
-              :disabled="!props.canWrite"
-              @change="submitDue"
-            ><input
-              v-else-if="dueKind === 'due_at'"
-              v-model="dueValue"
-              class="text-input"
-              type="datetime-local"
-              aria-label="期限日時"
-              :disabled="!props.canWrite"
-              @change="submitDue"
-            >
+            >期限</label>
+            <div class="grid min-w-0 grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)] gap-2">
+              <select
+                id="detail-due-kind"
+                v-model="dueKind"
+                class="text-input min-w-0"
+                :disabled="!props.canWrite"
+                @change="submitDueKind"
+              >
+                <option value="none">
+                  期限なし
+                </option><option value="due_on">
+                  日付
+                </option><option value="due_at">
+                  日時
+                </option>
+              </select><input
+                v-if="dueKind === 'due_on'"
+                v-model="dueValue"
+                class="text-input min-w-0"
+                type="date"
+                aria-label="期限日"
+                :disabled="!props.canWrite"
+                @change="submitDue"
+              ><input
+                v-else-if="dueKind === 'due_at'"
+                v-model="dueValue"
+                class="text-input min-w-0"
+                type="datetime-local"
+                aria-label="期限日時"
+                :disabled="!props.canWrite"
+                @change="submitDue"
+              >
+            </div>
           </div>
           <div class="field-group">
             <label
@@ -637,7 +648,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
             >説明<textarea
               id="detail-notes"
               v-model="notes"
-              class="text-input min-h-32"
+              class="text-input min-h-48"
               :disabled="!props.canWrite"
               @change="submitNotes"
             /></label>
