@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   areaSchema,
   dateSchema,
   importanceSchema,
   isoDateTimeSchema,
+  parentWorkModeSchema,
+  taskStatusSchema,
   type Dependency,
   type ObsidianLink,
 } from "../../shared/domain";
@@ -24,6 +26,7 @@ import {
   statusLabel,
   type RendererGuiEdit,
 } from "./state";
+import RekaSelect from "./RekaSelect.vue";
 
 const props = defineProps<{
   task: ViewModelTaskDetail | undefined;
@@ -61,6 +64,43 @@ const parentWorkMode = ref<"children_only" | "has_own_work" | "unknown">("unknow
 const obsidianVaultId = ref("");
 const obsidianQuery = ref("");
 const localError = ref("");
+
+const statusOptions = [
+  { value: "not_started", label: "未着手" },
+  { value: "in_progress", label: "進行中" },
+  { value: "completed", label: "完了" },
+  { value: "withdrawn", label: "取り下げ" },
+];
+
+const importanceOptions = [
+  { value: 1, label: "1" },
+  { value: 2, label: "2" },
+  { value: 3, label: "3" },
+  { value: 4, label: "4" },
+  { value: 5, label: "5" },
+];
+
+const dueKindOptions = [
+  { value: "none", label: "期限なし" },
+  { value: "due_on", label: "日付" },
+  { value: "due_at", label: "日時" },
+];
+
+const parentWorkModeOptions = [
+  { value: "children_only", label: "子タスクのみ" },
+  { value: "has_own_work", label: "親自身の作業あり" },
+  { value: "unknown", label: "不明" },
+];
+
+const areaOptions = computed(() => props.areas.map((candidate) => ({
+  value: candidate,
+  label: candidate,
+})));
+
+const obsidianVaultOptions = computed(() => props.obsidianVaultIds.map((candidate) => ({
+  value: candidate,
+  label: candidate,
+})));
 
 function resetForm(task: ViewModelTaskDetail | undefined): void {
   localError.value = "";
@@ -129,12 +169,22 @@ function submitStatus(): void {
   submitOperation({ kind: "set_status", value: status.value });
 }
 
+function selectStatus(value: string | number): void {
+  status.value = taskStatusSchema.parse(value);
+  submitStatus();
+}
+
 function submitImportance(): void {
   try {
     submitOperation({ kind: "set_importance", value: importanceSchema.parse(importance.value) });
   } catch {
     localError.value = "重要度を確認してください。";
   }
+}
+
+function selectImportance(value: string | number): void {
+  importance.value = importanceSchema.parse(value);
+  submitImportance();
 }
 
 function submitDue(): void {
@@ -157,6 +207,14 @@ function submitDueKind(): void {
   if (dueKind.value === "none") {
     submitOperation({ kind: "clear_due" });
   }
+}
+
+function selectDueKind(value: string | number): void {
+  if (value !== "none" && value !== "due_on" && value !== "due_at") {
+    throw new TypeError("期限種別の形式が不正です。");
+  }
+  dueKind.value = value;
+  submitDueKind();
 }
 
 function datetimeLocalToIso(value: string): string {
@@ -234,6 +292,11 @@ function submitArea(): void {
   }
 }
 
+function selectArea(value: string | number): void {
+  area.value = areaSchema.parse(value);
+  submitArea();
+}
+
 function currentDependencies(task: ViewModelTaskDetail): Dependency[] {
   return task.dependencies.map((dependency) => ({
     task_gid: dependency.gid,
@@ -265,6 +328,21 @@ function submitParent(): void {
 
 function submitParentWorkMode(): void {
   submitOperation({ kind: "set_parent_work_mode", value: parentWorkMode.value });
+}
+
+function selectParentWorkMode(value: string | number): void {
+  parentWorkMode.value = parentWorkModeSchema.parse(value);
+  submitParentWorkMode();
+}
+
+function selectObsidianVault(value: string | number): void {
+  if (typeof value !== "string") {
+    throw new TypeError("ObsidianのVault選択値の形式が不正です。");
+  }
+  if (!props.obsidianVaultIds.includes(value)) {
+    throw new Error("ObsidianのVault選択値が登録済みVaultにありません。");
+  }
+  obsidianVaultId.value = value;
 }
 
 function unlinkLink(link: ObsidianLink): void {
@@ -564,54 +642,50 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
               <label
                 class="field-label"
                 for="detail-status"
-              >状態<select
+              >状態<RekaSelect
                 id="detail-status"
-                v-model="status"
-                class="text-input"
+                :model-value="status"
+                :options="statusOptions"
                 :disabled="!props.canWrite"
-                @change="submitStatus"
-              ><option value="not_started">未着手</option><option value="in_progress">進行中</option><option value="completed">完了</option><option value="withdrawn">取り下げ</option></select></label>
+                @update:model-value="selectStatus"
+              /></label>
             </div>
             <div class="field-group">
               <label
                 class="field-label"
                 for="detail-importance"
-              >重要度<select
+              >重要度<RekaSelect
                 id="detail-importance"
-                v-model.number="importance"
-                class="text-input"
+                :model-value="importance"
+                :options="importanceOptions"
                 :disabled="!props.canWrite"
-                @change="submitImportance"
-              ><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label>
+                @update:model-value="selectImportance"
+              /></label>
             </div>
             <div class="field-group">
               <label
                 class="field-label"
                 for="detail-area"
-              >領域<select
+              >領域<RekaSelect
                 id="detail-area"
-                v-model="area"
-                class="text-input"
+                :model-value="area"
+                :options="areaOptions"
                 :disabled="!props.canWrite"
-                @change="submitArea"
-              ><option
-                v-for="candidate in props.areas"
-                :key="candidate"
-                :value="candidate"
-              >{{ candidate }}</option></select></label>
+                @update:model-value="selectArea"
+              /></label>
             </div>
           </div>
           <div class="field-group">
             <label
               class="field-label"
               for="detail-due-kind"
-            >期限<select
+            >期限<RekaSelect
               id="detail-due-kind"
-              v-model="dueKind"
-              class="text-input"
+              :model-value="dueKind"
+              :options="dueKindOptions"
               :disabled="!props.canWrite"
-              @change="submitDueKind"
-            ><option value="none">期限なし</option><option value="due_on">日付</option><option value="due_at">日時</option></select></label><input
+              @update:model-value="selectDueKind"
+            /></label><input
               v-if="dueKind === 'due_on'"
               v-model="dueValue"
               class="text-input"
@@ -913,13 +987,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                   <label
                     class="field-label min-w-0"
                     for="detail-parent-mode"
-                  >親タスクの作業範囲<select
+                  >親タスクの作業範囲<RekaSelect
                     id="detail-parent-mode"
-                    v-model="parentWorkMode"
-                    class="text-input min-w-0"
+                    :model-value="parentWorkMode"
+                    :options="parentWorkModeOptions"
                     :disabled="!props.canWrite"
-                    @change="submitParentWorkMode"
-                  ><option value="children_only">子タスクのみ</option><option value="has_own_work">親自身の作業あり</option><option value="unknown">不明</option></select></label>
+                    @update:model-value="selectParentWorkMode"
+                  /></label>
                 </div>
               </div>
             </div>
@@ -1089,16 +1163,13 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
                     v-if="props.obsidianVaultIds.length > 0"
                     class="field-label min-w-0"
                     for="obsidian-vault"
-                  >Vault<select
+                  >Vault<RekaSelect
                     id="obsidian-vault"
-                    v-model="obsidianVaultId"
-                    class="text-input min-w-0"
+                    :model-value="obsidianVaultId"
+                    :options="obsidianVaultOptions"
                     :disabled="!props.readAvailable"
-                  ><option
-                    v-for="candidate in props.obsidianVaultIds"
-                    :key="candidate"
-                    :value="candidate"
-                  >{{ candidate }}</option></select></label>
+                    @update:model-value="selectObsidianVault"
+                  /></label>
                   <p
                     v-else
                     class="break-words text-xs text-slate-600 dark:text-slate-400"

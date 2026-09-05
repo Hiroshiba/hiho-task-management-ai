@@ -13,6 +13,13 @@ import {
 } from "../../shared/ai-workflow";
 import type { ProposalOperation } from "../../shared/ai";
 import type { RendererAiState } from "./state";
+import {
+  CheckboxIndicator,
+  CheckboxRoot,
+  RadioGroupIndicator,
+  RadioGroupItem,
+  RadioGroupRoot,
+} from "reka-ui";
 
 type ApplicationOutcome = Extract<RendererAiState, { kind: "applied" }>["result"]["application"]["outcome"];
 
@@ -213,11 +220,36 @@ function sendMessage(): void {
   }
 }
 
-function toggleValue(values: string[], value: string): string[] {
-  if (values.includes(value)) {
-    return values.filter((candidate) => candidate !== value);
+function updateSelection(values: string[], value: string, checked: boolean): string[] {
+  const selected = values.includes(value);
+  if (checked === selected) {
+    return values;
   }
-  return [...values, value];
+  if (checked) {
+    return [...values, value];
+  }
+  return values.filter((candidate) => candidate !== value);
+}
+
+function updateGroupSelection(groupId: string, value: boolean | "indeterminate"): void {
+  if (value === "indeterminate") {
+    throw new TypeError("変更グループ選択値の形式が不正です。");
+  }
+  selectedGroupIds.value = updateSelection(selectedGroupIds.value, groupId, value);
+}
+
+function updateOperationSelection(operationId: string, value: boolean | "indeterminate"): void {
+  if (value === "indeterminate") {
+    throw new TypeError("変更操作選択値の形式が不正です。");
+  }
+  selectedOperationIds.value = updateSelection(selectedOperationIds.value, operationId, value);
+}
+
+function updateSelectionMode(value: unknown): void {
+  if (value !== "all" && value !== "groups" && value !== "operations") {
+    throw new TypeError("適用範囲の形式が不正です。");
+  }
+  selectionMode.value = value;
 }
 
 function selectProposal(proposal: AiWorkflowProposalView): void {
@@ -681,14 +713,18 @@ function applicationReasonLabel(reason: string): string {
             class="rounded-md border border-slate-200 p-4 dark:border-slate-700"
           >
             <div class="flex flex-wrap items-center gap-3">
-              <input
+              <CheckboxRoot
                 v-if="selectionMode === 'groups'"
-                :checked="selectedGroup(group.group_id)"
+                :model-value="selectedGroup(group.group_id)"
                 :disabled="!groupIsApplicable(requireProposal(), group.group_id)"
-                type="checkbox"
                 :aria-label="`変更グループ ${groupIndex + 1}を選択`"
-                @change="selectedGroupIds = toggleValue(selectedGroupIds, group.group_id)"
-              ><span class="font-medium text-slate-900 dark:text-slate-100">変更グループ {{ groupIndex + 1 }}</span><span class="text-xs text-slate-600 dark:text-slate-400">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
+                class="inline-flex size-4 shrink-0 items-center justify-center rounded border border-slate-400 bg-white text-xs text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 data-[state=checked]:bg-sky-100 data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:data-[state=checked]:border-sky-400 dark:data-[state=checked]:bg-sky-950 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
+                @update:model-value="(value) => updateGroupSelection(group.group_id, value)"
+              >
+                <CheckboxIndicator aria-hidden="true">
+                  ✓
+                </CheckboxIndicator>
+              </CheckboxRoot><span class="font-medium text-slate-900 dark:text-slate-100">変更グループ {{ groupIndex + 1 }}</span><span class="text-xs text-slate-600 dark:text-slate-400">{{ group.atomic ? '一括適用' : '個別適用' }}</span><span
                 v-if="selectionMode === 'operations' && group.atomic"
                 class="text-xs text-slate-600 dark:text-slate-400"
               >一括選択で適用</span>
@@ -709,13 +745,13 @@ function applicationReasonLabel(reason: string): string {
                   </div><label
                     v-if="selectionMode === 'operations' && !group.atomic"
                     class="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"
-                  ><input
-                    :checked="selectedOperation(operation.operation_id)"
+                  ><CheckboxRoot
+                    :model-value="selectedOperation(operation.operation_id)"
                     :disabled="!operationIsApplicable(requireProposal(), operation.operation_id)"
-                    type="checkbox"
                     :aria-label="`${operationLabel(operation)}を選択`"
-                    @change="selectedOperationIds = toggleValue(selectedOperationIds, operation.operation_id)"
-                  >操作を選択</label>
+                    class="inline-flex size-4 shrink-0 items-center justify-center rounded border border-slate-400 bg-white text-xs text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 data-[state=checked]:bg-sky-100 data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:data-[state=checked]:border-sky-400 dark:data-[state=checked]:bg-sky-950 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
+                    @update:model-value="(value) => updateOperationSelection(operation.operation_id, value)"
+                  ><CheckboxIndicator aria-hidden="true">✓</CheckboxIndicator></CheckboxRoot>操作を選択</label>
                 </div><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
                   <dt class="text-slate-600 dark:text-slate-400">
                     変更前
@@ -831,20 +867,36 @@ function applicationReasonLabel(reason: string): string {
         >
           適用できない変更があります。適用範囲を選び直すか、変更案を修正してください。
         </p>
-        <div class="flex flex-wrap gap-2">
-          <label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
-            v-model="selectionMode"
-            type="radio"
-            value="all"
-          >全体</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
-            v-model="selectionMode"
-            type="radio"
-            value="groups"
-          >グループ単位</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input
-            v-model="selectionMode"
-            type="radio"
-            value="operations"
-          >非一括操作単位</label><button
+        <div class="flex flex-wrap items-center gap-2">
+          <RadioGroupRoot
+            :model-value="selectionMode"
+            class="contents"
+            aria-label="適用範囲"
+            @update:model-value="updateSelectionMode"
+          >
+            <label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><RadioGroupItem
+              value="all"
+              aria-label="全体"
+              class="inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-slate-400 bg-white text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
+            ><RadioGroupIndicator
+              aria-hidden="true"
+              class="size-2 rounded-full bg-current"
+            /></RadioGroupItem>全体</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><RadioGroupItem
+              value="groups"
+              aria-label="グループ単位"
+              class="inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-slate-400 bg-white text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
+            ><RadioGroupIndicator
+              aria-hidden="true"
+              class="size-2 rounded-full bg-current"
+            /></RadioGroupItem>グループ単位</label><label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><RadioGroupItem
+              value="operations"
+              aria-label="非一括操作単位"
+              class="inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-slate-400 bg-white text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
+            ><RadioGroupIndicator
+              aria-hidden="true"
+              class="size-2 rounded-full bg-current"
+            /></RadioGroupItem>非一括操作単位</label>
+          </RadioGroupRoot><button
             type="button"
             class="secondary-button"
             :disabled="!props.canWrite || !selectionCanBeSubmitted"
