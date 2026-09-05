@@ -467,16 +467,6 @@ function executionPoints(task: ViewModelTaskDetail): number | undefined {
   return breakdown.execution_points;
 }
 
-function rankingDetailsOpen(task: ViewModelTaskDetail): boolean {
-  switch (task.ranking.kind) {
-    case "ranked":
-      return false;
-    case "excluded":
-    case "unavailable":
-      return true;
-  }
-}
-
 function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
   return task.cleanup_warnings.length > 0;
 }
@@ -493,7 +483,7 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
     >
       <h2
         id="task-detail-title"
-        class="text-lg font-semibold text-slate-900 dark:text-slate-100"
+        class="sr-only"
       >
         タスク詳細
       </h2>
@@ -505,12 +495,9 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
       <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
         <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <p class="text-xs text-slate-500 dark:text-slate-400">
-              タスク詳細
-            </p>
             <h2
               id="task-detail-title"
-              class="mt-1 break-words text-xl font-semibold text-slate-900 dark:text-slate-100"
+              class="break-words text-xl font-semibold text-slate-900 dark:text-slate-100"
             >
               {{ props.task.title }}
             </h2>
@@ -551,12 +538,12 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
           {{ localError }}
         </p>
         <p
+          v-if="props.saving || !props.canWrite"
           class="text-sm text-slate-600 dark:text-slate-300"
           role="status"
           aria-live="polite"
         >
           <span v-if="props.saving">保存しています…</span>
-          <span v-else-if="props.canWrite">変更すると自動で保存されます。</span>
           <span v-else>現在は編集できません。</span>
         </p>
         <div
@@ -782,55 +769,52 @@ function hasCleanupWarnings(task: ViewModelTaskDetail): boolean {
 
         <div class="grid gap-6 border-t border-slate-200 pt-5 dark:border-slate-700 2xl:grid-cols-2">
           <div>
-            <h3 class="section-heading">
-              順位の要約
-            </h3><p class="mt-2 text-sm font-medium text-sky-800 dark:text-sky-400">
-              {{ rankingLabel(props.task) }}
-            </p><p
-              v-if="executionPoints(props.task) != null"
-              class="mt-2 text-sm text-slate-700 dark:text-slate-300"
-            >
-              実行点: {{ executionPoints(props.task) }}
-            </p><p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
-              ブロック: {{ blockLabel(props.task.block_state) }}
-            </p><p
-              v-if="props.task.block_reason != null"
-              class="mt-1 text-sm text-amber-800 dark:text-amber-200"
-            >
-              {{ props.task.block_reason.summary }}
-            </p><div class="mt-4">
-              <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
-                順位理由
-              </p><div
-                v-if="rankingReasonSummary(props.task).visible.length > 0"
-                class="mt-2 flex flex-wrap gap-1"
-              >
-                <span
-                  v-for="reason in rankingReasonSummary(props.task).visible"
-                  :key="reason"
-                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                >{{ reason }}</span>
-                <span
-                  v-if="rankingReasonSummary(props.task).remaining > 0"
-                  class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                >ほか{{ rankingReasonSummary(props.task).remaining }}件</span>
-              </div><p
-                v-else
-                class="mt-1 text-sm text-slate-600 dark:text-slate-400"
-              >
-                なし
-              </p>
-            </div>
-            <details
-              class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700"
-              :open="rankingDetailsOpen(props.task)"
-            >
+            <details class="min-w-0">
               <summary
                 class="cursor-pointer rounded-md px-2 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
               >
                 順位の計算根拠
               </summary>
               <div class="mt-3 space-y-4 border-l border-slate-200 pl-3 dark:border-slate-700">
+                <div>
+                  <p class="text-sm font-medium text-sky-800 dark:text-sky-400">
+                    {{ rankingLabel(props.task) }}
+                  </p><p
+                    v-if="executionPoints(props.task) != null"
+                    class="mt-2 text-sm text-slate-700 dark:text-slate-300"
+                  >
+                    実行点: {{ executionPoints(props.task) }}
+                  </p><p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                    ブロック: {{ blockLabel(props.task.block_state) }}
+                  </p><p
+                    v-if="props.task.block_reason != null"
+                    class="mt-1 text-sm text-amber-800 dark:text-amber-200"
+                  >
+                    {{ props.task.block_reason.summary }}
+                  </p><div class="mt-4">
+                    <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
+                      順位理由
+                    </p><div
+                      v-if="rankingReasonSummary(props.task).visible.length > 0"
+                      class="mt-2 flex flex-wrap gap-1"
+                    >
+                      <span
+                        v-for="reason in rankingReasonSummary(props.task).visible"
+                        :key="reason"
+                        class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                      >{{ reason }}</span>
+                      <span
+                        v-if="rankingReasonSummary(props.task).remaining > 0"
+                        class="break-words rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                      >ほか{{ rankingReasonSummary(props.task).remaining }}件</span>
+                    </div><p
+                      v-else
+                      class="mt-1 text-sm text-slate-600 dark:text-slate-400"
+                    >
+                      なし
+                    </p>
+                  </div>
+                </div>
                 <p
                   v-if="props.task.ranking.calculated_at != null"
                   class="text-xs text-slate-500 dark:text-slate-400"
