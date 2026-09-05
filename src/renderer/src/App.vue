@@ -636,10 +636,7 @@ function createSyncFeedback(result: IpcSyncResult): Feedback {
   ].join("、");
   return {
     kind: syncFeedbackKind(result),
-    message: includeNormalizationNotificationFeedback(
-      synchronizationSummary,
-      result.normalization_notifications,
-    ),
+    message: synchronizationSummary,
   };
 }
 
@@ -836,16 +833,12 @@ function applySyncStateDisplay(value: IpcSyncStateEvent): void {
   setConnectionState(chromiumConnectionState(), settledSyncState(value));
 }
 
-function showNormalizationNotifications(
-  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+function showNormalizationNotificationToast(
+  syncedAt: string,
+  notifications: readonly SyncNormalizationNotification[],
 ): void {
-  const notifications = value.normalization_notifications;
-  if (notifications == null || notifications.length === 0) {
+  if (notifications.length === 0) {
     return;
-  }
-  const syncedAt = value.last_successful_sync_at;
-  if (syncedAt == null) {
-    throw new Error("状態整合化通知に同期日時がありません。");
   }
   if (
     normalizationNotificationDisplayState.kind === "displayed"
@@ -859,11 +852,25 @@ function showNormalizationNotifications(
   if (notificationFeedback == null) {
     throw new Error("状態整合化通知を表示できません。");
   }
+  addToast("success", notificationFeedback);
   normalizationNotificationDisplayState = {
     kind: "displayed",
     synced_at: syncedAt,
   };
-  showGlobalResultFeedback({ kind: "success", message: notificationFeedback });
+}
+
+function showNormalizationNotifications(
+  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+): void {
+  const notifications = value.normalization_notifications;
+  if (notifications == null || notifications.length === 0) {
+    return;
+  }
+  const syncedAt = value.last_successful_sync_at;
+  if (syncedAt == null) {
+    throw new Error("状態整合化通知に同期日時がありません。");
+  }
+  showNormalizationNotificationToast(syncedAt, notifications);
 }
 
 function handleSyncState(value: IpcSyncStateEvent): void {
@@ -1583,12 +1590,13 @@ async function completeAsanaReauthentication(): Promise<void> {
       ));
       return;
     }
+    showNormalizationNotificationToast(
+      synchronized.synced_at,
+      synchronized.normalization_notifications,
+    );
     showGlobalResultFeedback({
       kind: syncFeedbackKind(synchronized),
-      message: includeNormalizationNotificationFeedback(
-        "Asanaを再認証し、タスク表示を更新しました。",
-        synchronized.normalization_notifications,
-      ),
+      message: "Asanaを再認証し、タスク表示を更新しました。",
     });
   } catch {
     clearAsanaAuthorizationCode();
@@ -1737,6 +1745,10 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     const syncFeedback = createSyncFeedback(result.value);
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
     if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
+      showNormalizationNotificationToast(
+        result.value.synced_at,
+        result.value.normalization_notifications,
+      );
       showGlobalResultFeedback(syncFeedback);
     }
   } catch {
