@@ -719,7 +719,7 @@ function applicationReasonLabel(reason: string): string {
                 :disabled="!groupIsApplicable(requireProposal(), group.group_id)"
                 :aria-label="`変更グループ ${groupIndex + 1}を選択`"
                 class="inline-flex size-4 shrink-0 items-center justify-center rounded border border-slate-400 bg-white text-xs text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 data-[state=checked]:bg-sky-100 data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:data-[state=checked]:border-sky-400 dark:data-[state=checked]:bg-sky-950 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
-                @update:model-value="(value) => updateGroupSelection(group.group_id, value)"
+                @update:model-value="(value: boolean | 'indeterminate') => updateGroupSelection(group.group_id, value)"
               >
                 <CheckboxIndicator aria-hidden="true">
                   ✓
@@ -750,7 +750,7 @@ function applicationReasonLabel(reason: string): string {
                     :disabled="!operationIsApplicable(requireProposal(), operation.operation_id)"
                     :aria-label="`${operationLabel(operation)}を選択`"
                     class="inline-flex size-4 shrink-0 items-center justify-center rounded border border-slate-400 bg-white text-xs text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 data-[state=checked]:border-sky-600 data-[state=checked]:bg-sky-100 data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 dark:border-slate-500 dark:bg-slate-800 dark:text-sky-300 dark:data-[state=checked]:border-sky-400 dark:data-[state=checked]:bg-sky-950 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950"
-                    @update:model-value="(value) => updateOperationSelection(operation.operation_id, value)"
+                    @update:model-value="(value: boolean | 'indeterminate') => updateOperationSelection(operation.operation_id, value)"
                   ><CheckboxIndicator aria-hidden="true">✓</CheckboxIndicator></CheckboxRoot>操作を選択</label>
                 </div><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
                   <dt class="text-slate-600 dark:text-slate-400">

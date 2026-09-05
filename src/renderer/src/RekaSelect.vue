@@ -16,7 +16,6 @@ type SelectOptionValue = string | number;
 type SelectOption = {
   readonly value: SelectOptionValue;
   readonly label: string;
-  readonly disabled?: boolean;
 };
 
 const props = defineProps<{
@@ -70,7 +69,6 @@ function updateValue(value: unknown): void {
             v-for="option in props.options"
             :key="`${typeof option.value}:${String(option.value)}`"
             :value="option.value"
-            :disabled="option.disabled"
             class="relative flex cursor-default select-none items-center rounded px-8 py-2 outline-none data-[highlighted]:bg-sky-100 data-[highlighted]:text-sky-950 data-[disabled]:pointer-events-none data-[disabled]:opacity-50 dark:data-[highlighted]:bg-sky-950 dark:data-[highlighted]:text-sky-100"
           >
             <SelectItemIndicator class="absolute left-2 inline-flex items-center">
