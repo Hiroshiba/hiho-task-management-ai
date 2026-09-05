@@ -3716,6 +3716,7 @@ export class TaskHubApplication {
       return;
     }
     this.aiStartResult = await this.codexSession.startNewSession(signal);
+    this.aiWorkflow?.resetPendingWithdrawConfirmation();
     this.codexAuthenticationRequired = false;
     this.publishAiStatus();
   }
@@ -3970,6 +3971,7 @@ export class TaskHubApplication {
       startNewSession: async (signal) => {
         this.assertOperationalReady();
         const startResult = await this.codexSession.startNewSession(signal);
+        this.aiWorkflow?.resetPendingWithdrawConfirmation();
         this.aiStartResult = startResult;
         switch (startResult.state) {
           case "ready":

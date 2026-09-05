@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { isoDateTimeSchema } from "../../shared/domain";
+import type { TaskHubApi } from "../../shared/task-hub-api";
 import {
   setupAsanaAuthorizationBeginInputSchema,
   setupAsanaAuthorizationCancelInputSchema,
@@ -18,21 +19,24 @@ import {
   type SetupWorkspaceSelectionInput,
 } from "../../shared/setup";
 import { vaultMappingSchema } from "../../shared/storage";
+import { useTaskHub } from "./task-hub";
+
+type SetupApi = TaskHubApi["setup"];
 
 type SetupAction =
   | { readonly kind: "start" }
   | { readonly kind: "complete_codex_authentication" }
   | {
       readonly kind: "begin_asana_authorization";
-      readonly request: ReturnType<Window["taskHub"]["setup"]["beginAsanaAuthorization"]>;
+      readonly request: ReturnType<SetupApi["beginAsanaAuthorization"]>;
     }
   | {
       readonly kind: "complete_asana_authorization";
-      readonly request: ReturnType<Window["taskHub"]["setup"]["completeAsanaAuthorization"]>;
+      readonly request: ReturnType<SetupApi["completeAsanaAuthorization"]>;
     }
   | {
       readonly kind: "cancel_asana_authorization";
-      readonly request: ReturnType<Window["taskHub"]["setup"]["cancelAsanaAuthorization"]>;
+      readonly request: ReturnType<SetupApi["cancelAsanaAuthorization"]>;
     }
   | { readonly kind: "list_workspaces" }
   | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
@@ -42,7 +46,7 @@ type SetupAction =
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
   | {
       readonly kind: "choose_external_tool";
-      readonly request: ReturnType<Window["taskHub"]["setup"]["chooseExternalTool"]>;
+      readonly request: ReturnType<SetupApi["chooseExternalTool"]>;
     }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };
@@ -61,6 +65,8 @@ const props = defineProps<{
   state: SetupState | undefined;
   busy: boolean;
 }>();
+
+const taskHub = useTaskHub();
 
 const emit = defineEmits<{
   (event: "action", action: SetupAction): void;
@@ -326,7 +332,7 @@ function submitCredentials(): void {
     return;
   }
   try {
-    const request = window.taskHub.setup.beginAsanaAuthorization(parsed.data);
+    const request = taskHub.setup.beginAsanaAuthorization(parsed.data);
     void request.then(clearClientSecret, clearClientSecret);
     emit("action", { kind: "begin_asana_authorization", request });
   } catch {
@@ -353,7 +359,7 @@ function submitAuthorizationCode(): void {
     return;
   }
   try {
-    const request = window.taskHub.setup.completeAsanaAuthorization(parsed.data);
+    const request = taskHub.setup.completeAsanaAuthorization(parsed.data);
     void request.then(clearAuthorizationCode, clearAuthorizationCode);
     emit("action", { kind: "complete_asana_authorization", request });
   } catch {
@@ -374,7 +380,7 @@ function cancelAuthorization(): void {
       authorization_id: state.authorization_id,
     });
   try {
-    const request = window.taskHub.setup.cancelAsanaAuthorization(input);
+    const request = taskHub.setup.cancelAsanaAuthorization(input);
     void request.then(clearAuthorizationCode, clearAuthorizationCode);
     emit("action", { kind: "cancel_asana_authorization", request });
   } catch {
@@ -436,7 +442,7 @@ function selectProject(value: string): void {
 
 function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {
   try {
-    const request = window.taskHub.setup.chooseExternalTool(input);
+    const request = taskHub.setup.chooseExternalTool(input);
     emit("action", { kind: "choose_external_tool", request });
   } catch {
     localError.value = "外部ツール設定を開始できませんでした。";
