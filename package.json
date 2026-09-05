@@ -14,6 +14,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:web": "vite --config vite.renderer.config.ts",
     "build": "electron-vite build",
     "start": "electron .",
     "lint": "eslint . --cache --cache-strategy content --cache-location node_modules/.cache/eslint/.eslintcache",
@@ -26,6 +27,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "reka-ui": "^2.10.4",
     "vue": "^3.5.18",
     "zod": "^4.0.17"
   },

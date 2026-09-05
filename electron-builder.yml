@@ -12,9 +12,19 @@ mac:
   target:
     - dmg
     - zip
+  icon: build/icon.icns
 win:
   target:
-    - nsis
+    - nsis-web
     - zip
-nsis:
+  icon: build/icon.ico
+linux:
+  icon: build/icons
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+nsisWeb:
   artifactName: ${productName}-Setup-${version}.${ext}
+  publish:
+    provider: generic
+    url: https://github.com/Hiroshiba/hiho-task-management-ai/releases/download/edge

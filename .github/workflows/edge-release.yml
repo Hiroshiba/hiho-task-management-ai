@@ -30,6 +30,7 @@ jobs:
             artifact_name: edge-windows
             artifact_paths: |
               release/*.exe
+              release/*.nsis.7z
               release/*.zip
     steps:
       - name: ソースコードを取得
@@ -55,6 +56,13 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run package
+      - name: nsis-web の生成物を公開用ディレクトリへ移動
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv release/nsis-web/*.exe release/
+          mv release/nsis-web/*.nsis.7z release/
       - name: 生成物を一時保存
         uses: actions/upload-artifact@v4
         with:
@@ -108,9 +116,10 @@ jobs:
           dmg_assets=(release-assets/*.dmg)
           zip_assets=(release-assets/*.zip)
           exe_assets=(release-assets/*.exe)
+          nsis_package_assets=(release-assets/*.nsis.7z)
 
-          if (( ${#assets[@]} != 4 || ${#dmg_assets[@]} != 1 || ${#zip_assets[@]} != 2 || ${#exe_assets[@]} != 1 )); then
-            echo "生成物は dmg 1件、zip 2件、exe 1件の合計4件である必要があります。実際は dmg ${#dmg_assets[@]}件、zip ${#zip_assets[@]}件、exe ${#exe_assets[@]}件、合計 ${#assets[@]}件です。" >&2
+          if (( ${#assets[@]} != 5 || ${#dmg_assets[@]} != 1 || ${#zip_assets[@]} != 2 || ${#exe_assets[@]} != 1 || ${#nsis_package_assets[@]} != 1 )); then
+            echo "生成物は dmg 1件、zip 2件、exe 1件、nsis.7z 1件の合計5件である必要があります。実際は dmg ${#dmg_assets[@]}件、zip ${#zip_assets[@]}件、exe ${#exe_assets[@]}件、nsis.7z ${#nsis_package_assets[@]}件、合計 ${#assets[@]}件です。" >&2
             exit 1
           fi
 
@@ -128,8 +137,7 @@ jobs:
                 --target "$GITHUB_SHA" \
                 --title edge \
                 --notes "$release_notes" \
-                --prerelease \
-                --latest=false
+                --latest
               ;;
             1)
               gh release edit edge \
@@ -137,8 +145,8 @@ jobs:
                 --title edge \
                 --notes "$release_notes" \
                 --draft=false \
-                --prerelease \
-                --latest=false
+                --prerelease=false \
+                --latest
               gh release upload edge "${assets[@]}" \
                 --repo "$GITHUB_REPOSITORY" \
                 --clobber

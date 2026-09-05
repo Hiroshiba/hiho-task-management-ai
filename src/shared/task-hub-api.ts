@@ -1,10 +1,13 @@
 import type {
   IpcAiApprovalInput,
   IpcAiApprovalResult,
+  IpcAiCloseSessionInput,
   IpcAiEditInput,
   IpcAiNewSessionResult,
+  IpcAiProposalInput,
   IpcAiStatus,
   IpcAiProposalView,
+  IpcAiRejectInput,
   IpcAiSelectionInput,
   IpcAiTurnInput,
   IpcAiTurnResult,
@@ -95,11 +98,12 @@ export interface TaskHubApi {
     readonly getStatus: () => IpcResult<IpcAiStatus>;
     readonly startNewSession: () => IpcResult<IpcAiNewSessionResult>;
     readonly startTurn: (input: IpcAiTurnInput) => IpcResult<IpcAiTurnResult>;
-    readonly getProposal: (proposalId: string) => IpcResult<IpcAiProposalView>;
+    readonly getProposal: (input: IpcAiProposalInput) => IpcResult<IpcAiProposalView>;
     readonly select: (input: IpcAiSelectionInput) => IpcResult<IpcAiProposalView>;
     readonly editOperation: (input: IpcAiEditInput) => IpcResult<IpcAiProposalView>;
-    readonly reject: (proposalId: string) => IpcResult<{ readonly completed: true }>;
+    readonly reject: (input: IpcAiRejectInput) => IpcResult<{ readonly completed: true }>;
     readonly approve: (input: IpcAiApprovalInput) => IpcResult<IpcAiApprovalResult>;
+    readonly closeSession: (sessionId: IpcAiCloseSessionInput) => IpcResult<{ readonly completed: true }>;
     readonly onDelta: IpcSubscription<IpcCodexDelta>;
     readonly onStatus: IpcSubscription<IpcAiStatus>;
   };
@@ -116,6 +120,6 @@ export interface TaskHubApi {
 
 declare global {
   interface Window {
-    readonly taskHub: TaskHubApi;
+    readonly taskHub?: TaskHubApi;
   }
 }

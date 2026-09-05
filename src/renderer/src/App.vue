@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import {
+  ipcAiApprovalInputSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiEditInputSchema,
+  ipcAiSelectionInputSchema,
+  ipcAiTurnInputSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -23,6 +28,9 @@ import {
   type IpcSyncStateEvent,
 } from "../../shared/ipc";
 import {
+  gidSchema,
+} from "../../shared/domain";
+import {
   setupStateSchema,
   type SetupProjectSelectionInput,
   type SetupState,
@@ -30,10 +38,7 @@ import {
   type SetupWorkspaceSelectionInput,
 } from "../../shared/setup";
 import {
-  aiWorkflowApprovalRequestSchema,
-  aiWorkflowOperationEditSchema,
   aiWorkflowProposalViewSchema,
-  aiWorkflowSelectionRequestSchema,
   aiWorkflowTurnRequestSchema,
   type AiWorkflowApprovalRequest,
   type AiWorkflowOperationEdit,
@@ -48,11 +53,12 @@ import {
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import AppHeader from "./AppHeader.vue";
-import AiPanel from "./AiPanel.vue";
+import AiSessionDialog from "./AiSessionDialog.vue";
 import SetupWizard from "./SetupWizard.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
+import ToastHost from "./ToastHost.vue";
 import {
   createErrorScreenState,
   filterTaskRows,
@@ -70,7 +76,13 @@ import {
   type RendererGuiEdit,
   type RendererScreenState,
   type RendererSyncState,
+  type AiSessionOperation,
+  type AiSessionView,
 } from "./state";
+import { useTaskHub } from "./task-hub";
+import { useToast } from "./useToast";
+
+const taskHub = useTaskHub();
 
 type SetupAction =
   | { readonly kind: "start" }
@@ -184,6 +196,18 @@ type Feedback = {
   readonly message: string;
 };
 
+type AiSessionRecord = Omit<
+  AiSessionView,
+  "can_write" | "can_send_ai" | "ai_send_disabled_reason" | "feedback"
+> & {
+  readonly feedback: AiSessionView["feedback"];
+  readonly created_at: number;
+};
+
+type AiSessionDialogApi = {
+  readonly focusSessionInput: (sessionId: string) => "focused" | "unavailable";
+};
+
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
 const asanaAuthenticationStateMaximumRetryCount = 3;
 
@@ -207,12 +231,17 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
   sync: { kind: "waiting" },
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
-const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
+const aiSessions = ref<AiSessionRecord[]>([]);
+const aiDialogVisible = ref(false);
+const aiSelectedSessionId = ref<string | undefined>();
+const aiDialogRef = ref<AiSessionDialogApi | null>(null);
+const aiDialogReturnFocus = ref<HTMLElement | null>(null);
+const aiSessionCreating = ref(false);
+const aiDialogFeedback = ref<Feedback | undefined>();
+const { addToast } = useToast();
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
-const aiFeedback = ref<Feedback | undefined>();
-const aiBusy = ref(false);
 const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
 const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
 const obsidianStatuses = ref<ReadonlyMap<string, ObsidianLinkStatus>>(new Map());
@@ -254,14 +283,6 @@ function clearTaskFeedback(): void {
   taskFeedback.value = undefined;
 }
 
-function setAiFeedback(kind: FeedbackKind, message: string): void {
-  aiFeedback.value = { kind, message };
-}
-
-function clearAiFeedback(): void {
-  aiFeedback.value = undefined;
-}
-
 function feedbackClass(kind: FeedbackKind): string {
   switch (kind) {
     case "success":
@@ -286,6 +307,24 @@ function feedbackRole(kind: FeedbackKind): "status" | "alert" {
   }
 }
 
+function showGlobalResultFeedback(value: Feedback): void {
+  if (value.kind === "success") {
+    clearFeedback();
+    addToast("success", value.message);
+    return;
+  }
+  setFeedback(value.kind, value.message);
+}
+
+function showTaskResultFeedback(kind: FeedbackKind, message: string): void {
+  if (kind === "success") {
+    clearTaskFeedback();
+    addToast("success", message);
+    return;
+  }
+  setTaskFeedback(kind, message);
+}
+
 const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
 const canManualSync = computed(() => configured.value
@@ -308,11 +347,157 @@ const canWrite = computed(() => {
     >= syncTimestamp(currentSyncState.synced_at);
 });
 const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
-const canSendAi = computed(() => codexState.value.kind === "ready"
-  && canWrite.value
+const aiTaskReferences = computed(() => overview.value?.tasks.map((task) => ({
+  gid: task.gid,
+  title: task.title,
+})) ?? []);
+const aiSessionViews = computed<readonly AiSessionView[]>(() => aiSessions.value
+  .slice()
+  .sort((left, right) => {
+    const statusOrder = (status: AiSessionView["status"]): number => {
+      switch (status) {
+        case "waiting_answer":
+          return 0;
+        case "waiting_approval":
+          return 1;
+        case "running":
+          return 2;
+        case "error":
+          return 3;
+        case "idle":
+          return 4;
+        case "completed":
+          return 5;
+      }
+    };
+    return statusOrder(left.status) - statusOrder(right.status)
+      || right.created_at - left.created_at;
+  })
+  .map((session) => ({
+    ...session,
+    can_write: canWrite.value && !guiEditSaving.value,
+    can_send_ai: aiSessionCanSend(session),
+    ai_send_disabled_reason: aiSessionDisabledReason(session),
+  })));
+const aiWaitingCount = computed(() => aiSessions.value.filter((session) =>
+  session.status === "waiting_answer"
+    || session.status === "waiting_approval"
+    || session.status === "error"
+).length);
+const aiRunningCount = computed(() => aiSessions.value.filter((session) =>
+  session.status === "running"
+).length);
+const canOpenAiAssistant = computed(() => configured.value);
+const canStartNewAiSession = computed(() => canWrite.value
   && !guiEditSaving.value
-  && !aiBusy.value);
-const aiSendDisabledReason = computed(() => {
+  && codexState.value.kind === "ready");
+const canReadLocal = computed(() => setupState.value?.kind === "ready");
+const canReanalyzeObsidianNotes = computed(() => {
+  return canWrite.value
+    && !guiEditSaving.value
+    && codexState.value.kind === "ready"
+    && registeredVaultIds.value.length > 0;
+});
+const visibleRows = computed(() => {
+  const currentOverview = overview.value;
+  if (currentOverview == null) {
+    return [];
+  }
+  return filterTaskRows(currentOverview, filter.value, currentAsOf.value);
+});
+
+function aiSessionStatus(
+  state: RendererAiState,
+  operation: AiSessionOperation,
+): AiSessionView["status"] {
+  if (operation !== "idle" || state.kind === "streaming") {
+    return "running";
+  }
+  switch (state.kind) {
+    case "questions":
+      if (state.questions.length > 0) {
+        return "waiting_answer";
+      }
+      return state.pending_proposal == null ? "completed" : "waiting_approval";
+    case "proposal":
+      return "waiting_approval";
+    case "unavailable":
+      return "error";
+    case "applied":
+      return "completed";
+    case "idle":
+      return "idle";
+  }
+}
+
+function requireAiSession(sessionId: string): AiSessionRecord {
+  const session = aiSessions.value.find((candidate) => candidate.session_id === sessionId);
+  if (session == null) {
+    throw new Error("AI依頼が見つかりません。");
+  }
+  return session;
+}
+
+function updateAiSession(
+  sessionId: string,
+  update: (session: AiSessionRecord) => AiSessionRecord,
+): void {
+  let found = false;
+  const nextSessions = aiSessions.value.map((session) => {
+    if (session.session_id !== sessionId) {
+      return session;
+    }
+    found = true;
+    return update(session);
+  });
+  if (!found) {
+    throw new Error("AI依頼が見つかりません。");
+  }
+  aiSessions.value = nextSessions;
+}
+
+function aiTaskTitle(taskGid: string | undefined): string | undefined {
+  if (taskGid == null) {
+    return undefined;
+  }
+  if (selectedTask.value?.gid === taskGid) {
+    return selectedTask.value.title;
+  }
+  const currentOverview = overview.value;
+  if (currentOverview == null) {
+    return undefined;
+  }
+  return currentOverview.tasks.find((task) => task.gid === taskGid)?.title;
+}
+
+function aiRequestTitle(message: string): string {
+  const compactMessage = message.replace(/\s+/gu, " ").trim();
+  if (compactMessage.length === 0) {
+    throw new Error("AI依頼文が空です。");
+  }
+  const characters = [...compactMessage];
+  return characters.length > 40
+    ? `${characters.slice(0, 40).join("")}…`
+    : compactMessage;
+}
+
+function rememberAiRequest(sessionId: string, message: string): void {
+  const title = aiRequestTitle(message);
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    title: session.request_history.length === 0 ? title : session.title,
+    request_history: [...session.request_history, message],
+  }));
+}
+
+function aiSessionCanSend(session: AiSessionRecord): boolean {
+  return codexState.value.kind === "ready"
+    && canWrite.value
+    && !guiEditSaving.value
+    && session.operation === "idle";
+}
+
+function aiSessionDisabledReason(session: AiSessionRecord): string {
   switch (codexState.value.kind) {
     case "connecting":
       return "Codexの接続を確認しています。";
@@ -329,35 +514,39 @@ const aiSendDisabledReason = computed(() => {
   if (guiEditSaving.value) {
     return "タスクを保存しています。";
   }
-  if (aiBusy.value) {
+  if (session.operation !== "idle") {
     return "AIが回答を準備しています。";
   }
   return "";
-});
-const canReadLocal = computed(() => setupState.value?.kind === "ready");
-const canReanalyzeObsidianNotes = computed(() => canWrite.value
-  && !guiEditSaving.value
-  && codexState.value.kind === "ready"
-  && !aiBusy.value
-  && registeredVaultIds.value.length > 0);
-const lastSyncAt = computed(() => {
-  const currentOverview = overview.value;
-  if (currentOverview != null) {
-    return currentOverview.last_successful_sync_at;
-  }
-  if (syncState.value.kind === "synced") {
-    return syncState.value.synced_at;
-  }
-  return undefined;
-});
-const cleanupCount = computed(() => overview.value?.cleanup_count);
-const visibleRows = computed(() => {
-  const currentOverview = overview.value;
-  if (currentOverview == null) {
-    return [];
-  }
-  return filterTaskRows(currentOverview, filter.value, currentAsOf.value);
-});
+}
+
+function setAiSessionFeedback(
+  sessionId: string,
+  kind: FeedbackKind,
+  message: string,
+): void {
+  updateAiSession(sessionId, (session) => ({ ...session, feedback: { kind, message } }));
+}
+
+function clearAiSessionFeedback(sessionId: string): void {
+  updateAiSession(sessionId, (session) => ({ ...session, feedback: undefined }));
+}
+
+function showAiSessionFailure(sessionId: string, value: IpcFailure): void {
+  setAiSessionFeedback(sessionId, "failure", displayFailure(value).message);
+}
+
+function showAiSessionUnexpectedFailure(sessionId: string): void {
+  setAiSessionFeedback(sessionId, "failure", "予期しないエラーが発生しました。もう一度お試しください。");
+}
+
+function showAiSessionFocusFailure(sessionId: string): void {
+  setAiSessionFeedback(sessionId, "warning", "新しいAIセッションを開始しましたが、入力欄へ移動できませんでした。");
+}
+
+function setAiDialogFeedback(kind: FeedbackKind, message: string): void {
+  aiDialogFeedback.value = { kind, message };
+}
 
 function isFailure(value: unknown): value is IpcFailure {
   const parsed = ipcFailureSchema.safeParse(value);
@@ -447,14 +636,6 @@ function showTaskUnexpectedFailure(): void {
   setTaskFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
 }
 
-function showAiFailure(value: IpcFailure): void {
-  setAiFeedback("failure", displayFailure(value).message);
-}
-
-function showAiUnexpectedFailure(): void {
-  setAiFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
-}
-
 function codexUnavailableReason(
   reasonCode: Extract<RendererCodexState, { readonly kind: "unavailable" }>["reason_code"],
 ): string {
@@ -498,16 +679,6 @@ function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の�
 
 function unavailableFeedbackKind(): FeedbackKind {
   if (connectionState.value.kind === "checking" || syncState.value.kind === "syncing") {
-    return "progress";
-  }
-  return "warning";
-}
-
-function aiSendDisabledFeedbackKind(): FeedbackKind {
-  if (codexState.value.kind === "connecting"
-    || connectionState.value.kind === "checking"
-    || syncState.value.kind === "syncing"
-    || guiEditState.value.kind === "saving") {
     return "progress";
   }
   return "warning";
@@ -613,10 +784,7 @@ function createSyncFeedback(result: IpcSyncResult): Feedback {
   ].join("、");
   return {
     kind: syncFeedbackKind(result),
-    message: includeNormalizationNotificationFeedback(
-      synchronizationSummary,
-      result.normalization_notifications,
-    ),
+    message: synchronizationSummary,
   };
 }
 
@@ -813,16 +981,12 @@ function applySyncStateDisplay(value: IpcSyncStateEvent): void {
   setConnectionState(chromiumConnectionState(), settledSyncState(value));
 }
 
-function showNormalizationNotifications(
-  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+function showNormalizationNotificationToast(
+  syncedAt: string,
+  notifications: readonly SyncNormalizationNotification[],
 ): void {
-  const notifications = value.normalization_notifications;
-  if (notifications == null || notifications.length === 0) {
+  if (notifications.length === 0) {
     return;
-  }
-  const syncedAt = value.last_successful_sync_at;
-  if (syncedAt == null) {
-    throw new Error("状態整合化通知に同期日時がありません。");
   }
   if (
     normalizationNotificationDisplayState.kind === "displayed"
@@ -836,11 +1000,25 @@ function showNormalizationNotifications(
   if (notificationFeedback == null) {
     throw new Error("状態整合化通知を表示できません。");
   }
+  addToast("success", notificationFeedback);
   normalizationNotificationDisplayState = {
     kind: "displayed",
     synced_at: syncedAt,
   };
-  setFeedback("success", notificationFeedback);
+}
+
+function showNormalizationNotifications(
+  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+): void {
+  const notifications = value.normalization_notifications;
+  if (notifications == null || notifications.length === 0) {
+    return;
+  }
+  const syncedAt = value.last_successful_sync_at;
+  if (syncedAt == null) {
+    throw new Error("状態整合化通知に同期日時がありません。");
+  }
+  showNormalizationNotificationToast(syncedAt, notifications);
 }
 
 function handleSyncState(value: IpcSyncStateEvent): void {
@@ -855,7 +1033,7 @@ function handleSyncState(value: IpcSyncStateEvent): void {
 
 async function readCurrentSyncState(): Promise<SyncStateReadResult> {
   try {
-    const result = await window.taskHub.sync.getState();
+    const result = await taskHub.sync.getState();
     if (isFailure(result)) {
       return { kind: "unavailable" };
     }
@@ -966,7 +1144,7 @@ async function collectObsidianStatuses(
         vault_id: link.vault_id,
         relative_path: link.path,
       });
-      const result = await window.taskHub.obsidian.noteExists(input);
+      const result = await taskHub.obsidian.noteExists(input);
       if (isFailure(result)) {
         statuses.set(key, "unavailable");
         continue;
@@ -986,7 +1164,7 @@ async function executeTaskDataRefresh(
   taskGid: string | undefined,
 ): Promise<TaskDataRefreshResult> {
   try {
-    const result = await window.taskHub.readModel.getOverview();
+    const result = await taskHub.readModel.getOverview();
     if (isFailure(result)) {
       if (generation === taskDataGeneration) {
         showFailure(result);
@@ -1019,7 +1197,7 @@ async function executeTaskDataRefresh(
       return { kind: "applied" };
     }
     try {
-      const detailResult = await window.taskHub.readModel.getTaskDetail(taskGid);
+      const detailResult = await taskHub.readModel.getTaskDetail(taskGid);
       if (isFailure(detailResult)) {
         if (detailResult.code === "not_found") {
           if (generation !== taskDataGeneration) {
@@ -1160,7 +1338,7 @@ function applySetupState(value: unknown): void {
 
 async function resynchronizeSetupState(): Promise<void> {
   try {
-    const result = await window.taskHub.setup.getState();
+    const result = await taskHub.setup.getState();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -1181,6 +1359,9 @@ async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
       await resynchronizeSetupState();
       return;
     }
+    if (result.value.kind === "external_tool_configured") {
+      addToast("success", "Discord読取連携を登録しました。");
+    }
     applySetupState(result.value);
   } catch {
     showUnexpectedFailure();
@@ -1198,7 +1379,7 @@ async function completeCodexAuthenticationFromHeader(): Promise<void> {
   setupBusy.value = true;
   clearFeedback();
   try {
-    const result = await window.taskHub.setup.completeCodexAuthentication();
+    const result = await taskHub.setup.completeCodexAuthentication();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -1358,7 +1539,7 @@ async function requestAsanaAuthenticationState(
 ): Promise<boolean> {
   asanaAuthenticationStateRequestBusy.value = true;
   try {
-    const result = await window.taskHub.asana.getAuthenticationState();
+    const result = await taskHub.asana.getAuthenticationState();
     if (generation !== asanaAuthenticationStateGeneration) {
       return false;
     }
@@ -1450,7 +1631,7 @@ async function beginAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.beginReauthentication();
+    const result = await taskHub.asana.beginReauthentication();
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value && isFailure(result)) {
         asanaAuthenticationStateNeedsRecheck.value = true;
@@ -1532,7 +1713,7 @@ async function completeAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.completeReauthentication(parsedInput.data);
+    const result = await taskHub.asana.completeReauthentication(parsedInput.data);
     clearAsanaAuthorizationCode();
     if (isFailure(result)) {
       const failureMessage = displayFailure(result).message;
@@ -1557,10 +1738,14 @@ async function completeAsanaReauthentication(): Promise<void> {
       ));
       return;
     }
-    setFeedback(syncFeedbackKind(synchronized), includeNormalizationNotificationFeedback(
-      "Asanaを再認証し、タスク表示を更新しました。",
+    showNormalizationNotificationToast(
+      synchronized.synced_at,
       synchronized.normalization_notifications,
-    ));
+    );
+    showGlobalResultFeedback({
+      kind: syncFeedbackKind(synchronized),
+      message: "Asanaを再認証し、タスク表示を更新しました。",
+    });
   } catch {
     clearAsanaAuthorizationCode();
     const failureMessage = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
@@ -1595,7 +1780,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.cancelReauthentication(input);
+    const result = await taskHub.asana.cancelReauthentication(input);
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value && isFailure(result)) {
         asanaAuthenticationStateNeedsRecheck.value = true;
@@ -1623,7 +1808,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
       throw new Error("Asana再認証の取消結果が不正です。");
     }
     setSyncState(authenticationRequired);
-    setFeedback("warning", "Asana再認証をキャンセルしました。");
+    addToast("warning", "Asana再認証をキャンセルしました。");
   } catch {
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value) {
@@ -1648,10 +1833,10 @@ async function cancelAsanaReauthentication(): Promise<void> {
 function handleSetupAction(action: SetupAction): void {
   switch (action.kind) {
     case "start":
-      void runSetupRequest(window.taskHub.setup.start());
+      void runSetupRequest(taskHub.setup.start());
       return;
     case "complete_codex_authentication":
-      void runSetupRequest(window.taskHub.setup.completeCodexAuthentication());
+      void runSetupRequest(taskHub.setup.completeCodexAuthentication());
       return;
     case "begin_asana_authorization":
     case "complete_asana_authorization":
@@ -1659,31 +1844,31 @@ function handleSetupAction(action: SetupAction): void {
       void runSetupRequest(action.request);
       return;
     case "list_workspaces":
-      void runSetupRequest(window.taskHub.setup.listWorkspaces());
+      void runSetupRequest(taskHub.setup.listWorkspaces());
       return;
     case "select_workspace":
-      void runSetupRequest(window.taskHub.setup.selectWorkspace(action.input));
+      void runSetupRequest(taskHub.setup.selectWorkspace(action.input));
       return;
     case "select_project":
-      void runSetupRequest(window.taskHub.setup.selectProject(action.input));
+      void runSetupRequest(taskHub.setup.selectProject(action.input));
       return;
     case "retry_resources":
-      void runSetupRequest(window.taskHub.setup.retryResources());
+      void runSetupRequest(taskHub.setup.retryResources());
       return;
     case "run_capability":
-      void runSetupRequest(window.taskHub.setup.runCapability());
+      void runSetupRequest(taskHub.setup.runCapability());
       return;
     case "choose_vault":
-      void runSetupRequest(window.taskHub.setup.chooseVault(action.input));
+      void runSetupRequest(taskHub.setup.chooseVault(action.input));
       return;
     case "choose_external_tool":
       void runSetupRequest(action.request);
       return;
     case "run_full_sync":
-      void runSetupRequest(window.taskHub.setup.runFullSync());
+      void runSetupRequest(taskHub.setup.runFullSync());
       return;
     case "run_codex_capability":
-      void runSetupRequest(window.taskHub.setup.runCodexCapability());
+      void runSetupRequest(taskHub.setup.runCodexCapability());
       return;
   }
 }
@@ -1695,7 +1880,7 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
   activeSyncMode.value = mode;
   setSyncState(rendererSyncStateSchema.parse({ kind: "syncing" }));
   try {
-    const result = await window.taskHub.sync.run({ mode });
+    const result = await taskHub.sync.run({ mode });
     if (isFailure(result)) {
       showFailure(result);
       await reconcileSyncStateAfterFailure(syncFailureStateFromIpc(result));
@@ -1708,7 +1893,11 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     const syncFeedback = createSyncFeedback(result.value);
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
     if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
-      setFeedback(syncFeedback.kind, syncFeedback.message);
+      showNormalizationNotificationToast(
+        result.value.synced_at,
+        result.value.normalization_notifications,
+      );
+      showGlobalResultFeedback(syncFeedback);
     }
   } catch {
     showUnexpectedFailure();
@@ -1743,7 +1932,7 @@ async function selectTask(taskGid: string): Promise<void> {
   selectedTask.value = undefined;
   obsidianStatuses.value = new Map();
   try {
-    const result = await window.taskHub.readModel.getTaskDetail(taskGid);
+    const result = await taskHub.readModel.getTaskDetail(taskGid);
     if (isFailure(result)) {
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
         showTaskFailure(result);
@@ -1780,7 +1969,7 @@ async function checkObsidianLinks(links: readonly ViewModelTaskDetail["obsidian_
 
 async function loadObsidianVaults(): Promise<void> {
   try {
-    const result = await window.taskHub.obsidian.listVaults();
+    const result = await taskHub.obsidian.listVaults();
     if (isFailure(result)) {
       showFailure(result);
       registeredVaultIds.value = [];
@@ -1814,7 +2003,7 @@ async function listObsidian(vaultId: string): Promise<void> {
   obsidianBusy.value = true;
   try {
     const input = ipcObsidianValidateInputSchema.parse({ vault_id: trimmedVaultId });
-    const result = await window.taskHub.obsidian.listNotes(input.vault_id);
+    const result = await taskHub.obsidian.listNotes(input.vault_id);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -1848,7 +2037,7 @@ async function searchObsidian(input: { readonly vaultId: string; readonly query:
       vault_id: trimmedVaultId,
       query: input.query,
     });
-    const result = await window.taskHub.obsidian.search(validated);
+    const result = await taskHub.obsidian.search(validated);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -1880,7 +2069,7 @@ async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][num
   }
   try {
     const input = ipcObsidianPathInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await window.taskHub.obsidian.noteExists(input);
+    const result = await taskHub.obsidian.noteExists(input);
     if (generation !== obsidianStatusGeneration) {
       return;
     }
@@ -1908,7 +2097,7 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
   }
   try {
     const input = ipcObsidianOpenNoteInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await window.taskHub.obsidian.openNote(input);
+    const result = await taskHub.obsidian.openNote(input);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -1916,7 +2105,8 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
       showTaskFailure(result);
       return;
     }
-    setTaskFeedback("success", "Obsidianでノートを開きました。");
+    clearTaskFeedback();
+    addToast("success", "Obsidianでノートを開きました。");
   } catch {
     if (isCurrentTaskDetailContext(context)) {
       showTaskUnexpectedFailure();
@@ -1931,7 +2121,7 @@ async function reloadTaskDataAfterGuiEdit(
 ): Promise<TaskDataRefreshResult> {
   const result = await reloadTaskData();
   if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(result)) {
-    setTaskFeedback(feedbackKind, message);
+    showTaskResultFeedback(feedbackKind, message);
   }
   return result;
 }
@@ -1949,7 +2139,7 @@ async function reconcileSyncStateAfterGuiRecovery(
     }
   } finally {
     if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(reloadResult)) {
-      setTaskFeedback(feedbackKind, message);
+      showTaskResultFeedback(feedbackKind, message);
     }
   }
 }
@@ -1993,7 +2183,7 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
         expected_sync_at: currentOverview.last_successful_sync_at,
         operation: input.operation,
       });
-      const result = await window.taskHub.gui.apply(validatedInput);
+      const result = await taskHub.gui.apply(validatedInput);
       if (isFailure(result)) {
         completion = {
           kind: "settled",
@@ -2059,31 +2249,6 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
   }
 }
 
-async function startAiSession(): Promise<void> {
-  if (aiBusy.value) {
-    return;
-  }
-  clearAiFeedback();
-  const pendingProposal = pendingAiProposal(aiState.value);
-  aiBusy.value = true;
-  try {
-    const result = await window.taskHub.ai.startNewSession();
-    if (isFailure(result)) {
-      showAiFailure(result);
-      return;
-    }
-    aiState.value = rendererAiStateSchema.parse({
-      kind: "idle",
-      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
-    setAiFeedback("success", "新しいAIセッションを開始しました。");
-  } catch {
-    showAiUnexpectedFailure();
-  } finally {
-    aiBusy.value = false;
-  }
-}
-
 function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefined {
   switch (state.kind) {
     case "proposal":
@@ -2098,21 +2263,59 @@ function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefine
   }
 }
 
-function appendDelta(delta: { readonly delta: string }): void {
-  if (aiState.value.kind !== "streaming") {
+function setAiSessionState(sessionId: string, state: RendererAiState): void {
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    state,
+    status: aiSessionStatus(state, session.operation),
+  }));
+}
+
+function setAiSessionOperation(
+  sessionId: string,
+  operation: AiSessionOperation,
+): void {
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    operation,
+    status: aiSessionStatus(session.state, operation),
+  }));
+}
+
+function clearAiSessionOperation(
+  sessionId: string,
+  operation: Exclude<AiSessionOperation, "idle">,
+): void {
+  if (!hasAiSession(sessionId) || requireAiSession(sessionId).operation !== operation) {
+    return;
+  }
+  setAiSessionOperation(sessionId, "idle");
+}
+
+function hasAiSession(sessionId: string): boolean {
+  return aiSessions.value.some((session) => session.session_id === sessionId);
+}
+
+function appendDelta(delta: { readonly session_id: string; readonly delta: string }): void {
+  if (!hasAiSession(delta.session_id)) {
+    return;
+  }
+  const session = requireAiSession(delta.session_id);
+  if (session.state.kind !== "streaming") {
     return;
   }
   try {
-    aiState.value = rendererAiStateSchema.parse({
+    const state = rendererAiStateSchema.parse({
       kind: "streaming",
-      text: `${aiState.value.text}${delta.delta}`,
-      ...(aiState.value.pending_proposal == null
+      text: `${session.state.text}${delta.delta}`,
+      ...(session.state.pending_proposal == null
         ? {}
-        : { pending_proposal: aiState.value.pending_proposal }),
+        : { pending_proposal: session.state.pending_proposal }),
     });
+    setAiSessionState(delta.session_id, state);
   } catch {
-    const pendingProposal = pendingAiProposal(aiState.value);
-    aiState.value = rendererAiStateSchema.parse({
+    const pendingProposal = pendingAiProposal(session.state);
+    setAiSessionState(delta.session_id, rendererAiStateSchema.parse({
       kind: "unavailable",
       failure: rendererFailureSchema.parse({
         kind: "error",
@@ -2120,65 +2323,184 @@ function appendDelta(delta: { readonly delta: string }): void {
         message: failureText("invalid_response"),
       }),
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    }));
   }
 }
 
-async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
-  if (aiBusy.value) {
+function openAiAssistant(): void {
+  if (!aiDialogVisible.value) {
+    const activeElement = document.activeElement;
+    aiDialogReturnFocus.value = activeElement instanceof HTMLElement ? activeElement : null;
+  }
+  aiDialogVisible.value = true;
+}
+
+function closeAiAssistant(): void {
+  aiDialogVisible.value = false;
+  const target = aiDialogReturnFocus.value;
+  aiDialogReturnFocus.value = null;
+  if (target != null && target.isConnected) {
+    target.focus();
     return;
   }
-  clearAiFeedback();
-  if (!canSendAi.value) {
-    setAiFeedback(aiSendDisabledFeedbackKind(), aiSendDisabledReason.value);
-    return;
+  const trigger = document.querySelector<HTMLElement>("[data-ai-assistant-trigger]");
+  trigger?.focus();
+}
+
+function removeAiSession(sessionId: string): void {
+  const remaining = aiSessions.value.filter((session) => session.session_id !== sessionId);
+  if (remaining.length === aiSessions.value.length) {
+    throw new Error("AI依頼が見つかりません。");
   }
-  const pendingProposal = pendingAiProposal(aiState.value);
-  aiBusy.value = true;
+  aiSessions.value = remaining;
+  if (aiSelectedSessionId.value === sessionId) {
+    aiSelectedSessionId.value = remaining[0]?.session_id;
+  }
+}
+
+async function createAiSession(taskGid: string | undefined): Promise<string | undefined> {
+  if (aiSessionCreating.value) {
+    return undefined;
+  }
+  aiSessionCreating.value = true;
+  setAiDialogFeedback("progress", "AI依頼を開始しています。");
   try {
-    const request = aiWorkflowTurnRequestSchema.parse(input);
-    aiState.value = rendererAiStateSchema.parse({
+    const result = await taskHub.ai.startNewSession();
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return undefined;
+    }
+    if (result.value.kind === "authentication_required") {
+      codexState.value = rendererCodexStateSchema.parse({ kind: "authentication_required" });
+      setAiDialogFeedback("failure", "CodexへログインするとAIを利用できます。");
+      return undefined;
+    }
+    const sessionId = result.value.session_id;
+    if (sessionId.trim().length === 0) {
+      throw new Error("AIセッションIDが空です。");
+    }
+    const state = rendererAiStateSchema.parse({ kind: "idle" });
+    const taskTitle = aiTaskTitle(taskGid);
+    const session: AiSessionRecord = {
+      session_id: sessionId,
+      title: taskTitle == null ? "新しいAI依頼" : taskTitle,
+      ...(taskGid == null ? {} : { task_gid: taskGid }),
+      ...(taskTitle == null ? {} : { task_title: taskTitle }),
+      state,
+      status: aiSessionStatus(state, "idle"),
+      operation: "idle",
+      feedback: undefined,
+      request_history: [],
+      created_at: Date.now(),
+    };
+    aiSessions.value = [...aiSessions.value, session];
+    aiSelectedSessionId.value = sessionId;
+    aiDialogFeedback.value = undefined;
+    addToast("success", `AI依頼「${session.title}」を開始しました。`);
+    return sessionId;
+  } catch {
+    setAiDialogFeedback("failure", "AIセッションを開始できませんでした。もう一度お試しください。");
+    return undefined;
+  } finally {
+    aiSessionCreating.value = false;
+  }
+}
+
+async function startAiSession(): Promise<void> {
+  openAiAssistant();
+  if (!canStartNewAiSession.value) {
+    setAiDialogFeedback(unavailableFeedbackKind(), "新しいAI依頼は現在利用できません。");
+    return;
+  }
+  const sessionId = await createAiSession(selectedTaskGid.value);
+  if (sessionId == null) {
+    return;
+  }
+  await nextTick();
+  const dialog = aiDialogRef.value;
+  if (dialog == null) {
+    showAiSessionFocusFailure(sessionId);
+    return;
+  }
+  switch (dialog.focusSessionInput(sessionId)) {
+    case "focused":
+      return;
+    case "unavailable":
+      showAiSessionFocusFailure(sessionId);
+      return;
+    default:
+      throw new Error("AI入力欄のフォーカス結果が不正です。");
+  }
+}
+
+async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
+    return;
+  }
+  clearAiSessionFeedback(sessionId);
+  if (!aiSessionCanSend(session)) {
+    setAiSessionFeedback(sessionId, unavailableFeedbackKind(), aiSessionDisabledReason(session));
+    return;
+  }
+  const validatedInput = aiWorkflowTurnRequestSchema.parse(input);
+  rememberAiRequest(sessionId, validatedInput.message);
+  const pendingProposal = pendingAiProposal(session.state);
+  setAiSessionOperation(sessionId, "turn");
+  try {
+    const currentSession = requireAiSession(sessionId);
+    const request = ipcAiTurnInputSchema.parse({
+      session_id: sessionId,
+      message: validatedInput.message,
+      ...(currentSession.task_gid == null ? {} : { target_task_gid: currentSession.task_gid }),
+    });
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "streaming",
       text: "",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
-    const result = await window.taskHub.ai.startTurn(request);
+    }));
+    const result = await taskHub.ai.startTurn(request);
+    if (!hasAiSession(sessionId)) {
+      return;
+    }
     if (isFailure(result)) {
-      aiState.value = rendererAiStateSchema.parse({
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
         kind: "unavailable",
         failure: displayFailure(result),
         ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-      });
+      }));
       return;
     }
     if (result.value.kind === "proposal") {
       const proposal = aiWorkflowProposalViewSchema.parse(result.value.proposal);
-      aiState.value = rendererAiStateSchema.parse({
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
         kind: "proposal",
         message: result.value.message,
         questions: result.value.questions,
         proposal,
-      });
+      }));
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: result.value.message,
       questions: result.value.questions,
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    }));
   } catch {
-    aiState.value = rendererAiStateSchema.parse({
-      kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "invalid_response",
-        message: failureText("invalid_response"),
-      }),
-      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    if (hasAiSession(sessionId)) {
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
+        kind: "unavailable",
+        failure: rendererFailureSchema.parse({
+          kind: "error",
+          code: "invalid_response",
+          message: failureText("invalid_response"),
+        }),
+        ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+      }));
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "turn");
   }
 }
 
@@ -2190,130 +2512,212 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
   });
-  await startAiTurn(request);
+  openAiAssistant();
+  const sessionId = await createAiSession(taskGid);
+  if (sessionId == null) {
+    return;
+  }
+  await startAiTurn(sessionId, request);
 }
 
-function proposalState(proposal: AiWorkflowProposalView): void {
-  const currentState = aiState.value;
+function proposalState(sessionId: string, proposal: AiWorkflowProposalView): void {
+  const currentState = requireAiSession(sessionId).state;
   if (currentState.kind === "proposal") {
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "proposal",
       message: currentState.message,
       questions: currentState.questions,
       proposal,
-    });
+    }));
     return;
   }
   const pendingProposal = pendingAiProposal(currentState);
   const message = pendingProposal?.message ?? "変更案を更新しました。";
   if (currentState.kind === "questions") {
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: currentState.message,
       questions: currentState.questions,
       pending_proposal: { message, proposal },
-    });
+    }));
     return;
   }
-  aiState.value = rendererAiStateSchema.parse({ kind: "proposal", message, questions: [], proposal });
+  setAiSessionState(sessionId, rendererAiStateSchema.parse({ kind: "proposal", message, questions: [], proposal }));
 }
 
-async function selectAiProposal(input: AiWorkflowSelectionRequest): Promise<void> {
-  if (aiBusy.value) {
+async function selectAiProposal(sessionId: string, input: AiWorkflowSelectionRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
-  aiBusy.value = true;
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "select");
   try {
-    const request = aiWorkflowSelectionRequestSchema.parse(input);
-    const result = await window.taskHub.ai.select(request);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    const request = ipcAiSelectionInputSchema.parse({ ...input, session_id: sessionId });
+    const result = await taskHub.ai.select(request);
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    proposalState(aiWorkflowProposalViewSchema.parse(result.value));
-  } catch {
-    showAiUnexpectedFailure();
-  } finally {
-    aiBusy.value = false;
-  }
-}
-
-async function editAiOperation(input: AiWorkflowOperationEdit): Promise<void> {
-  if (aiBusy.value) {
-    return;
-  }
-  clearAiFeedback();
-  aiBusy.value = true;
-  try {
-    const request = aiWorkflowOperationEditSchema.parse(input);
-    const result = await window.taskHub.ai.editOperation(request);
     if (isFailure(result)) {
-      showAiFailure(result);
+      showAiSessionFailure(sessionId, result);
       return;
     }
-    proposalState(aiWorkflowProposalViewSchema.parse(result.value));
+    proposalState(sessionId, aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "select");
   }
 }
 
-async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void> {
-  if (aiBusy.value) {
+async function editAiOperation(sessionId: string, input: AiWorkflowOperationEdit): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "edit");
+  try {
+    const request = ipcAiEditInputSchema.parse({ ...input, session_id: sessionId });
+    const result = await taskHub.ai.editOperation(request);
+    if (!hasAiSession(sessionId)) {
+      return;
+    }
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    proposalState(sessionId, aiWorkflowProposalViewSchema.parse(result.value));
+  } catch {
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
+  } finally {
+    clearAiSessionOperation(sessionId, "edit");
+  }
+}
+
+async function approveAiProposal(sessionId: string, input: AiWorkflowApprovalRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
+    return;
+  }
+  clearAiSessionFeedback(sessionId);
   if (!canWrite.value) {
-    setAiFeedback(unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
+    setAiSessionFeedback(sessionId, unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
     return;
   }
-  aiBusy.value = true;
+  setAiSessionOperation(sessionId, "approve");
   try {
-    const request = aiWorkflowApprovalRequestSchema.parse(input);
-    const result = await window.taskHub.ai.approve(request);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    const request = ipcAiApprovalInputSchema.parse({ ...input, session_id: sessionId });
+    const result = await taskHub.ai.approve(request);
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "applied",
       message: "適用結果を確認してください。",
       result: result.value,
-    });
+    }));
     await manualSync();
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "approve");
   }
 }
 
-async function rejectAiProposal(proposalId: string): Promise<void> {
-  if (aiBusy.value) {
+async function rejectAiProposal(sessionId: string, proposalId: string): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
-  aiBusy.value = true;
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "reject");
   try {
-    const result = await window.taskHub.ai.reject(proposalId);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    const result = await taskHub.ai.reject({ session_id: sessionId, proposal_id: proposalId });
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    setAiFeedback("warning", "変更案を却下しました。");
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({ kind: "idle" }));
+    addToast("warning", `AI依頼「${session.title}」の変更案を却下しました。`);
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "reject");
   }
+}
+
+async function closeAiSession(sessionId: string): Promise<void> {
+  if (!hasAiSession(sessionId)) {
+    return;
+  }
+  const session = requireAiSession(sessionId);
+  if (session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  setAiSessionOperation(sessionId, "closing");
+  try {
+    const result = await taskHub.ai.closeSession(ipcAiCloseSessionInputSchema.parse(sessionId));
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      clearAiSessionOperation(sessionId, "closing");
+      return;
+    }
+    removeAiSession(sessionId);
+  } catch {
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+      clearAiSessionOperation(sessionId, "closing");
+    }
+  }
+}
+
+function completeAiSession(sessionId: string): void {
+  const session = requireAiSession(sessionId);
+  if (session.status !== "completed" || session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  void closeAiSession(sessionId);
+}
+
+function cancelAiSession(sessionId: string): void {
+  const session = requireAiSession(sessionId);
+  if (session.status === "completed" || session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  void closeAiSession(sessionId);
+}
+
+function selectAiSession(sessionId: string): void {
+  requireAiSession(sessionId);
+  aiSelectedSessionId.value = sessionId;
+}
+
+function selectAiSessionTask(sessionId: string, taskGid: string): void {
+  requireAiSession(sessionId);
+  const validTaskGid = gidSchema.parse(taskGid);
+  closeAiAssistant();
+  void selectTask(validTaskGid);
 }
 
 async function loadInitialSyncState(): Promise<void> {
   try {
-    const result = await window.taskHub.sync.getState();
+    const result = await taskHub.sync.getState();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -2326,7 +2730,7 @@ async function loadInitialSyncState(): Promise<void> {
 
 async function loadInitialCodexStatus(): Promise<void> {
   try {
-    const result = await window.taskHub.ai.getStatus();
+    const result = await taskHub.ai.getStatus();
     if (isFailure(result)) {
       codexState.value = rendererCodexStateSchema.parse({
         kind: "unavailable",
@@ -2345,7 +2749,7 @@ async function loadInitialCodexStatus(): Promise<void> {
 
 async function initialize(): Promise<void> {
   try {
-    removeSyncSubscription = window.taskHub.sync.onState((value) => {
+    removeSyncSubscription = taskHub.sync.onState((value) => {
       try {
         handleSyncState(value);
       } catch {
@@ -2356,7 +2760,7 @@ async function initialize(): Promise<void> {
     setSyncState(rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" }));
   }
   try {
-    removeAiSubscription = window.taskHub.ai.onDelta((delta) => {
+    removeAiSubscription = taskHub.ai.onDelta((delta) => {
       appendDelta(delta);
     });
   } catch {
@@ -2366,7 +2770,7 @@ async function initialize(): Promise<void> {
     });
   }
   try {
-    removeAiStatusSubscription = window.taskHub.ai.onStatus((value) => {
+    removeAiStatusSubscription = taskHub.ai.onStatus((value) => {
       try {
         handleCodexStatus(value);
       } catch {
@@ -2384,7 +2788,7 @@ async function initialize(): Promise<void> {
     setFeedback("failure", "Codex状態を購読できませんでした。");
   }
   try {
-    const result = await window.taskHub.setup.getState();
+    const result = await taskHub.setup.getState();
     if (isFailure(result)) {
       setScreenError(result);
     } else {
@@ -2437,12 +2841,14 @@ onUnmounted(() => {
   <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <AppHeader
       :connection-state="connectionState"
-      :last-sync-at="lastSyncAt"
       :configured="configured"
       :can-manual-sync="canManualSync"
       :can-full-sync="canManualSync"
       :full-sync-running="activeSyncMode === 'full'"
       :can-write="canWrite"
+      :can-open-ai-assistant="canOpenAiAssistant"
+      :ai-waiting-count="aiWaitingCount"
+      :ai-running-count="aiRunningCount"
       :codex-state="codexState"
       :codex-authentication-busy="setupBusy"
       :asana-authentication-busy="asanaAuthenticationBusy"
@@ -2450,13 +2856,33 @@ onUnmounted(() => {
       :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
       :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
       :asana-authentication-state="asanaAuthenticationState"
-      :cleanup-count="cleanupCount"
       @sync="manualSync"
       @full-sync="fullSync"
-      @new-ai-session="startAiSession"
+      @open-ai-assistant="openAiAssistant"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
+    />
+    <AiSessionDialog
+      ref="aiDialogRef"
+      :open="aiDialogVisible"
+      :can-start-new-session="canStartNewAiSession"
+      :creating-session="aiSessionCreating"
+      :feedback="aiDialogFeedback"
+      :sessions="aiSessionViews"
+      :tasks="aiTaskReferences"
+      :selected-session-id="aiSelectedSessionId"
+      @close="closeAiAssistant"
+      @new-session="startAiSession"
+      @select-session="selectAiSession"
+      @start="startAiTurn"
+      @select="selectAiProposal"
+      @edit="editAiOperation"
+      @approve="approveAiProposal"
+      @reject="rejectAiProposal"
+      @complete="completeAiSession"
+      @cancel="cancelAiSession"
+      @select-task="selectAiSessionTask"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p
@@ -2597,7 +3023,7 @@ onUnmounted(() => {
               </li>
             </ul>
           </details>
-          <div class="grid items-start gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
+          <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
             <TaskList
               :rows="visibleRows"
               :selected-task-gid="selectedTaskGid"
@@ -2633,27 +3059,6 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <div class="min-w-0 space-y-3">
-            <p
-              v-if="aiFeedback != null"
-              class="sticky top-3 rounded-md px-4 py-3 text-sm"
-              :class="feedbackClass(aiFeedback.kind)"
-              :role="feedbackRole(aiFeedback.kind)"
-            >
-              {{ aiFeedback.message }}
-            </p>
-            <AiPanel
-              :state="aiState"
-              :can-write="canWrite && !guiEditSaving && !aiBusy"
-              :can-send-ai="canSendAi"
-              :ai-send-disabled-reason="aiSendDisabledReason"
-              @start="startAiTurn"
-              @select="selectAiProposal"
-              @edit="editAiOperation"
-              @approve="approveAiProposal"
-              @reject="rejectAiProposal"
-            />
-          </div>
         </section>
         <div
           v-else
@@ -2664,5 +3069,6 @@ onUnmounted(() => {
         </div>
       </template>
     </main>
+    <ToastHost />
   </div>
 </template>

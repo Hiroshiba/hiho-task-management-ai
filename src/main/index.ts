@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   net,
   powerMonitor,
   session,
@@ -167,28 +168,46 @@ function recordServiceDiagnostic(error: unknown, channel: string): void {
 }
 
 function getRendererUrl(): string {
+  let rendererUrl: string;
   if (app.isPackaged) {
-    return pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+    rendererUrl = pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+  } else {
+    if (developmentRendererUrl == null) {
+      throw new Error("開発用Renderer URLが設定されていません。");
+    }
+
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(developmentRendererUrl);
+    } catch (error) {
+      throw new Error("開発用Renderer URLが不正です。", { cause: error });
+    }
+    if (
+      parsedUrl.protocol !== "http:" ||
+      !["localhost", "127.0.0.1", "[::1]"].includes(parsedUrl.hostname)
+    ) {
+      throw new Error("開発用Renderer URLはローカルHTTP URLでなければなりません。");
+    }
+    rendererUrl = parsedUrl.href;
   }
 
-  if (developmentRendererUrl == null) {
-    throw new Error("開発用Renderer URLが設定されていません。");
+  return appendMockArgumentToRendererUrl(rendererUrl);
+}
+
+function appendMockArgumentToRendererUrl(rendererUrl: string): string {
+  const mockArgumentPrefix = "--mock=";
+  const mockArguments = process.argv
+    .filter((argument) => argument.startsWith(mockArgumentPrefix))
+    .map((argument) => argument.slice(mockArgumentPrefix.length));
+  if (mockArguments.length === 0) {
+    return rendererUrl;
   }
 
-  let parsedUrl: URL;
-
-  try {
-    parsedUrl = new URL(developmentRendererUrl);
-  } catch (error) {
-    throw new Error("開発用Renderer URLが不正です。", { cause: error });
+  const parsedUrl = new URL(rendererUrl);
+  for (const mockArgument of mockArguments) {
+    parsedUrl.searchParams.append("mock", mockArgument);
   }
-  if (
-    parsedUrl.protocol !== "http:" ||
-    !["localhost", "127.0.0.1", "[::1]"].includes(parsedUrl.hostname)
-  ) {
-    throw new Error("開発用Renderer URLはローカルHTTP URLでなければなりません。");
-  }
-
   return parsedUrl.href;
 }
 
@@ -577,6 +596,9 @@ async function createMainWindow(
   }
   const window = new BrowserWindow({
     show: false,
+    icon: app.isPackaged
+      ? join(process.resourcesPath, "icon.png")
+      : join(__dirname, "../../build/icon.png"),
     webPreferences: {
       devTools: !app.isPackaged,
       nodeIntegration: false,
@@ -623,7 +645,8 @@ async function createMainWindow(
       }
     });
     if (app.isPackaged) {
-      await window.loadFile(fileURLToPath(rendererUrl));
+      const parsedRendererUrl = new URL(rendererUrl);
+      await window.loadFile(fileURLToPath(rendererUrl), { search: parsedRendererUrl.search });
     } else {
       await window.loadURL(rendererUrl);
     }
@@ -689,6 +712,7 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  Menu.setApplicationMenu(null);
   configureContentSecurityPolicy();
   configurePermissionPolicy();
   const rendererUrl = getRendererUrl();

@@ -1,5 +1,8 @@
 export {
+  createCodexSessionWorkspaceUserDataPath,
   initializeCodexWorkspace,
+  initializeCodexSessionWorkspaceParent,
+  removeCodexSessionWorkspace,
 } from "./initializer";
 export {
   CodexWorkspaceError,
