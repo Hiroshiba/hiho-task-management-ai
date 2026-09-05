@@ -677,6 +677,13 @@ export const proposalSchema = z
     });
   });
 
+const withdrawConfirmationSchema = z
+  .object({
+    target_task_gid: gidSchema,
+    allowed_operation: z.literal("withdraw"),
+  })
+  .strict();
+
 const questionSchema = z
   .object({
     question_id: identifierSchema,
@@ -686,6 +693,7 @@ const questionSchema = z
       .min(2)
       .max(8)
       .optional(),
+    withdraw_confirmation: withdrawConfirmationSchema.optional(),
   })
   .strict();
 
