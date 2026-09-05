@@ -2644,6 +2644,7 @@ onUnmounted(() => {
             </p>
             <AiPanel
               :state="aiState"
+              :tasks="overview.tasks"
               :can-write="canWrite && !guiEditSaving && !aiBusy"
               :can-send-ai="canSendAi"
               :ai-send-disabled-reason="aiSendDisabledReason"

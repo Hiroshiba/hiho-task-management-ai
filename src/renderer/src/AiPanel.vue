@@ -12,7 +12,26 @@ import {
   type AiWorkflowTurnRequest,
 } from "../../shared/ai-workflow";
 import type { ProposalOperation } from "../../shared/ai";
-import type { RendererAiState } from "./state";
+import {
+  importanceLabel,
+  parentWorkModeLabel,
+  statusLabel,
+  type RendererAiState,
+} from "./state";
+
+type TaskTitleReference = {
+  readonly gid: string;
+  readonly title: string;
+};
+
+type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
+type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
+type ProposalDueValue = Extract<ProposalOperation, { operation: "set_due" }>["before"];
+type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" }>["before"];
+type ProposalDependency = Extract<ProposalOperation, { operation: "set_dependencies" }>["after"][number];
+type CreateTaskFields = CreateTaskOperation["after"];
+type ObsidianLink = Extract<ProposalOperation, { operation: "link_obsidian" }>["after"];
+type RankChange = AiWorkflowProposalView["impact"]["rank_changes"][number];
 
 type ApplicationOutcome = Extract<RendererAiState, { kind: "applied" }>["result"]["application"]["outcome"];
 
@@ -27,6 +46,7 @@ type ApplicationOutcomePresentation = {
 
 const props = defineProps<{
   state: RendererAiState;
+  tasks: readonly TaskTitleReference[];
   canWrite: boolean;
   canSendAi: boolean;
   aiSendDisabledReason: string;
@@ -278,14 +298,235 @@ function operationLabel(operation: ProposalOperation): string {
   }
 }
 
-function targetLabel(operation: ProposalOperation): string {
+function taskLabel(gid: string): string {
+  const task = props.tasks.find((candidate) => candidate.gid === gid);
+  if (task == null) {
+    return `タスク名未取得・ID ${gid}`;
+  }
+  return `タスク「${task.title}」`;
+}
+
+function createTaskOperationForRef(
+  proposal: AiWorkflowProposalView,
+  temporaryRef: string,
+): CreateTaskOperation {
+  const operation = proposal.proposal.groups
+    .flatMap((group) => group.operations)
+    .find((candidate): candidate is CreateTaskOperation =>
+      candidate.operation === "create_task" && candidate.temporary_ref === temporaryRef);
+  if (operation == null) {
+    throw new Error("一時参照に対応するタスク作成操作がありません。");
+  }
+  return operation;
+}
+
+function targetReferenceLabel(
+  proposal: AiWorkflowProposalView,
+  target: ProposalTarget,
+): string {
+  if (target.kind === "existing") {
+    return taskLabel(target.gid);
+  }
+  const createOperation = createTaskOperationForRef(proposal, target.ref);
+  return `新規タスク「${createOperation.after.title}」`;
+}
+
+function targetLabel(
+  proposal: AiWorkflowProposalView,
+  operation: ProposalOperation,
+): string {
   if (operation.operation === "create_task") {
-    return `新規 ${operation.temporary_ref}`;
+    return `新規タスク「${operation.after.title}」`;
+  }
+  return targetReferenceLabel(proposal, operation.target);
+}
+
+function targetDetailLabel(
+  proposal: AiWorkflowProposalView,
+  operation: ProposalOperation,
+): string {
+  if (operation.operation === "create_task") {
+    return `${targetLabel(proposal, operation)}・一時参照 ${operation.temporary_ref}`;
   }
   if (operation.target.kind === "existing") {
-    return operation.target.gid;
+    return `${targetLabel(proposal, operation)}・ID ${operation.target.gid}`;
   }
-  return `一時参照 ${operation.target.ref}`;
+  return `${targetLabel(proposal, operation)}・一時参照 ${operation.target.ref}`;
+}
+
+function rankTaskLabel(proposal: AiWorkflowProposalView, gid: string): string {
+  const temporaryPrefix = "temporary:";
+  if (!gid.startsWith(temporaryPrefix)) {
+    return taskLabel(gid);
+  }
+  const temporaryRef = gid.slice(temporaryPrefix.length);
+  if (temporaryRef.length === 0) {
+    throw new Error("順位影響の一時参照が空です。");
+  }
+  const createOperation = createTaskOperationForRef(proposal, temporaryRef);
+  return `新規タスク「${createOperation.after.title}」`;
+}
+
+function notesValueLabel(value: string): string {
+  return value.trim().length === 0 ? "なし" : value;
+}
+
+function dueAtLabel(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("期限日時を表示できません。");
+  }
+  const formatted = new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(timestamp));
+  return `日時 ${formatted} JST`;
+}
+
+function dueValueLabel(value: ProposalDueValue): string {
+  switch (value.kind) {
+    case "absent":
+      return "期限なし";
+    case "due_on":
+      return `日付 ${value.due_on}`;
+    case "due_at":
+      return dueAtLabel(value.due_at);
+  }
+}
+
+function dependencyScopeLabel(scope: ProposalDependency["scope"]): string {
+  return scope === "full" ? "完全依存" : "一部依存";
+}
+
+function dependencyLines(
+  proposal: AiWorkflowProposalView,
+  dependencies: readonly ProposalDependency[],
+): readonly string[] {
+  if (dependencies.length === 0) {
+    return ["依存先: なし"];
+  }
+  return dependencies.map((dependency, index) =>
+    `依存先${index + 1}: ${targetReferenceLabel(proposal, dependency.target)}・${dependencyScopeLabel(dependency.scope)}・根拠 ${dependency.source}`);
+}
+
+function parentValueLabel(
+  proposal: AiWorkflowProposalView,
+  value: ProposalParentValue,
+): string {
+  if (value.kind === "absent") {
+    return "親タスクなし";
+  }
+  return `親 ${targetReferenceLabel(proposal, value)}`;
+}
+
+function obsidianLinkLabel(link: ObsidianLink): string {
+  return `${link.title}・Vault ${link.vault_id}・パス ${link.path}・信頼度 ${Math.round(link.confidence * 100)}%`;
+}
+
+function createTaskFieldsLines(
+  proposal: AiWorkflowProposalView,
+  fields: CreateTaskFields,
+): readonly string[] {
+  const lines = [`タイトル: ${fields.title}`];
+  if (fields.notes != null) {
+    lines.push(`説明: ${notesValueLabel(fields.notes)}`);
+  }
+  if (fields.status != null) {
+    lines.push(`状態: ${statusLabel(fields.status)}`);
+  }
+  if (fields.importance != null) {
+    lines.push(`重要度: ${importanceLabel(fields.importance)}`);
+  }
+  if (fields.area != null) {
+    lines.push(`領域: ${fields.area}`);
+  }
+  if (fields.due != null) {
+    lines.push(`期限: ${dueValueLabel(fields.due)}`);
+  }
+  if (fields.parent != null) {
+    lines.push(`親タスク: ${targetReferenceLabel(proposal, fields.parent)}`);
+  }
+  if (fields.parent_work_mode != null) {
+    lines.push(`親作業モード: ${parentWorkModeLabel(fields.parent_work_mode)}`);
+  }
+  if (fields.dependencies != null) {
+    lines.push(...dependencyLines(proposal, fields.dependencies));
+  }
+  if (fields.obsidian_links != null) {
+    if (fields.obsidian_links.length === 0) {
+      lines.push("Obsidianリンク: なし");
+    } else {
+      fields.obsidian_links.forEach((link, index) => {
+        lines.push(`Obsidianリンク${index + 1}: ${obsidianLinkLabel(link)}`);
+      });
+    }
+  }
+  return lines;
+}
+
+function operationValueLines(
+  proposal: AiWorkflowProposalView,
+  operation: ProposalOperation,
+  side: "before" | "after",
+): readonly string[] {
+  switch (operation.operation) {
+    case "create_task":
+      return side === "before" ? ["未作成"] : createTaskFieldsLines(proposal, operation.after);
+    case "update_title":
+      return [side === "before" ? operation.before : operation.after];
+    case "update_notes":
+      return [notesValueLabel(side === "before" ? operation.before : operation.after)];
+    case "set_status":
+      return [statusLabel(side === "before" ? operation.before : operation.after)];
+    case "set_importance":
+      return [importanceLabel(side === "before" ? operation.before : operation.after)];
+    case "set_due":
+      return [dueValueLabel(side === "before" ? operation.before : operation.after)];
+    case "clear_due":
+      return [dueValueLabel(side === "before" ? operation.before : operation.after)];
+    case "set_area":
+      return [side === "before" ? operation.before : operation.after];
+    case "set_dependencies":
+      return dependencyLines(
+        proposal,
+        side === "before" ? operation.before : operation.after,
+      );
+    case "set_parent":
+      return [parentValueLabel(proposal, side === "before" ? operation.before : operation.after)];
+    case "set_parent_work_mode":
+      return [parentWorkModeLabel(side === "before" ? operation.before : operation.after)];
+    case "link_obsidian":
+      return side === "before"
+        ? ["Obsidianリンクなし"]
+        : [obsidianLinkLabel(operation.after)];
+    case "unlink_obsidian":
+      return side === "before"
+        ? [obsidianLinkLabel(operation.before)]
+        : ["Obsidianリンクなし"];
+    case "complete":
+      return [statusLabel(side === "before" ? operation.before : operation.after)];
+    case "withdraw":
+      return [statusLabel(side === "before" ? operation.before : operation.after)];
+  }
+}
+
+function rankPositionLabel(state: RankChange["before_state"], rank: number | undefined): string {
+  if (state === "ranked") {
+    if (rank == null) {
+      throw new Error("順位付き変更に順位がありません。");
+    }
+    return `順位${rank}`;
+  }
+  if (rank != null) {
+    throw new Error("順位なしの変更に順位が指定されています。");
+  }
+  switch (state) {
+    case "excluded":
+      return "順位対象外";
+    case "not_present":
+      return "一覧対象外";
+  }
 }
 
 function evidenceKindLabel(
@@ -303,17 +544,17 @@ function evidenceKindLabel(
   }
 }
 
-function valueLabel(value: unknown): string {
+function serializeEditValue(value: unknown): string {
   const serialized = JSON.stringify(value);
   if (serialized == null) {
-    return "値を表示できません";
+    throw new Error("編集値をJSONへ変換できません。");
   }
   return serialized;
 }
 
 function startEditing(operation: ProposalOperation): void {
   editingOperationId.value = operation.operation_id;
-  editValue.value = valueLabel(operation.after);
+  editValue.value = serializeEditValue(operation.after);
   editEvidence.value = "user_message";
   localError.value = "";
 }
@@ -686,7 +927,7 @@ function applicationReasonLabel(reason: string): string {
                 <div class="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p class="font-medium text-slate-900 dark:text-slate-100">
-                      {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600 dark:text-slate-400">{{ targetLabel(operation) }}</span>
+                      {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600 dark:text-slate-400">{{ targetLabel(requireProposal(), operation) }}</span>
                     </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
                       {{ operationValidation(requireProposal(), operation.operation_id) }}・{{ operation.basis === 'explicit' ? '明示' : '推測' }}・信頼度 {{ confidenceLabel(operation.confidence) }}
                     </p>
@@ -700,15 +941,29 @@ function applicationReasonLabel(reason: string): string {
                     :aria-label="`${operationLabel(operation)}を選択`"
                     @change="selectedOperationIds = toggleValue(selectedOperationIds, operation.operation_id)"
                   >操作を選択</label>
-                </div><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                </div><dl class="mt-3 grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-4">
                   <dt class="text-slate-600 dark:text-slate-400">
                     変更前
-                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
-                    {{ valueLabel(operation.before) }}
+                  </dt><dd class="min-w-0 whitespace-pre-wrap break-words text-slate-800 dark:text-slate-100">
+                    <ul class="space-y-1">
+                      <li
+                        v-for="line in operationValueLines(requireProposal(), operation, 'before')"
+                        :key="line"
+                      >
+                        {{ line }}
+                      </li>
+                    </ul>
                   </dd><dt class="text-slate-600 dark:text-slate-400">
                     変更後
-                  </dt><dd class="break-words text-slate-800 dark:text-slate-100">
-                    {{ valueLabel(operation.after) }}
+                  </dt><dd class="min-w-0 whitespace-pre-wrap break-words text-slate-800 dark:text-slate-100">
+                    <ul class="space-y-1">
+                      <li
+                        v-for="line in operationValueLines(requireProposal(), operation, 'after')"
+                        :key="line"
+                      >
+                        {{ line }}
+                      </li>
+                    </ul>
                   </dd><dt class="text-slate-600 dark:text-slate-400">
                     理由
                   </dt><dd class="break-words text-slate-800 dark:text-slate-100">
@@ -791,7 +1046,7 @@ function applicationReasonLabel(reason: string): string {
                   操作ID: {{ operation.operation_id }}
                 </p>
                 <p>
-                  対象: {{ targetLabel(operation) }}
+                  対象: {{ targetDetailLabel(requireProposal(), operation) }}
                 </p>
                 <p>
                   基準データの識別子: {{ operation.baseline_snapshot_hash }}
@@ -862,7 +1117,7 @@ function applicationReasonLabel(reason: string): string {
               v-for="change in requireProposal().impact.rank_changes"
               :key="change.task_gid"
             >
-              {{ change.task_gid }}: {{ change.before_rank == null ? '順位なし' : `順位${change.before_rank}` }} → {{ change.after_rank == null ? '順位なし' : `順位${change.after_rank}` }}
+              {{ rankTaskLabel(requireProposal(), change.task_gid) }}: {{ rankPositionLabel(change.before_state, change.before_rank) }} → {{ rankPositionLabel(change.after_state, change.after_rank) }}
             </li>
           </ul><p
             v-else
