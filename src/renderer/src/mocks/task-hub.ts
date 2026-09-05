@@ -25,7 +25,6 @@ import {
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCancelReauthenticationResponseSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
-  ipcAsanaCompleteReauthenticationResponseSchema,
   ipcEmptyRequestSchema,
   ipcFailureSchema,
   ipcGuiEditInputSchema,
@@ -139,6 +138,14 @@ function ok<T>(value: T): MockResult<T> {
 
 function failure(code: IpcFailure["code"], message: string): IpcFailure {
   return ipcFailureSchema.parse({ kind: "error", code, message });
+}
+
+function advanceSyncAt(previousSyncAt: string): string {
+  const previousTimestamp = Date.parse(previousSyncAt);
+  if (!Number.isFinite(previousTimestamp)) {
+    throw new Error("mockの同期日時が不正です。");
+  }
+  return new Date(previousTimestamp + 1).toISOString();
 }
 
 function parseDetail(value: unknown): ViewModelTaskDetail {
@@ -282,13 +289,17 @@ function createRow(detail: ViewModelTaskDetail, rank: number): ViewModelTaskRow 
   });
 }
 
-function createOverview(details: ReadonlyMap<string, ViewModelTaskDetail>): ViewModelOverview {
+function createOverview(
+  details: ReadonlyMap<string, ViewModelTaskDetail>,
+  lastSuccessfulSyncAt: string,
+  lastFullSyncAt: string,
+): ViewModelOverview {
   const tasks = Array.from(details.values(), (detail, index) => createRow(detail, index + 1));
   const areas = Array.from(new Set(Array.from(details.values(), (detail) => detail.area)));
   return viewModelOverviewSchema.parse({
     project_gid: PROJECT_GID,
-    last_successful_sync_at: SYNC_AT,
-    last_full_sync_at: SYNC_AT,
+    last_successful_sync_at: lastSuccessfulSyncAt,
+    last_full_sync_at: lastFullSyncAt,
     ranking: {
       kind: "available",
       calculated_at: SYNC_AT,
@@ -516,11 +527,11 @@ function applyGuiOperation(
   throw new Error("mockのGUI操作が不正です。");
 }
 
-function createSyncResult(mode: "full" | "delta"): IpcSyncResult {
+function createSyncResult(mode: "full" | "delta", syncedAt: string): IpcSyncResult {
   return ipcSyncResultSchema.parse({
     requested_mode: mode,
     performed_mode: mode,
-    synced_at: SYNC_AT,
+    synced_at: syncedAt,
     application_result: {
       affected_gids: TASK_GIDS,
       operations: [],
@@ -612,7 +623,7 @@ function notify<T>(listeners: ReadonlySet<(value: T) => void>, value: T): void {
 /** 画面確認用の全TaskHub API mockを作成します。 */
 export function createMockTaskHubApi(): TaskHubApi {
   const details = createInitialDetails();
-  let overview = createOverview(details);
+  let overview = createOverview(details, SYNC_AT, SYNC_AT);
   const setupState: IpcSetupState = ipcSetupStateSchema.parse({
     kind: "ready",
     step: "ready",
@@ -674,16 +685,23 @@ export function createMockTaskHubApi(): TaskHubApi {
   function runSync(input: { readonly mode: "full" | "delta" }): Promise<MockResult<IpcSyncResult>> {
     return Promise.resolve().then(() => {
       const parsedInput = ipcSyncInputSchema.parse(input);
+      const previousFullSyncAt = overview.last_full_sync_at;
+      if (previousFullSyncAt == null) {
+        throw new Error("mockの完全同期日時がありません。");
+      }
+      const syncedAt = advanceSyncAt(overview.last_successful_sync_at);
+      const nextFullSyncAt = parsedInput.mode === "full" ? syncedAt : previousFullSyncAt;
+      overview = createOverview(details, syncedAt, nextFullSyncAt);
       syncResultState({
         kind: "syncing",
         requested_mode: parsedInput.mode,
-        last_successful_sync_at: SYNC_AT,
+        last_successful_sync_at: syncedAt,
       });
       syncResultState({
         kind: "online",
-        last_successful_sync_at: SYNC_AT,
+        last_successful_sync_at: syncedAt,
       });
-      return ipcSyncResponseSchema.parse(ok(createSyncResult(parsedInput.mode)));
+      return ipcSyncResponseSchema.parse(ok(createSyncResult(parsedInput.mode, syncedAt)));
     });
   }
 
@@ -712,7 +730,7 @@ export function createMockTaskHubApi(): TaskHubApi {
             return failure("invalid_request", "mockのOAuth認可IDと一致しません。");
           }
           asanaAuthenticationState = ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" });
-          return ipcAsanaCompleteReauthenticationResponseSchema.parse(ok(createSyncResult("full")));
+          return runSync({ mode: "full" });
         }),
       cancelReauthentication: (input: IpcAsanaReauthenticationCancelInput) =>
         Promise.resolve().then(() => {
@@ -828,7 +846,7 @@ export function createMockTaskHubApi(): TaskHubApi {
           return failure("not_found", "指定したタスクがmockにありません。");
         }
         const operationId = `mock-${parsedInput.task_gid}-${parsedInput.operation.kind}`;
-        if (parsedInput.expected_sync_at !== SYNC_AT) {
+        if (parsedInput.expected_sync_at !== overview.last_successful_sync_at) {
           return ipcGuiEditResponseSchema.parse(ok({
             operation_id: operationId,
             task_gid: parsedInput.task_gid,
@@ -839,7 +857,15 @@ export function createMockTaskHubApi(): TaskHubApi {
         }
         const nextDetail = applyGuiOperation(detail, parsedInput.operation, details);
         details.set(nextDetail.gid, nextDetail);
-        overview = createOverview(details);
+        const currentFullSyncAt = overview.last_full_sync_at;
+        if (currentFullSyncAt == null) {
+          throw new Error("mockの完全同期日時がありません。");
+        }
+        overview = createOverview(
+          details,
+          overview.last_successful_sync_at,
+          currentFullSyncAt,
+        );
         return ipcGuiEditResponseSchema.parse(ok({
           operation_id: operationId,
           task_gid: parsedInput.task_gid,
@@ -970,7 +996,15 @@ export function createMockTaskHubApi(): TaskHubApi {
         }
         const nextDetail = parseDetail({ ...detail, title: operation.after });
         details.set(nextDetail.gid, nextDetail);
-        overview = createOverview(details);
+        const currentFullSyncAt = overview.last_full_sync_at;
+        if (currentFullSyncAt == null) {
+          throw new Error("mockの完全同期日時がありません。");
+        }
+        overview = createOverview(
+          details,
+          overview.last_successful_sync_at,
+          currentFullSyncAt,
+        );
         currentProposal = undefined;
         const result: IpcAiApprovalResult = aiWorkflowApprovalResultSchema.parse({
           proposal_id: parsedInput.proposal_id,
