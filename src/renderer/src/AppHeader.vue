@@ -25,7 +25,9 @@ const props = defineProps<{
   canFullSync: boolean;
   fullSyncRunning: boolean;
   canWrite: boolean;
-  canStartNewAiSession: boolean;
+  canOpenAiAssistant: boolean;
+  aiWaitingCount: number;
+  aiRunningCount: number;
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
   asanaAuthenticationBusy: boolean;
@@ -38,7 +40,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "sync"): void;
   (event: "full-sync"): void;
-  (event: "new-ai-session"): void;
+  (event: "open-ai-assistant"): void;
   (event: "complete-codex-authentication"): void;
   (event: "begin-reauthentication"): void;
   (event: "recheck-authentication-state"): void;
@@ -368,14 +370,21 @@ function handleAsanaAuthenticationAction(): void {
           aria-label="Codexの操作"
         >
           <button
-            v-if="codexState.kind === 'ready'"
+            v-if="configured"
             type="button"
             class="secondary-button"
-            :disabled="!props.canStartNewAiSession"
-            aria-label="新しいAIセッションを開始"
-            @click="emit('new-ai-session')"
+            :disabled="!props.canOpenAiAssistant"
+            data-ai-assistant-trigger
+            aria-label="AIアシスタントを開く"
+            @click="emit('open-ai-assistant')"
           >
-            新しいAIセッション
+            AIアシスタント
+            <span
+              v-if="aiWaitingCount > 0 || aiRunningCount > 0"
+              class="ml-2 text-xs font-normal"
+            >
+              対応待ち{{ aiWaitingCount }}件・実行中{{ aiRunningCount }}件
+            </span>
           </button>
           <button
             v-if="codexState.kind === 'authentication_required'"

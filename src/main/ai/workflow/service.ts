@@ -1189,6 +1189,15 @@ function createTurnPrompt(
     as_of: prepared.snapshot.as_of,
   });
   const serializedContext = canonicalizeJson(context);
+  const targetTask = request.target_task_gid == null
+    ? undefined
+    : findTaskByGid(prepared.snapshot, request.target_task_gid);
+  if (request.target_task_gid != null && targetTask == null) {
+    throw new AiWorkflowError("指定された対象タスクが基準スナップショットにありません。");
+  }
+  const targetTaskContext = targetTask == null
+    ? []
+    : [`対象タスク文脈: GID ${targetTask.gid}、タイトル「${targetTask.title}」`];
   return [
     "TaskHubの構造化変更案だけを検討してください。",
     `基準コンテキスト: ${serializedContext}`,
@@ -1206,6 +1215,7 @@ function createTurnPrompt(
     "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
     `固定検証済みの分割依頼locator: ${canonicalizeJson(prepared.explicit_split_request_locators)}`,
     "split_childのinstruction_referenceには固定検証済み一覧のlocatorだけを使用し、一覧が空ならsplit_childを提案しないでください。",
+    ...targetTaskContext,
     `利用者要求: ${request.message}`,
   ].join("\n");
 }

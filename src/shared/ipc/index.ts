@@ -1,6 +1,8 @@
 export {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiCloseSessionResponseSchema,
   ipcAiDeltaEventSchema,
   ipcAiEditInputSchema,
   ipcAiEditResponseSchema,
@@ -75,7 +77,10 @@ export {
 export type {
   IpcAiApprovalInput,
   IpcAiApprovalResult,
+  IpcAiCloseSessionInput,
+  IpcAiProposalInput,
   IpcAiEditInput,
+  IpcAiRejectInput,
   IpcAiNewSessionResult,
   IpcAiStatus,
   IpcAiProposalView,

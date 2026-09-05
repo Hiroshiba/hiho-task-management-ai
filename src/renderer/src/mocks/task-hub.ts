@@ -2,6 +2,8 @@ import type { TaskHubApi } from "../../../shared/task-hub-api";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiCloseSessionResponseSchema,
   ipcAiDeltaEventSchema,
   ipcAiEditInputSchema,
   ipcAiEditResponseSchema,
@@ -71,6 +73,8 @@ import {
   type IpcAiApprovalResult,
   type IpcAiEditInput,
   type IpcAiProposalView,
+  type IpcAiProposalInput,
+  type IpcAiRejectInput,
   type IpcAiSelectionInput,
   type IpcAiStatus,
   type IpcAiTurnInput,
@@ -97,7 +101,6 @@ import {
   aiWorkflowApprovalResultSchema,
   aiWorkflowProposalViewSchema,
   aiWorkflowTurnResultSchema,
-  type AiWorkflowOperationEdit,
 } from "../../../shared/ai-workflow";
 import {
   type Dependency,
@@ -115,6 +118,11 @@ import {
 } from "../../../shared/view-model";
 
 type MockResult<T> = { readonly kind: "ok"; readonly value: T } | IpcFailure;
+type MockAiSessionState = {
+  readonly session_id: string;
+  stream: string;
+  proposal: IpcAiProposalView | undefined;
+};
 type RankedTaskRanking = Extract<ViewModelTaskDetail["ranking"], { kind: "ranked" }>;
 type RankingTieBreak = RankedTaskRanking["tie_break"];
 
@@ -620,6 +628,13 @@ function notify<T>(listeners: ReadonlySet<(value: T) => void>, value: T): void {
   }
 }
 
+function findMockAiSession(
+  sessions: ReadonlyMap<string, MockAiSessionState>,
+  sessionId: string,
+): MockAiSessionState | undefined {
+  return sessions.get(sessionId);
+}
+
 /** 画面確認用の全TaskHub API mockを作成します。 */
 export function createMockTaskHubApi(): TaskHubApi {
   const details = createInitialDetails();
@@ -662,7 +677,8 @@ export function createMockTaskHubApi(): TaskHubApi {
     kind: "online",
     last_successful_sync_at: SYNC_AT,
   });
-  let currentProposal: IpcAiProposalView | undefined;
+  let nextAiSessionNumber = 1;
+  const aiSessions = new Map<string, MockAiSessionState>();
   const syncListeners = new Set<(value: IpcSyncStateEvent) => void>();
   const aiDeltaListeners = new Set<(value: IpcCodexDelta) => void>();
   const aiStatusListeners = new Set<(value: IpcAiStatus) => void>();
@@ -881,63 +897,87 @@ export function createMockTaskHubApi(): TaskHubApi {
       }),
       startNewSession: () => Promise.resolve().then(() => {
         ipcAiStartNewSessionInputSchema.parse(undefined);
-        currentProposal = undefined;
+        const sessionId = `mock-session-${nextAiSessionNumber}`;
+        nextAiSessionNumber += 1;
+        aiSessions.set(sessionId, {
+          session_id: sessionId,
+          stream: "",
+          proposal: undefined,
+        });
         return ipcAiStartNewSessionResponseSchema.parse(ok(
-          { kind: "started" },
+          { kind: "started", session_id: sessionId },
         ));
       }),
       startTurn: (input: IpcAiTurnInput) => Promise.resolve().then(() => {
-        ipcAiTurnInputSchema.parse(input);
+        const parsedInput = ipcAiTurnInputSchema.parse(input);
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
         const detail = details.get(PRIMARY_TASK_GID);
         if (detail == null) {
           throw new Error("mockの提案対象タスクがありません。");
         }
         const delta = ipcAiDeltaEventSchema.parse({
+          session_id: session.session_id,
           thread_id: "mock-thread",
           turn_id: "mock-turn",
           item_id: "mock-item",
           delta: "画面確認用の変更案を作成しました。",
         });
+        session.stream += delta.delta;
         notify(aiDeltaListeners, delta);
-        currentProposal = createProposalView(detail.title);
+        session.proposal = createProposalView(detail.title);
         return ipcAiTurnResponseSchema.parse(ok(
           aiWorkflowTurnResultSchema.parse({
             kind: "proposal",
             message: "画面確認用の固定提案です。",
             questions: [],
-            proposal: currentProposal,
+            proposal: session.proposal,
             retry_count: 0,
           }),
         ));
       }),
-      getProposal: (proposalId: string) => Promise.resolve().then(() => {
-        const parsedInput = ipcAiProposalInputSchema.parse({ proposal_id: proposalId });
-        if (currentProposal == null || currentProposal.proposal_id !== parsedInput.proposal_id) {
+      getProposal: (input: IpcAiProposalInput) => Promise.resolve().then(() => {
+        const parsedInput = ipcAiProposalInputSchema.parse(input);
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
-        return ipcAiProposalResponseSchema.parse(ok(currentProposal));
+        return ipcAiProposalResponseSchema.parse(ok(session.proposal));
       }),
       select: (input: IpcAiSelectionInput) => Promise.resolve().then(() => {
         const parsedInput = ipcAiSelectionInputSchema.parse(input);
-        if (currentProposal == null || currentProposal.proposal_id !== parsedInput.proposal_id) {
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
-        currentProposal = aiWorkflowProposalViewSchema.parse({
-          ...currentProposal,
+        session.proposal = aiWorkflowProposalViewSchema.parse({
+          ...session.proposal,
           selected_operation_ids: selectedOperationIds(parsedInput.selection),
         });
-        return ipcAiSelectionResponseSchema.parse(ok(currentProposal));
+        return ipcAiSelectionResponseSchema.parse(ok(session.proposal));
       }),
       editOperation: (input: IpcAiEditInput) => Promise.resolve().then(() => {
-        const parsedInput: AiWorkflowOperationEdit = ipcAiEditInputSchema.parse(input);
-        if (currentProposal == null || currentProposal.proposal_id !== parsedInput.proposal_id) {
+        const parsedInput = ipcAiEditInputSchema.parse(input);
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
         if (typeof parsedInput.after !== "string" || parsedInput.after.trim().length === 0) {
           return failure("invalid_request", "mockではタスク名を文字列で指定してください。");
         }
         let operationFound = false;
-        const groups = currentProposal.proposal.groups.map((group) => ({
+        const groups = session.proposal.proposal.groups.map((group) => ({
           ...group,
           operations: group.operations.map((operation) => {
             if (operation.operation_id !== parsedInput.operation_id) {
@@ -958,30 +998,38 @@ export function createMockTaskHubApi(): TaskHubApi {
         if (!operationFound) {
           return failure("not_found", "指定したAI操作がmockにありません。");
         }
-        currentProposal = aiWorkflowProposalViewSchema.parse({
-          ...currentProposal,
-          proposal: { ...currentProposal.proposal, groups },
+        session.proposal = aiWorkflowProposalViewSchema.parse({
+          ...session.proposal,
+          proposal: { ...session.proposal.proposal, groups },
         });
-        return ipcAiEditResponseSchema.parse(ok(currentProposal));
+        return ipcAiEditResponseSchema.parse(ok(session.proposal));
       }),
-      reject: (proposalId: string) => Promise.resolve().then(() => {
-        const parsedInput = ipcAiRejectInputSchema.parse({ proposal_id: proposalId });
-        if (currentProposal == null || currentProposal.proposal_id !== parsedInput.proposal_id) {
+      reject: (input: IpcAiRejectInput) => Promise.resolve().then(() => {
+        const parsedInput = ipcAiRejectInputSchema.parse(input);
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
-        currentProposal = undefined;
+        session.proposal = undefined;
         return ipcAiRejectResponseSchema.parse(ok({ completed: true }));
       }),
       approve: (input: IpcAiApprovalInput) => Promise.resolve().then(() => {
         const parsedInput = ipcAiApprovalInputSchema.parse(input);
-        if (currentProposal == null || currentProposal.proposal_id !== parsedInput.proposal_id) {
+        const session = findMockAiSession(aiSessions, parsedInput.session_id);
+        if (session == null) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
         const selectedIds = selectedOperationIds(parsedInput.selection);
         if (selectedIds.length === 0) {
           return failure("invalid_request", "適用するAI操作を1件以上選択してください。");
         }
-        const operation = currentProposal.proposal.groups
+        const operation = session.proposal.proposal.groups
           .flatMap((group) => group.operations)
           .find((candidate) => candidate.operation_id === selectedIds[0]);
         if (operation == null) {
@@ -1005,7 +1053,7 @@ export function createMockTaskHubApi(): TaskHubApi {
           overview.last_successful_sync_at,
           currentFullSyncAt,
         );
-        currentProposal = undefined;
+        session.proposal = undefined;
         const result: IpcAiApprovalResult = aiWorkflowApprovalResultSchema.parse({
           proposal_id: parsedInput.proposal_id,
           application: {
@@ -1026,6 +1074,13 @@ export function createMockTaskHubApi(): TaskHubApi {
           },
         });
         return ipcAiApprovalResponseSchema.parse(ok(result));
+      }),
+      closeSession: (sessionId: string) => Promise.resolve().then(() => {
+        const parsedSessionId = ipcAiCloseSessionInputSchema.parse(sessionId);
+        if (!aiSessions.delete(parsedSessionId)) {
+          return failure("not_found", "指定したAIセッションがmockにありません。");
+        }
+        return ipcAiCloseSessionResponseSchema.parse(ok({ completed: true }));
       }),
       onDelta: (listener) => {
         if (typeof listener !== "function") {

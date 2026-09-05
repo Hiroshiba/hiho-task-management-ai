@@ -4,6 +4,8 @@ import type { TaskHubApi } from "../shared/task-hub-api";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiCloseSessionResponseSchema,
   ipcAiDeltaEventSchema,
   ipcAiEditInputSchema,
   ipcAiEditResponseSchema,
@@ -233,11 +235,11 @@ const api: TaskHubApi = {
       ipcAiTurnResponseSchema,
       input,
     ),
-    getProposal: (proposalId) => invoke(
+    getProposal: (input) => invoke(
       "ai:get-proposal",
       ipcAiProposalInputSchema,
       ipcAiProposalResponseSchema,
-      { proposal_id: proposalId },
+      input,
     ),
     select: (input) => invoke(
       "ai:select",
@@ -251,17 +253,23 @@ const api: TaskHubApi = {
       ipcAiEditResponseSchema,
       input,
     ),
-    reject: (proposalId) => invoke(
+    reject: (input) => invoke(
       "ai:reject",
       ipcAiRejectInputSchema,
       ipcAiRejectResponseSchema,
-      { proposal_id: proposalId },
+      input,
     ),
     approve: (input) => invoke(
       "ai:approve",
       ipcAiApprovalInputSchema,
       ipcAiApprovalResponseSchema,
       input,
+    ),
+    closeSession: (sessionId) => invoke(
+      "ai:close-session",
+      ipcAiCloseSessionInputSchema,
+      ipcAiCloseSessionResponseSchema,
+      sessionId,
     ),
     onDelta: (listener) => subscribe(
       "ai:delta",

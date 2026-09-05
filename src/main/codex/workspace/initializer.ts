@@ -10,7 +10,7 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { join, parse, relative, resolve, sep } from "node:path";
+import { basename, join, parse, relative, resolve, sep } from "node:path";
 import {
   codexWorkspaceInitializationInputSchema,
   codexWorkspaceInitializationResultSchema,
@@ -157,6 +157,27 @@ function clearTemporaryDirectory(directoryPath: string): void {
   }
 }
 
+/** AI依頼用ワークスペースの親ディレクトリを初期化します。 */
+export function initializeCodexSessionWorkspaceParent(
+  parentPath: string,
+): string {
+  const normalizedParentPath = resolve(parentPath);
+  assertNoSymlinkPath(parse(normalizedParentPath).dir);
+  ensureDirectory(normalizedParentPath, "AIセッション用ワークスペースの親ディレクトリ");
+  for (const entry of readdirSync(normalizedParentPath)) {
+    if (!entry.startsWith("ai-session-")) {
+      throw new CodexWorkspaceError(
+        "AIセッション用ワークスペースの親ディレクトリに不正な項目があります。",
+      );
+    }
+    removeCodexSessionWorkspace(
+      join(normalizedParentPath, entry),
+      normalizedParentPath,
+    );
+  }
+  return normalizedParentPath;
+}
+
 function writeFileAtomically(filePath: string, content: string, mode: number): void {
   const temporaryFilePath = `${filePath}.${randomUUID()}.tmp`;
   try {
@@ -180,6 +201,56 @@ function writeFileAtomically(filePath: string, content: string, mode: number): v
     }
     throw error;
   }
+}
+
+/** AI依頼ごとのCodex専用ワークスペースを削除します。 */
+export function removeCodexSessionWorkspace(
+  userDataPath: string,
+  parentPath: string,
+): void {
+  const normalizedUserDataPath = resolve(userDataPath);
+  const normalizedParentPath = resolve(parentPath);
+  if (
+    parse(normalizedUserDataPath).dir !== normalizedParentPath
+    || !/^ai-session-[0-9a-f-]+$/u.test(basename(normalizedUserDataPath))
+  ) {
+    throw new CodexWorkspaceError("AIセッションのワークスペースパスが不正です。");
+  }
+  assertNoSymlinkPath(normalizedParentPath);
+  let stats: Stats;
+  try {
+    stats = lstatSync(normalizedUserDataPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return;
+    }
+    throw new CodexWorkspaceError(
+      "AIセッションのワークスペースを確認できません。",
+      { cause: error },
+    );
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new CodexWorkspaceError("AIセッションのワークスペースが不正です。");
+  }
+  assertNoSymlinkPath(normalizedUserDataPath);
+  clearTemporaryDirectory(normalizedUserDataPath);
+  rmdirSync(normalizedUserDataPath);
+}
+
+/** AI依頼用のユーザーデータ領域を作成します。 */
+export function createCodexSessionWorkspaceUserDataPath(
+  parentPath: string,
+  sessionId: string,
+): string {
+  const normalizedParentPath = resolve(parentPath);
+  if (!/^[0-9a-f-]+$/u.test(sessionId)) {
+    throw new CodexWorkspaceError("AIセッションIDが不正です。");
+  }
+  assertNoSymlinkPath(normalizedParentPath);
+  ensureDirectory(normalizedParentPath, "AIセッション用ワークスペースの親ディレクトリ");
+  const userDataPath = join(normalizedParentPath, `ai-session-${sessionId}`);
+  mkdirSync(userDataPath, { mode: directoryMode });
+  return resolve(userDataPath);
 }
 
 function writeFixedFiles(

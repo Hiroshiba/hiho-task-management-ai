@@ -303,6 +303,43 @@ export const rendererAiStateSchema = z.discriminatedUnion("kind", [
 /** Rendererが表示するAI状態を表す型です。 */
 export type RendererAiState = z.infer<typeof rendererAiStateSchema>;
 
+export type AiSessionStatus =
+  | "waiting_answer"
+  | "waiting_approval"
+  | "running"
+  | "error"
+  | "completed"
+  | "idle";
+
+export type AiSessionFeedback = {
+  readonly kind: "success" | "progress" | "warning" | "failure";
+  readonly message: string;
+};
+
+export type AiSessionOperation =
+  | "idle"
+  | "turn"
+  | "select"
+  | "edit"
+  | "approve"
+  | "reject"
+  | "closing";
+
+export type AiSessionView = {
+  readonly session_id: string;
+  readonly title: string;
+  readonly task_gid?: string | undefined;
+  readonly task_title?: string | undefined;
+  readonly state: RendererAiState;
+  readonly status: AiSessionStatus;
+  readonly operation: AiSessionOperation;
+  readonly request_history: readonly string[];
+  readonly feedback?: AiSessionFeedback | undefined;
+  readonly can_write: boolean;
+  readonly can_send_ai: boolean;
+  readonly ai_send_disabled_reason: string;
+};
+
 /** Rendererが扱うAI変更案の型を明示します。 */
 export type RendererProposal = AiWorkflowProposalView;
 

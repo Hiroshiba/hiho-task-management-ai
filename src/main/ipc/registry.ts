@@ -27,6 +27,8 @@ import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage"
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiCloseSessionResponseSchema,
   ipcAiDeltaEventSchema,
   ipcAiEditInputSchema,
   ipcAiEditResponseSchema,
@@ -93,8 +95,11 @@ import {
   ipcSyncStateEventSchema,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
+  type IpcAiCloseSessionInput,
   type IpcAiEditInput,
   type IpcAiNewSessionResult,
+  type IpcAiProposalInput,
+  type IpcAiRejectInput,
   type IpcAiStatus,
   type IpcAiProposalView,
   type IpcAiSelectionInput,
@@ -199,11 +204,12 @@ export interface IpcAiPort {
   getStatus(): MaybePromise<IpcAiStatus>;
   startNewSession(signal: AbortSignal): MaybePromise<IpcAiNewSessionResult>;
   startTurn(input: IpcAiTurnInput, signal: AbortSignal): MaybePromise<IpcAiTurnResult>;
-  getProposal(proposalId: string): MaybePromise<IpcAiProposalView>;
+  getProposal(input: IpcAiProposalInput): MaybePromise<IpcAiProposalView>;
   select(input: IpcAiSelectionInput): MaybePromise<IpcAiProposalView>;
   editOperation(input: IpcAiEditInput): MaybePromise<IpcAiProposalView>;
-  rejectProposal(proposalId: string): MaybePromise<void>;
+  reject(input: IpcAiRejectInput): MaybePromise<void>;
   approve(input: IpcAiApprovalInput, signal: AbortSignal): MaybePromise<IpcAiApprovalResult>;
+  closeSession(sessionId: IpcAiCloseSessionInput): MaybePromise<{ readonly completed: true }>;
   onDelta?(listener: (delta: IpcCodexDelta) => void): () => void;
   onStatus?(listener: (status: IpcAiStatus) => void): () => void;
 }
@@ -769,7 +775,7 @@ export class IpcHandlerRegistry {
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        return port.getProposal(input.proposal_id);
+        return port.getProposal(input);
       },
     );
     this.registerHandle(
@@ -808,7 +814,7 @@ export class IpcHandlerRegistry {
         if (port == null) {
           throw new IpcCapabilityUnavailableError();
         }
-        await port.rejectProposal(input.proposal_id);
+        await port.reject(input);
         return createCompletedValue();
       },
     );
@@ -823,6 +829,19 @@ export class IpcHandlerRegistry {
           throw new IpcCapabilityUnavailableError();
         }
         return port.approve(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "ai:close-session",
+      ipcAiCloseSessionInputSchema,
+      ipcAiCloseSessionResponseSchema,
+      async (sessionId) => {
+        const port = this.options.ports.ai;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.closeSession(sessionId);
       },
     );
     this.registerHandle(
