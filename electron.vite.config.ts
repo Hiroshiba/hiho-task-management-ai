@@ -1,6 +1,5 @@
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
-import tailwindcss from "@tailwindcss/vite";
-import vue from "@vitejs/plugin-vue";
+import { rendererPlugins } from "./vite.renderer.config";
 
 export default defineConfig({
   main: {
@@ -18,6 +17,6 @@ export default defineConfig({
     },
   },
   renderer: {
-    plugins: [vue(), tailwindcss()],
+    plugins: rendererPlugins,
   },
 });

@@ -9,7 +9,7 @@ declare module "*.vue" {
 
 declare global {
   interface Window {
-    readonly taskHub: TaskHubApi;
+    readonly taskHub?: TaskHubApi;
   }
 }
 
