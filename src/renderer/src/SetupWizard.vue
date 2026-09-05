@@ -826,13 +826,6 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
         class="space-y-3"
       >
         <p
-          v-if="props.state.kind === 'external_tool_configured'"
-          class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
-          role="status"
-        >
-          Discord読取連携を登録しました。
-        </p>
-        <p
           v-if="props.state.kind === 'external_tool_unavailable'"
           class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
           role="status"
