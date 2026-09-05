@@ -5,7 +5,7 @@
 - 対象版: 初期版
 - 作成日: 2026-08-26（JST）
 - 対象OS: Windows / macOS
-- 指定技術: Electron / Vite / TypeScript / Vue / Tailwind CSS / pnpm
+- 指定技術: Electron / Vite / TypeScript / Vue / Reka UI / Tailwind CSS / pnpm
 - 前提利用者数: 1人
 - 課金方針: Asana Personalの無料範囲を使用し、AIは既存のChatGPT/Codexサブスクリプションを使用する。OpenAI API課金は使用しない。
 - テスト方針: 自動テスト・テストコードは実装対象外とする。末尾の受入条件は手動確認用であり、テスト実装の要求ではない。
@@ -1328,6 +1328,10 @@ Asana APIには一般的なCASトランザクションがないため、完全�
 
 実装画像・詳細なピクセル設計は本書の対象外とし、情報構造だけを定義する。
 
+確認ダイアログ、選択欄、チェックボックス、ラジオボタン、トーストにはReka UIを使用する。
+同期や編集の完了など、消えても操作の継続に支障がない通知はトーストに表示し、一定時間で閉じる。利用者が手動で閉じることもできる。
+処理中の表示、入力エラー、競合、復旧待ち、認証要求など、操作や判断に必要な情報は画面内に残す。
+
 ### 17.1 全体構成
 
 #### ヘッダー
@@ -2032,5 +2036,5 @@ OpenAI API課金は使わないが、CodexのChatGPTサブスクリプション�
 - 完全削除なし。すべて取り下げ。
 - 開発者ログはエラー時に原因と状態を追える安全化情報だけを保存し、成功イベント、秘密値、外部本文、プロンプトを保存しない。
 - 必要な能力またはプラットフォーム別のサンドボックスを確認できない場合はAIだけを停止し、Asana機能を継続する。Codex版ごとの未公開機能を完全に監査しないことは残余リスクとする。
-- Electron / Vite / TypeScript / Vue / Tailwind CSS / pnpm、Windows / macOS。
+- Electron / Vite / TypeScript / Vue / Reka UI / Tailwind CSS / pnpm、Windows / macOS。
 - 自動テストは実装しない。
