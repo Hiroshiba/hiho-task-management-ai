@@ -3023,7 +3023,7 @@ onUnmounted(() => {
               </li>
             </ul>
           </details>
-          <div class="grid items-start gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
+          <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
             <TaskList
               :rows="visibleRows"
               :selected-task-gid="selectedTaskGid"
