@@ -120,6 +120,6 @@ export interface TaskHubApi {
 
 declare global {
   interface Window {
-    readonly taskHub: TaskHubApi;
+    readonly taskHub?: TaskHubApi;
   }
 }

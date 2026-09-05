@@ -3785,11 +3785,18 @@ export class TaskHubApplication {
     return validatedState;
   }
 
+  private resetAiSessionWithdrawConfirmations(): void {
+    for (const record of this.aiSessions.values()) {
+      record.workflow.resetPendingWithdrawConfirmation();
+    }
+  }
+
   private async refreshCodexThreadIfReady(signal: AbortSignal): Promise<void> {
     if (this.codexSession.getState() !== "ready") {
       return;
     }
     this.aiStartResult = await this.codexSession.startNewSession(signal);
+    this.resetAiSessionWithdrawConfirmations();
     this.codexAuthenticationRequired = false;
     this.publishAiStatus();
   }
@@ -4521,7 +4528,10 @@ export class TaskHubApplication {
         }
         record.turnInFlight = true;
         try {
-          const request = aiWorkflowTurnRequestSchema.parse({ message: input.message });
+          const request = aiWorkflowTurnRequestSchema.parse({
+            message: input.message,
+            target_task_gid: input.target_task_gid,
+          });
           const result = aiWorkflowTurnResultSchema.parse(
             await this.runAiSessionOperation(
               record,

@@ -86,6 +86,7 @@ export const aiWorkflowSnapshotSchema = z
 export const aiWorkflowTurnRequestSchema = z
   .object({
     message: nonBlankMessageSchema,
+    target_task_gid: gidSchema.optional(),
   })
   .strict();
 

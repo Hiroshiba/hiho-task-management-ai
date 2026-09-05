@@ -78,6 +78,9 @@ import {
   type AiSessionOperation,
   type AiSessionView,
 } from "./state";
+import { useTaskHub } from "./task-hub";
+
+const taskHub = useTaskHub();
 
 type SetupAction =
   | { readonly kind: "start" }
@@ -323,6 +326,10 @@ const canWrite = computed(() => {
     >= syncTimestamp(currentSyncState.synced_at);
 });
 const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
+const aiTaskReferences = computed(() => overview.value?.tasks.map((task) => ({
+  gid: task.gid,
+  title: task.title,
+})) ?? []);
 const aiSessionViews = computed<readonly AiSessionView[]>(() => aiSessions.value
   .slice()
   .sort((left, right) => {
@@ -451,14 +458,6 @@ function aiRequestTitle(message: string): string {
   return characters.length > 40
     ? `${characters.slice(0, 40).join("")}…`
     : compactMessage;
-}
-
-function aiTurnMessage(session: AiSessionRecord, message: string): string {
-  if (session.task_gid == null) {
-    return message;
-  }
-  const taskTitle = session.task_title == null ? "" : `・タスク名 ${session.task_title}`;
-  return `このAI依頼の対象タスクを固定します。タスクGID ${session.task_gid}${taskTitle}\n\n利用者の依頼:\n${message}`;
 }
 
 function rememberAiRequest(sessionId: string, message: string): void {
@@ -1006,7 +1005,7 @@ function handleSyncState(value: IpcSyncStateEvent): void {
 
 async function readCurrentSyncState(): Promise<SyncStateReadResult> {
   try {
-    const result = await window.taskHub.sync.getState();
+    const result = await taskHub.sync.getState();
     if (isFailure(result)) {
       return { kind: "unavailable" };
     }
@@ -1117,7 +1116,7 @@ async function collectObsidianStatuses(
         vault_id: link.vault_id,
         relative_path: link.path,
       });
-      const result = await window.taskHub.obsidian.noteExists(input);
+      const result = await taskHub.obsidian.noteExists(input);
       if (isFailure(result)) {
         statuses.set(key, "unavailable");
         continue;
@@ -1137,7 +1136,7 @@ async function executeTaskDataRefresh(
   taskGid: string | undefined,
 ): Promise<TaskDataRefreshResult> {
   try {
-    const result = await window.taskHub.readModel.getOverview();
+    const result = await taskHub.readModel.getOverview();
     if (isFailure(result)) {
       if (generation === taskDataGeneration) {
         showFailure(result);
@@ -1170,7 +1169,7 @@ async function executeTaskDataRefresh(
       return { kind: "applied" };
     }
     try {
-      const detailResult = await window.taskHub.readModel.getTaskDetail(taskGid);
+      const detailResult = await taskHub.readModel.getTaskDetail(taskGid);
       if (isFailure(detailResult)) {
         if (detailResult.code === "not_found") {
           if (generation !== taskDataGeneration) {
@@ -1311,7 +1310,7 @@ function applySetupState(value: unknown): void {
 
 async function resynchronizeSetupState(): Promise<void> {
   try {
-    const result = await window.taskHub.setup.getState();
+    const result = await taskHub.setup.getState();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -1349,7 +1348,7 @@ async function completeCodexAuthenticationFromHeader(): Promise<void> {
   setupBusy.value = true;
   clearFeedback();
   try {
-    const result = await window.taskHub.setup.completeCodexAuthentication();
+    const result = await taskHub.setup.completeCodexAuthentication();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -1509,7 +1508,7 @@ async function requestAsanaAuthenticationState(
 ): Promise<boolean> {
   asanaAuthenticationStateRequestBusy.value = true;
   try {
-    const result = await window.taskHub.asana.getAuthenticationState();
+    const result = await taskHub.asana.getAuthenticationState();
     if (generation !== asanaAuthenticationStateGeneration) {
       return false;
     }
@@ -1601,7 +1600,7 @@ async function beginAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.beginReauthentication();
+    const result = await taskHub.asana.beginReauthentication();
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value && isFailure(result)) {
         asanaAuthenticationStateNeedsRecheck.value = true;
@@ -1683,7 +1682,7 @@ async function completeAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.completeReauthentication(parsedInput.data);
+    const result = await taskHub.asana.completeReauthentication(parsedInput.data);
     clearAsanaAuthorizationCode();
     if (isFailure(result)) {
       const failureMessage = displayFailure(result).message;
@@ -1746,7 +1745,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
     kind: "authentication_required",
   });
   try {
-    const result = await window.taskHub.asana.cancelReauthentication(input);
+    const result = await taskHub.asana.cancelReauthentication(input);
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value && isFailure(result)) {
         asanaAuthenticationStateNeedsRecheck.value = true;
@@ -1799,10 +1798,10 @@ async function cancelAsanaReauthentication(): Promise<void> {
 function handleSetupAction(action: SetupAction): void {
   switch (action.kind) {
     case "start":
-      void runSetupRequest(window.taskHub.setup.start());
+      void runSetupRequest(taskHub.setup.start());
       return;
     case "complete_codex_authentication":
-      void runSetupRequest(window.taskHub.setup.completeCodexAuthentication());
+      void runSetupRequest(taskHub.setup.completeCodexAuthentication());
       return;
     case "begin_asana_authorization":
     case "complete_asana_authorization":
@@ -1810,31 +1809,31 @@ function handleSetupAction(action: SetupAction): void {
       void runSetupRequest(action.request);
       return;
     case "list_workspaces":
-      void runSetupRequest(window.taskHub.setup.listWorkspaces());
+      void runSetupRequest(taskHub.setup.listWorkspaces());
       return;
     case "select_workspace":
-      void runSetupRequest(window.taskHub.setup.selectWorkspace(action.input));
+      void runSetupRequest(taskHub.setup.selectWorkspace(action.input));
       return;
     case "select_project":
-      void runSetupRequest(window.taskHub.setup.selectProject(action.input));
+      void runSetupRequest(taskHub.setup.selectProject(action.input));
       return;
     case "retry_resources":
-      void runSetupRequest(window.taskHub.setup.retryResources());
+      void runSetupRequest(taskHub.setup.retryResources());
       return;
     case "run_capability":
-      void runSetupRequest(window.taskHub.setup.runCapability());
+      void runSetupRequest(taskHub.setup.runCapability());
       return;
     case "choose_vault":
-      void runSetupRequest(window.taskHub.setup.chooseVault(action.input));
+      void runSetupRequest(taskHub.setup.chooseVault(action.input));
       return;
     case "choose_external_tool":
       void runSetupRequest(action.request);
       return;
     case "run_full_sync":
-      void runSetupRequest(window.taskHub.setup.runFullSync());
+      void runSetupRequest(taskHub.setup.runFullSync());
       return;
     case "run_codex_capability":
-      void runSetupRequest(window.taskHub.setup.runCodexCapability());
+      void runSetupRequest(taskHub.setup.runCodexCapability());
       return;
   }
 }
@@ -1846,7 +1845,7 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
   activeSyncMode.value = mode;
   setSyncState(rendererSyncStateSchema.parse({ kind: "syncing" }));
   try {
-    const result = await window.taskHub.sync.run({ mode });
+    const result = await taskHub.sync.run({ mode });
     if (isFailure(result)) {
       showFailure(result);
       await reconcileSyncStateAfterFailure(syncFailureStateFromIpc(result));
@@ -1894,7 +1893,7 @@ async function selectTask(taskGid: string): Promise<void> {
   selectedTask.value = undefined;
   obsidianStatuses.value = new Map();
   try {
-    const result = await window.taskHub.readModel.getTaskDetail(taskGid);
+    const result = await taskHub.readModel.getTaskDetail(taskGid);
     if (isFailure(result)) {
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
         showTaskFailure(result);
@@ -1931,7 +1930,7 @@ async function checkObsidianLinks(links: readonly ViewModelTaskDetail["obsidian_
 
 async function loadObsidianVaults(): Promise<void> {
   try {
-    const result = await window.taskHub.obsidian.listVaults();
+    const result = await taskHub.obsidian.listVaults();
     if (isFailure(result)) {
       showFailure(result);
       registeredVaultIds.value = [];
@@ -1965,7 +1964,7 @@ async function listObsidian(vaultId: string): Promise<void> {
   obsidianBusy.value = true;
   try {
     const input = ipcObsidianValidateInputSchema.parse({ vault_id: trimmedVaultId });
-    const result = await window.taskHub.obsidian.listNotes(input.vault_id);
+    const result = await taskHub.obsidian.listNotes(input.vault_id);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -1999,7 +1998,7 @@ async function searchObsidian(input: { readonly vaultId: string; readonly query:
       vault_id: trimmedVaultId,
       query: input.query,
     });
-    const result = await window.taskHub.obsidian.search(validated);
+    const result = await taskHub.obsidian.search(validated);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -2031,7 +2030,7 @@ async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][num
   }
   try {
     const input = ipcObsidianPathInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await window.taskHub.obsidian.noteExists(input);
+    const result = await taskHub.obsidian.noteExists(input);
     if (generation !== obsidianStatusGeneration) {
       return;
     }
@@ -2059,7 +2058,7 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
   }
   try {
     const input = ipcObsidianOpenNoteInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await window.taskHub.obsidian.openNote(input);
+    const result = await taskHub.obsidian.openNote(input);
     if (!isCurrentTaskDetailContext(context)) {
       return;
     }
@@ -2144,7 +2143,7 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
         expected_sync_at: currentOverview.last_successful_sync_at,
         operation: input.operation,
       });
-      const result = await window.taskHub.gui.apply(validatedInput);
+      const result = await taskHub.gui.apply(validatedInput);
       if (isFailure(result)) {
         completion = {
           kind: "settled",
@@ -2326,7 +2325,7 @@ async function createAiSession(taskGid: string | undefined): Promise<string | un
   aiSessionCreating.value = true;
   setAiDialogFeedback("progress", "AI依頼を開始しています。");
   try {
-    const result = await window.taskHub.ai.startNewSession();
+    const result = await taskHub.ai.startNewSession();
     if (isFailure(result)) {
       setAiDialogFeedback("failure", displayFailure(result).message);
       return undefined;
@@ -2412,14 +2411,15 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
     const currentSession = requireAiSession(sessionId);
     const request = ipcAiTurnInputSchema.parse({
       session_id: sessionId,
-      message: aiTurnMessage(currentSession, validatedInput.message),
+      message: validatedInput.message,
+      ...(currentSession.task_gid == null ? {} : { target_task_gid: currentSession.task_gid }),
     });
     setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "streaming",
       text: "",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     }));
-    const result = await window.taskHub.ai.startTurn(request);
+    const result = await taskHub.ai.startTurn(request);
     if (!hasAiSession(sessionId)) {
       return;
     }
@@ -2514,7 +2514,7 @@ async function selectAiProposal(sessionId: string, input: AiWorkflowSelectionReq
   setAiSessionOperation(sessionId, "select");
   try {
     const request = ipcAiSelectionInputSchema.parse({ ...input, session_id: sessionId });
-    const result = await window.taskHub.ai.select(request);
+    const result = await taskHub.ai.select(request);
     if (!hasAiSession(sessionId)) {
       return;
     }
@@ -2541,7 +2541,7 @@ async function editAiOperation(sessionId: string, input: AiWorkflowOperationEdit
   setAiSessionOperation(sessionId, "edit");
   try {
     const request = ipcAiEditInputSchema.parse({ ...input, session_id: sessionId });
-    const result = await window.taskHub.ai.editOperation(request);
+    const result = await taskHub.ai.editOperation(request);
     if (!hasAiSession(sessionId)) {
       return;
     }
@@ -2572,7 +2572,7 @@ async function approveAiProposal(sessionId: string, input: AiWorkflowApprovalReq
   setAiSessionOperation(sessionId, "approve");
   try {
     const request = ipcAiApprovalInputSchema.parse({ ...input, session_id: sessionId });
-    const result = await window.taskHub.ai.approve(request);
+    const result = await taskHub.ai.approve(request);
     if (!hasAiSession(sessionId)) {
       return;
     }
@@ -2603,7 +2603,7 @@ async function rejectAiProposal(sessionId: string, proposalId: string): Promise<
   clearAiSessionFeedback(sessionId);
   setAiSessionOperation(sessionId, "reject");
   try {
-    const result = await window.taskHub.ai.reject({ session_id: sessionId, proposal_id: proposalId });
+    const result = await taskHub.ai.reject({ session_id: sessionId, proposal_id: proposalId });
     if (!hasAiSession(sessionId)) {
       return;
     }
@@ -2632,7 +2632,7 @@ async function closeAiSession(sessionId: string): Promise<void> {
   }
   setAiSessionOperation(sessionId, "closing");
   try {
-    const result = await window.taskHub.ai.closeSession(ipcAiCloseSessionInputSchema.parse(sessionId));
+    const result = await taskHub.ai.closeSession(ipcAiCloseSessionInputSchema.parse(sessionId));
     if (isFailure(result)) {
       showAiSessionFailure(sessionId, result);
       clearAiSessionOperation(sessionId, "closing");
@@ -2677,7 +2677,7 @@ function selectAiSessionTask(sessionId: string, taskGid: string): void {
 
 async function loadInitialSyncState(): Promise<void> {
   try {
-    const result = await window.taskHub.sync.getState();
+    const result = await taskHub.sync.getState();
     if (isFailure(result)) {
       showFailure(result);
       return;
@@ -2690,7 +2690,7 @@ async function loadInitialSyncState(): Promise<void> {
 
 async function loadInitialCodexStatus(): Promise<void> {
   try {
-    const result = await window.taskHub.ai.getStatus();
+    const result = await taskHub.ai.getStatus();
     if (isFailure(result)) {
       codexState.value = rendererCodexStateSchema.parse({
         kind: "unavailable",
@@ -2709,7 +2709,7 @@ async function loadInitialCodexStatus(): Promise<void> {
 
 async function initialize(): Promise<void> {
   try {
-    removeSyncSubscription = window.taskHub.sync.onState((value) => {
+    removeSyncSubscription = taskHub.sync.onState((value) => {
       try {
         handleSyncState(value);
       } catch {
@@ -2720,7 +2720,7 @@ async function initialize(): Promise<void> {
     setSyncState(rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" }));
   }
   try {
-    removeAiSubscription = window.taskHub.ai.onDelta((delta) => {
+    removeAiSubscription = taskHub.ai.onDelta((delta) => {
       appendDelta(delta);
     });
   } catch {
@@ -2730,7 +2730,7 @@ async function initialize(): Promise<void> {
     });
   }
   try {
-    removeAiStatusSubscription = window.taskHub.ai.onStatus((value) => {
+    removeAiStatusSubscription = taskHub.ai.onStatus((value) => {
       try {
         handleCodexStatus(value);
       } catch {
@@ -2748,7 +2748,7 @@ async function initialize(): Promise<void> {
     setFeedback("failure", "Codex状態を購読できませんでした。");
   }
   try {
-    const result = await window.taskHub.setup.getState();
+    const result = await taskHub.setup.getState();
     if (isFailure(result)) {
       setScreenError(result);
     } else {
@@ -2830,6 +2830,7 @@ onUnmounted(() => {
       :creating-session="aiSessionCreating"
       :feedback="aiDialogFeedback"
       :sessions="aiSessionViews"
+      :tasks="aiTaskReferences"
       :selected-session-id="aiSelectedSessionId"
       @close="closeAiAssistant"
       @new-session="startAiSession"

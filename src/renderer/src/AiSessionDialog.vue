@@ -17,12 +17,18 @@ type AiPanelApi = {
   readonly focusMessageInput: () => "focused" | "unavailable";
 };
 
+type AiTaskReference = {
+  readonly gid: string;
+  readonly title: string;
+};
+
 const props = defineProps<{
   open: boolean;
   canStartNewSession: boolean;
   creatingSession: boolean;
   feedback?: AiSessionFeedback | undefined;
   sessions: readonly AiSessionView[];
+  tasks: readonly AiTaskReference[];
   selectedSessionId?: string | undefined;
 }>();
 
@@ -273,9 +279,9 @@ watch(() => props.selectedSessionId, (sessionId) => {
           閉じる
         </button>
       </header>
-      <div class="min-h-0 flex-1 md:grid md:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
+      <div class="min-h-0 flex flex-1 flex-col md:grid md:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
         <aside
-          class="min-h-0 border-b border-slate-200 dark:border-slate-700 md:block md:overflow-y-auto md:border-b-0 md:border-r"
+          class="min-h-0 flex-1 overflow-y-auto border-b border-slate-200 dark:border-slate-700 md:block md:border-b-0 md:border-r"
           :class="mobileDetailVisible ? 'hidden' : 'block'"
           aria-label="AI依頼一覧"
         >
@@ -343,7 +349,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
           </ul>
         </aside>
         <main
-          class="min-h-0 overflow-y-auto"
+          class="min-h-0 flex-1 overflow-y-auto"
           :class="mobileDetailVisible ? 'block' : 'hidden md:block'"
           aria-label="AI依頼の詳細"
         >
@@ -435,6 +441,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                 <AiPanel
                   :ref="(value) => registerPanel(session.session_id, value)"
                   :state="session.state"
+                  :tasks="props.tasks"
                   :can-write="session.can_write && session.operation === 'idle'"
                   :can-send-ai="session.can_send_ai"
                   :ai-send-disabled-reason="session.ai_send_disabled_reason"

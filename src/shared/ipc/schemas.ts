@@ -615,11 +615,8 @@ export const ipcSetupStateSchema = setupStateSchema;
 export const ipcGuiEditInputSchema = guiRequestSchema;
 export const ipcGuiEditResultSchema = guiResultSchema;
 export const ipcGuiEditResponseSchema = responseSchema(guiResultSchema);
-export const ipcAiTurnInputSchema = z
-  .object({
-    session_id: identifierSchema,
-    message: aiWorkflowTurnRequestSchema.shape.message,
-  })
+export const ipcAiTurnInputSchema = aiWorkflowTurnRequestSchema
+  .extend({ session_id: identifierSchema })
   .strict();
 export const ipcAiTurnResponseSchema = responseSchema(aiWorkflowTurnResultSchema);
 export const ipcAiStartNewSessionInputSchema = emptyRequestSchema;
