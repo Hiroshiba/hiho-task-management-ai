@@ -53,6 +53,7 @@ import SetupWizard from "./SetupWizard.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
+import ToastHost from "./ToastHost.vue";
 import {
   createErrorScreenState,
   filterTaskRows,
@@ -72,6 +73,7 @@ import {
   type RendererSyncState,
 } from "./state";
 import { useTaskHub } from "./task-hub";
+import { useToast } from "./useToast";
 
 const taskHub = useTaskHub();
 
@@ -217,6 +219,7 @@ const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
 const aiPanelVisible = ref(false);
 const aiPanelRef = ref<AiPanelApi | null>(null);
+const { addToast } = useToast();
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
@@ -293,6 +296,24 @@ function feedbackRole(kind: FeedbackKind): "status" | "alert" {
     case "failure":
       return "alert";
   }
+}
+
+function showGlobalResultFeedback(value: Feedback): void {
+  if (value.kind === "success") {
+    clearFeedback();
+    addToast("success", value.message);
+    return;
+  }
+  setFeedback(value.kind, value.message);
+}
+
+function showTaskResultFeedback(kind: FeedbackKind, message: string): void {
+  if (kind === "success") {
+    clearTaskFeedback();
+    addToast("success", message);
+    return;
+  }
+  setTaskFeedback(kind, message);
 }
 
 const syncState = computed(() => connectionState.value.sync);
@@ -618,10 +639,7 @@ function createSyncFeedback(result: IpcSyncResult): Feedback {
   ].join("、");
   return {
     kind: syncFeedbackKind(result),
-    message: includeNormalizationNotificationFeedback(
-      synchronizationSummary,
-      result.normalization_notifications,
-    ),
+    message: synchronizationSummary,
   };
 }
 
@@ -818,16 +836,12 @@ function applySyncStateDisplay(value: IpcSyncStateEvent): void {
   setConnectionState(chromiumConnectionState(), settledSyncState(value));
 }
 
-function showNormalizationNotifications(
-  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+function showNormalizationNotificationToast(
+  syncedAt: string,
+  notifications: readonly SyncNormalizationNotification[],
 ): void {
-  const notifications = value.normalization_notifications;
-  if (notifications == null || notifications.length === 0) {
+  if (notifications.length === 0) {
     return;
-  }
-  const syncedAt = value.last_successful_sync_at;
-  if (syncedAt == null) {
-    throw new Error("状態整合化通知に同期日時がありません。");
   }
   if (
     normalizationNotificationDisplayState.kind === "displayed"
@@ -841,11 +855,25 @@ function showNormalizationNotifications(
   if (notificationFeedback == null) {
     throw new Error("状態整合化通知を表示できません。");
   }
+  addToast("success", notificationFeedback);
   normalizationNotificationDisplayState = {
     kind: "displayed",
     synced_at: syncedAt,
   };
-  setFeedback("success", notificationFeedback);
+}
+
+function showNormalizationNotifications(
+  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
+): void {
+  const notifications = value.normalization_notifications;
+  if (notifications == null || notifications.length === 0) {
+    return;
+  }
+  const syncedAt = value.last_successful_sync_at;
+  if (syncedAt == null) {
+    throw new Error("状態整合化通知に同期日時がありません。");
+  }
+  showNormalizationNotificationToast(syncedAt, notifications);
 }
 
 function handleSyncState(value: IpcSyncStateEvent): void {
@@ -1185,6 +1213,9 @@ async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
       showFailure(result);
       await resynchronizeSetupState();
       return;
+    }
+    if (result.value.kind === "external_tool_configured") {
+      addToast("success", "Discord読取連携を登録しました。");
     }
     applySetupState(result.value);
   } catch {
@@ -1562,10 +1593,14 @@ async function completeAsanaReauthentication(): Promise<void> {
       ));
       return;
     }
-    setFeedback(syncFeedbackKind(synchronized), includeNormalizationNotificationFeedback(
-      "Asanaを再認証し、タスク表示を更新しました。",
+    showNormalizationNotificationToast(
+      synchronized.synced_at,
       synchronized.normalization_notifications,
-    ));
+    );
+    showGlobalResultFeedback({
+      kind: syncFeedbackKind(synchronized),
+      message: "Asanaを再認証し、タスク表示を更新しました。",
+    });
   } catch {
     clearAsanaAuthorizationCode();
     const failureMessage = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
@@ -1628,7 +1663,7 @@ async function cancelAsanaReauthentication(): Promise<void> {
       throw new Error("Asana再認証の取消結果が不正です。");
     }
     setSyncState(authenticationRequired);
-    setFeedback("warning", "Asana再認証をキャンセルしました。");
+    addToast("warning", "Asana再認証をキャンセルしました。");
   } catch {
     if (generation !== asanaAuthenticationStateGeneration) {
       if (asanaAuthenticationBusy.value) {
@@ -1713,7 +1748,11 @@ async function runSynchronization(mode: "delta" | "full"): Promise<void> {
     const syncFeedback = createSyncFeedback(result.value);
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
     if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
-      setFeedback(syncFeedback.kind, syncFeedback.message);
+      showNormalizationNotificationToast(
+        result.value.synced_at,
+        result.value.normalization_notifications,
+      );
+      showGlobalResultFeedback(syncFeedback);
     }
   } catch {
     showUnexpectedFailure();
@@ -1921,7 +1960,8 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
       showTaskFailure(result);
       return;
     }
-    setTaskFeedback("success", "Obsidianでノートを開きました。");
+    clearTaskFeedback();
+    addToast("success", "Obsidianでノートを開きました。");
   } catch {
     if (isCurrentTaskDetailContext(context)) {
       showTaskUnexpectedFailure();
@@ -1936,7 +1976,7 @@ async function reloadTaskDataAfterGuiEdit(
 ): Promise<TaskDataRefreshResult> {
   const result = await reloadTaskData();
   if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(result)) {
-    setTaskFeedback(feedbackKind, message);
+    showTaskResultFeedback(feedbackKind, message);
   }
   return result;
 }
@@ -1954,7 +1994,7 @@ async function reconcileSyncStateAfterGuiRecovery(
     }
   } finally {
     if (generation === guiEditGeneration && isTaskDataRefreshSuccessful(reloadResult)) {
-      setTaskFeedback(feedbackKind, message);
+      showTaskResultFeedback(feedbackKind, message);
     }
   }
 }
@@ -2087,7 +2127,7 @@ async function startAiSession(): Promise<void> {
       kind: "idle",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     });
-    setAiFeedback("success", "新しいAIセッションを開始しました。");
+    addToast("success", "新しいAIセッションを開始しました。");
   } catch {
     showAiUnexpectedFailure();
     return;
@@ -2331,7 +2371,7 @@ async function rejectAiProposal(proposalId: string): Promise<void> {
       return;
     }
     aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    setAiFeedback("warning", "変更案を却下しました。");
+    addToast("warning", "変更案を却下しました。");
   } catch {
     showAiUnexpectedFailure();
   } finally {
@@ -2696,5 +2736,6 @@ onUnmounted(() => {
         </div>
       </template>
     </main>
+    <ToastHost />
   </div>
 </template>
