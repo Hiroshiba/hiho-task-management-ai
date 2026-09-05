@@ -981,7 +981,7 @@ export function createMockTaskHubApi(): TaskHubApi {
               operation_id: OPERATION_ID,
               task_gid: operation.target.gid,
               outcome: "applied",
-              reason_code: "mock_applied",
+              reason_code: "applied",
             }],
             groups: [{
               group_id: GROUP_ID,
