@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { isoDateTimeSchema } from "../../shared/domain";
 import type { IpcAsanaAuthenticationState } from "../../shared/ipc";
 import type {
   RendererCodexState,
@@ -10,12 +9,12 @@ import type {
 
 const props = defineProps<{
   connectionState: RendererConnectionState;
-  lastSyncAt: string | undefined;
   configured: boolean;
   canManualSync: boolean;
   canFullSync: boolean;
   fullSyncRunning: boolean;
   canWrite: boolean;
+  canStartNewAiSession: boolean;
   codexState: RendererCodexState;
   codexAuthenticationBusy: boolean;
   asanaAuthenticationBusy: boolean;
@@ -23,7 +22,6 @@ const props = defineProps<{
   asanaAuthenticationStateNeedsRecheck: boolean;
   asanaAuthenticationStateRequestBusy: boolean;
   asanaAuthenticationState: IpcAsanaAuthenticationState;
-  cleanupCount: number | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -79,6 +77,19 @@ function syncLabel(state: RendererSyncState): string {
   }
 }
 
+function shouldShowSyncState(state: RendererSyncState): boolean {
+  switch (state.kind) {
+    case "waiting":
+    case "syncing":
+    case "authentication_required":
+    case "recovery_pending":
+    case "error":
+      return true;
+    case "synced":
+      return false;
+  }
+}
+
 function syncErrorLabel(
   errorCode: Extract<RendererSyncState, { readonly kind: "error" }>["error_code"],
 ): string {
@@ -129,6 +140,16 @@ function networkLabel(state: RendererConnectionState): string {
   }
 }
 
+function shouldShowNetworkState(state: RendererConnectionState): boolean {
+  switch (state.kind) {
+    case "offline":
+      return true;
+    case "checking":
+    case "online":
+      return false;
+  }
+}
+
 function networkClass(state: RendererConnectionState): string {
   switch (state.kind) {
     case "checking":
@@ -172,6 +193,17 @@ function codexLabel(state: RendererCodexState): string {
   }
 }
 
+function shouldShowCodexState(state: RendererCodexState): boolean {
+  switch (state.kind) {
+    case "authentication_required":
+    case "unavailable":
+      return true;
+    case "connecting":
+    case "ready":
+      return false;
+  }
+}
+
 function codexClass(state: RendererCodexState): string {
   switch (state.kind) {
     case "connecting":
@@ -183,18 +215,6 @@ function codexClass(state: RendererCodexState): string {
     case "unavailable":
       return "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-100";
   }
-}
-
-function writeClass(canWrite: boolean): string {
-  return canWrite
-    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
-    : "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
-}
-
-function cleanupClass(cleanupCount: number): string {
-  return cleanupCount > 0
-    ? "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100"
-    : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-100";
 }
 
 function asanaAuthenticationButtonLabel(
@@ -230,21 +250,6 @@ function handleAsanaAuthenticationAction(): void {
   emit("begin-reauthentication");
 }
 
-function jstDateTimeLabel(value: string | undefined): string {
-  if (value == null) {
-    return "未同期";
-  }
-  const validated = isoDateTimeSchema.parse(value);
-  const timestamp = Date.parse(validated);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("最終同期日時を表示できません。");
-  }
-  return new Intl.DateTimeFormat("ja-JP", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Tokyo",
-  }).format(new Date(timestamp));
-}
 </script>
 
 <template>
@@ -258,11 +263,8 @@ function jstDateTimeLabel(value: string | undefined): string {
         role="group"
         aria-label="ブランド"
       >
-        <p class="text-xs font-semibold tracking-[0.18em] text-sky-700 dark:text-sky-400">
-          TASKHUB
-        </p>
         <h1 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
-          Asanaタスク管理
+          タスクハブ
         </h1>
       </div>
       <div
@@ -271,33 +273,28 @@ function jstDateTimeLabel(value: string | undefined): string {
         aria-label="状態"
       >
         <span
+          v-if="shouldShowSyncState(connectionState.sync)"
           class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
           :class="syncClass(connectionState.sync)"
           aria-live="polite"
           aria-atomic="true"
         >同期: {{ syncLabel(connectionState.sync) }}</span>
-        <span class="max-w-full whitespace-normal break-words rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-800 dark:text-slate-100">
-          最終同期: {{ jstDateTimeLabel(lastSyncAt) }}
-        </span>
         <span
+          v-if="shouldShowNetworkState(connectionState)"
           class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
           :class="networkClass(connectionState)"
         >
           ネットワーク: {{ networkLabel(connectionState) }}
         </span>
         <span
+          v-if="shouldShowCodexState(codexState)"
           class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
           :class="codexClass(codexState)"
         >Codex: {{ codexLabel(codexState) }}</span>
         <span
-          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
-          :class="writeClass(canWrite)"
-        >編集: {{ canWrite ? "可能" : "読み取り専用" }}</span>
-        <span
-          v-if="cleanupCount != null"
-          class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"
-          :class="cleanupClass(cleanupCount)"
-        >要整理: {{ cleanupCount }}件</span>
+          v-if="!canWrite"
+          class="max-w-full whitespace-normal break-words rounded-full bg-amber-100 px-3 py-1 text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+        >読み取り専用</span>
       </div>
       <div
         class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-3 lg:col-span-2 xl:col-span-1 xl:justify-end"
@@ -324,28 +321,38 @@ function jstDateTimeLabel(value: string | undefined): string {
             type="button"
             class="secondary-button"
             :disabled="!canManualSync"
-            aria-label="手動同期を実行"
+            aria-label="最新の変更を取得"
             @click="emit('sync')"
           >
-            手動同期
+            最新の変更を取得
           </button>
           <button
             v-if="configured && !fullSyncConfirmationOpen"
             type="button"
             class="secondary-button"
             :disabled="!canFullSync"
-            aria-label="完全同期を確認"
-            title="Asanaから全件を取得して完全同期します"
+            aria-label="全データを再取得"
+            title="Asanaから全タスクを取得して全データを再構築します"
             @click="requestFullSyncConfirmation"
           >
-            {{ fullSyncRunning ? "完全同期中" : "完全同期" }}
+            {{ fullSyncRunning ? "全データを再取得中" : "全データを再取得" }}
           </button>
         </div>
         <div
           class="flex min-w-0 max-w-full flex-wrap items-center gap-3"
           role="group"
-          aria-label="CodexとAIセッションの操作"
+          aria-label="Codexの操作"
         >
+          <button
+            v-if="codexState.kind === 'ready'"
+            type="button"
+            class="secondary-button"
+            :disabled="!props.canStartNewAiSession"
+            aria-label="新しいAIセッションを開始"
+            @click="emit('new-ai-session')"
+          >
+            新しいAIセッション
+          </button>
           <button
             v-if="codexState.kind === 'authentication_required'"
             type="button"
@@ -356,32 +363,22 @@ function jstDateTimeLabel(value: string | undefined): string {
           >
             Codex認証を完了
           </button>
-          <button
-            v-else-if="codexState.kind === 'ready'"
-            type="button"
-            class="secondary-button"
-            :disabled="!canWrite"
-            aria-label="新しいAIセッションを開始"
-            @click="emit('new-ai-session')"
-          >
-            新しいAIセッション
-          </button>
         </div>
       </div>
       <div
         v-if="configured && fullSyncConfirmationOpen"
         class="flex min-w-0 max-w-full flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100 lg:col-span-2 xl:col-span-3"
         role="group"
-        aria-label="完全同期の確認"
+        aria-label="全データ再取得の確認"
       >
-        <span>Asanaから全件を取得します。</span>
+        <span>全タスク、順位、キャッシュを再構築し、必要に応じてAsana側を整合します。</span>
         <button
           type="button"
           class="secondary-button"
           :disabled="!canFullSync"
           @click="confirmFullSync"
         >
-          完全同期を実行
+          全データを再取得
         </button>
         <button
           type="button"

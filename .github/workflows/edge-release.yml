@@ -128,8 +128,7 @@ jobs:
                 --target "$GITHUB_SHA" \
                 --title edge \
                 --notes "$release_notes" \
-                --prerelease \
-                --latest=false
+                --latest
               ;;
             1)
               gh release edit edge \
@@ -137,8 +136,8 @@ jobs:
                 --title edge \
                 --notes "$release_notes" \
                 --draft=false \
-                --prerelease \
-                --latest=false
+                --prerelease=false \
+                --latest
               gh release upload edge "${assets[@]}" \
                 --repo "$GITHUB_REPOSITORY" \
                 --clobber

@@ -399,12 +399,12 @@ export function dueRelativeLabel(
   const targetDate = due.kind === "on" ? dateSchema.parse(due.value) : jstCalendarDate(isoDateTimeSchema.parse(due.value));
   const days = jstDayDifference(targetDate, currentDate);
   if (days === 0) {
-    return "本日";
+    return "期限は本日";
   }
   if (days > 0) {
-    return `あと${days}日`;
+    return `期限まで ${days}日`;
   }
-  return `${Math.abs(days)}日超過`;
+  return `期限超過 ${Math.abs(days)}日`;
 }
 
 function hasReason(row: ViewModelTaskRow, code: string): boolean {
@@ -489,7 +489,7 @@ export type RendererSelectedTask = ViewModelTaskDetail | undefined;
 
 /** 重要度の表示値を文字列へ変換します。 */
 export function importanceLabel(importance: Importance): string {
-  return `重要度${importance}`;
+  return `重要度 ${importance}`;
 }
 
 /** 親作業モードを日本語表示へ変換します。 */
