@@ -44,19 +44,24 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
     class="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
     aria-labelledby="task-list-title"
   >
-    <div class="flex min-w-0 items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-5 dark:border-slate-700">
-      <div class="min-w-0 flex-1">
-        <h2
-          id="task-list-title"
-          class="text-lg font-semibold text-slate-900 dark:text-slate-100"
-        >
-          タスク一覧
-        </h2>
-        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
-          今取り組みたい順に表示しています。完全にブロックされたタスクは通常表示から除外されます。
-        </p>
+    <div class="border-b border-slate-200 px-4 py-4 sm:px-5 dark:border-slate-700">
+      <div class="flex min-w-0 items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <h2
+            id="task-list-title"
+            class="text-lg font-semibold text-slate-900 dark:text-slate-100"
+          >
+            タスク一覧
+          </h2>
+          <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            今取り組みたい順に表示しています。完全にブロックされたタスクは通常表示から除外されます。
+          </p>
+        </div>
+        <span class="shrink-0 text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
       </div>
-      <span class="shrink-0 text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
+      <div class="mt-4 min-w-0">
+        <slot name="filters" />
+      </div>
     </div>
 
     <div

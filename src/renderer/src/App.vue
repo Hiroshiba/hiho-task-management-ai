@@ -2985,11 +2985,6 @@ onUnmounted(() => {
           class="space-y-5"
           aria-label="タスク管理画面"
         >
-          <TaskFilters
-            v-model="filter"
-            :areas="overview.areas"
-            :disabled="false"
-          />
           <details
             v-if="overview.cleanup_items.length > 0"
             :open="filter.kind === 'cleanup'"
@@ -3029,7 +3024,16 @@ onUnmounted(() => {
               :selected-task-gid="selectedTaskGid"
               :as-of="currentAsOf"
               @select="selectTask"
-            /><div class="min-w-0 space-y-3">
+            >
+              <template #filters>
+                <TaskFilters
+                  v-model="filter"
+                  :areas="overview.areas"
+                  :disabled="false"
+                />
+              </template>
+            </TaskList>
+            <div class="min-w-0 space-y-3">
               <p
                 v-if="taskFeedback != null"
                 class="sticky top-3 rounded-md px-4 py-3 text-sm"
