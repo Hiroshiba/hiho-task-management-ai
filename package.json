@@ -14,6 +14,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:web": "vite --config vite.renderer.config.ts",
     "build": "electron-vite build",
     "start": "electron .",
     "lint": "eslint . --cache --cache-strategy content --cache-location node_modules/.cache/eslint/.eslintcache",
