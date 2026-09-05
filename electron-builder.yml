@@ -12,9 +12,16 @@ mac:
   target:
     - dmg
     - zip
+  icon: build/icon.icns
 win:
   target:
     - nsis
     - zip
+  icon: build/icon.ico
+linux:
+  icon: build/icons
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 nsis:
   artifactName: ${productName}-Setup-${version}.${ext}

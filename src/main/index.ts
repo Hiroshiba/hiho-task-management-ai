@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   net,
   powerMonitor,
   session,
@@ -577,6 +578,9 @@ async function createMainWindow(
   }
   const window = new BrowserWindow({
     show: false,
+    icon: app.isPackaged
+      ? join(process.resourcesPath, "icon.png")
+      : join(__dirname, "../../build/icon.png"),
     webPreferences: {
       devTools: !app.isPackaged,
       nodeIntegration: false,
@@ -689,6 +693,7 @@ async function stopApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  Menu.setApplicationMenu(null);
   configureContentSecurityPolicy();
   configurePermissionPolicy();
   const rendererUrl = getRendererUrl();
