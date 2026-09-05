@@ -38,6 +38,7 @@ const emit = defineEmits<{
   (event: "edit", input: AiWorkflowOperationEdit): void;
   (event: "approve", input: AiWorkflowApprovalRequest): void;
   (event: "reject", proposalId: string): void;
+  (event: "select-task", taskGid: string): void;
 }>();
 
 const message = ref("");
@@ -301,6 +302,71 @@ function targetLabel(operation: ProposalOperation): string {
     return operation.target.gid;
   }
   return `一時参照 ${operation.target.ref}`;
+}
+
+function targetGid(operation: ProposalOperation): string | undefined {
+  if (operation.operation === "create_task" || operation.target.kind !== "existing") {
+    return undefined;
+  }
+  return operation.target.gid;
+}
+
+function selectExistingTask(operation: ProposalOperation): void {
+  const gid = targetGid(operation);
+  if (gid == null) {
+    throw new Error("既存タスクの対象が見つかりません。");
+  }
+  emit("select-task", gid);
+}
+
+type ProposalTaskTarget =
+  | { readonly kind: "existing"; readonly gid: string }
+  | { readonly kind: "temporary"; readonly ref: string };
+
+function addExistingTaskGid(target: ProposalTaskTarget, gids: Set<string>): void {
+  if (target.kind === "existing") {
+    gids.add(target.gid);
+  }
+}
+
+function relatedTaskGids(operation: ProposalOperation): string[] {
+  const gids = new Set<string>();
+  if (operation.operation !== "create_task") {
+    addExistingTaskGid(operation.target, gids);
+  }
+  switch (operation.operation) {
+    case "create_task":
+      if (operation.creation.kind === "split_child") {
+        addExistingTaskGid(operation.creation.parent, gids);
+      }
+      if (operation.after.parent != null) {
+        addExistingTaskGid(operation.after.parent, gids);
+      }
+      operation.after.dependencies?.forEach((dependency) => {
+        addExistingTaskGid(dependency.target, gids);
+      });
+      break;
+    case "set_dependencies":
+      operation.before.forEach((dependency) => {
+        addExistingTaskGid(dependency.target, gids);
+      });
+      operation.after.forEach((dependency) => {
+        addExistingTaskGid(dependency.target, gids);
+      });
+      break;
+    case "set_parent":
+      if (operation.before.kind !== "absent") {
+        addExistingTaskGid(operation.before, gids);
+      }
+      if (operation.after.kind !== "absent") {
+        addExistingTaskGid(operation.after, gids);
+      }
+      break;
+    default:
+      break;
+  }
+  const operationGid = targetGid(operation);
+  return [...gids].filter((gid) => gid !== operationGid);
 }
 
 function evidenceKindLabel(
@@ -702,9 +768,36 @@ function applicationReasonLabel(reason: string): string {
                 <div class="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p class="font-medium text-slate-900 dark:text-slate-100">
-                      {{ operationLabel(operation) }} <span class="text-xs font-normal text-slate-600 dark:text-slate-400">{{ targetLabel(operation) }}</span>
+                      {{ operationLabel(operation) }}
+                      <button
+                        v-if="targetGid(operation) != null"
+                        type="button"
+                        class="text-button text-xs font-normal text-slate-600 dark:text-slate-400"
+                        @click="selectExistingTask(operation)"
+                      >
+                        {{ targetLabel(operation) }}
+                      </button><span
+                        v-else
+                        class="text-xs font-normal text-slate-600 dark:text-slate-400"
+                      >{{ targetLabel(operation) }}</span>
                     </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
                       {{ operationValidation(requireProposal(), operation.operation_id) }}・{{ operation.basis === 'explicit' ? '明示' : '推測' }}・信頼度 {{ confidenceLabel(operation.confidence) }}
+                    </p>
+                    <p
+                      v-if="relatedTaskGids(operation).length > 0"
+                      class="mt-2 text-xs text-slate-600 dark:text-slate-400"
+                    >
+                      関連タスク:
+                      <button
+                        v-for="taskGid in relatedTaskGids(operation)"
+                        :key="taskGid"
+                        type="button"
+                        class="text-button ml-1"
+                        :aria-label="`関連タスク ${taskGid}を表示`"
+                        @click="emit('select-task', taskGid)"
+                      >
+                        {{ taskGid }}
+                      </button>
                     </p>
                   </div><label
                     v-if="selectionMode === 'operations' && !group.atomic"
@@ -807,7 +900,15 @@ function applicationReasonLabel(reason: string): string {
                   操作ID: {{ operation.operation_id }}
                 </p>
                 <p>
-                  対象: {{ targetLabel(operation) }}
+                  対象:
+                  <button
+                    v-if="targetGid(operation) != null"
+                    type="button"
+                    class="text-button"
+                    @click="selectExistingTask(operation)"
+                  >
+                    {{ targetLabel(operation) }}
+                  </button><span v-else>{{ targetLabel(operation) }}</span>
                 </p>
                 <p>
                   基準データの識別子: {{ operation.baseline_snapshot_hash }}

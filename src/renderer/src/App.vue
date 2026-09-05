@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import {
+  ipcAiApprovalInputSchema,
+  ipcAiCloseSessionInputSchema,
+  ipcAiEditInputSchema,
+  ipcAiSelectionInputSchema,
+  ipcAiTurnInputSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -23,6 +28,9 @@ import {
   type IpcSyncStateEvent,
 } from "../../shared/ipc";
 import {
+  gidSchema,
+} from "../../shared/domain";
+import {
   setupStateSchema,
   type SetupProjectSelectionInput,
   type SetupState,
@@ -30,10 +38,7 @@ import {
   type SetupWorkspaceSelectionInput,
 } from "../../shared/setup";
 import {
-  aiWorkflowApprovalRequestSchema,
-  aiWorkflowOperationEditSchema,
   aiWorkflowProposalViewSchema,
-  aiWorkflowSelectionRequestSchema,
   aiWorkflowTurnRequestSchema,
   type AiWorkflowApprovalRequest,
   type AiWorkflowOperationEdit,
@@ -48,7 +53,7 @@ import {
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import AppHeader from "./AppHeader.vue";
-import AiPanel from "./AiPanel.vue";
+import AiSessionDialog from "./AiSessionDialog.vue";
 import SetupWizard from "./SetupWizard.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
@@ -70,6 +75,8 @@ import {
   type RendererGuiEdit,
   type RendererScreenState,
   type RendererSyncState,
+  type AiSessionOperation,
+  type AiSessionView,
 } from "./state";
 
 type SetupAction =
@@ -184,8 +191,16 @@ type Feedback = {
   readonly message: string;
 };
 
-type AiPanelApi = {
-  readonly focusMessageInput: () => "focused" | "unavailable";
+type AiSessionRecord = Omit<
+  AiSessionView,
+  "can_write" | "can_send_ai" | "ai_send_disabled_reason" | "feedback"
+> & {
+  readonly feedback: AiSessionView["feedback"];
+  readonly created_at: number;
+};
+
+type AiSessionDialogApi = {
+  readonly focusSessionInput: (sessionId: string) => "focused" | "unavailable";
 };
 
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
@@ -211,14 +226,16 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
   sync: { kind: "waiting" },
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
-const aiState = ref<RendererAiState>(rendererAiStateSchema.parse({ kind: "idle" }));
-const aiPanelVisible = ref(false);
-const aiPanelRef = ref<AiPanelApi | null>(null);
+const aiSessions = ref<AiSessionRecord[]>([]);
+const aiDialogVisible = ref(false);
+const aiSelectedSessionId = ref<string | undefined>();
+const aiDialogRef = ref<AiSessionDialogApi | null>(null);
+const aiDialogReturnFocus = ref<HTMLElement | null>(null);
+const aiSessionCreating = ref(false);
+const aiDialogFeedback = ref<Feedback | undefined>();
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
-const aiFeedback = ref<Feedback | undefined>();
-const aiBusy = ref(false);
 const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
 const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
 const obsidianStatuses = ref<ReadonlyMap<string, ObsidianLinkStatus>>(new Map());
@@ -258,14 +275,6 @@ function setTaskFeedback(kind: FeedbackKind, message: string): void {
 
 function clearTaskFeedback(): void {
   taskFeedback.value = undefined;
-}
-
-function setAiFeedback(kind: FeedbackKind, message: string): void {
-  aiFeedback.value = { kind, message };
-}
-
-function clearAiFeedback(): void {
-  aiFeedback.value = undefined;
 }
 
 function feedbackClass(kind: FeedbackKind): string {
@@ -314,14 +323,161 @@ const canWrite = computed(() => {
     >= syncTimestamp(currentSyncState.synced_at);
 });
 const guiEditSaving = computed(() => guiEditState.value.kind === "saving");
-const canSendAi = computed(() => codexState.value.kind === "ready"
-  && canWrite.value
-  && !guiEditSaving.value
-  && !aiBusy.value);
+const aiSessionViews = computed<readonly AiSessionView[]>(() => aiSessions.value
+  .slice()
+  .sort((left, right) => {
+    const statusOrder = (status: AiSessionView["status"]): number => {
+      switch (status) {
+        case "waiting_answer":
+          return 0;
+        case "waiting_approval":
+          return 1;
+        case "running":
+          return 2;
+        case "error":
+          return 3;
+        case "idle":
+          return 4;
+        case "completed":
+          return 5;
+      }
+    };
+    return statusOrder(left.status) - statusOrder(right.status)
+      || right.created_at - left.created_at;
+  })
+  .map((session) => ({
+    ...session,
+    can_write: canWrite.value && !guiEditSaving.value,
+    can_send_ai: aiSessionCanSend(session),
+    ai_send_disabled_reason: aiSessionDisabledReason(session),
+  })));
+const aiWaitingCount = computed(() => aiSessions.value.filter((session) =>
+  session.status === "waiting_answer"
+    || session.status === "waiting_approval"
+    || session.status === "error"
+).length);
+const aiRunningCount = computed(() => aiSessions.value.filter((session) =>
+  session.status === "running"
+).length);
+const canOpenAiAssistant = computed(() => configured.value);
 const canStartNewAiSession = computed(() => canWrite.value
   && !guiEditSaving.value
-  && !aiBusy.value);
-const aiSendDisabledReason = computed(() => {
+  && codexState.value.kind === "ready");
+const canReadLocal = computed(() => setupState.value?.kind === "ready");
+const canReanalyzeObsidianNotes = computed(() => {
+  return canWrite.value
+    && !guiEditSaving.value
+    && codexState.value.kind === "ready"
+    && registeredVaultIds.value.length > 0;
+});
+const visibleRows = computed(() => {
+  const currentOverview = overview.value;
+  if (currentOverview == null) {
+    return [];
+  }
+  return filterTaskRows(currentOverview, filter.value, currentAsOf.value);
+});
+
+function aiSessionStatus(
+  state: RendererAiState,
+  operation: AiSessionOperation,
+): AiSessionView["status"] {
+  if (operation !== "idle" || state.kind === "streaming") {
+    return "running";
+  }
+  switch (state.kind) {
+    case "questions":
+      if (state.questions.length > 0) {
+        return "waiting_answer";
+      }
+      return state.pending_proposal == null ? "completed" : "waiting_approval";
+    case "proposal":
+      return "waiting_approval";
+    case "unavailable":
+      return "error";
+    case "applied":
+      return "completed";
+    case "idle":
+      return "idle";
+  }
+}
+
+function requireAiSession(sessionId: string): AiSessionRecord {
+  const session = aiSessions.value.find((candidate) => candidate.session_id === sessionId);
+  if (session == null) {
+    throw new Error("AI依頼が見つかりません。");
+  }
+  return session;
+}
+
+function updateAiSession(
+  sessionId: string,
+  update: (session: AiSessionRecord) => AiSessionRecord,
+): void {
+  let found = false;
+  const nextSessions = aiSessions.value.map((session) => {
+    if (session.session_id !== sessionId) {
+      return session;
+    }
+    found = true;
+    return update(session);
+  });
+  if (!found) {
+    throw new Error("AI依頼が見つかりません。");
+  }
+  aiSessions.value = nextSessions;
+}
+
+function aiTaskTitle(taskGid: string | undefined): string | undefined {
+  if (taskGid == null) {
+    return undefined;
+  }
+  if (selectedTask.value?.gid === taskGid) {
+    return selectedTask.value.title;
+  }
+  const currentOverview = overview.value;
+  if (currentOverview == null) {
+    return undefined;
+  }
+  return currentOverview.tasks.find((task) => task.gid === taskGid)?.title;
+}
+
+function aiRequestTitle(message: string): string {
+  const compactMessage = message.replace(/\s+/gu, " ").trim();
+  if (compactMessage.length === 0) {
+    throw new Error("AI依頼文が空です。");
+  }
+  const characters = [...compactMessage];
+  return characters.length > 40
+    ? `${characters.slice(0, 40).join("")}…`
+    : compactMessage;
+}
+
+function aiTurnMessage(session: AiSessionRecord, message: string): string {
+  if (session.task_gid == null) {
+    return message;
+  }
+  const taskTitle = session.task_title == null ? "" : `・タスク名 ${session.task_title}`;
+  return `このAI依頼の対象タスクを固定します。タスクGID ${session.task_gid}${taskTitle}\n\n利用者の依頼:\n${message}`;
+}
+
+function rememberAiRequest(sessionId: string, message: string): void {
+  const title = aiRequestTitle(message);
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    title: session.request_history.length === 0 ? title : session.title,
+    request_history: [...session.request_history, message],
+  }));
+}
+
+function aiSessionCanSend(session: AiSessionRecord): boolean {
+  return codexState.value.kind === "ready"
+    && canWrite.value
+    && !guiEditSaving.value
+    && session.operation === "idle";
+}
+
+function aiSessionDisabledReason(session: AiSessionRecord): string {
   switch (codexState.value.kind) {
     case "connecting":
       return "Codexの接続を確認しています。";
@@ -338,24 +494,39 @@ const aiSendDisabledReason = computed(() => {
   if (guiEditSaving.value) {
     return "タスクを保存しています。";
   }
-  if (aiBusy.value) {
+  if (session.operation !== "idle") {
     return "AIが回答を準備しています。";
   }
   return "";
-});
-const canReadLocal = computed(() => setupState.value?.kind === "ready");
-const canReanalyzeObsidianNotes = computed(() => canWrite.value
-  && !guiEditSaving.value
-  && codexState.value.kind === "ready"
-  && !aiBusy.value
-  && registeredVaultIds.value.length > 0);
-const visibleRows = computed(() => {
-  const currentOverview = overview.value;
-  if (currentOverview == null) {
-    return [];
-  }
-  return filterTaskRows(currentOverview, filter.value, currentAsOf.value);
-});
+}
+
+function setAiSessionFeedback(
+  sessionId: string,
+  kind: FeedbackKind,
+  message: string,
+): void {
+  updateAiSession(sessionId, (session) => ({ ...session, feedback: { kind, message } }));
+}
+
+function clearAiSessionFeedback(sessionId: string): void {
+  updateAiSession(sessionId, (session) => ({ ...session, feedback: undefined }));
+}
+
+function showAiSessionFailure(sessionId: string, value: IpcFailure): void {
+  setAiSessionFeedback(sessionId, "failure", displayFailure(value).message);
+}
+
+function showAiSessionUnexpectedFailure(sessionId: string): void {
+  setAiSessionFeedback(sessionId, "failure", "予期しないエラーが発生しました。もう一度お試しください。");
+}
+
+function showAiSessionFocusFailure(sessionId: string): void {
+  setAiSessionFeedback(sessionId, "warning", "新しいAIセッションを開始しましたが、入力欄へ移動できませんでした。");
+}
+
+function setAiDialogFeedback(kind: FeedbackKind, message: string): void {
+  aiDialogFeedback.value = { kind, message };
+}
 
 function isFailure(value: unknown): value is IpcFailure {
   const parsed = ipcFailureSchema.safeParse(value);
@@ -445,18 +616,6 @@ function showTaskUnexpectedFailure(): void {
   setTaskFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
 }
 
-function showAiFailure(value: IpcFailure): void {
-  setAiFeedback("failure", displayFailure(value).message);
-}
-
-function showAiUnexpectedFailure(): void {
-  setAiFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
-}
-
-function showAiFocusFailure(): void {
-  setAiFeedback("warning", "新しいAIセッションを開始しましたが、入力欄へ移動できませんでした。");
-}
-
 function codexUnavailableReason(
   reasonCode: Extract<RendererCodexState, { readonly kind: "unavailable" }>["reason_code"],
 ): string {
@@ -500,16 +659,6 @@ function writeUnavailableText(operation: "編集" | "AI利用" | "変更案の�
 
 function unavailableFeedbackKind(): FeedbackKind {
   if (connectionState.value.kind === "checking" || syncState.value.kind === "syncing") {
-    return "progress";
-  }
-  return "warning";
-}
-
-function aiSendDisabledFeedbackKind(): FeedbackKind {
-  if (codexState.value.kind === "connecting"
-    || connectionState.value.kind === "checking"
-    || syncState.value.kind === "syncing"
-    || guiEditState.value.kind === "saving") {
     return "progress";
   }
   return "warning";
@@ -2061,53 +2210,6 @@ async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
   }
 }
 
-async function startAiSession(): Promise<void> {
-  if (aiBusy.value) {
-    return;
-  }
-  aiPanelVisible.value = true;
-  clearAiFeedback();
-  const pendingProposal = pendingAiProposal(aiState.value);
-  aiBusy.value = true;
-  try {
-    const result = await window.taskHub.ai.startNewSession();
-    if (isFailure(result)) {
-      showAiFailure(result);
-      return;
-    }
-    if (result.value.kind === "authentication_required") {
-      codexState.value = rendererCodexStateSchema.parse({ kind: "authentication_required" });
-      setAiFeedback("failure", "CodexへログインするとAIを利用できます。");
-      return;
-    }
-    aiState.value = rendererAiStateSchema.parse({
-      kind: "idle",
-      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
-    setAiFeedback("success", "新しいAIセッションを開始しました。");
-  } catch {
-    showAiUnexpectedFailure();
-    return;
-  } finally {
-    aiBusy.value = false;
-  }
-  await nextTick();
-  const panel = aiPanelRef.value;
-  if (panel == null) {
-    showAiFocusFailure();
-    return;
-  }
-  switch (panel.focusMessageInput()) {
-    case "focused":
-      return;
-    case "unavailable":
-      showAiFocusFailure();
-      return;
-    default:
-      throw new Error("AI入力欄のフォーカス結果が不正です。");
-  }
-}
-
 function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefined {
   switch (state.kind) {
     case "proposal":
@@ -2122,21 +2224,59 @@ function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefine
   }
 }
 
-function appendDelta(delta: { readonly delta: string }): void {
-  if (aiState.value.kind !== "streaming") {
+function setAiSessionState(sessionId: string, state: RendererAiState): void {
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    state,
+    status: aiSessionStatus(state, session.operation),
+  }));
+}
+
+function setAiSessionOperation(
+  sessionId: string,
+  operation: AiSessionOperation,
+): void {
+  updateAiSession(sessionId, (session) => ({
+    ...session,
+    operation,
+    status: aiSessionStatus(session.state, operation),
+  }));
+}
+
+function clearAiSessionOperation(
+  sessionId: string,
+  operation: Exclude<AiSessionOperation, "idle">,
+): void {
+  if (!hasAiSession(sessionId) || requireAiSession(sessionId).operation !== operation) {
+    return;
+  }
+  setAiSessionOperation(sessionId, "idle");
+}
+
+function hasAiSession(sessionId: string): boolean {
+  return aiSessions.value.some((session) => session.session_id === sessionId);
+}
+
+function appendDelta(delta: { readonly session_id: string; readonly delta: string }): void {
+  if (!hasAiSession(delta.session_id)) {
+    return;
+  }
+  const session = requireAiSession(delta.session_id);
+  if (session.state.kind !== "streaming") {
     return;
   }
   try {
-    aiState.value = rendererAiStateSchema.parse({
+    const state = rendererAiStateSchema.parse({
       kind: "streaming",
-      text: `${aiState.value.text}${delta.delta}`,
-      ...(aiState.value.pending_proposal == null
+      text: `${session.state.text}${delta.delta}`,
+      ...(session.state.pending_proposal == null
         ? {}
-        : { pending_proposal: aiState.value.pending_proposal }),
+        : { pending_proposal: session.state.pending_proposal }),
     });
+    setAiSessionState(delta.session_id, state);
   } catch {
-    const pendingProposal = pendingAiProposal(aiState.value);
-    aiState.value = rendererAiStateSchema.parse({
+    const pendingProposal = pendingAiProposal(session.state);
+    setAiSessionState(delta.session_id, rendererAiStateSchema.parse({
       kind: "unavailable",
       failure: rendererFailureSchema.parse({
         kind: "error",
@@ -2144,65 +2284,183 @@ function appendDelta(delta: { readonly delta: string }): void {
         message: failureText("invalid_response"),
       }),
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    }));
   }
 }
 
-async function startAiTurn(input: AiWorkflowTurnRequest): Promise<void> {
-  if (aiBusy.value) {
+function openAiAssistant(): void {
+  if (!aiDialogVisible.value) {
+    const activeElement = document.activeElement;
+    aiDialogReturnFocus.value = activeElement instanceof HTMLElement ? activeElement : null;
+  }
+  aiDialogVisible.value = true;
+}
+
+function closeAiAssistant(): void {
+  aiDialogVisible.value = false;
+  const target = aiDialogReturnFocus.value;
+  aiDialogReturnFocus.value = null;
+  if (target != null && target.isConnected) {
+    target.focus();
     return;
   }
-  clearAiFeedback();
-  if (!canSendAi.value) {
-    setAiFeedback(aiSendDisabledFeedbackKind(), aiSendDisabledReason.value);
-    return;
+  const trigger = document.querySelector<HTMLElement>("[data-ai-assistant-trigger]");
+  trigger?.focus();
+}
+
+function removeAiSession(sessionId: string): void {
+  const remaining = aiSessions.value.filter((session) => session.session_id !== sessionId);
+  if (remaining.length === aiSessions.value.length) {
+    throw new Error("AI依頼が見つかりません。");
   }
-  const pendingProposal = pendingAiProposal(aiState.value);
-  aiBusy.value = true;
+  aiSessions.value = remaining;
+  if (aiSelectedSessionId.value === sessionId) {
+    aiSelectedSessionId.value = remaining[0]?.session_id;
+  }
+}
+
+async function createAiSession(taskGid: string | undefined): Promise<string | undefined> {
+  if (aiSessionCreating.value) {
+    return undefined;
+  }
+  aiSessionCreating.value = true;
+  setAiDialogFeedback("progress", "AI依頼を開始しています。");
   try {
-    const request = aiWorkflowTurnRequestSchema.parse(input);
-    aiState.value = rendererAiStateSchema.parse({
+    const result = await window.taskHub.ai.startNewSession();
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return undefined;
+    }
+    if (result.value.kind === "authentication_required") {
+      codexState.value = rendererCodexStateSchema.parse({ kind: "authentication_required" });
+      setAiDialogFeedback("failure", "CodexへログインするとAIを利用できます。");
+      return undefined;
+    }
+    const sessionId = result.value.session_id;
+    if (sessionId.trim().length === 0) {
+      throw new Error("AIセッションIDが空です。");
+    }
+    const state = rendererAiStateSchema.parse({ kind: "idle" });
+    const taskTitle = aiTaskTitle(taskGid);
+    const session: AiSessionRecord = {
+      session_id: sessionId,
+      title: taskTitle == null ? "新しいAI依頼" : taskTitle,
+      ...(taskGid == null ? {} : { task_gid: taskGid }),
+      ...(taskTitle == null ? {} : { task_title: taskTitle }),
+      state,
+      status: aiSessionStatus(state, "idle"),
+      operation: "idle",
+      feedback: undefined,
+      request_history: [],
+      created_at: Date.now(),
+    };
+    aiSessions.value = [...aiSessions.value, session];
+    aiSelectedSessionId.value = sessionId;
+    aiDialogFeedback.value = undefined;
+    setAiSessionFeedback(sessionId, "success", "新しいAIセッションを開始しました。");
+    return sessionId;
+  } catch {
+    setAiDialogFeedback("failure", "AIセッションを開始できませんでした。もう一度お試しください。");
+    return undefined;
+  } finally {
+    aiSessionCreating.value = false;
+  }
+}
+
+async function startAiSession(): Promise<void> {
+  openAiAssistant();
+  if (!canStartNewAiSession.value) {
+    setAiDialogFeedback(unavailableFeedbackKind(), "新しいAI依頼は現在利用できません。");
+    return;
+  }
+  const sessionId = await createAiSession(selectedTaskGid.value);
+  if (sessionId == null) {
+    return;
+  }
+  await nextTick();
+  const dialog = aiDialogRef.value;
+  if (dialog == null) {
+    showAiSessionFocusFailure(sessionId);
+    return;
+  }
+  switch (dialog.focusSessionInput(sessionId)) {
+    case "focused":
+      return;
+    case "unavailable":
+      showAiSessionFocusFailure(sessionId);
+      return;
+    default:
+      throw new Error("AI入力欄のフォーカス結果が不正です。");
+  }
+}
+
+async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
+    return;
+  }
+  clearAiSessionFeedback(sessionId);
+  if (!aiSessionCanSend(session)) {
+    setAiSessionFeedback(sessionId, unavailableFeedbackKind(), aiSessionDisabledReason(session));
+    return;
+  }
+  const validatedInput = aiWorkflowTurnRequestSchema.parse(input);
+  rememberAiRequest(sessionId, validatedInput.message);
+  const pendingProposal = pendingAiProposal(session.state);
+  setAiSessionOperation(sessionId, "turn");
+  try {
+    const currentSession = requireAiSession(sessionId);
+    const request = ipcAiTurnInputSchema.parse({
+      session_id: sessionId,
+      message: aiTurnMessage(currentSession, validatedInput.message),
+    });
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "streaming",
       text: "",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    }));
     const result = await window.taskHub.ai.startTurn(request);
+    if (!hasAiSession(sessionId)) {
+      return;
+    }
     if (isFailure(result)) {
-      aiState.value = rendererAiStateSchema.parse({
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
         kind: "unavailable",
         failure: displayFailure(result),
         ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-      });
+      }));
       return;
     }
     if (result.value.kind === "proposal") {
       const proposal = aiWorkflowProposalViewSchema.parse(result.value.proposal);
-      aiState.value = rendererAiStateSchema.parse({
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
         kind: "proposal",
         message: result.value.message,
         questions: result.value.questions,
         proposal,
-      });
+      }));
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: result.value.message,
       questions: result.value.questions,
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    }));
   } catch {
-    aiState.value = rendererAiStateSchema.parse({
-      kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "invalid_response",
-        message: failureText("invalid_response"),
-      }),
-      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
-    });
+    if (hasAiSession(sessionId)) {
+      setAiSessionState(sessionId, rendererAiStateSchema.parse({
+        kind: "unavailable",
+        failure: rendererFailureSchema.parse({
+          kind: "error",
+          code: "invalid_response",
+          message: failureText("invalid_response"),
+        }),
+        ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+      }));
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "turn");
   }
 }
 
@@ -2214,126 +2472,207 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
   });
-  aiPanelVisible.value = true;
-  await startAiTurn(request);
+  openAiAssistant();
+  const sessionId = await createAiSession(taskGid);
+  if (sessionId == null) {
+    return;
+  }
+  await startAiTurn(sessionId, request);
 }
 
-function proposalState(proposal: AiWorkflowProposalView): void {
-  const currentState = aiState.value;
+function proposalState(sessionId: string, proposal: AiWorkflowProposalView): void {
+  const currentState = requireAiSession(sessionId).state;
   if (currentState.kind === "proposal") {
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "proposal",
       message: currentState.message,
       questions: currentState.questions,
       proposal,
-    });
+    }));
     return;
   }
   const pendingProposal = pendingAiProposal(currentState);
   const message = pendingProposal?.message ?? "変更案を更新しました。";
   if (currentState.kind === "questions") {
-    aiState.value = rendererAiStateSchema.parse({
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: currentState.message,
       questions: currentState.questions,
       pending_proposal: { message, proposal },
-    });
+    }));
     return;
   }
-  aiState.value = rendererAiStateSchema.parse({ kind: "proposal", message, questions: [], proposal });
+  setAiSessionState(sessionId, rendererAiStateSchema.parse({ kind: "proposal", message, questions: [], proposal }));
 }
 
-async function selectAiProposal(input: AiWorkflowSelectionRequest): Promise<void> {
-  if (aiBusy.value) {
+async function selectAiProposal(sessionId: string, input: AiWorkflowSelectionRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
-  aiBusy.value = true;
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "select");
   try {
-    const request = aiWorkflowSelectionRequestSchema.parse(input);
+    const request = ipcAiSelectionInputSchema.parse({ ...input, session_id: sessionId });
     const result = await window.taskHub.ai.select(request);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    proposalState(aiWorkflowProposalViewSchema.parse(result.value));
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    proposalState(sessionId, aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "select");
   }
 }
 
-async function editAiOperation(input: AiWorkflowOperationEdit): Promise<void> {
-  if (aiBusy.value) {
+async function editAiOperation(sessionId: string, input: AiWorkflowOperationEdit): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
-  aiBusy.value = true;
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "edit");
   try {
-    const request = aiWorkflowOperationEditSchema.parse(input);
+    const request = ipcAiEditInputSchema.parse({ ...input, session_id: sessionId });
     const result = await window.taskHub.ai.editOperation(request);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    proposalState(aiWorkflowProposalViewSchema.parse(result.value));
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    proposalState(sessionId, aiWorkflowProposalViewSchema.parse(result.value));
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "edit");
   }
 }
 
-async function approveAiProposal(input: AiWorkflowApprovalRequest): Promise<void> {
-  if (aiBusy.value) {
+async function approveAiProposal(sessionId: string, input: AiWorkflowApprovalRequest): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
+  clearAiSessionFeedback(sessionId);
   if (!canWrite.value) {
-    setAiFeedback(unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
+    setAiSessionFeedback(sessionId, unavailableFeedbackKind(), writeUnavailableText("変更案の適用"));
     return;
   }
-  aiBusy.value = true;
+  setAiSessionOperation(sessionId, "approve");
   try {
-    const request = aiWorkflowApprovalRequestSchema.parse(input);
+    const request = ipcAiApprovalInputSchema.parse({ ...input, session_id: sessionId });
     const result = await window.taskHub.ai.approve(request);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({
       kind: "applied",
       message: "適用結果を確認してください。",
       result: result.value,
-    });
+    }));
     await manualSync();
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "approve");
   }
 }
 
-async function rejectAiProposal(proposalId: string): Promise<void> {
-  if (aiBusy.value) {
+async function rejectAiProposal(sessionId: string, proposalId: string): Promise<void> {
+  const session = requireAiSession(sessionId);
+  if (session.operation !== "idle") {
     return;
   }
-  clearAiFeedback();
-  aiBusy.value = true;
+  clearAiSessionFeedback(sessionId);
+  setAiSessionOperation(sessionId, "reject");
   try {
-    const result = await window.taskHub.ai.reject(proposalId);
-    if (isFailure(result)) {
-      showAiFailure(result);
+    const result = await window.taskHub.ai.reject({ session_id: sessionId, proposal_id: proposalId });
+    if (!hasAiSession(sessionId)) {
       return;
     }
-    aiState.value = rendererAiStateSchema.parse({ kind: "idle" });
-    setAiFeedback("warning", "変更案を却下しました。");
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      return;
+    }
+    setAiSessionState(sessionId, rendererAiStateSchema.parse({ kind: "idle" }));
+    setAiSessionFeedback(sessionId, "warning", "変更案を却下しました。");
   } catch {
-    showAiUnexpectedFailure();
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+    }
   } finally {
-    aiBusy.value = false;
+    clearAiSessionOperation(sessionId, "reject");
   }
+}
+
+async function closeAiSession(sessionId: string): Promise<void> {
+  if (!hasAiSession(sessionId)) {
+    return;
+  }
+  const session = requireAiSession(sessionId);
+  if (session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  setAiSessionOperation(sessionId, "closing");
+  try {
+    const result = await window.taskHub.ai.closeSession(ipcAiCloseSessionInputSchema.parse(sessionId));
+    if (isFailure(result)) {
+      showAiSessionFailure(sessionId, result);
+      clearAiSessionOperation(sessionId, "closing");
+      return;
+    }
+    removeAiSession(sessionId);
+  } catch {
+    if (hasAiSession(sessionId)) {
+      showAiSessionUnexpectedFailure(sessionId);
+      clearAiSessionOperation(sessionId, "closing");
+    }
+  }
+}
+
+function completeAiSession(sessionId: string): void {
+  const session = requireAiSession(sessionId);
+  if (session.status !== "completed" || session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  void closeAiSession(sessionId);
+}
+
+function cancelAiSession(sessionId: string): void {
+  const session = requireAiSession(sessionId);
+  if (session.status === "completed" || session.operation === "approve" || session.operation === "closing") {
+    return;
+  }
+  void closeAiSession(sessionId);
+}
+
+function selectAiSession(sessionId: string): void {
+  requireAiSession(sessionId);
+  aiSelectedSessionId.value = sessionId;
+}
+
+function selectAiSessionTask(sessionId: string, taskGid: string): void {
+  requireAiSession(sessionId);
+  const validTaskGid = gidSchema.parse(taskGid);
+  closeAiAssistant();
+  void selectTask(validTaskGid);
 }
 
 async function loadInitialSyncState(): Promise<void> {
@@ -2467,7 +2806,9 @@ onUnmounted(() => {
       :can-full-sync="canManualSync"
       :full-sync-running="activeSyncMode === 'full'"
       :can-write="canWrite"
-      :can-start-new-ai-session="canStartNewAiSession"
+      :can-open-ai-assistant="canOpenAiAssistant"
+      :ai-waiting-count="aiWaitingCount"
+      :ai-running-count="aiRunningCount"
       :codex-state="codexState"
       :codex-authentication-busy="setupBusy"
       :asana-authentication-busy="asanaAuthenticationBusy"
@@ -2477,10 +2818,30 @@ onUnmounted(() => {
       :asana-authentication-state="asanaAuthenticationState"
       @sync="manualSync"
       @full-sync="fullSync"
-      @new-ai-session="startAiSession"
+      @open-ai-assistant="openAiAssistant"
       @complete-codex-authentication="completeCodexAuthenticationFromHeader"
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
+    />
+    <AiSessionDialog
+      ref="aiDialogRef"
+      :open="aiDialogVisible"
+      :can-start-new-session="canStartNewAiSession"
+      :creating-session="aiSessionCreating"
+      :feedback="aiDialogFeedback"
+      :sessions="aiSessionViews"
+      :selected-session-id="aiSelectedSessionId"
+      @close="closeAiAssistant"
+      @new-session="startAiSession"
+      @select-session="selectAiSession"
+      @start="startAiTurn"
+      @select="selectAiProposal"
+      @edit="editAiOperation"
+      @approve="approveAiProposal"
+      @reject="rejectAiProposal"
+      @complete="completeAiSession"
+      @cancel="cancelAiSession"
+      @select-task="selectAiSessionTask"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
       <p
@@ -2628,31 +2989,6 @@ onUnmounted(() => {
               :as-of="currentAsOf"
               @select="selectTask"
             /><div class="min-w-0 space-y-3">
-              <div
-                v-show="aiPanelVisible"
-                class="min-w-0 space-y-3"
-              >
-                <p
-                  v-if="aiFeedback != null"
-                  class="sticky top-3 rounded-md px-4 py-3 text-sm"
-                  :class="feedbackClass(aiFeedback.kind)"
-                  :role="feedbackRole(aiFeedback.kind)"
-                >
-                  {{ aiFeedback.message }}
-                </p>
-                <AiPanel
-                  ref="aiPanelRef"
-                  :state="aiState"
-                  :can-write="canWrite && !guiEditSaving && !aiBusy"
-                  :can-send-ai="canSendAi"
-                  :ai-send-disabled-reason="aiSendDisabledReason"
-                  @start="startAiTurn"
-                  @select="selectAiProposal"
-                  @edit="editAiOperation"
-                  @approve="approveAiProposal"
-                  @reject="rejectAiProposal"
-                />
-              </div>
               <p
                 v-if="taskFeedback != null"
                 class="sticky top-3 rounded-md px-4 py-3 text-sm"
