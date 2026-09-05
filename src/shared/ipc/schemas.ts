@@ -40,11 +40,7 @@ import {
   aiWorkflowSelectionRequestSchema,
   aiWorkflowTurnRequestSchema,
   aiWorkflowTurnResultSchema,
-  type AiWorkflowApprovalRequest,
-  type AiWorkflowOperationEdit,
   type AiWorkflowProposalView,
-  type AiWorkflowSelectionRequest,
-  type AiWorkflowTurnRequest,
   type AiWorkflowTurnResult,
 } from "../ai-workflow";
 import {
@@ -405,6 +401,7 @@ const setupVaultInputSchema = setupVaultChoiceInputSchema;
 const setupExternalToolInputSchema = setupExternalToolChoiceInputSchema;
 
 const codexDeltaSchema = z.object({
+  session_id: identifierSchema,
   thread_id: z.string().min(1).max(200),
   turn_id: z.string().min(1).max(200),
   item_id: z.string().min(1).max(200),
@@ -412,10 +409,11 @@ const codexDeltaSchema = z.object({
 }).strict();
 
 const ipcAiDeltaEventSchema = codexDeltaSchema;
-const aiNewSessionResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("started") }).strict(),
-  z.object({ kind: z.literal("authentication_required") }).strict(),
-]);
+const aiNewSessionResultSchema = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("started"), session_id: identifierSchema }).strict(),
+    z.object({ kind: z.literal("authentication_required") }).strict(),
+  ]);
 
 const relativeMarkdownPathSchema = z
   .string()
@@ -559,6 +557,7 @@ export const ipcChannelSchema = z.enum([
   "ai:edit-operation",
   "ai:reject",
   "ai:approve",
+  "ai:close-session",
   "ai:delta:subscribe",
   "ai:delta:unsubscribe",
   "ai:delta",
@@ -616,23 +615,40 @@ export const ipcSetupStateSchema = setupStateSchema;
 export const ipcGuiEditInputSchema = guiRequestSchema;
 export const ipcGuiEditResultSchema = guiResultSchema;
 export const ipcGuiEditResponseSchema = responseSchema(guiResultSchema);
-export const ipcAiTurnInputSchema = aiWorkflowTurnRequestSchema;
+export const ipcAiTurnInputSchema = z
+  .object({
+    session_id: identifierSchema,
+    message: aiWorkflowTurnRequestSchema.shape.message,
+  })
+  .strict();
 export const ipcAiTurnResponseSchema = responseSchema(aiWorkflowTurnResultSchema);
 export const ipcAiStartNewSessionInputSchema = emptyRequestSchema;
 export const ipcAiStartNewSessionResponseSchema = responseSchema(aiNewSessionResultSchema);
 export const ipcAiGetStatusInputSchema = emptyRequestSchema;
 export const ipcAiGetStatusResponseSchema = responseSchema(aiStatusSchema);
 export const ipcAiStatusEventSchema = aiStatusSchema;
-export const ipcAiProposalInputSchema = z.object({ proposal_id: identifierSchema }).strict();
+export const ipcAiProposalInputSchema = z
+  .object({ session_id: identifierSchema, proposal_id: identifierSchema })
+  .strict();
 export const ipcAiProposalResponseSchema = responseSchema(aiWorkflowProposalViewSchema);
-export const ipcAiSelectionInputSchema = aiWorkflowSelectionRequestSchema;
+export const ipcAiSelectionInputSchema = aiWorkflowSelectionRequestSchema
+  .extend({ session_id: identifierSchema })
+  .strict();
 export const ipcAiSelectionResponseSchema = responseSchema(aiWorkflowProposalViewSchema);
-export const ipcAiEditInputSchema = aiWorkflowOperationEditSchema;
+export const ipcAiEditInputSchema = aiWorkflowOperationEditSchema
+  .extend({ session_id: identifierSchema })
+  .strict();
 export const ipcAiEditResponseSchema = responseSchema(aiWorkflowProposalViewSchema);
-export const ipcAiRejectInputSchema = z.object({ proposal_id: identifierSchema }).strict();
+export const ipcAiRejectInputSchema = z
+  .object({ session_id: identifierSchema, proposal_id: identifierSchema })
+  .strict();
 export const ipcAiRejectResponseSchema = responseSchema(completedResultSchema);
-export const ipcAiApprovalInputSchema = aiWorkflowApprovalRequestSchema;
+export const ipcAiApprovalInputSchema = aiWorkflowApprovalRequestSchema
+  .extend({ session_id: identifierSchema })
+  .strict();
 export const ipcAiApprovalResponseSchema = responseSchema(aiWorkflowApprovalResultSchema);
+export const ipcAiCloseSessionInputSchema = identifierSchema;
+export const ipcAiCloseSessionResponseSchema = responseSchema(completedResultSchema);
 export { ipcAiDeltaEventSchema };
 export const ipcObsidianValidateInputSchema = z.object({ vault_id: vaultIdSchema }).strict();
 export const ipcObsidianValidateResponseSchema = responseSchema(obsidianVaultResultSchema);
@@ -671,13 +687,16 @@ export type IpcGuiEditInput = z.infer<typeof guiRequestSchema>;
 export type IpcGuiEditResult = z.infer<typeof guiResultSchema>;
 export type IpcCodexDelta = z.infer<typeof codexDeltaSchema>;
 export type IpcAiNewSessionResult = z.infer<typeof aiNewSessionResultSchema>;
-export type IpcAiTurnInput = AiWorkflowTurnRequest;
+export type IpcAiTurnInput = z.infer<typeof ipcAiTurnInputSchema>;
 export type IpcAiTurnResult = AiWorkflowTurnResult;
+export type IpcAiProposalInput = z.infer<typeof ipcAiProposalInputSchema>;
 export type IpcAiProposalView = AiWorkflowProposalView;
-export type IpcAiSelectionInput = AiWorkflowSelectionRequest;
-export type IpcAiEditInput = AiWorkflowOperationEdit;
-export type IpcAiApprovalInput = AiWorkflowApprovalRequest;
+export type IpcAiSelectionInput = z.infer<typeof ipcAiSelectionInputSchema>;
+export type IpcAiEditInput = z.infer<typeof ipcAiEditInputSchema>;
+export type IpcAiRejectInput = z.infer<typeof ipcAiRejectInputSchema>;
+export type IpcAiApprovalInput = z.infer<typeof ipcAiApprovalInputSchema>;
 export type IpcAiApprovalResult = z.infer<typeof aiWorkflowApprovalResultSchema>;
+export type IpcAiCloseSessionInput = z.infer<typeof ipcAiCloseSessionInputSchema>;
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;
 export type IpcObsidianVaultList = z.infer<typeof obsidianVaultListResultSchema>;
 export type IpcObsidianPathResult = z.infer<typeof obsidianPathResultSchema>;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { z } from "zod";
 import {
   AsanaRequestAbortedError,
@@ -63,9 +64,12 @@ import {
   type SecretStorageData,
 } from "../auth/secret-storage";
 import {
+  createCodexSessionWorkspaceUserDataPath,
   initializeCodexWorkspace,
+  initializeCodexSessionWorkspaceParent,
   installContextctlClientScript,
   installDisabledExternalToolsSkill,
+  removeCodexSessionWorkspace,
   type ContextctlInstallationResult,
   type CodexWorkspaceInitializationResult,
 } from "../codex/workspace";
@@ -76,6 +80,7 @@ import {
   CodexSessionAbortedError,
   CodexSessionService,
   createCodexAppServerConnectionFactory,
+  type CodexSessionConnectionFactory,
   type CodexSessionStartResult,
 } from "../codex/session";
 import { CodexSetupAdapter } from "./codex-adapter";
@@ -119,6 +124,7 @@ import {
 import { discoverTasksVault } from "../obsidian/tasks-vault-discovery";
 import {
   ExternalToolBroker,
+  ExternalToolError,
   ExternalToolRegistry,
   ExternalToolStatusEvidenceCollector,
   SecretStorageDiscordCredentialProvider,
@@ -155,6 +161,7 @@ import {
   type AsanaTaskResponse,
 } from "../../shared/domain";
 import {
+  aiWorkflowApprovalRequestSchema,
   aiWorkflowApprovalResultSchema,
   aiWorkflowOperationEditSchema,
   aiWorkflowProposalViewSchema,
@@ -165,6 +172,7 @@ import {
   type AiWorkflowSnapshot,
 } from "../../shared/ai-workflow";
 import {
+  TaskctlAbortError,
   taskHubExecutablePathEnvironmentVariable,
   taskctlSnapshotSchema,
   type TaskctlSnapshot,
@@ -215,6 +223,8 @@ import {
   type IpcAiEditInput,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
+  type IpcAiProposalInput,
+  type IpcAiRejectInput,
   type IpcAsanaAuthenticationState,
   type IpcAsanaReauthenticationCancelInput,
   type IpcAsanaReauthenticationCompleteInput,
@@ -246,6 +256,51 @@ type MutableTokenProviderPort = TokenProvider & {
 };
 
 type BaselineExternalData = AsanaProposalApplicationInput["baseline_external_data"];
+
+type AiSessionBaselineStore = {
+  readonly externalData: Map<string, BaselineExternalData>;
+  readonly proposalKeys: Map<string, string>;
+  readonly currentTurnKeys: Set<string>;
+};
+
+type AiSessionRecord = {
+  readonly sessionId: string;
+  readonly workspace: CodexWorkspaceInitializationResult;
+  readonly session: CodexSessionService;
+  readonly externalToolBroker: ExternalToolBroker | undefined;
+  readonly workflow: AiWorkflowService;
+  readonly baselineStore: AiSessionBaselineStore;
+  readonly lifecycleController: AbortController;
+  readonly removeLifecycleListener: () => void;
+  readonly removeDeltaListener: () => void;
+  readonly operations: Map<AbortController, Promise<unknown>>;
+  readonly proposalIds: Set<string>;
+  closing: boolean;
+  turnInFlight: boolean;
+  approvalInFlight: boolean;
+  closePromise: Promise<void> | undefined;
+};
+
+type AiSessionStartResult =
+  | { readonly kind: "started"; readonly session_id: string }
+  | { readonly kind: "authentication_required" };
+
+type AiSessionStartRecord = {
+  readonly sessionId: string;
+  readonly workspaceUserDataPath: string;
+  readonly lifecycleController: AbortController;
+  readonly removeLifecycleListener: () => void;
+  workspace: CodexWorkspaceInitializationResult | undefined;
+  session: CodexSessionService | undefined;
+  externalToolBroker: ExternalToolBroker | undefined;
+  readonly completion: Promise<AiSessionStartResult>;
+};
+
+type AiSessionExternalToolResources = {
+  readonly broker: ExternalToolBroker | undefined;
+  readonly collector: ExternalToolStatusEvidenceCollector;
+  readonly endpoint: string | undefined;
+};
 
 const codexAuthenticationStateSchema = z.union([
   z.object({ kind: z.literal("authenticated") }).strict(),
@@ -473,6 +528,37 @@ function errorHasCause(error: unknown, expectedCause: unknown): boolean {
     seen.add(current);
     current = current.cause;
   }
+}
+
+function isAiSessionAbortError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    if (
+      current instanceof AsanaRequestAbortedError
+      || current instanceof CodexSessionAbortedError
+      || current instanceof TaskctlAbortError
+      || (current instanceof ExternalToolError && current.code === "aborted")
+    ) {
+      return true;
+    }
+    seen.add(current);
+    current = current.cause;
+  }
+  return false;
+}
+
+type AiSessionPromiseResult =
+  | { readonly kind: "completed" }
+  | { readonly kind: "rejected"; readonly error: unknown };
+
+function settleAiSessionPromise(
+  promise: Promise<unknown>,
+): Promise<AiSessionPromiseResult> {
+  return promise.then(
+    () => ({ kind: "completed" }),
+    (error: unknown) => ({ kind: "rejected", error }),
+  );
 }
 
 function throwExternalToolConfigurationIfAborted(signal: AbortSignal): void {
@@ -924,13 +1010,16 @@ export class TaskHubApplication {
   private readonly planApplier: AsanaNormalizationPlanApplier;
   private readonly syncCoordinator: AsanaSyncCoordinator;
   private readonly codexWorkspace: CodexWorkspaceInitializationResult;
+  private readonly aiSessionWorkspaceParentPath: string;
   private readonly codexSession: CodexSessionService;
+  private readonly codexConnectionFactory: CodexSessionConnectionFactory;
   private readonly codexAdapter: CodexSetupAdapter;
   private readonly setup: SetupOrchestrator;
   private readonly readModel: ReadModelService;
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
+  private externalToolRegistry: ExternalToolRegistry | undefined;
   private asanaReauthenticationOperation: AsanaReauthenticationOperation = {
     kind: "idle",
   };
@@ -947,14 +1036,16 @@ export class TaskHubApplication {
   private writer: AsanaProposalOperationWriter | undefined;
   private applicationCoordinator: AsanaProposalApplicationCoordinator | undefined;
   private guiEdit: AsanaGuiEditService | undefined;
-  private aiWorkflow: AiWorkflowService | undefined;
+  private aiSessionsConfigured = false;
+  private readonly aiSessions = new Map<string, AiSessionRecord>();
+  private readonly aiSessionStarts = new Map<string, AiSessionStartRecord>();
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
   private readonly syncStateListeners = new Set<(state: IpcSyncStateEvent) => void>();
+  private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
   private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
   private readonly proposalIds = new Map<string, string>();
-  private readonly baselineExternalData = new Map<string, BaselineExternalData>();
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
@@ -1022,6 +1113,9 @@ export class TaskHubApplication {
     this.codexWorkspace = initializeCodexWorkspace({
       userDataPath: options.user_data_path,
     });
+    this.aiSessionWorkspaceParentPath = initializeCodexSessionWorkspaceParent(
+      join(this.codexWorkspace.userDataPath, "ai-sessions"),
+    );
     this.externalToolLifecycle = {
       kind: "disabled",
       reason: "no_registered_tools",
@@ -1041,6 +1135,7 @@ export class TaskHubApplication {
       capabilities: { experimentalApi: true },
       configOverrides: [],
     });
+    this.codexConnectionFactory = connectionFactory;
     this.codexSession = new CodexSessionService({
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
@@ -1200,12 +1295,9 @@ export class TaskHubApplication {
     this.removeRuntimeSubscription?.();
     this.removeRuntimeSubscription = undefined;
     this.syncStateListeners.clear();
+    this.aiDeltaListeners.clear();
     this.aiStatusListeners.clear();
-    try {
-      this.aiWorkflow?.dispose();
-    } catch (error: unknown) {
-      errors.push(error);
-    }
+    await this.closeAllAiSessions(errors);
     await this.stopAsyncService(this.displayOrder, errors);
     await this.stopAsyncService(this.runtime, errors);
     await this.stopAsyncService(this.codexSession, errors);
@@ -1508,7 +1600,7 @@ export class TaskHubApplication {
       && this.writer != null
       && this.applicationCoordinator != null
       && this.guiEdit != null
-      && this.aiWorkflow != null;
+      && this.aiSessionsConfigured;
     if (fullyConfigured) {
       return;
     }
@@ -1518,7 +1610,7 @@ export class TaskHubApplication {
       || this.writer != null
       || this.applicationCoordinator != null
       || this.guiEdit != null
-      || this.aiWorkflow != null
+      || this.aiSessionsConfigured
     ) {
       throw new Error("運用サービスの構成状態が一貫していません。");
     }
@@ -1591,43 +1683,13 @@ export class TaskHubApplication {
       },
       randomUUID,
     );
-    const aiWorkflow = new AiWorkflowService({
-      session: this.codexSession,
-      snapshotProvider: (signal) => this.createAiSnapshot(signal),
-      taskctlSnapshotProvider: () => this.createTaskctlSnapshot(),
-      externalStatusEvidenceCollector: this.externalStatusEvidenceCollector,
-      applicationCoordinator: {
-        apply: async (input, signal) => {
-          if (this.aiApplicationState !== "idle") {
-            throw new Error("AI変更案を同時に適用できません。");
-          }
-          this.aiApplicationState = "applying";
-          let result: AsanaProposalApplicationResult;
-          try {
-            result = await applicationCoordinator.apply(input, signal);
-          } finally {
-            this.aiApplicationState = "idle";
-          }
-          this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
-          this.diagnostics.record({
-            code: "proposal.application",
-            severity: "info",
-            proposal_id: result.proposal_id,
-          });
-          return result;
-        },
-      },
-      prepareApprovalInput: (input, signal) =>
-        this.prepareApprovalInput(input, signal),
-      isOnline: () => this.isOnline(),
-    });
     this.runtime = runtime;
     this.removeRuntimeSubscription = removeRuntimeSubscription;
     this.displayOrder = displayOrder;
     this.writer = writer;
     this.applicationCoordinator = applicationCoordinator;
     this.guiEdit = guiEdit;
-    this.aiWorkflow = aiWorkflow;
+    this.aiSessionsConfigured = true;
   }
 
   private rethrowFeatureAbort(error: unknown, signal: AbortSignal): void {
@@ -1950,10 +2012,12 @@ export class TaskHubApplication {
     if (result.kind !== "disabled" || result.reason !== reason) {
       throw new Error("外部ツール無効Skillの導入結果が一致しません。");
     }
+    this.externalToolRegistry = undefined;
     this.setCodexExternalSocketPaths([]);
   }
 
   private setExternalToolsDisabled(): void {
+    this.externalToolRegistry = undefined;
     this.externalToolLifecycle = {
       kind: "disabled",
       reason: "no_registered_tools",
@@ -2049,13 +2113,15 @@ export class TaskHubApplication {
 
   private createExternalToolBroker(
     registry: ExternalToolRegistry,
+    tmpDirectoryPath: string,
+    statusEvidenceCollector: ExternalToolStatusEvidenceCollector,
   ): ExternalToolBroker {
     return new ExternalToolBroker({
-      tmp_directory_path: this.codexWorkspace.tmpDirectoryPath,
+      tmp_directory_path: tmpDirectoryPath,
       registry,
       discord_credential_provider:
         new SecretStorageDiscordCredentialProvider(this.secretStorage),
-      status_evidence_collector: this.externalStatusEvidenceCollector,
+      status_evidence_collector: statusEvidenceCollector,
     });
   }
 
@@ -2074,6 +2140,7 @@ export class TaskHubApplication {
       throw new Error("起動済み外部ツールのCodex連携を有効化できませんでした。");
     }
     this.setCodexExternalSocketPaths([endpoint]);
+    this.externalToolRegistry = registry;
     this.recordDiagnostic("external_tools.status", "info");
     this.externalToolLifecycle = {
       kind: "ready",
@@ -2446,7 +2513,11 @@ export class TaskHubApplication {
     let broker: ExternalToolBroker;
     try {
       registry = createExternalToolRegistry(expectedDefinition);
-      broker = this.createExternalToolBroker(registry);
+      broker = this.createExternalToolBroker(
+        registry,
+        this.codexWorkspace.tmpDirectoryPath,
+        this.externalStatusEvidenceCollector,
+      );
     } catch (error: unknown) {
       await this.recordExternalToolFailure(
         error,
@@ -2565,7 +2636,11 @@ export class TaskHubApplication {
         configuration.allowed_channel_ids,
       );
       registry = createExternalToolRegistry(definition);
-      broker = this.createExternalToolBroker(registry);
+      broker = this.createExternalToolBroker(
+        registry,
+        this.codexWorkspace.tmpDirectoryPath,
+        this.externalStatusEvidenceCollector,
+      );
     } catch (error: unknown) {
       await this.recordExternalToolFailure(
         error,
@@ -3334,7 +3409,10 @@ export class TaskHubApplication {
     });
   }
 
-  private createAiSnapshot(signal: AbortSignal): AiWorkflowSnapshot {
+  private createAiSnapshot(
+    signal: AbortSignal,
+    baselineStore: AiSessionBaselineStore,
+  ): AiWorkflowSnapshot {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const context = this.requireContext();
@@ -3382,17 +3460,12 @@ export class TaskHubApplication {
         };
       })
       .sort((left, right) => compareStrings(left.task_gid, right.task_gid));
-    this.baselineExternalData.set(
-      canonicalizeJson(createBaselineSnapshot(snapshot)),
+    const baselineKey = canonicalizeJson(createBaselineSnapshot(snapshot));
+    baselineStore.externalData.set(
+      baselineKey,
       baselineExternalData,
     );
-    while (this.baselineExternalData.size > 32) {
-      const oldest = this.baselineExternalData.keys().next().value;
-      if (oldest == null) {
-        throw new Error("AI基準外部データの保持状態が不正です。");
-      }
-      this.baselineExternalData.delete(oldest);
-    }
+    baselineStore.currentTurnKeys.add(baselineKey);
     return snapshot;
   }
 
@@ -3501,6 +3574,7 @@ export class TaskHubApplication {
   private async prepareApprovalInput(
     input: ApprovalPreparationInput,
     signal: AbortSignal,
+    baselineStore: AiSessionBaselineStore,
   ): Promise<AsanaProposalApplicationInput> {
     validateAbortSignal(signal);
     this.assertWritesAllowed();
@@ -3513,7 +3587,7 @@ export class TaskHubApplication {
     ) {
       throw new Error("AI変更案の基準スナップショット文脈が一致しません。");
     }
-    const baselineExternalData = this.baselineExternalData.get(
+    const baselineExternalData = baselineStore.externalData.get(
       canonicalizeJson(baseline),
     );
     if (baselineExternalData == null) {
@@ -3890,15 +3964,7 @@ export class TaskHubApplication {
     };
   }
 
-  private requireAiWorkflow(): AiWorkflowService {
-    const workflow = this.aiWorkflow;
-    if (workflow == null) {
-      throw new Error("AIワークフローが設定されていません。");
-    }
-    return workflow;
-  }
-
-  private rememberProposal(view: IpcAiProposalView): void {
+  private rememberProposal(record: AiSessionRecord, view: IpcAiProposalView): void {
     for (const operation of view.proposal.groups.flatMap((group) => group.operations)) {
       const existing = this.proposalIds.get(operation.operation_id);
       if (existing != null && existing !== view.proposal_id) {
@@ -3906,14 +3972,33 @@ export class TaskHubApplication {
       }
       this.proposalIds.set(operation.operation_id, view.proposal_id);
     }
+    record.proposalIds.add(view.proposal_id);
   }
 
-  private forgetProposal(proposalId: string): void {
+  private forgetProposal(record: AiSessionRecord, proposalId: string): void {
     for (const [operationId, storedProposalId] of this.proposalIds) {
       if (storedProposalId === proposalId) {
         this.proposalIds.delete(operationId);
       }
     }
+    record.proposalIds.delete(proposalId);
+    const baselineKey = record.baselineStore.proposalKeys.get(proposalId);
+    if (baselineKey == null) {
+      return;
+    }
+    record.baselineStore.proposalKeys.delete(proposalId);
+    if (![...record.baselineStore.proposalKeys.values()].includes(baselineKey)) {
+      record.baselineStore.externalData.delete(baselineKey);
+    }
+  }
+
+  private releaseCurrentTurnBaselines(record: AiSessionRecord): void {
+    for (const baselineKey of record.baselineStore.currentTurnKeys) {
+      if (![...record.baselineStore.proposalKeys.values()].includes(baselineKey)) {
+        record.baselineStore.externalData.delete(baselineKey);
+      }
+    }
+    record.baselineStore.currentTurnKeys.clear();
   }
 
   private currentAiStatus(): IpcAiStatus {
@@ -3961,90 +4046,586 @@ export class TaskHubApplication {
     }
   }
 
+  private publishAiDelta(event: IpcCodexDelta): void {
+    for (const listener of this.aiDeltaListeners) {
+      try {
+        listener(event);
+      } catch (error: unknown) {
+        this.recordDiagnostic("ipc.error", "error");
+        this.options.diagnostic(error, "ai_delta_listener");
+      }
+    }
+  }
+
+  private createAiSessionLifecycle(): {
+    readonly controller: AbortController;
+    readonly remove: () => void;
+  } {
+    const controller = new AbortController();
+    const abort = (): void => {
+      controller.abort();
+    };
+    this.options.lifecycle_signal.addEventListener("abort", abort, { once: true });
+    if (this.options.lifecycle_signal.aborted) {
+      abort();
+    }
+    return {
+      controller,
+      remove: (): void => {
+        this.options.lifecycle_signal.removeEventListener("abort", abort);
+      },
+    };
+  }
+
+  private linkAbortSignal(
+    source: AbortSignal,
+    target: AbortController,
+  ): () => void {
+    const abort = (): void => {
+      target.abort();
+    };
+    source.addEventListener("abort", abort, { once: true });
+    if (source.aborted) {
+      abort();
+    }
+    return (): void => {
+      source.removeEventListener("abort", abort);
+    };
+  }
+
+  private createAiSessionWorkspace(sessionId: string): CodexWorkspaceInitializationResult {
+    const workspaceUserDataPath = createCodexSessionWorkspaceUserDataPath(
+      this.aiSessionWorkspaceParentPath,
+      sessionId,
+    );
+    return initializeCodexWorkspace({ userDataPath: workspaceUserDataPath });
+  }
+
+  private async prepareAiSessionExternalTools(
+    workspace: CodexWorkspaceInitializationResult,
+    signal: AbortSignal,
+  ): Promise<AiSessionExternalToolResources> {
+    const collector = new ExternalToolStatusEvidenceCollector();
+    if (this.externalToolLifecycle.kind !== "ready") {
+      return { broker: undefined, collector, endpoint: undefined };
+    }
+    const registry = this.externalToolRegistry;
+    if (registry == null) {
+      throw new Error("外部ツールレジストリが設定されていません。");
+    }
+    const broker = this.createExternalToolBroker(
+      registry,
+      workspace.tmpDirectoryPath,
+      collector,
+    );
+    try {
+      const startResult = await broker.start(signal);
+      if (startResult.kind !== "ready") {
+        throw new Error("AIセッションの外部ツールブローカーを起動できませんでした。");
+      }
+      const installation = installContextctlClientScript({
+        workspacePath: workspace.workspacePath,
+        connectionInfoPath: startResult.connection_info_path,
+        toolDefinitions: [...registry.list()],
+      });
+      if (installation.kind !== "ready") {
+        throw new Error("AIセッションの外部ツール連携を有効化できませんでした。");
+      }
+      return {
+        broker,
+        collector,
+        endpoint: startResult.endpoint,
+      };
+    } catch (error: unknown) {
+      try {
+        await broker.stop();
+      } catch (cleanupError: unknown) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "AIセッションの外部ツール起動後処理に失敗しました。",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  private createAiSessionService(
+    workspace: CodexWorkspaceInitializationResult,
+    externalToolEndpoint: string | undefined,
+  ): CodexSessionService {
+    return new CodexSessionService({
+      workspacePath: workspace.workspacePath,
+      agentsFilePath: workspace.agentsFilePath,
+      tmpDirectoryPath: workspace.tmpDirectoryPath,
+      expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
+      readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
+      additionalUnixSocketPaths: externalToolEndpoint == null
+        ? []
+        : [externalToolEndpoint],
+      connectionFactory: this.codexConnectionFactory,
+      snapshotProvider: () => this.createTaskctlSnapshot(),
+      syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
+    });
+  }
+
+  private createAiWorkflow(
+    session: CodexSessionService,
+    externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector,
+    baselineStore: AiSessionBaselineStore,
+  ): AiWorkflowService {
+    const applicationCoordinator = this.requireApplicationCoordinator();
+    return new AiWorkflowService({
+      session,
+      snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
+      taskctlSnapshotProvider: () => this.createTaskctlSnapshot(),
+      externalStatusEvidenceCollector,
+      applicationCoordinator: {
+        apply: async (input, signal) => {
+          if (this.aiApplicationState !== "idle") {
+            throw new Error("AI変更案を同時に適用できません。");
+          }
+          this.aiApplicationState = "applying";
+          let result: AsanaProposalApplicationResult;
+          try {
+            result = await applicationCoordinator.apply(input, signal);
+          } finally {
+            this.aiApplicationState = "idle";
+          }
+          this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
+          this.diagnostics.record({
+            code: "proposal.application",
+            severity: "info",
+            proposal_id: result.proposal_id,
+          });
+          return result;
+        },
+      },
+      prepareApprovalInput: (input, signal) =>
+        this.prepareApprovalInput(input, signal, baselineStore),
+      isOnline: () => this.isOnline(),
+    });
+  }
+
+  private requireAiSession(sessionId: string): AiSessionRecord {
+    const parsedSessionId = identifierSchema.parse(sessionId);
+    const record = this.aiSessions.get(parsedSessionId);
+    if (record == null || record.closing) {
+      throw new Error("指定されたAIセッションは終了しています。");
+    }
+    return record;
+  }
+
+  private runAiSessionOperation<T>(
+    record: AiSessionRecord,
+    signal: AbortSignal,
+    operation: (operationSignal: AbortSignal) => T | PromiseLike<T>,
+  ): Promise<T> {
+    validateAbortSignal(signal);
+    if (record.closing) {
+      throw new Error("AIセッションは終了処理中です。");
+    }
+    const controller = new AbortController();
+    const removeRequestAbort = this.linkAbortSignal(signal, controller);
+    const removeSessionAbort = this.linkAbortSignal(
+      record.lifecycleController.signal,
+      controller,
+    );
+    const completion = Promise.resolve().then(() => operation(controller.signal));
+    record.operations.set(controller, completion);
+    return completion.finally(() => {
+      removeRequestAbort();
+      removeSessionAbort();
+      record.operations.delete(controller);
+    });
+  }
+
+  private async closeAiSessionRecord(
+    record: AiSessionRecord,
+    reason: "explicit" | "application_stop",
+  ): Promise<void> {
+    if (record.closePromise != null) {
+      return record.closePromise;
+    }
+    if (reason === "explicit" && record.approvalInFlight) {
+      throw new Error("承認適用中のAIセッションは終了できません。");
+    }
+    record.closing = true;
+    record.lifecycleController.abort();
+    for (const controller of record.operations.keys()) {
+      controller.abort();
+    }
+    const closePromise = (async (): Promise<void> => {
+      const stopPromises: Promise<void>[] = [record.session.stop()];
+      if (record.externalToolBroker != null) {
+        stopPromises.push(record.externalToolBroker.stop());
+      }
+      const stopResultsPromise = Promise.all(
+        stopPromises.map((promise) => settleAiSessionPromise(promise)),
+      );
+      const operationResultsPromise = Promise.all(
+        [...record.operations.entries()].map(async ([controller, promise]) => ({
+          controller,
+          result: await settleAiSessionPromise(promise),
+        })),
+      );
+      const operationResults = await operationResultsPromise;
+      const stopResults = await stopResultsPromise;
+      const errors: unknown[] = [
+        ...operationResults
+          .filter(({ controller, result }) =>
+            result.kind === "rejected"
+            && !isAiSessionAbortError(result.error)
+            && !controller.signal.aborted)
+          .map(({ result }) => {
+            if (result.kind !== "rejected") {
+              throw new Error("AIセッション操作の終了結果が不正です。");
+            }
+            return result.error;
+          }),
+        ...stopResults
+          .filter((result) => result.kind === "rejected")
+          .map((result) => result.error),
+      ];
+      try {
+        record.workflow.dispose();
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+      record.removeDeltaListener();
+      record.removeLifecycleListener();
+      for (const proposalId of record.proposalIds) {
+        this.forgetProposal(record, proposalId);
+      }
+      record.baselineStore.currentTurnKeys.clear();
+      record.baselineStore.proposalKeys.clear();
+      record.baselineStore.externalData.clear();
+      if (this.aiSessions.get(record.sessionId) === record) {
+        this.aiSessions.delete(record.sessionId);
+      }
+      try {
+        removeCodexSessionWorkspace(
+          record.workspace.userDataPath,
+          this.aiSessionWorkspaceParentPath,
+        );
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "AIセッションの終了に失敗しました。");
+      }
+    })();
+    record.closePromise = closePromise;
+    return closePromise;
+  }
+
+  private async closeAiSessionStart(
+    start: AiSessionStartRecord,
+  ): Promise<void> {
+    const stopPromises: Promise<void>[] = [];
+    if (start.session != null) {
+      stopPromises.push(start.session.stop());
+    }
+    if (start.externalToolBroker != null) {
+      stopPromises.push(start.externalToolBroker.stop());
+    }
+    const stopResults = await Promise.all(
+      stopPromises.map((promise) => settleAiSessionPromise(promise)),
+    );
+    const errors = stopResults
+      .filter((result) => result.kind === "rejected")
+      .map((result) => result.error);
+    try {
+      removeCodexSessionWorkspace(
+        start.workspace?.userDataPath ?? start.workspaceUserDataPath,
+        this.aiSessionWorkspaceParentPath,
+      );
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "AIセッションの開始後処理に失敗しました。");
+    }
+  }
+
+  private async closeAllAiSessions(errors: unknown[]): Promise<void> {
+    const starts = [...this.aiSessionStarts.values()];
+    for (const start of starts) {
+      start.lifecycleController.abort();
+    }
+    const startResults = await Promise.all(
+      starts.map(async (start) => ({
+        start,
+        result: await settleAiSessionPromise(start.completion),
+      })),
+    );
+    for (const { start, result } of startResults) {
+      if (
+        result.kind === "rejected"
+        && !isAiSessionAbortError(result.error)
+        && !start.lifecycleController.signal.aborted
+      ) {
+        errors.push(result.error);
+      }
+    }
+    const records = [...this.aiSessions.values()];
+    await Promise.all(records.map(async (record) => {
+      try {
+        await this.closeAiSessionRecord(record, "application_stop");
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+    }));
+  }
+
+  private async runAiSessionStart(
+    start: AiSessionStartRecord,
+    signal: AbortSignal,
+  ): Promise<AiSessionStartResult> {
+    const removeRequestAbort = this.linkAbortSignal(
+      signal,
+      start.lifecycleController,
+    );
+    let lifecycleTransferred = false;
+    try {
+      start.workspace = this.createAiSessionWorkspace(start.sessionId);
+      const externalToolResources = await this.prepareAiSessionExternalTools(
+        start.workspace,
+        start.lifecycleController.signal,
+      );
+      start.externalToolBroker = externalToolResources.broker;
+      start.session = this.createAiSessionService(
+        start.workspace,
+        externalToolResources.endpoint,
+      );
+      const startResult = await start.session.start(start.lifecycleController.signal);
+      if (startResult.state === "authentication_required") {
+        this.aiStartResult = startResult;
+        this.codexAuthenticationRequired = true;
+        this.publishAiStatus();
+        await this.closeAiSessionStart(start);
+        return { kind: "authentication_required" };
+      }
+      if (this.stopped || start.lifecycleController.signal.aborted) {
+        throw new CodexSessionAbortedError();
+      }
+      const baselineStore: AiSessionBaselineStore = {
+        externalData: new Map(),
+        proposalKeys: new Map(),
+        currentTurnKeys: new Set(),
+      };
+      const workflow = this.createAiWorkflow(
+        start.session,
+        externalToolResources.collector,
+        baselineStore,
+      );
+      const removeDeltaListener = workflow.onDelta((delta) => {
+        this.publishAiDelta(ipcAiDeltaEventSchema.parse({
+          session_id: start.sessionId,
+          thread_id: delta.threadId,
+          turn_id: delta.turnId,
+          item_id: delta.itemId,
+          delta: delta.delta,
+        }));
+      });
+      const record: AiSessionRecord = {
+        sessionId: start.sessionId,
+        workspace: start.workspace,
+        session: start.session,
+        externalToolBroker: start.externalToolBroker,
+        workflow,
+        baselineStore,
+        lifecycleController: start.lifecycleController,
+        removeLifecycleListener: start.removeLifecycleListener,
+        removeDeltaListener,
+        operations: new Map(),
+        proposalIds: new Set(),
+        closing: false,
+        turnInFlight: false,
+        approvalInFlight: false,
+        closePromise: undefined,
+      };
+      if (this.stopped || start.lifecycleController.signal.aborted) {
+        removeDeltaListener();
+        workflow.dispose();
+        throw new CodexSessionAbortedError();
+      }
+      this.aiSessions.set(start.sessionId, record);
+      lifecycleTransferred = true;
+      return { kind: "started", session_id: start.sessionId };
+    } catch (error: unknown) {
+      try {
+        await this.closeAiSessionStart(start);
+      } catch (cleanupError: unknown) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "AIセッションの開始と後処理に失敗しました。",
+          { cause: error },
+        );
+      }
+      throw error;
+    } finally {
+      removeRequestAbort();
+      if (!lifecycleTransferred) {
+        start.removeLifecycleListener();
+      }
+      this.aiSessionStarts.delete(start.sessionId);
+    }
+  }
+
+  private startAiSession(signal: AbortSignal): Promise<{
+    readonly kind: "started";
+    readonly session_id: string;
+  } | { readonly kind: "authentication_required" }> {
+    if (this.stopped) {
+      throw new Error("アプリケーションは停止済みです。");
+    }
+    this.assertOperationalReady();
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const sessionId = identifierSchema.parse(randomUUID());
+    const lifecycle = this.createAiSessionLifecycle();
+    const start: AiSessionStartRecord = {
+      sessionId,
+      workspaceUserDataPath: join(
+        this.aiSessionWorkspaceParentPath,
+        `ai-session-${sessionId}`,
+      ),
+      lifecycleController: lifecycle.controller,
+      removeLifecycleListener: lifecycle.remove,
+      workspace: undefined,
+      session: undefined,
+      externalToolBroker: undefined,
+      completion: Promise.resolve().then<AiSessionStartResult>(() =>
+        this.runAiSessionStart(start, signal)),
+    };
+    this.aiSessionStarts.set(sessionId, start);
+    return start.completion;
+  }
+
   private createAiPort(): IpcAiPort {
     return {
       getStatus: () => {
         this.assertOperationalReady();
         return this.currentAiStatus();
       },
-      startNewSession: async (signal) => {
-        this.assertOperationalReady();
-        const startResult = await this.codexSession.startNewSession(signal);
-        this.aiStartResult = startResult;
-        switch (startResult.state) {
-          case "ready":
-            this.codexAuthenticationRequired = false;
-            this.publishAiStatus();
-            return { kind: "started" };
-          case "authentication_required":
-            this.codexAuthenticationRequired = true;
-            this.publishAiStatus();
-            return { kind: "authentication_required" };
-          default:
-            throw new Error("新しいCodexセッションの起動結果が不正です。");
-        }
-      },
+      startNewSession: (signal) => this.startAiSession(signal),
       startTurn: async (input: IpcAiTurnInput, signal): Promise<IpcAiTurnResult> => {
         this.assertWritesAllowed();
-        const result = aiWorkflowTurnResultSchema.parse(
-          await this.requireAiWorkflow().startTurn(
-            aiWorkflowTurnRequestSchema.parse(input),
-            signal,
-          ),
-        );
-        if (result.kind === "proposal") {
-          this.rememberProposal(result.proposal);
+        const record = this.requireAiSession(input.session_id);
+        if (record.turnInFlight) {
+          throw new Error("同じAIセッションで複数のターンを同時に実行できません。");
         }
-        return result;
+        if (record.baselineStore.currentTurnKeys.size > 0) {
+          throw new Error("前回のAIターンの基準外部データが解放されていません。");
+        }
+        record.turnInFlight = true;
+        try {
+          const request = aiWorkflowTurnRequestSchema.parse({ message: input.message });
+          const result = aiWorkflowTurnResultSchema.parse(
+            await this.runAiSessionOperation(
+              record,
+              signal,
+              (operationSignal) => record.workflow.startTurn(request, operationSignal),
+            ),
+          );
+          if (result.kind === "proposal") {
+            this.rememberProposal(record, result.proposal);
+            let baselineKey: string | undefined;
+            for (const key of record.baselineStore.currentTurnKeys) {
+              baselineKey = key;
+            }
+            if (baselineKey == null) {
+              throw new Error("AI変更案に対応する基準外部データがありません。");
+            }
+            record.baselineStore.proposalKeys.set(
+              result.proposal.proposal_id,
+              baselineKey,
+            );
+          }
+          return result;
+        } finally {
+          this.releaseCurrentTurnBaselines(record);
+          record.turnInFlight = false;
+        }
       },
-      getProposal: (proposalId) => {
+      getProposal: (input: IpcAiProposalInput) => {
         this.assertOperationalReady();
+        const record = this.requireAiSession(input.session_id);
         return aiWorkflowProposalViewSchema.parse(
-          this.requireAiWorkflow().getProposal(identifierSchema.parse(proposalId)),
+          record.workflow.getProposal(identifierSchema.parse(input.proposal_id)),
         );
       },
       select: (input: IpcAiSelectionInput) => {
         this.assertOperationalReady();
+        const record = this.requireAiSession(input.session_id);
         return aiWorkflowProposalViewSchema.parse(
-          this.requireAiWorkflow().select(aiWorkflowSelectionRequestSchema.parse(input)),
+          record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
+            proposal_id: input.proposal_id,
+            selection: input.selection,
+          })),
         );
       },
       editOperation: (input: IpcAiEditInput) => {
         this.assertOperationalReady();
+        const record = this.requireAiSession(input.session_id);
         return aiWorkflowProposalViewSchema.parse(
-          this.requireAiWorkflow().editOperation(aiWorkflowOperationEditSchema.parse(input)),
+          record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
+            proposal_id: input.proposal_id,
+            operation_id: input.operation_id,
+            after: input.after,
+            evidence_locator: input.evidence_locator,
+          })),
         );
       },
-      rejectProposal: (proposalId) => {
+      reject: (input: IpcAiRejectInput) => {
         this.assertOperationalReady();
-        const validatedProposalId = identifierSchema.parse(proposalId);
-        this.requireAiWorkflow().rejectProposal(validatedProposalId);
-        this.forgetProposal(validatedProposalId);
+        const record = this.requireAiSession(input.session_id);
+        const validatedProposalId = identifierSchema.parse(input.proposal_id);
+        record.workflow.rejectProposal(validatedProposalId);
+        this.forgetProposal(record, validatedProposalId);
       },
       approve: async (
         input: IpcAiApprovalInput,
         signal,
       ): Promise<IpcAiApprovalResult> => {
         this.assertWritesAllowed();
-        const result = aiWorkflowApprovalResultSchema.parse(
-          await this.requireAiWorkflow().approve(input, signal),
-        );
-        this.forgetProposal(result.proposal_id);
-        return result;
+        const record = this.requireAiSession(input.session_id);
+        if (record.approvalInFlight) {
+          throw new Error("同じAIセッションで承認を同時に実行できません。");
+        }
+        const request = aiWorkflowApprovalRequestSchema.parse({
+          proposal_id: input.proposal_id,
+          selection: input.selection,
+        });
+        record.approvalInFlight = true;
+        try {
+          const result = aiWorkflowApprovalResultSchema.parse(
+            await this.runAiSessionOperation(
+              record,
+              signal,
+              (operationSignal) => record.workflow.approve(request, operationSignal),
+            ),
+          );
+          this.forgetProposal(record, result.proposal_id);
+          return result;
+        } finally {
+          record.approvalInFlight = false;
+        }
+      },
+      closeSession: async (sessionId) => {
+        const record = this.requireAiSession(sessionId);
+        await this.closeAiSessionRecord(record, "explicit");
+        return { completed: true };
       },
       onDelta: (listener) => {
         if (typeof listener !== "function") {
           throw new TypeError("AI差分の購読関数が必要です。");
         }
-        return this.codexSession.onDelta((delta) => {
-          const event: IpcCodexDelta = ipcAiDeltaEventSchema.parse({
-            thread_id: delta.threadId,
-            turn_id: delta.turnId,
-            item_id: delta.itemId,
-            delta: delta.delta,
-          });
-          listener(event);
-        });
+        this.aiDeltaListeners.add(listener);
+        return (): void => {
+          this.aiDeltaListeners.delete(listener);
+        };
       },
       onStatus: (listener) => {
         if (typeof listener !== "function") {
