@@ -38,6 +38,10 @@ import {
   type AsanaSyncRuntimeState,
 } from "../asana/runtime";
 import {
+  AsanaOperationInvalidatedError,
+  AsanaOperationQueue,
+} from "../asana/operation-queue";
+import {
   createAsanaDisplayOrderService,
   asanaDisplayOrderInputSchema,
   type AsanaDisplayOrderInput,
@@ -99,13 +103,13 @@ import {
   AsanaProposalOperationWriter,
   asanaPostWriteSynchronizationResultSchema,
   type AsanaProposalApplicationInput,
-  type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
   type PostWriteSynchronizationFailureCode,
   type PostWriteSynchronizationResult,
 } from "../ai/proposal-application";
 import {
   AsanaGuiEditService,
+  hashGuiEditBaseline,
   type AsanaGuiEditInput,
   type AsanaGuiEditRelationGraphValidationRequest,
   type AsanaGuiEditRelationGraphValidationResult,
@@ -261,6 +265,7 @@ type AiSessionBaselineStore = {
   readonly externalData: Map<string, BaselineExternalData>;
   readonly proposalKeys: Map<string, string>;
   readonly currentTurnKeys: Set<string>;
+  taskctlSnapshot: TaskctlSnapshot | undefined;
 };
 
 type AiSessionRecord = {
@@ -995,6 +1000,7 @@ export class TaskHubApplication {
   private readonly secretStorage: SecretStorage;
   private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
+  private readonly operationQueue: AsanaOperationQueue;
   private readonly tokenProvider: MutableTokenProviderPort;
   private readonly transport: AsanaTransport;
   private readonly readClient: AsanaReadClient;
@@ -1063,6 +1069,7 @@ export class TaskHubApplication {
   public constructor(options: ApplicationOptions) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
+    this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(options.database_path);
     this.diagnostics = new DiagnosticLogService(
       this.database,
@@ -1300,6 +1307,7 @@ export class TaskHubApplication {
     await this.closeAllAiSessions(errors);
     await this.stopAsyncService(this.displayOrder, errors);
     await this.stopAsyncService(this.runtime, errors);
+    await this.stopAsyncService(this.operationQueue, errors);
     await this.stopAsyncService(this.codexSession, errors);
     await this.stopAsyncService(this.externalToolBrokerForStop(), errors);
     this.externalToolLifecycle = { kind: "stopped" };
@@ -1448,21 +1456,31 @@ export class TaskHubApplication {
       kind: "completing",
       authorizationId: validatedInput.authorization_id,
     };
+    this.operationQueue.invalidatePendingMutations("context_changed");
     try {
-      const rawAuthentication = await this.oauth.completeOutOfBandAuthorization(
-        validatedInput,
+      await this.operationQueue.enqueue({
+        priority: "user",
+        kind: "context_change",
         signal,
-      );
-      this.asanaReauthenticationOperation = {
-        kind: "synchronizing",
-        authorizationId: validatedInput.authorization_id,
-      };
-      const authentication = asanaOAuthCoordinatorResultSchema.parse(rawAuthentication);
-      if (authentication.client_id !== settings.client_id) {
-        throw new Error("Asana OAuth再認証結果のClient IDが一致しません。");
-      }
-      throwIfAborted(signal);
-      this.configureAsanaFromSettings(settings);
+        run: async (context) => {
+          const rawAuthentication = await this.oauth.completeOutOfBandAuthorization(
+            validatedInput,
+            context.signal,
+          );
+          const authentication = asanaOAuthCoordinatorResultSchema.parse(
+            rawAuthentication,
+          );
+          if (authentication.client_id !== settings.client_id) {
+            throw new Error("Asana OAuth再認証結果のClient IDが一致しません。");
+          }
+          throwIfAborted(context.signal);
+          this.configureAsanaFromSettings(settings);
+          this.asanaReauthenticationOperation = {
+            kind: "synchronizing",
+            authorizationId: validatedInput.authorization_id,
+          };
+        },
+      });
       const synchronized = await this.requireSynchronizedResult(
         this.requireRuntime().onOnline(signal),
       );
@@ -1632,6 +1650,7 @@ export class TaskHubApplication {
       (signal) => this.beforeAsanaSynchronization(signal),
       (error) => this.notifyUnexpectedError(error, "sync"),
       () => createNowIso(this.options.now_provider),
+      this.operationQueue,
     );
     const removeRuntimeSubscription = runtime.subscribe((runtimeState) => {
       this.handleRuntimeState(runtimeState);
@@ -1640,6 +1659,7 @@ export class TaskHubApplication {
       this.transport,
       (error) => this.notifyUnexpectedError(error, "display_order"),
       this.options.lifecycle_signal,
+      this.operationQueue,
     );
     const writer = new AsanaProposalOperationWriter(
       this.interactiveReadClient,
@@ -2744,16 +2764,21 @@ export class TaskHubApplication {
     this.configureContextFromState(this.setup.getState());
     this.recordDiagnostic("sync.started", "info");
     try {
-      const result = await this.syncCoordinator.coordinate(
-        {
-          mode: "full",
-          project_gid: validatedInput.project_gid,
-          section_gids: validatedInput.section_gids,
-          device_id: validatedInput.device_id,
-          app_version: this.options.app_version,
-        },
+      const result = await this.operationQueue.enqueue({
+        priority: "user",
+        kind: "synchronization",
         signal,
-      );
+        run: (context) => this.syncCoordinator.coordinate(
+          {
+            mode: "full",
+            project_gid: validatedInput.project_gid,
+            section_gids: validatedInput.section_gids,
+            device_id: validatedInput.device_id,
+            app_version: this.options.app_version,
+          },
+          context.signal,
+        ),
+      });
       if (result.performed_mode !== "full") {
         throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
       }
@@ -3040,13 +3065,22 @@ export class TaskHubApplication {
   private async recoverApplicationJournal(signal: AbortSignal): Promise<void> {
     validateAbortSignal(signal);
     throwIfAborted(signal);
+    if (this.operationQueue.hasOwner(signal)) {
+      await this.performApplicationJournalRecovery(signal);
+      return;
+    }
     const runningRecovery = this.journalRecoveryPromise;
     if (runningRecovery != null) {
       await runningRecovery;
       throwIfAborted(signal);
       return;
     }
-    const recovery = this.performApplicationJournalRecovery(signal);
+    const recovery = this.operationQueue.enqueue({
+      priority: "user",
+      kind: "journal_recovery",
+      signal,
+      run: (context) => this.performApplicationJournalRecovery(context.signal),
+    });
     this.journalRecoveryPromise = recovery;
     try {
       await recovery;
@@ -3328,18 +3362,23 @@ export class TaskHubApplication {
     if (displayOrder == null) {
       return;
     }
-    let input: AsanaDisplayOrderInput;
-    try {
-      input = await this.createDisplayOrderInput(signal);
-    } catch (error: unknown) {
-      if (signal.aborted) {
-        signal.throwIfAborted();
+    const expectedContext = this.requireContext();
+    void displayOrder.requestLatest(
+      async (operationSignal) => {
+        this.assertQueuedMutationReady();
+        this.assertContextUnchanged(expectedContext);
+        const input = await this.createDisplayOrderInput(operationSignal);
+        this.assertContextUnchanged(expectedContext);
+        return input;
+      },
+      signal,
+    ).catch((error: unknown) => {
+      if (
+        !(error instanceof AsanaRequestAbortedError)
+        && !(error instanceof AsanaOperationInvalidatedError)
+      ) {
+        this.notifyUnexpectedError(error, "display_order");
       }
-      this.notifyUnexpectedError(error, "display_order");
-      return;
-    }
-    void displayOrder.request(input, signal).catch((error: unknown) => {
-      this.notifyUnexpectedError(error, "display_order");
     });
   }
 
@@ -3412,6 +3451,30 @@ export class TaskHubApplication {
   private createAiSnapshot(
     signal: AbortSignal,
     baselineStore: AiSessionBaselineStore,
+  ): Promise<AiWorkflowSnapshot> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const expectedContext = this.requireContext();
+    if (this.operationQueue.hasOwner(signal)) {
+      return this.operationQueue.runOwned(signal, (context) =>
+        this.createAiSnapshotOwned(context.signal, baselineStore),
+      );
+    }
+    return this.operationQueue.enqueue({
+      priority: "user",
+      kind: "ai_snapshot",
+      signal,
+      beforeStart: () => {
+        this.assertQueuedMutationReady();
+        this.assertContextUnchanged(expectedContext);
+      },
+      run: (context) => this.createAiSnapshotOwned(context.signal, baselineStore),
+    });
+  }
+
+  private createAiSnapshotOwned(
+    signal: AbortSignal,
+    baselineStore: AiSessionBaselineStore,
   ): AiWorkflowSnapshot {
     validateAbortSignal(signal);
     throwIfAborted(signal);
@@ -3447,6 +3510,9 @@ export class TaskHubApplication {
       tasks,
       areas: [...areas].sort(compareStrings),
     });
+    const taskctlSnapshot = this.createTaskctlSnapshot();
+    throwIfAborted(signal);
+    baselineStore.taskctlSnapshot = taskctlSnapshot;
     const baselineExternalData: BaselineExternalData = entries
       .filter((entry) => externalDataIsValid(entry.asana_response))
       .map((entry) => {
@@ -3466,6 +3532,19 @@ export class TaskHubApplication {
       baselineExternalData,
     );
     baselineStore.currentTurnKeys.add(baselineKey);
+    return snapshot;
+  }
+
+  private requireAiTaskctlSnapshot(
+    signal: AbortSignal,
+    baselineStore: AiSessionBaselineStore,
+  ): TaskctlSnapshot {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const snapshot = baselineStore.taskctlSnapshot;
+    if (snapshot == null) {
+      throw new Error("AIターンのtaskctl基準スナップショットがありません。");
+    }
     return snapshot;
   }
 
@@ -3706,19 +3785,59 @@ export class TaskHubApplication {
     }
   }
 
-  private assertAsanaReauthenticationIdle(): void {
-    if (this.asanaReauthenticationOperation.kind !== "idle") {
-      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
+  private assertQueuedMutationReady(): void {
+    this.assertWritesAllowed();
+    if (!this.isOnline()) {
+      throw new Error("オフライン中はAsana変更操作を開始できません。");
     }
   }
 
-  private assertExpectedSyncAt(expectedSyncAt: string): void {
-    const expected = isoDateTimeSchema.parse(expectedSyncAt);
-    const current = this.database.getSyncState(
-      this.requireContext().project_gid,
-    )?.last_successful_sync_at;
-    if (current == null || current !== expected) {
-      throw new Error("GUI編集の同期基準が最新状態と一致しません。");
+  private assertMutationRequestAccepted(): void {
+    this.assertOperationalReady();
+    this.assertAsanaReauthenticationIdle();
+    if (!this.isOnline()) {
+      throw new Error("オフライン中はAsana変更操作を受け付けられません。");
+    }
+    const synchronizationState = this.requireRuntime().getState();
+    if (synchronizationState.kind !== "syncing") {
+      if (synchronizationState.last_successful_sync_at == null) {
+        throw new Error("初回同期が完了するまで変更操作を受け付けられません。");
+      }
+      this.assertWritesAllowed();
+      return;
+    }
+    if (synchronizationState.last_successful_sync_at == null) {
+      throw new Error("初回同期が完了するまで変更操作を受け付けられません。");
+    }
+    if (synchronizationState.last_error_code != null) {
+      throw new Error("Asana同期エラーを解消するまで変更操作を受け付けられません。");
+    }
+    if (
+      this.journalRecoveryPending
+      || this.database.getIncompleteApplicationJournals().length > 0
+    ) {
+      throw new Error("未完了のAI適用ジャーナルを復旧するまで変更操作を受け付けられません。");
+    }
+    const blocked = this.database.getCleanupItems()?.some(
+      (item) => item.kind === "oauth_app_mismatch" && item.task_gid == null,
+    ) ?? false;
+    if (blocked) {
+      throw new Error(
+        "同一のAsana OAuthアプリ設定を確認するまで変更操作を受け付けられません。",
+      );
+    }
+  }
+
+  private assertContextUnchanged(expected: OperationalContext): void {
+    const current = this.requireContext();
+    if (canonicalizeJson(current) !== canonicalizeJson(expected)) {
+      throw new AsanaOperationInvalidatedError("context_changed");
+    }
+  }
+
+  private assertAsanaReauthenticationIdle(): void {
+    if (this.asanaReauthenticationOperation.kind !== "idle") {
+      throw new AsanaOAuthOutOfBandAuthenticationInProgressError();
     }
   }
 
@@ -3946,29 +4065,80 @@ export class TaskHubApplication {
     return {
       apply: async (input: IpcGuiRequest, signal): Promise<IpcGuiEditResult> => {
         const request = ipcGuiEditInputSchema.parse(input);
-        this.assertWritesAllowed();
-        this.assertExpectedSyncAt(request.expected_sync_at);
+        this.assertMutationRequestAccepted();
         const context = this.requireContext();
-        const baseline = this.database.getTaskCacheEntry(request.task_gid);
-        if (baseline == null) {
-          throw new Error("GUI編集の対象タスクが同期キャッシュにありません。");
+        try {
+          const result = await this.operationQueue.enqueue({
+            priority: "user",
+            kind: "gui_edit",
+            signal,
+            beforeStart: () => {
+              this.assertQueuedMutationReady();
+              this.assertContextUnchanged(context);
+            },
+            run: (operationContext) => {
+              const baseline = this.database.getTaskCacheEntry(request.task_gid);
+              if (baseline == null) {
+                return this.createGuiRejectedResult(
+                  request.task_gid,
+                  "task_missing",
+                );
+              }
+              const baselineTask = asanaTaskResponseSchema.parse(
+                baseline.asana_response,
+              );
+              if (hashGuiEditBaseline(baselineTask) !== request.expected_task_hash) {
+                return this.createGuiRejectedResult(
+                  request.task_gid,
+                  "baseline_changed",
+                );
+              }
+              const guiInput: AsanaGuiEditInput = {
+                task_gid: request.task_gid,
+                project_gid: context.project_gid,
+                workspace_gid: context.workspace_gid,
+                section_gids: context.section_gids,
+                device_id: context.device_id,
+                created_via: "gui",
+                activity_date: todayJst(this.options.now_provider),
+                baseline_task: baselineTask,
+                operation: request.operation,
+              };
+              return this.requireGuiEdit().apply(
+                guiInput,
+                operationContext.signal,
+              );
+            },
+          });
+          return ipcGuiEditResultSchema.parse(result);
+        } catch (error: unknown) {
+          if (error instanceof AsanaOperationInvalidatedError) {
+            return this.createGuiRejectedResult(
+              request.task_gid,
+              error.reason,
+            );
+          }
+          throw error;
         }
-        const guiInput: AsanaGuiEditInput = {
-          task_gid: request.task_gid,
-          project_gid: context.project_gid,
-          workspace_gid: context.workspace_gid,
-          section_gids: context.section_gids,
-          device_id: context.device_id,
-          created_via: "gui",
-          activity_date: todayJst(this.options.now_provider),
-          baseline_task: asanaTaskResponseSchema.parse(baseline.asana_response),
-          operation: request.operation,
-        };
-        return ipcGuiEditResultSchema.parse(
-          await this.requireGuiEdit().apply(guiInput, signal),
-        );
       },
     };
+  }
+
+  private createGuiRejectedResult(
+    taskGid: string,
+    reasonCode:
+      | "offline"
+      | "baseline_changed"
+      | "task_missing"
+      | "synchronization_failed"
+      | "context_changed",
+  ): IpcGuiEditResult {
+    return ipcGuiEditResultSchema.parse({
+      operation_id: randomUUID(),
+      task_gid: taskGid,
+      outcome: "rejected",
+      reason_code: reasonCode,
+    });
   }
 
   private rememberProposal(record: AiSessionRecord, view: IpcAiProposalView): void {
@@ -4006,6 +4176,7 @@ export class TaskHubApplication {
       }
     }
     record.baselineStore.currentTurnKeys.clear();
+    record.baselineStore.taskctlSnapshot = undefined;
   }
 
   private currentAiStatus(): IpcAiStatus {
@@ -4185,27 +4356,30 @@ export class TaskHubApplication {
     return new AiWorkflowService({
       session,
       snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
-      taskctlSnapshotProvider: () => this.createTaskctlSnapshot(),
+      taskctlSnapshotProvider: (signal) =>
+        this.requireAiTaskctlSnapshot(signal, baselineStore),
       externalStatusEvidenceCollector,
       applicationCoordinator: {
         apply: async (input, signal) => {
           if (this.aiApplicationState !== "idle") {
             throw new Error("AI変更案を同時に適用できません。");
           }
+          if (!this.operationQueue.hasOwner(signal)) {
+            throw new Error("AI変更適用の実行権を所有していません。");
+          }
           this.aiApplicationState = "applying";
-          let result: AsanaProposalApplicationResult;
           try {
-            result = await applicationCoordinator.apply(input, signal);
+            const result = await applicationCoordinator.apply(input, signal);
+            this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
+            this.diagnostics.record({
+              code: "proposal.application",
+              severity: "info",
+              proposal_id: result.proposal_id,
+            });
+            return result;
           } finally {
             this.aiApplicationState = "idle";
           }
-          this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
-          this.diagnostics.record({
-            code: "proposal.application",
-            severity: "info",
-            proposal_id: result.proposal_id,
-          });
-          return result;
         },
       },
       prepareApprovalInput: (input, signal) =>
@@ -4238,11 +4412,15 @@ export class TaskHubApplication {
       record.lifecycleController.signal,
       controller,
     );
+    const removeQueueOwnedSignal = this.operationQueue.hasOwner(signal)
+      ? this.operationQueue.linkOwnedSignal(controller.signal, signal)
+      : undefined;
     const completion = Promise.resolve().then(() => operation(controller.signal));
     record.operations.set(controller, completion);
     return completion.finally(() => {
       removeRequestAbort();
       removeSessionAbort();
+      removeQueueOwnedSignal?.();
       record.operations.delete(controller);
     });
   }
@@ -4307,6 +4485,7 @@ export class TaskHubApplication {
       record.baselineStore.currentTurnKeys.clear();
       record.baselineStore.proposalKeys.clear();
       record.baselineStore.externalData.clear();
+      record.baselineStore.taskctlSnapshot = undefined;
       if (this.aiSessions.get(record.sessionId) === record) {
         this.aiSessions.delete(record.sessionId);
       }
@@ -4420,6 +4599,7 @@ export class TaskHubApplication {
         externalData: new Map(),
         proposalKeys: new Map(),
         currentTurnKeys: new Set(),
+        taskctlSnapshot: undefined,
       };
       const workflow = this.createAiWorkflow(
         start.session,
@@ -4518,7 +4698,7 @@ export class TaskHubApplication {
       },
       startNewSession: (signal) => this.startAiSession(signal),
       startTurn: async (input: IpcAiTurnInput, signal): Promise<IpcAiTurnResult> => {
-        this.assertWritesAllowed();
+        this.assertMutationRequestAccepted();
         const record = this.requireAiSession(input.session_id);
         if (record.turnInFlight) {
           throw new Error("同じAIセッションで複数のターンを同時に実行できません。");
@@ -4599,7 +4779,7 @@ export class TaskHubApplication {
         input: IpcAiApprovalInput,
         signal,
       ): Promise<IpcAiApprovalResult> => {
-        this.assertWritesAllowed();
+        this.assertMutationRequestAccepted();
         const record = this.requireAiSession(input.session_id);
         if (record.approvalInFlight) {
           throw new Error("同じAIセッションで承認を同時に実行できません。");
@@ -4608,14 +4788,24 @@ export class TaskHubApplication {
           proposal_id: input.proposal_id,
           selection: input.selection,
         });
+        const approvalContext = this.requireContext();
         record.approvalInFlight = true;
         try {
           const result = aiWorkflowApprovalResultSchema.parse(
-            await this.runAiSessionOperation(
-              record,
+            await this.operationQueue.enqueue({
+              priority: "user",
+              kind: "ai_apply",
               signal,
-              (operationSignal) => record.workflow.approve(request, operationSignal),
-            ),
+              beforeStart: () => {
+                this.assertQueuedMutationReady();
+                this.assertContextUnchanged(approvalContext);
+              },
+              run: (context) => this.runAiSessionOperation(
+                record,
+                context.signal,
+                (operationSignal) => record.workflow.approve(request, operationSignal),
+              ),
+            }),
           );
           this.forgetProposal(record, result.proposal_id);
           return result;

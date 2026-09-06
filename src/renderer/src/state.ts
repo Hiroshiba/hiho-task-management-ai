@@ -10,6 +10,7 @@ import {
   isoDateTimeSchema,
   obsidianLinkSchema,
   parentWorkModeSchema,
+  snapshotHashSchema,
   taskStatusSchema,
   type Dependency,
   type Importance,
@@ -87,7 +88,12 @@ const rendererSyncErrorCodeSchema = z.enum([
 
 export const rendererSyncStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("waiting") }).strict(),
-  z.object({ kind: z.literal("syncing") }).strict(),
+  z
+    .object({
+      kind: z.literal("syncing"),
+      can_accept_write: z.boolean(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("synced"),
@@ -232,12 +238,40 @@ const rendererGuiOperationSchema = z.discriminatedUnion("kind", [
 export const rendererGuiEditSchema = z
   .object({
     task_gid: gidSchema,
+    edit_baseline_hash: snapshotHashSchema,
     operation: rendererGuiOperationSchema,
   })
   .strict();
 
 /** Rendererから発行するGUI編集要求の型です。 */
 export type RendererGuiEdit = z.infer<typeof rendererGuiEditSchema>;
+
+/** RendererでGUI編集の完了結果をタスク単位に保持する型です。 */
+export type RendererTaskEditMarker =
+  | {
+      readonly kind: "saved";
+      readonly generation: number;
+      readonly operation: RendererGuiEdit["operation"];
+      readonly detail: ViewModelTaskDetail | undefined;
+    }
+  | {
+      readonly kind: "conflict";
+      readonly generation: number;
+    }
+  | {
+      readonly kind: "missing";
+      readonly generation: number;
+    };
+
+/** RendererでGUI編集の完了結果を登録する型です。 */
+export type RendererTaskEditMarkerUpdate =
+  | {
+      readonly kind: "saved";
+      readonly operation: RendererGuiEdit["operation"];
+      readonly detail: ViewModelTaskDetail | undefined;
+    }
+  | { readonly kind: "conflict" }
+  | { readonly kind: "missing" };
 
 const rendererQuestionSchema = z
   .object({

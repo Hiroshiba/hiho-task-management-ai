@@ -10,6 +10,7 @@ import {
   isoDateTimeSchema,
   obsidianLinksSchema,
   parentWorkModeSchema,
+  snapshotHashSchema,
   taskStatusSchema,
 } from "../domain";
 import {
@@ -485,6 +486,7 @@ export const viewModelTaskDetailSchema = z
   .object({
     project_gid: gidSchema,
     gid: gidSchema,
+    edit_baseline_hash: snapshotHashSchema,
     title: boundedTitleSchema,
     notes: boundedNotesSchema,
     status: taskStatusSchema,
