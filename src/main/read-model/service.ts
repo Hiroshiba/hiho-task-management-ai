@@ -35,6 +35,7 @@ import {
   normalizeTaskGraph,
   type BlockStateResult,
 } from "../domain";
+import { hashGuiEditBaseline } from "../gui-edit";
 import type { StorageDatabase } from "../storage";
 
 const projectAreaPrefix = "TaskHub/領域/";
@@ -928,6 +929,7 @@ function createTaskDetail(
   return viewModelTaskDetailSchema.parse({
     project_gid: snapshot.projectGid,
     gid: task.gid,
+    edit_baseline_hash: hashGuiEditBaseline(entry.asana_response),
     title: task.title,
     notes: task.notes,
     status: task.status,

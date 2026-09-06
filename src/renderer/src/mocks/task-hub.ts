@@ -156,6 +156,15 @@ function advanceSyncAt(previousSyncAt: string): string {
   return new Date(previousTimestamp + 1).toISOString();
 }
 
+function advanceEditBaselineHash(previousHash: string): string {
+  const suffix = Number.parseInt(previousHash.slice(-8), 16);
+  if (!Number.isSafeInteger(suffix)) {
+    throw new Error("mockの編集基準ハッシュが不正です。");
+  }
+  const nextSuffix = ((suffix + 1) >>> 0).toString(16).padStart(8, "0");
+  return `${previousHash.slice(0, -8)}${nextSuffix}`;
+}
+
 function parseDetail(value: unknown): ViewModelTaskDetail {
   return viewModelTaskDetailSchema.parse(value);
 }
@@ -184,6 +193,7 @@ function createSampleDetail(
   return parseDetail({
     project_gid: PROJECT_GID,
     gid,
+    edit_baseline_hash: SNAPSHOT_HASH,
     title,
     notes,
     status,
@@ -678,6 +688,7 @@ export function createMockTaskHubApi(): TaskHubApi {
     last_successful_sync_at: SYNC_AT,
   });
   let nextAiSessionNumber = 1;
+  let operationQueue: Promise<void> = Promise.resolve();
   const aiSessions = new Map<string, MockAiSessionState>();
   const syncListeners = new Set<(value: IpcSyncStateEvent) => void>();
   const aiDeltaListeners = new Set<(value: IpcCodexDelta) => void>();
@@ -698,8 +709,14 @@ export function createMockTaskHubApi(): TaskHubApi {
     notify(syncListeners, syncState);
   }
 
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = operationQueue.then(operation, operation);
+    operationQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   function runSync(input: { readonly mode: "full" | "delta" }): Promise<MockResult<IpcSyncResult>> {
-    return Promise.resolve().then(() => {
+    return enqueue(() => Promise.resolve().then(() => {
       const parsedInput = ipcSyncInputSchema.parse(input);
       const previousFullSyncAt = overview.last_full_sync_at;
       if (previousFullSyncAt == null) {
@@ -718,7 +735,7 @@ export function createMockTaskHubApi(): TaskHubApi {
         last_successful_sync_at: syncedAt,
       });
       return ipcSyncResponseSchema.parse(ok(createSyncResult(parsedInput.mode, syncedAt)));
-    });
+    }));
   }
 
   const api: TaskHubApi = {
@@ -855,23 +872,30 @@ export function createMockTaskHubApi(): TaskHubApi {
       }),
     },
     gui: {
-      apply: (input: IpcGuiEditInput) => Promise.resolve().then(() => {
+      apply: (input: IpcGuiEditInput) => enqueue(() => Promise.resolve().then(() => {
         const parsedInput = ipcGuiEditInputSchema.parse(input);
+        const operationId = `mock-${parsedInput.task_gid}-${parsedInput.operation.kind}`;
         const detail = details.get(parsedInput.task_gid);
         if (detail == null) {
-          return failure("not_found", "指定したタスクがmockにありません。");
-        }
-        const operationId = `mock-${parsedInput.task_gid}-${parsedInput.operation.kind}`;
-        if (parsedInput.expected_sync_at !== overview.last_successful_sync_at) {
           return ipcGuiEditResponseSchema.parse(ok({
             operation_id: operationId,
             task_gid: parsedInput.task_gid,
-            outcome: "conflict",
-            reason_code: "baseline_changed",
-            side_effect: "none",
+            outcome: "rejected",
+            reason_code: "task_missing",
           }));
         }
-        const nextDetail = applyGuiOperation(detail, parsedInput.operation, details);
+        if (parsedInput.expected_task_hash !== detail.edit_baseline_hash) {
+          return ipcGuiEditResponseSchema.parse(ok({
+            operation_id: operationId,
+            task_gid: parsedInput.task_gid,
+            outcome: "rejected",
+            reason_code: "baseline_changed",
+          }));
+        }
+        const nextDetail = parseDetail({
+          ...applyGuiOperation(detail, parsedInput.operation, details),
+          edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
+        });
         details.set(nextDetail.gid, nextDetail);
         const currentFullSyncAt = overview.last_full_sync_at;
         if (currentFullSyncAt == null) {
@@ -888,7 +912,7 @@ export function createMockTaskHubApi(): TaskHubApi {
           outcome: "applied",
           reason_code: "applied",
         }));
-      }),
+      })),
     },
     ai: {
       getStatus: () => Promise.resolve().then(() => {
@@ -1016,7 +1040,7 @@ export function createMockTaskHubApi(): TaskHubApi {
         session.proposal = undefined;
         return ipcAiRejectResponseSchema.parse(ok({ completed: true }));
       }),
-      approve: (input: IpcAiApprovalInput) => Promise.resolve().then(() => {
+      approve: (input: IpcAiApprovalInput) => enqueue(() => Promise.resolve().then(() => {
         const parsedInput = ipcAiApprovalInputSchema.parse(input);
         const session = findMockAiSession(aiSessions, parsedInput.session_id);
         if (session == null) {
@@ -1042,7 +1066,11 @@ export function createMockTaskHubApi(): TaskHubApi {
         if (detail == null) {
           return failure("not_found", "承認対象タスクがmockにありません。");
         }
-        const nextDetail = parseDetail({ ...detail, title: operation.after });
+        const nextDetail = parseDetail({
+          ...detail,
+          title: operation.after,
+          edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
+        });
         details.set(nextDetail.gid, nextDetail);
         const currentFullSyncAt = overview.last_full_sync_at;
         if (currentFullSyncAt == null) {
@@ -1074,7 +1102,7 @@ export function createMockTaskHubApi(): TaskHubApi {
           },
         });
         return ipcAiApprovalResponseSchema.parse(ok(result));
-      }),
+      })),
       closeSession: (sessionId: string) => Promise.resolve().then(() => {
         const parsedSessionId = ipcAiCloseSessionInputSchema.parse(sessionId);
         if (!aiSessions.delete(parsedSessionId)) {

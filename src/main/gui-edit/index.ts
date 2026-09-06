@@ -18,3 +18,4 @@ export {
   type AsanaGuiEditRelationGraphValidationResult,
   type AsanaGuiEditSectionGids,
 } from "./schemas";
+export { hashGuiEditBaseline } from "./baseline";

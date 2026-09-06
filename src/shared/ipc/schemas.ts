@@ -11,6 +11,7 @@ import {
   isoDateTimeSchema,
   obsidianLinkSchema,
   parentWorkModeSchema,
+  snapshotHashSchema,
   taskStatusSchema,
   vaultIdSchema,
 } from "../domain";
@@ -178,7 +179,7 @@ const guiOperationSchema = z.discriminatedUnion("kind", [
 const guiRequestSchema = z
   .object({
     task_gid: gidSchema,
-    expected_sync_at: isoDateTimeSchema,
+    expected_task_hash: snapshotHashSchema,
     operation: guiOperationSchema,
   })
   .strict();
@@ -221,7 +222,13 @@ const guiResultSchema = z.discriminatedUnion("outcome", [
       operation_id: identifierSchema,
       task_gid: gidSchema,
       outcome: z.literal("rejected"),
-      reason_code: z.literal("offline"),
+      reason_code: z.enum([
+        "offline",
+        "baseline_changed",
+        "task_missing",
+        "synchronization_failed",
+        "context_changed",
+      ]),
     })
     .strict(),
   z
