@@ -409,29 +409,6 @@ watch(() => props.selectedSessionId, (sessionId) => {
               >
                 対象タスクを表示
               </button>
-              <section
-                v-if="selectedSession.request_history.length > 0"
-                class="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-700"
-                aria-label="送信済みの依頼"
-              >
-                <h4 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  送信済みの依頼
-                </h4>
-                <ol class="space-y-2 text-sm text-slate-700 dark:text-slate-300">
-                  <li
-                    v-for="(request, requestIndex) in selectedSession.request_history"
-                    :key="`${selectedSession.session_id}-request-${requestIndex}`"
-                    class="rounded-md bg-slate-50 p-3 dark:bg-slate-800"
-                  >
-                    <p class="text-xs text-slate-500 dark:text-slate-400">
-                      依頼{{ requestIndex + 1 }}
-                    </p>
-                    <p class="mt-1 whitespace-pre-wrap break-words">
-                      {{ request }}
-                    </p>
-                  </li>
-                </ol>
-              </section>
               <div
                 v-for="session in props.sessions"
                 v-show="session.session_id === props.selectedSessionId"
@@ -441,6 +418,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                 <AiPanel
                   :ref="(value) => registerPanel(session.session_id, value)"
                   :state="session.state"
+                  :conversation-history="session.conversation_history"
                   :tasks="props.tasks"
                   :can-write="session.can_write && session.operation === 'idle'"
                   :can-send-ai="session.can_send_ai"

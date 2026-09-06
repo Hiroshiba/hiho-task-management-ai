@@ -337,6 +337,46 @@ export const rendererAiStateSchema = z.discriminatedUnion("kind", [
 /** Rendererが表示するAI状態を表す型です。 */
 export type RendererAiState = z.infer<typeof rendererAiStateSchema>;
 
+const rendererAiConversationRequestSchema = createUtf8ByteLimitedStringSchema(64 * 1024)
+  .min(1)
+  .refine((value) => value.trim().length > 0, {
+    message: "AI依頼文を空白だけにできません。",
+  });
+
+export const rendererAiConversationEntrySchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("pending"),
+      request: rendererAiConversationRequestSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("streaming"),
+      request: rendererAiConversationRequestSchema,
+      text: createUtf8ByteLimitedStringSchema(256 * 1024),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("response"),
+      request: rendererAiConversationRequestSchema,
+      message: rendererMessageSchema,
+      questions: z.array(rendererQuestionSchema).max(8),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("failure"),
+      request: rendererAiConversationRequestSchema,
+      failure: rendererFailureSchema,
+    })
+    .strict(),
+]);
+
+/** Rendererが表示するAI会話の1ターンを表す型です。 */
+export type RendererAiConversationEntry = z.infer<typeof rendererAiConversationEntrySchema>;
+
 export type AiSessionStatus =
   | "waiting_answer"
   | "waiting_approval"
@@ -367,7 +407,7 @@ export type AiSessionView = {
   readonly state: RendererAiState;
   readonly status: AiSessionStatus;
   readonly operation: AiSessionOperation;
-  readonly request_history: readonly string[];
+  readonly conversation_history: readonly RendererAiConversationEntry[];
   readonly feedback?: AiSessionFeedback | undefined;
   readonly can_write: boolean;
   readonly can_send_ai: boolean;

@@ -22,6 +22,7 @@ import {
   importanceLabel,
   parentWorkModeLabel,
   statusLabel,
+  type RendererAiConversationEntry,
   type RendererAiState,
 } from "./state";
 import ProposalOperationEditor from "./ProposalOperationEditor.vue";
@@ -56,6 +57,7 @@ type ApplicationOutcomePresentation = {
 
 const props = defineProps<{
   state: RendererAiState;
+  conversationHistory: readonly RendererAiConversationEntry[];
   tasks: readonly TaskTitleReference[];
   canWrite: boolean;
   canSendAi: boolean;
@@ -149,20 +151,6 @@ const creations = computed((): readonly CreateTaskOperation[] => {
   return createTaskOperations(currentProposal);
 });
 
-const proposalMessage = computed(() => {
-  switch (props.state.kind) {
-    case "proposal":
-      return props.state.message;
-    case "idle":
-    case "streaming":
-    case "questions":
-    case "unavailable":
-      return props.state.pending_proposal?.message;
-    case "applied":
-      return undefined;
-  }
-});
-
 const responseQuestions = computed(() => {
   if (props.state.kind === "proposal" || props.state.kind === "questions") {
     return props.state.questions;
@@ -170,15 +158,42 @@ const responseQuestions = computed(() => {
   return [];
 });
 
-const questionResponseMessage = computed(() => {
-  if (props.state.kind === "questions") {
-    return props.state.message;
-  }
-  if (props.state.kind === "proposal" && props.state.questions.length > 0) {
-    return props.state.message;
-  }
-  return undefined;
+type AiConversationQuestions = Extract<
+  RendererAiConversationEntry,
+  { readonly kind: "response" }
+>["questions"];
+
+const hasResponseOptions = computed(() =>
+  responseQuestions.value.some((question) => question.options != null),
+);
+
+const conversationIsStreaming = computed(() => {
+  const latestEntry = props.conversationHistory.at(-1);
+  return latestEntry?.kind === "pending" || latestEntry?.kind === "streaming";
 });
+
+const unavailableFailureIsInHistory = computed(() => {
+  if (props.state.kind !== "unavailable") {
+    return false;
+  }
+  const latestEntry = props.conversationHistory.at(-1);
+  return latestEntry?.kind === "failure"
+    && latestEntry.failure.code === props.state.failure.code
+    && latestEntry.failure.message === props.state.failure.message;
+});
+
+function historyQuestions(
+  entry: RendererAiConversationEntry,
+  entryIndex: number,
+): AiConversationQuestions {
+  if (entry.kind !== "response") {
+    return [];
+  }
+  if (entryIndex === props.conversationHistory.length - 1 && responseQuestions.value.length > 0) {
+    return [];
+  }
+  return entry.questions;
+}
 
 const panelTitle = computed(() => {
   switch (props.state.kind) {
@@ -909,88 +924,116 @@ function applicationReasonLabel(reason: string): string {
     </div>
 
     <div class="space-y-5 p-5">
-      <p
-        v-if="localError.length > 0"
-        class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
-        role="alert"
+      <section
+        v-if="props.conversationHistory.length > 0"
+        class="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-700"
+        :aria-live="conversationIsStreaming ? 'polite' : undefined"
+        :aria-busy="conversationIsStreaming ? 'true' : undefined"
+        aria-label="AI会話履歴"
       >
-        {{ localError }}
-      </p>
-      <div
-        v-if="props.state.kind === 'idle' || props.state.kind === 'questions' || props.state.kind === 'proposal'"
-        class="space-y-3"
-      >
-        <form
-          class="space-y-3"
-          @submit.prevent="sendMessage"
-        >
-          <label
-            class="field-label"
-            for="ai-message"
-          >質問や依頼<textarea
-            id="ai-message"
-            ref="messageInput"
-            v-model="message"
-            class="text-input min-h-24"
-            :disabled="!props.canSendAi"
-            placeholder="例: 今週着手すべきタスクを教えてください"
-          /></label><button
-            type="submit"
-            class="primary-button"
-            :disabled="!props.canSendAi"
+        <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+          会話履歴
+        </h3>
+        <ol class="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+          <li
+            v-for="(entry, entryIndex) in props.conversationHistory"
+            :key="entryIndex"
+            class="space-y-2 rounded-md bg-slate-50 p-3 dark:bg-slate-800"
           >
-            AIへ送信
-          </button>
-        </form>
-        <p
-          v-if="!props.canSendAi"
-          class="text-sm text-amber-800 dark:text-amber-200"
-          role="status"
-          aria-live="polite"
-        >
-          {{ props.aiSendDisabledReason }}
-        </p>
-        <p
-          v-if="proposal != null"
-          class="text-xs text-slate-600 dark:text-slate-400"
-        >
-          表示中の変更案を保持したまま追質問や再提案を依頼できます。
-        </p>
-      </div>
+            <div>
+              <p class="text-xs text-slate-500 dark:text-slate-400">
+                依頼{{ entryIndex + 1 }}
+              </p>
+              <p class="mt-1 whitespace-pre-wrap break-words">
+                {{ entry.request }}
+              </p>
+            </div>
+            <template v-if="entry.kind === 'pending'">
+              <div
+                class="flex items-center gap-3 rounded-md bg-white p-3 dark:bg-slate-900"
+                role="status"
+              >
+                <span
+                  class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600 dark:border-slate-600 dark:border-t-violet-400"
+                  aria-hidden="true"
+                /><p class="text-sm font-medium text-slate-800 dark:text-slate-100">
+                  AIが回答を準備しています
+                </p>
+              </div>
+            </template>
+            <template v-else-if="entry.kind === 'streaming'">
+              <div
+                v-if="entry.text.length === 0"
+                class="flex items-center gap-3 rounded-md bg-white p-3 dark:bg-slate-900"
+                role="status"
+              >
+                <span
+                  class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600 dark:border-slate-600 dark:border-t-violet-400"
+                  aria-hidden="true"
+                /><p class="text-sm font-medium text-slate-800 dark:text-slate-100">
+                  AIが回答を準備しています
+                </p>
+              </div>
+              <template v-else>
+                <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
+                  AIの応答
+                </p>
+                <pre
+                  class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-white p-3 text-sm leading-6 text-slate-800 dark:bg-slate-900 dark:text-slate-100"
+                >{{ entry.text }}</pre>
+              </template>
+            </template>
+            <template v-else-if="entry.kind === 'response'">
+              <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
+                AIの応答
+              </p>
+              <p class="whitespace-pre-wrap break-words">
+                {{ entry.message }}
+              </p>
+              <ul
+                v-if="historyQuestions(entry, entryIndex).length > 0"
+                class="space-y-1 rounded-md border border-slate-200 p-3 dark:border-slate-700"
+              >
+                <li
+                  v-for="question in historyQuestions(entry, entryIndex)"
+                  :key="question.question_id"
+                >
+                  <p class="font-medium text-slate-900 dark:text-slate-100">
+                    {{ question.text }}
+                  </p>
+                  <p
+                    v-if="question.options != null"
+                    class="mt-1 text-xs text-slate-600 dark:text-slate-400"
+                  >
+                    選択肢: {{ question.options.join(" / ") }}
+                  </p>
+                </li>
+              </ul>
+            </template>
+            <template v-else>
+              <p class="text-sm font-medium text-rose-800 dark:text-rose-100">
+                AIの応答に失敗しました。
+              </p>
+              <p class="whitespace-pre-wrap break-words text-rose-800 dark:text-rose-100">
+                {{ entry.failure.message }}
+              </p>
+            </template>
+          </li>
+        </ol>
+      </section>
 
       <div
-        v-if="props.state.kind === 'streaming'"
+        v-if="responseQuestions.length > 0"
         class="space-y-3"
         aria-live="polite"
-        aria-busy="true"
       >
-        <div
-          v-if="props.state.text.length === 0"
-          class="flex items-center gap-3 rounded-md bg-slate-50 p-4 dark:bg-slate-800"
-          role="status"
+        <p
+          v-if="hasResponseOptions"
+          class="text-sm font-medium text-slate-700 dark:text-slate-300"
         >
-          <span
-            class="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-violet-600 dark:border-slate-600 dark:border-t-violet-400"
-            aria-hidden="true"
-          /><p class="text-sm font-medium text-slate-800 dark:text-slate-100">
-            AIが回答を準備しています
-          </p>
-        </div>
-        <template v-else>
-          <p class="text-sm font-medium text-slate-800 dark:text-slate-100">
-            Codexの応答
-          </p><pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-4 text-sm leading-6 text-slate-800 dark:bg-slate-800 dark:text-slate-100">{{ props.state.text }}</pre>
-        </template>
-      </div>
-
-      <div
-        v-if="questionResponseMessage != null"
-        class="space-y-3"
-        aria-live="polite"
-      >
-        <p class="text-sm text-slate-700 dark:text-slate-300">
-          {{ questionResponseMessage }}
-        </p><ul class="space-y-3">
+          現在の質問への回答を選択してください。
+        </p>
+        <ul class="space-y-3">
           <li
             v-for="question in responseQuestions"
             :key="question.question_id"
@@ -998,7 +1041,8 @@ function applicationReasonLabel(reason: string): string {
           >
             <p class="font-medium text-slate-900 dark:text-slate-100">
               {{ question.text }}
-            </p><div
+            </p>
+            <div
               v-if="question.options != null"
               class="mt-2 flex flex-wrap gap-2"
             >
@@ -1019,9 +1063,7 @@ function applicationReasonLabel(reason: string): string {
 
       <template v-if="proposal != null">
         <div class="rounded-md bg-slate-50 p-4 dark:bg-slate-800">
-          <p class="text-sm font-medium text-slate-900 dark:text-slate-100">
-            {{ proposalMessage }}
-          </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
+          <p class="text-sm text-slate-700 dark:text-slate-300">
             承認するまでAsanaには反映されません。
           </p><p class="mt-1 text-xs text-slate-600 dark:text-slate-400">
             影響を受けるタスク: {{ requireProposal().impact.impacted_task_count }}件
@@ -1368,8 +1410,65 @@ function applicationReasonLabel(reason: string): string {
       >
         <p class="font-medium text-amber-900 dark:text-amber-100">
           AIは利用できません。
-        </p><p class="mt-1 text-sm text-amber-900 dark:text-amber-100">
+        </p><p
+          v-if="unavailableFailureIsInHistory"
+          class="mt-1 text-sm text-amber-900 dark:text-amber-100"
+        >
+          詳細は会話履歴を確認してください。
+        </p><p
+          v-else
+          class="mt-1 text-sm text-amber-900 dark:text-amber-100"
+        >
           {{ props.state.failure.message }}
+        </p>
+      </div>
+
+      <div
+        v-if="props.state.kind === 'idle' || props.state.kind === 'questions' || props.state.kind === 'proposal'"
+        class="space-y-3"
+      >
+        <p
+          v-if="localError.length > 0"
+          class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
+          role="alert"
+        >
+          {{ localError }}
+        </p>
+        <form
+          class="space-y-3"
+          @submit.prevent="sendMessage"
+        >
+          <label
+            class="field-label"
+            for="ai-message"
+          >質問や依頼<textarea
+            id="ai-message"
+            ref="messageInput"
+            v-model="message"
+            class="text-input min-h-24"
+            :disabled="!props.canSendAi"
+            placeholder="例: 今週着手すべきタスクを教えてください"
+          /></label><button
+            type="submit"
+            class="primary-button"
+            :disabled="!props.canSendAi"
+          >
+            AIへ送信
+          </button>
+        </form>
+        <p
+          v-if="!props.canSendAi"
+          class="text-sm text-amber-800 dark:text-amber-200"
+          role="status"
+          aria-live="polite"
+        >
+          {{ props.aiSendDisabledReason }}
+        </p>
+        <p
+          v-if="proposal != null"
+          class="text-xs text-slate-600 dark:text-slate-400"
+        >
+          表示中の変更案を保持したまま追質問や再提案を依頼できます。
         </p>
       </div>
     </div>
