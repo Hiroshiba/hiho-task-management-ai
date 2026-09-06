@@ -259,7 +259,7 @@ function handleAsanaAuthenticationAction(): void {
     class="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
     aria-label="アプリケーションヘッダー"
   >
-    <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 lg:grid-cols-[auto_minmax(0,1fr)] lg:px-6 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-4">
+    <div class="mx-auto grid max-w-[1600px] grid-cols-1 items-start gap-3 px-4 py-3 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:gap-4 lg:px-6">
       <div
         class="flex min-w-0 max-w-full flex-col px-1 py-1"
         role="group"
@@ -270,7 +270,7 @@ function handleAsanaAuthenticationAction(): void {
         </h1>
       </div>
       <div
-        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 dark:text-slate-300 xl:justify-center"
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 text-sm text-slate-700 dark:text-slate-300 lg:justify-center"
         role="group"
         aria-label="状態"
       >
@@ -299,7 +299,7 @@ function handleAsanaAuthenticationAction(): void {
         >読み取り専用</span>
       </div>
       <div
-        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-3 lg:col-span-2 xl:col-span-1 xl:justify-end"
+        class="flex min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-3 lg:justify-end"
         role="group"
         aria-label="操作"
       >
