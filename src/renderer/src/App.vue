@@ -3018,7 +3018,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 lg:flex lg:h-dvh lg:flex-col">
     <AppHeader
       :connection-state="connectionState"
       :configured="configured"
@@ -3064,7 +3064,7 @@ onUnmounted(() => {
       @cancel="cancelAiSession"
       @select-task="selectAiSessionTask"
     />
-    <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:px-6">
+    <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:flex-1 lg:min-h-0 lg:px-6">
       <p
         v-if="feedback != null"
         class="rounded-md px-4 py-3 text-sm"
@@ -3162,13 +3162,13 @@ onUnmounted(() => {
         </section>
         <section
           v-if="overview != null"
-          class="space-y-5"
+          class="space-y-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col"
           aria-label="タスク管理画面"
         >
           <details
             v-if="overview.cleanup_items.length > 0"
             :open="filter.kind === 'cleanup'"
-            class="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950"
+            class="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 lg:max-h-[30dvh] lg:overflow-y-auto"
             aria-labelledby="cleanup-title"
           >
             <summary
@@ -3198,8 +3198,9 @@ onUnmounted(() => {
               </li>
             </ul>
           </details>
-          <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)]">
+          <div class="grid items-start gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(24rem,1fr)] lg:items-stretch">
             <TaskList
+              class="lg:min-h-0 lg:overflow-y-auto"
               :rows="visibleRows"
               :selected-task-gid="selectedTaskGid"
               :as-of="currentAsOf"
@@ -3214,7 +3215,7 @@ onUnmounted(() => {
                 />
               </template>
             </TaskList>
-            <div class="min-w-0 space-y-3">
+            <div class="min-w-0 space-y-3 lg:min-h-0 lg:overflow-y-auto">
               <p
                 v-if="taskFeedback != null"
                 class="sticky top-3 rounded-md px-4 py-3 text-sm"
