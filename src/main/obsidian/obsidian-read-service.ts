@@ -20,6 +20,7 @@ import {
 import { z } from "zod";
 import {
   getUtf8ByteLength,
+  isoDateTimeSchema,
   vaultIdSchema,
 } from "../../shared/domain";
 import {
@@ -40,6 +41,7 @@ const maximumExcerptBytes = 1_024;
 const maximumHeadingCount = 1_000;
 const maximumWorkers = 5;
 const maximumReadChunkBytes = 64 * 1_024;
+const maximumRecentNoteLimit = 100;
 
 function hasControlCharacter(value: string): boolean {
   return [...value].some((character) => {
@@ -185,6 +187,24 @@ const searchResultSchema = z
 
 const searchResultArraySchema = z.array(searchResultSchema).max(maximumResultCount);
 
+const recentNoteLimitSchema = z.number().int().min(1).max(maximumRecentNoteLimit);
+
+const recentNoteSchema = z
+  .object({
+    relative_path: relativeMarkdownPathSchema,
+    title: createUtf8TextSchema(maximumOutputBytes).refine(
+      (value) => value.trim().length > 0,
+      "ノートタイトルを空にできません。",
+    ),
+    headings: z.array(createUtf8TextSchema(maximumOutputBytes)).max(maximumHeadingCount),
+    modified_at: isoDateTimeSchema,
+  })
+  .strict();
+
+const recentNoteArraySchema = z
+  .array(recentNoteSchema)
+  .max(maximumRecentNoteLimit);
+
 const obsidianErrorCodeSchema = z.enum([
   "vault_not_registered",
   "vault_unavailable",
@@ -207,6 +227,7 @@ export type ObsidianResolvedPathResult = z.infer<
 export type ObsidianNoteSummary = z.infer<typeof noteSummarySchema>;
 export type ObsidianNoteReadResult = z.infer<typeof noteReadResultSchema>;
 export type ObsidianSearchResult = z.infer<typeof searchResultSchema>;
+export type ObsidianRecentNote = z.infer<typeof recentNoteSchema>;
 export type ObsidianReadErrorCode = z.infer<typeof obsidianErrorCodeSchema>;
 
 /** Vault読み取り処理の構造化エラーを表します。 */
@@ -247,6 +268,9 @@ export const obsidianNoteReadResultSchema = noteReadResultSchema;
 
 /** Vaultノート検索結果を検証するスキーマです。 */
 export const obsidianSearchResultArraySchema = searchResultArraySchema;
+
+/** Vaultの最近更新されたノート一覧結果を検証するスキーマです。 */
+export const obsidianRecentNoteArraySchema = recentNoteArraySchema;
 
 type RegisteredVault = {
   readonly vault_id: string;
@@ -289,13 +313,27 @@ type ParsedNote = {
   readonly body: string;
 };
 
+type ParsedNoteWithStats = {
+  readonly note: ParsedNote;
+  readonly stats: BigIntStats;
+};
+
 type ReadBudget = {
   total_bytes: number;
 };
 
 type ReadAttempt =
-  | { readonly kind: "succeeded"; readonly buffer: Buffer }
+  | {
+      readonly kind: "succeeded";
+      readonly buffer: Buffer;
+      readonly stats: BigIntStats;
+    }
   | { readonly kind: "failed"; readonly error: unknown };
+
+type ReadFileResult = {
+  readonly buffer: Buffer;
+  readonly stats: BigIntStats;
+};
 
 type CloseAttempt =
   | { readonly kind: "succeeded" }
@@ -639,7 +677,7 @@ function reserveReadBytes(budget: ReadBudget, size: number): void {
 async function readFileWithLimit(
   resolvedPath: ResolvedNotePath,
   signal: AbortSignal,
-): Promise<Buffer> {
+): Promise<ReadFileResult> {
   let file: FileHandle;
   try {
     throwIfAborted(signal);
@@ -735,6 +773,7 @@ async function readFileWithLimit(
     readResult = {
       kind: "succeeded",
       buffer: Buffer.concat(chunks, totalBytes),
+      stats: afterReadStats,
     };
   } catch (error) {
     readResult = { kind: "failed", error };
@@ -762,7 +801,10 @@ async function readFileWithLimit(
   if (closeResult.kind === "failed") {
     throw closeResult.error;
   }
-  return readResult.buffer;
+  return {
+    buffer: readResult.buffer,
+    stats: readResult.stats,
+  };
 }
 
 function decodeUtf8(buffer: Buffer): string {
@@ -843,9 +885,21 @@ async function readMarkdownNote(
   if (resolved.kind === "missing") {
     return resolved;
   }
+  const result = await readMarkdownNoteFromResolvedPath(resolved, signal, budget);
+  return result.note;
+}
+
+async function readMarkdownNoteFromResolvedPath(
+  resolved: ResolvedNotePath,
+  signal: AbortSignal,
+  budget: ReadBudget,
+): Promise<ParsedNoteWithStats> {
   let buffer: Buffer;
+  let stats: BigIntStats;
   try {
-    buffer = await readFileWithLimit(resolved, signal);
+    const readResult = await readFileWithLimit(resolved, signal);
+    buffer = readResult.buffer;
+    stats = readResult.stats;
   } catch (error) {
     if (signal.aborted) {
       throw error;
@@ -861,7 +915,7 @@ async function readMarkdownNote(
   }
   reserveReadBytes(budget, buffer.byteLength);
   throwIfAborted(signal);
-  const note = parseMarkdown(relativePath, decodeUtf8(buffer));
+  const note = parseMarkdown(resolved.relative_path, decodeUtf8(buffer));
   assertOutputBudget([
     note.relative_path,
     note.title,
@@ -869,7 +923,7 @@ async function readMarkdownNote(
     ...(note.frontmatter == null ? [] : [note.frontmatter]),
     note.body,
   ]);
-  return note;
+  return { note, stats };
 }
 
 async function collectMarkdownPaths(
@@ -927,6 +981,44 @@ async function collectMarkdownPaths(
   }
   paths.sort();
   return paths;
+}
+
+function modifiedAtFromMtimeNs(mtimeNs: bigint): string {
+  const milliseconds = Number(mtimeNs / 1_000_000n);
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new ObsidianReadError(
+      "file_read_failed",
+      "Markdownファイルの更新日時を確認できません。",
+    );
+  }
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) {
+    throw new ObsidianReadError(
+      "file_read_failed",
+      "Markdownファイルの更新日時を確認できません。",
+    );
+  }
+  return isoDateTimeSchema.parse(date.toISOString());
+}
+
+async function collectRecentNotePaths(
+  vault: RegisteredVault,
+  signal: AbortSignal,
+): Promise<readonly ResolvedNotePath[]> {
+  const paths = await collectMarkdownPaths(vault, signal);
+  const resolvedPaths: ResolvedNotePath[] = [];
+  for (const path of paths) {
+    throwIfAborted(signal);
+    const resolved = await resolveNotePathWithinVault(vault, path, signal);
+    if (resolved.kind === "missing") {
+      throw new ObsidianReadError(
+        "path_changed",
+        "Vault走査中にMarkdownファイルが消失しました。",
+      );
+    }
+    resolvedPaths.push(resolved);
+  }
+  return resolvedPaths;
 }
 
 async function readMarkdownNotes(
@@ -1046,6 +1138,55 @@ export class ObsidianReadService {
       result.flatMap((note) => [note.relative_path, note.title, ...note.headings]),
     );
     return noteSummaryArraySchema.parse(result);
+  }
+
+  /** 登録済みVault内の最近更新されたMarkdownノートを一覧します。 */
+  public async recentNotes(
+    vaultId: string,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<readonly ObsidianRecentNote[]> {
+    validateAbortSignal(signal);
+    const validatedLimit = recentNoteLimitSchema.parse(limit);
+    const vault = await this.getRegisteredVault(vaultId, signal);
+    const paths = await collectRecentNotePaths(vault, signal);
+    const sortedPaths = [...paths].sort((left, right) => {
+      if (left.pre_open_stats.mtimeNs > right.pre_open_stats.mtimeNs) {
+        return -1;
+      }
+      if (left.pre_open_stats.mtimeNs < right.pre_open_stats.mtimeNs) {
+        return 1;
+      }
+      if (left.relative_path < right.relative_path) {
+        return -1;
+      }
+      if (left.relative_path > right.relative_path) {
+        return 1;
+      }
+      return 0;
+    });
+    const budget: ReadBudget = { total_bytes: 0 };
+    const result: ObsidianRecentNote[] = [];
+    for (const path of sortedPaths.slice(0, validatedLimit)) {
+      throwIfAborted(signal);
+      const parsed = await readMarkdownNoteFromResolvedPath(path, signal, budget);
+      assertFileStateUnchanged(path.pre_open_stats, parsed.stats);
+      result.push({
+        relative_path: parsed.note.relative_path,
+        title: parsed.note.title,
+        headings: [...parsed.note.headings],
+        modified_at: modifiedAtFromMtimeNs(path.pre_open_stats.mtimeNs),
+      });
+    }
+    assertOutputBudget(
+      result.flatMap((note) => [
+        note.relative_path,
+        note.title,
+        ...note.headings,
+        note.modified_at,
+      ]),
+    );
+    return recentNoteArraySchema.parse(result);
   }
 
   /** 登録済みVault内のMarkdown相対パスを安全な絶対パスへ解決します。 */
