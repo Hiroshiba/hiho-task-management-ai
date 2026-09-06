@@ -57,16 +57,12 @@ import {
   ipcFailureSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
-  ipcObsidianListInputSchema,
   ipcObsidianListVaultsInputSchema,
   ipcObsidianListVaultsResponseSchema,
-  ipcObsidianListResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
-  ipcObsidianSearchInputSchema,
-  ipcObsidianSearchResponseSchema,
   ipcObsidianValidateInputSchema,
   ipcObsidianValidateResponseSchema,
   ipcReadModelOverviewInputSchema,
@@ -120,9 +116,7 @@ import {
   type IpcFailure,
   type IpcGuiEditInput,
   type IpcGuiEditResult,
-  type IpcObsidianNoteSummary,
   type IpcObsidianPathResult,
-  type IpcObsidianSearchResult,
   type IpcObsidianVaultResult,
   type IpcReadModelOverview,
   type IpcReadModelTaskDetail,
@@ -218,10 +212,8 @@ export interface IpcAiPort {
 export interface IpcObsidianPort {
   listVaults(signal: AbortSignal): MaybePromise<readonly string[]>;
   validateVault(vaultId: string, signal: AbortSignal): MaybePromise<IpcObsidianVaultResult>;
-  listNotes(vaultId: string, signal: AbortSignal): MaybePromise<readonly IpcObsidianNoteSummary[]>;
   resolvePath(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
   noteExists(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
-  search(vaultId: string, query: string, signal: AbortSignal): MaybePromise<readonly IpcObsidianSearchResult[]>;
   openNote(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<void>;
 }
 
@@ -873,19 +865,6 @@ export class IpcHandlerRegistry {
     );
     this.registerHandle(
       ipcMain,
-      "obsidian:list-notes",
-      ipcObsidianListInputSchema,
-      ipcObsidianListResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return [...await port.listNotes(input.vault_id, signal)];
-      },
-    );
-    this.registerHandle(
-      ipcMain,
       "obsidian:resolve-path",
       ipcObsidianPathInputSchema,
       ipcObsidianPathResponseSchema,
@@ -916,19 +895,6 @@ export class IpcHandlerRegistry {
           input.relative_path,
           signal,
         );
-      },
-    );
-    this.registerHandle(
-      ipcMain,
-      "obsidian:search",
-      ipcObsidianSearchInputSchema,
-      ipcObsidianSearchResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return [...await port.search(input.vault_id, input.query, signal)];
       },
     );
     this.registerHandle(

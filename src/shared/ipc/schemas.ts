@@ -459,12 +459,6 @@ const obsidianPathResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("resolved"), vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict(),
   z.object({ kind: z.literal("missing"), vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict(),
 ]);
-const obsidianNoteSummarySchema = z.object({
-  relative_path: relativeMarkdownPathSchema,
-  title: safeMessageSchema,
-  headings: z.array(safeMessageSchema).max(1_000),
-}).strict();
-const obsidianSearchResultSchema = obsidianNoteSummarySchema.extend({ excerpt: safeMessageSchema }).strict();
 const completedResultSchema = z.object({ completed: z.literal(true) }).strict();
 const syncRuntimeErrorCodeSchema = z.enum([
   "authentication_required",
@@ -573,10 +567,8 @@ export const ipcChannelSchema = z.enum([
   "ai:status",
   "obsidian:validate-vault",
   "obsidian:list-vaults",
-  "obsidian:list-notes",
   "obsidian:resolve-path",
   "obsidian:note-exists",
-  "obsidian:search",
   "obsidian:open-note",
 ]);
 
@@ -658,12 +650,8 @@ export const ipcObsidianValidateInputSchema = z.object({ vault_id: vaultIdSchema
 export const ipcObsidianValidateResponseSchema = responseSchema(obsidianVaultResultSchema);
 export const ipcObsidianListVaultsInputSchema = emptyRequestSchema;
 export const ipcObsidianListVaultsResponseSchema = responseSchema(obsidianVaultListResultSchema);
-export const ipcObsidianListInputSchema = ipcObsidianValidateInputSchema;
-export const ipcObsidianListResponseSchema = responseSchema(z.array(obsidianNoteSummarySchema).max(1_000));
 export const ipcObsidianPathInputSchema = z.object({ vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict();
 export const ipcObsidianPathResponseSchema = responseSchema(obsidianPathResultSchema);
-export const ipcObsidianSearchInputSchema = z.object({ vault_id: vaultIdSchema, query: safeMessageSchema }).strict();
-export const ipcObsidianSearchResponseSchema = responseSchema(z.array(obsidianSearchResultSchema).max(1_000));
 export const ipcObsidianOpenNoteInputSchema = ipcObsidianPathInputSchema;
 export const ipcObsidianOpenNoteResponseSchema = responseSchema(completedResultSchema);
 export const ipcEmptyRequestSchema = emptyRequestSchema;
@@ -704,8 +692,6 @@ export type IpcAiCloseSessionInput = z.infer<typeof ipcAiCloseSessionInputSchema
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;
 export type IpcObsidianVaultList = z.infer<typeof obsidianVaultListResultSchema>;
 export type IpcObsidianPathResult = z.infer<typeof obsidianPathResultSchema>;
-export type IpcObsidianNoteSummary = z.infer<typeof obsidianNoteSummarySchema>;
-export type IpcObsidianSearchResult = z.infer<typeof obsidianSearchResultSchema>;
 export type IpcSyncStateEvent = z.infer<typeof syncStateEventSchema>;
 export type IpcAiStatus = z.infer<typeof aiStatusSchema>;
 export type IpcEmptyRequest = undefined;

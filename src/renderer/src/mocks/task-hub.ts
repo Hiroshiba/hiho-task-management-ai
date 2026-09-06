@@ -31,16 +31,12 @@ import {
   ipcFailureSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
-  ipcObsidianListInputSchema,
-  ipcObsidianListResponseSchema,
   ipcObsidianListVaultsInputSchema,
   ipcObsidianListVaultsResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
-  ipcObsidianSearchInputSchema,
-  ipcObsidianSearchResponseSchema,
   ipcObsidianValidateInputSchema,
   ipcObsidianValidateResponseSchema,
   ipcReadModelOverviewInputSchema,
@@ -84,8 +80,6 @@ import {
   type IpcCodexDelta,
   type IpcFailure,
   type IpcGuiEditInput,
-  type IpcObsidianNoteSummary,
-  type IpcObsidianSearchResult,
   type IpcSetupAsanaAuthorizationBeginInput,
   type IpcSetupAsanaAuthorizationCancelInput,
   type IpcSetupAsanaAuthorizationCompleteInput,
@@ -694,12 +688,6 @@ export function createMockTaskHubApi(): TaskHubApi {
   const aiDeltaListeners = new Set<(value: IpcCodexDelta) => void>();
   const aiStatusListeners = new Set<(value: IpcAiStatus) => void>();
   const aiStatus = ipcAiStatusEventSchema.parse({ kind: "ready", model: "mock-model" });
-  const notes: readonly IpcObsidianNoteSummary[] = [{
-    relative_path: MOCK_NOTE_PATH,
-    title: "集中タスク",
-    headings: ["今日の予定", "次の一歩"],
-  }];
-
   function setupResult(): MockResult<IpcSetupState> {
     return ipcSetupStateResponseSchema.parse(ok(setupState));
   }
@@ -1146,13 +1134,6 @@ export function createMockTaskHubApi(): TaskHubApi {
           { vault_id: parsedInput.vault_id, kind: "valid" },
         ));
       }),
-      listNotes: (vaultId: string) => Promise.resolve().then(() => {
-        const parsedInput = ipcObsidianListInputSchema.parse({ vault_id: vaultId });
-        if (parsedInput.vault_id !== MOCK_VAULT_ID) {
-          return failure("not_found", "指定したVaultがmockにありません。");
-        }
-        return ipcObsidianListResponseSchema.parse(ok(notes));
-      }),
       resolvePath: (input: { readonly vault_id: string; readonly relative_path: string }) =>
         Promise.resolve().then(() => {
         const parsedInput = ipcObsidianPathInputSchema.parse(input);
@@ -1178,22 +1159,6 @@ export function createMockTaskHubApi(): TaskHubApi {
           vault_id: parsedInput.vault_id,
           relative_path: parsedInput.relative_path,
         }));
-        }),
-      search: (input: { readonly vault_id: string; readonly query: string }) =>
-        Promise.resolve().then(() => {
-        const parsedInput = ipcObsidianSearchInputSchema.parse(input);
-        if (parsedInput.vault_id !== MOCK_VAULT_ID) {
-          return failure("not_found", "指定したVaultがmockにありません。");
-        }
-        const query = parsedInput.query.toLocaleLowerCase();
-        const results: readonly IpcObsidianSearchResult[] = notes
-          .filter((note) => [note.title, ...note.headings]
-            .some((value) => value.toLocaleLowerCase().includes(query)))
-          .map((note) => ({
-            ...note,
-            excerpt: "画面確認用の関連ノートです。",
-          }));
-        return ipcObsidianSearchResponseSchema.parse(ok(results));
         }),
       openNote: (input: { readonly vault_id: string; readonly relative_path: string }) =>
         Promise.resolve().then(() => {

@@ -4857,10 +4857,6 @@ export class TaskHubApplication {
         const result = await this.obsidian.validateVault(vaultId, signal);
         return { vault_id: result.vault_id, kind: "valid" };
       },
-      listNotes: (vaultId, signal) => {
-        this.assertOperationalReady();
-        return this.obsidian.listNotes(vaultId, signal);
-      },
       resolvePath: async (vaultId, relativePath, signal) => {
         this.assertOperationalReady();
         const result = await this.obsidian.resolveRelativePath(
@@ -4888,10 +4884,6 @@ export class TaskHubApplication {
           vault_id: result.vault_id,
           relative_path: result.relative_path,
         };
-      },
-      search: (vaultId, query, signal) => {
-        this.assertOperationalReady();
-        return this.obsidian.searchNotes(vaultId, query, signal);
       },
       openNote: async (vaultId, relativePath, signal) => {
         this.assertOperationalReady();

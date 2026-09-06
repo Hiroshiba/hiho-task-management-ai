@@ -18,9 +18,7 @@ import type {
   IpcFailure,
   IpcGuiEditInput,
   IpcGuiEditResult,
-  IpcObsidianNoteSummary,
   IpcObsidianPathResult,
-  IpcObsidianSearchResult,
   IpcObsidianVaultList,
   IpcObsidianVaultResult,
   IpcReadModelOverview,
@@ -110,10 +108,8 @@ export interface TaskHubApi {
   readonly obsidian: {
     readonly listVaults: () => IpcResult<IpcObsidianVaultList>;
     readonly validateVault: (vaultId: string) => IpcResult<IpcObsidianVaultResult>;
-    readonly listNotes: (vaultId: string) => IpcResult<readonly IpcObsidianNoteSummary[]>;
     readonly resolvePath: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
     readonly noteExists: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
-    readonly search: (input: { readonly vault_id: string; readonly query: string }) => IpcResult<readonly IpcObsidianSearchResult[]>;
     readonly openNote: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<{ readonly completed: true }>;
   };
 }
