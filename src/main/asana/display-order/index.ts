@@ -1,6 +1,7 @@
 export {
   createAsanaDisplayOrderService,
   AsanaDisplayOrderService,
+  type AsanaDisplayOrderInputProvider,
   type AsanaDisplayOrderUnexpectedErrorNotifier,
 } from "./service";
 export {

@@ -1,5 +1,9 @@
 import { AsanaRequestAbortedError } from "../scheduler";
 import {
+  AsanaOperationQueue,
+  type AsanaOperationQueueInput,
+} from "../operation-queue";
+import {
   AsanaTaskWriteClient,
   type AsanaTaskInsertionPosition,
 } from "../client/task-write-client";
@@ -32,13 +36,18 @@ type Waiter = {
 };
 
 type PendingBatch = {
-  input: AsanaDisplayOrderInput;
+  readonly inputProvider: AsanaDisplayOrderInputProvider;
   readonly waiters: Waiter[];
 };
 
 type RunningBatch = {
   readonly promise: Promise<AsanaDisplayOrderResult>;
 };
+
+/** 表示順同期の実行権取得後に最新入力を作る関数です。 */
+export type AsanaDisplayOrderInputProvider = (
+  signal: AbortSignal,
+) => AsanaDisplayOrderInput | PromiseLike<AsanaDisplayOrderInput>;
 
 function validateAbortSignal(signal: AbortSignal): void {
   if (
@@ -126,6 +135,7 @@ export function createAsanaDisplayOrderService(
   transport: AsanaTransport,
   notifyUnexpectedError: AsanaDisplayOrderUnexpectedErrorNotifier,
   lifecycleSignal: AbortSignal,
+  operationQueue: AsanaOperationQueue,
 ): AsanaDisplayOrderService {
   if (typeof transport?.withPriority !== "function") {
     throw new TypeError("表示順同期のAsana通信が必要です。");
@@ -134,6 +144,7 @@ export function createAsanaDisplayOrderService(
     new AsanaTaskWriteClient(transport.withPriority("low")),
     notifyUnexpectedError,
     lifecycleSignal,
+    operationQueue,
   );
 }
 
@@ -142,6 +153,7 @@ export class AsanaDisplayOrderService {
   private readonly writeClient: DisplayOrderWriteClient;
   private readonly notifyUnexpectedError: AsanaDisplayOrderUnexpectedErrorNotifier;
   private readonly lifecycleSignal: AbortSignal;
+  private readonly operationQueue: AsanaOperationQueue;
   private readonly stopController = new AbortController();
   private readonly lifecycleAbortListener = (): void => {
     void this.stop().catch((error: unknown) => {
@@ -159,6 +171,7 @@ export class AsanaDisplayOrderService {
     writeClient: DisplayOrderWriteClient,
     notifyUnexpectedError: AsanaDisplayOrderUnexpectedErrorNotifier,
     lifecycleSignal: AbortSignal,
+    operationQueue: AsanaOperationQueue,
   ) {
     if (typeof writeClient?.addTaskToProject !== "function") {
       throw new TypeError("表示順同期の書き込みクライアントが必要です。");
@@ -167,9 +180,13 @@ export class AsanaDisplayOrderService {
       throw new TypeError("表示順同期の診断通知関数が必要です。");
     }
     validateAbortSignal(lifecycleSignal);
+    if (!(operationQueue instanceof AsanaOperationQueue)) {
+      throw new TypeError("Asana操作キューが必要です。");
+    }
     this.writeClient = writeClient;
     this.notifyUnexpectedError = notifyUnexpectedError;
     this.lifecycleSignal = lifecycleSignal;
+    this.operationQueue = operationQueue;
     this.stopped = lifecycleSignal.aborted;
     if (!this.stopped) {
       lifecycleSignal.addEventListener(
@@ -180,13 +197,22 @@ export class AsanaDisplayOrderService {
     }
   }
 
-  /** 表示順同期を数秒間まとめて要求します。 */
-  public request(
-    input: AsanaDisplayOrderInput,
+  /** 表示順同期の入力を実行権取得後に作成します。 */
+  public requestLatest(
+    inputProvider: AsanaDisplayOrderInputProvider,
     signal: AbortSignal,
   ): Promise<AsanaDisplayOrderResult> {
     validateAbortSignal(signal);
-    const validatedInput = asanaDisplayOrderInputSchema.parse(input);
+    if (typeof inputProvider !== "function") {
+      throw new TypeError("表示順同期の入力作成関数が必要です。");
+    }
+    return this.requestWithProvider(inputProvider, signal);
+  }
+
+  private requestWithProvider(
+    inputProvider: AsanaDisplayOrderInputProvider,
+    signal: AbortSignal,
+  ): Promise<AsanaDisplayOrderResult> {
     if (signal.aborted || this.stopped) {
       return Promise.reject(new AsanaRequestAbortedError());
     }
@@ -194,31 +220,9 @@ export class AsanaDisplayOrderService {
     if (waiting.waiter.settled) {
       return waiting.promise;
     }
-    this.enqueue(validatedInput, waiting.waiter);
+    this.enqueue(inputProvider, waiting.waiter);
     if (this.running == null && this.debounceTimer == null) {
       this.scheduleDebounceTimer();
-    }
-    return waiting.promise;
-  }
-
-  /** 保留中の表示順同期を直ちに実行します。 */
-  public async flush(
-    input: AsanaDisplayOrderInput,
-    signal: AbortSignal,
-  ): Promise<AsanaDisplayOrderResult> {
-    validateAbortSignal(signal);
-    const validatedInput = asanaDisplayOrderInputSchema.parse(input);
-    if (signal.aborted || this.stopped) {
-      throw new AsanaRequestAbortedError();
-    }
-    const waiting = createWaiter(signal);
-    if (waiting.waiter.settled) {
-      return waiting.promise;
-    }
-    this.enqueue(validatedInput, waiting.waiter);
-    this.clearDebounceTimer();
-    if (this.running == null) {
-      await this.drain();
     }
     return waiting.promise;
   }
@@ -254,13 +258,18 @@ export class AsanaDisplayOrderService {
     }
   }
 
-  private enqueue(input: AsanaDisplayOrderInput, waiter: Waiter): void {
+  private enqueue(
+    inputProvider: AsanaDisplayOrderInputProvider,
+    waiter: Waiter,
+  ): void {
     if (this.pending == null) {
-      this.pending = { input, waiters: [waiter] };
+      this.pending = { inputProvider, waiters: [waiter] };
       return;
     }
-    this.pending.input = input;
-    this.pending.waiters.push(waiter);
+    this.pending = {
+      inputProvider,
+      waiters: this.pending.waiters.concat(waiter),
+    };
   }
 
   private takePendingBatch(): PendingBatch | undefined {
@@ -292,7 +301,7 @@ export class AsanaDisplayOrderService {
     while (this.pending != null && !this.stopped) {
       const batch = this.pending;
       this.pending = undefined;
-      const running = this.startRun(batch.input);
+      const running = this.startRun(batch.inputProvider);
       try {
         const result = await running.promise;
         for (const waiter of batch.waiters) {
@@ -317,12 +326,23 @@ export class AsanaDisplayOrderService {
     }
   }
 
-  private startRun(input: AsanaDisplayOrderInput): RunningBatch {
+  private startRun(inputProvider: AsanaDisplayOrderInputProvider): RunningBatch {
     const signal = AbortSignal.any([
       this.lifecycleSignal,
       this.stopController.signal,
     ]);
-    const promise = Promise.resolve().then(() => this.execute(input, signal));
+    const operationInput: AsanaOperationQueueInput<AsanaDisplayOrderResult> = {
+      priority: "background",
+      kind: "display_order",
+      signal,
+      run: async (context) => {
+        const input = asanaDisplayOrderInputSchema.parse(
+          await inputProvider(context.signal),
+        );
+        return this.execute(input, context.signal);
+      },
+    };
+    const promise = this.operationQueue.enqueue(operationInput);
     const running: RunningBatch = { promise };
     this.running = running;
     return running;
