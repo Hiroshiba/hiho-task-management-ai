@@ -62,6 +62,7 @@ import ToastHost from "./ToastHost.vue";
 import {
   createErrorScreenState,
   filterTaskRows,
+  rendererAiConversationEntrySchema,
   rendererAiStateSchema,
   rendererCodexStateSchema,
   rendererConnectionStateSchema,
@@ -69,6 +70,7 @@ import {
   rendererScreenStateSchema,
   rendererSyncStateSchema,
   type RendererAiState,
+  type RendererAiConversationEntry,
   type RendererCodexState,
   type RendererConnectionState,
   type RendererFailure,
@@ -492,10 +494,14 @@ function aiRequestTitle(message: string): string {
 
 function rememberAiRequest(sessionId: string, message: string): void {
   const title = aiRequestTitle(message);
+  const entry = rendererAiConversationEntrySchema.parse({
+    kind: "pending",
+    request: message,
+  });
   updateAiSession(sessionId, (session) => ({
     ...session,
-    title: session.request_history.length === 0 ? title : session.title,
-    request_history: [...session.request_history, message],
+    title: session.conversation_history.length === 0 ? title : session.title,
+    conversation_history: [...session.conversation_history, entry],
   }));
 }
 
@@ -2433,6 +2439,77 @@ function pendingAiProposal(state: RendererAiState): PendingAiProposal | undefine
   }
 }
 
+function conversationEntryForState(
+  entry: RendererAiConversationEntry,
+  state: RendererAiState,
+): RendererAiConversationEntry {
+  switch (state.kind) {
+    case "streaming":
+      if (entry.kind !== "pending" && entry.kind !== "streaming") {
+        throw new Error("AI会話の応答状態を更新できません。");
+      }
+      return rendererAiConversationEntrySchema.parse({
+        kind: "streaming",
+        request: entry.request,
+        text: state.text,
+      });
+    case "questions":
+    case "proposal":
+      if (
+        entry.kind !== "pending"
+        && entry.kind !== "streaming"
+        && entry.kind !== "failure"
+      ) {
+        throw new Error("AI会話の応答状態を完了できません。");
+      }
+      return rendererAiConversationEntrySchema.parse({
+        kind: "response",
+        request: entry.request,
+        message: state.message,
+        questions: state.questions,
+      });
+    case "unavailable":
+      if (
+        entry.kind !== "pending"
+        && entry.kind !== "streaming"
+        && entry.kind !== "failure"
+      ) {
+        throw new Error("AI会話の失敗状態を更新できません。");
+      }
+      return rendererAiConversationEntrySchema.parse({
+        kind: "failure",
+        request: entry.request,
+        failure: state.failure,
+      });
+    case "idle":
+    case "applied":
+      throw new Error("AI会話履歴へ記録できないAI状態です。");
+  }
+}
+
+function setAiSessionStateAndConversation(
+  sessionId: string,
+  state: RendererAiState,
+): void {
+  updateAiSession(sessionId, (session) => {
+    const lastEntry = session.conversation_history.at(-1);
+    if (lastEntry == null) {
+      throw new Error("AI会話履歴が空です。");
+    }
+    const conversationHistory = [...session.conversation_history];
+    conversationHistory[conversationHistory.length - 1] = conversationEntryForState(
+      lastEntry,
+      state,
+    );
+    return {
+      ...session,
+      state,
+      status: aiSessionStatus(state, session.operation),
+      conversation_history: conversationHistory,
+    };
+  });
+}
+
 function setAiSessionState(sessionId: string, state: RendererAiState): void {
   updateAiSession(sessionId, (session) => ({
     ...session,
@@ -2478,23 +2555,24 @@ function appendDelta(delta: { readonly session_id: string; readonly delta: strin
     return;
   }
   try {
-    const state = rendererAiStateSchema.parse({
+    const text = `${session.state.text}${delta.delta}`;
+    setAiSessionStateAndConversation(delta.session_id, rendererAiStateSchema.parse({
       kind: "streaming",
-      text: `${session.state.text}${delta.delta}`,
+      text,
       ...(session.state.pending_proposal == null
         ? {}
         : { pending_proposal: session.state.pending_proposal }),
-    });
-    setAiSessionState(delta.session_id, state);
+    }));
   } catch {
     const pendingProposal = pendingAiProposal(session.state);
-    setAiSessionState(delta.session_id, rendererAiStateSchema.parse({
+    const failure = rendererFailureSchema.parse({
+      kind: "error",
+      code: "invalid_response",
+      message: failureText("invalid_response"),
+    });
+    setAiSessionStateAndConversation(delta.session_id, rendererAiStateSchema.parse({
       kind: "unavailable",
-      failure: rendererFailureSchema.parse({
-        kind: "error",
-        code: "invalid_response",
-        message: failureText("invalid_response"),
-      }),
+      failure,
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
     }));
   }
@@ -2563,7 +2641,7 @@ async function createAiSession(taskGid: string | undefined): Promise<string | un
       status: aiSessionStatus(state, "idle"),
       operation: "idle",
       feedback: undefined,
-      request_history: [],
+      conversation_history: [],
       created_at: Date.now(),
     };
     aiSessions.value = [...aiSessions.value, session];
@@ -2628,7 +2706,7 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
       message: validatedInput.message,
       ...(currentSession.task_gid == null ? {} : { target_task_gid: currentSession.task_gid }),
     });
-    setAiSessionState(sessionId, rendererAiStateSchema.parse({
+    setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
       kind: "streaming",
       text: "",
       ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
@@ -2638,16 +2716,17 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
       return;
     }
     if (isFailure(result)) {
-      setAiSessionState(sessionId, rendererAiStateSchema.parse({
+      const failure = displayFailure(result);
+      setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
         kind: "unavailable",
-        failure: displayFailure(result),
+        failure,
         ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
       }));
       return;
     }
     if (result.value.kind === "proposal") {
       const proposal = aiWorkflowProposalViewSchema.parse(result.value.proposal);
-      setAiSessionState(sessionId, rendererAiStateSchema.parse({
+      setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
         kind: "proposal",
         message: result.value.message,
         questions: result.value.questions,
@@ -2655,7 +2734,7 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
       }));
       return;
     }
-    setAiSessionState(sessionId, rendererAiStateSchema.parse({
+    setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: result.value.message,
       questions: result.value.questions,
@@ -2663,13 +2742,21 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
     }));
   } catch {
     if (hasAiSession(sessionId)) {
-      setAiSessionState(sessionId, rendererAiStateSchema.parse({
+      const currentEntry = requireAiSession(sessionId).conversation_history.at(-1);
+      if (currentEntry == null) {
+        throw new Error("AI会話履歴が空です。");
+      }
+      if (currentEntry.kind === "response") {
+        return;
+      }
+      const failure = rendererFailureSchema.parse({
+        kind: "error",
+        code: "invalid_response",
+        message: failureText("invalid_response"),
+      });
+      setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
         kind: "unavailable",
-        failure: rendererFailureSchema.parse({
-          kind: "error",
-          code: "invalid_response",
-          message: failureText("invalid_response"),
-        }),
+        failure,
         ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
       }));
     }
