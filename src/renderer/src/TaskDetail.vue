@@ -1355,7 +1355,7 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
               <h3 class="section-heading">
                 依存関係と親子関係を編集
               </h3>
-              <div class="mt-3 grid min-w-0 gap-4 2xl:grid-cols-2">
+              <div class="mt-3 grid min-w-0 gap-4 xl:grid-cols-2">
                 <div class="field-group min-w-0">
                   <label
                     class="field-label min-w-0"
@@ -1401,7 +1401,7 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
               </div>
             </div>
 
-            <div class="grid min-w-0 gap-6 border-t border-slate-200 pt-5 dark:border-slate-700 2xl:grid-cols-2">
+            <div class="grid min-w-0 gap-6 border-t border-slate-200 pt-5 dark:border-slate-700 xl:grid-cols-2">
               <div class="min-w-0">
                 <h3 class="section-heading">
                   既存の関係
