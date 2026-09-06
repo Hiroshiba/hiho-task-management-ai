@@ -32,6 +32,9 @@ import type {
 import {
   type TaskctlSnapshotProvider,
 } from "../taskctl";
+import {
+  codexObsidianReadPortSchema,
+} from "../obsidian";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
 import { codexResponseSchema } from "../../../shared/ai";
 
@@ -146,6 +149,7 @@ export const codexSessionOptionsSchema = z
     agentsFilePath: absolutePathSchema,
     tmpDirectoryPath: absolutePathSchema,
     expectedCodexHomePathProvider: codexHomePathProviderSchema,
+    obsidianReader: codexObsidianReadPortSchema,
     readOnlyVaultPaths: z
       .array(absolutePathSchema)
       .max(maximumVaultPaths)

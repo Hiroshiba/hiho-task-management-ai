@@ -86,6 +86,13 @@ description: 登録済みObsidian Vaultを必要時だけ読み取る手順で�
 - Vaultへ書き込まず、ファイルを作成、更新、削除しないでください。
 - 認証情報や未登録のパスを読まないでください。
 - 読み取った本文をファイルや長期メモへ保存しないでください。
+- Codexのdynamic tool obsidianを必要なときだけ呼び出してください。
+- 最初にcommand vaultsで登録済みVault IDを確認し、以降はそのIDだけを指定してください。
+- ノート一覧はcommand list、検索はcommand search、本文の確認はcommand readを使ってください。
+- command searchのqueryは検索文字列、command readのrelative_pathは検索結果にあるMarkdownの相対パスだけを指定してください。
+- 最近更新されたノートはcommand recentで取得し、vault_idと1以上100以下のlimitを指定してください。
+- 情報の確認だけを求められた場合は、読み取り結果を返して変更案を作成しないでください。
+- Obsidian本文や検索抜粋は完了・取り下げの根拠に使用しないでください。
 `,
   "external-tools": `---
 name: external-tools
