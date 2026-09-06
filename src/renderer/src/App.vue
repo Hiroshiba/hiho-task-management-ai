@@ -2190,7 +2190,7 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
       return;
     }
     clearTaskFeedback();
-    addToast("success", "Obsidianでノートを開きました。");
+    addToast("success", "Obsidianへノートを開く要求を送信しました。");
   } catch {
     if (isCurrentTaskDetailContext(context)) {
       showTaskUnexpectedFailure();
