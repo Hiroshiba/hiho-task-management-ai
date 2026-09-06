@@ -1071,9 +1071,6 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
           </p>
           <div class="flex flex-wrap gap-2">
             <template v-if="props.task.status === 'not_started' || props.task.status === 'in_progress'">
-              <p class="w-full text-xs text-slate-600 dark:text-slate-400">
-                このタスクを今日進めたことを記録し、順位に反映します。
-              </p>
               <button
                 type="button"
                 class="secondary-button"
@@ -1088,13 +1085,6 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
                 @click="submitOperation({ kind: 'withdraw' })"
               >
                 取り下げる
-              </button><button
-                type="button"
-                class="secondary-button"
-                :disabled="!props.canWrite"
-                @click="submitOperation({ kind: 'mark_activity' })"
-              >
-                今日取り組んだ
               </button>
             </template>
             <template v-else>
@@ -1114,6 +1104,28 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
                 進行中に戻す
               </button>
             </template>
+          </div>
+        </div>
+
+        <div
+          v-if="props.task.status === 'not_started' || props.task.status === 'in_progress'"
+          class="field-group border-t border-slate-200 pt-5 dark:border-slate-700"
+        >
+          <p class="field-label">
+            作業記録
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <p class="w-full text-xs text-slate-600 dark:text-slate-400">
+              今日作業したことを記録し、長く作業していないことによる順位の減点をリセットします。タスクの状態は変わりません。
+            </p>
+            <button
+              type="button"
+              class="secondary-button"
+              :disabled="!props.canWrite"
+              @click="submitOperation({ kind: 'mark_activity' })"
+            >
+              今日の作業を記録
+            </button>
           </div>
         </div>
 
