@@ -1162,6 +1162,11 @@ function clearTaskSelection(): void {
   obsidianStatuses.value = new Map();
 }
 
+function deselectTask(): void {
+  clearTaskFeedback();
+  clearTaskSelection();
+}
+
 function captureTaskDetailContext(): TaskDetailContext {
   const taskGid = selectedTaskGid.value;
   if (taskGid == null) {
@@ -3199,6 +3204,7 @@ onUnmounted(() => {
               :selected-task-gid="selectedTaskGid"
               :as-of="currentAsOf"
               @select="selectTask"
+              @clear-selection="deselectTask"
             >
               <template #filters>
                 <TaskFilters

@@ -10,6 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "select", taskGid: string): void;
+  (event: "clear-selection"): void;
 }>();
 
 function rankLabel(row: ViewModelTaskRow): string {
@@ -54,7 +55,17 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
             タスク一覧
           </h2>
         </div>
-        <span class="shrink-0 text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
+        <div class="flex shrink-0 items-center gap-3">
+          <button
+            v-if="props.selectedTaskGid != null"
+            type="button"
+            class="text-button"
+            @click="emit('clear-selection')"
+          >
+            選択解除
+          </button>
+          <span class="text-sm text-slate-500 dark:text-slate-400">{{ props.rows.length }}件</span>
+        </div>
       </div>
       <div class="mt-4 min-w-0">
         <slot name="filters" />
