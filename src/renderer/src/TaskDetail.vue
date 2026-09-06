@@ -1144,7 +1144,7 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
               <li
                 v-for="link in props.task.obsidian_links"
                 :key="`${link.vault_id}-${link.path}`"
-                class="flex min-w-0 flex-col gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:flex-row sm:items-start sm:justify-between"
+                class="flex min-w-0 flex-col gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-700"
               >
                 <div class="min-w-0 flex-1">
                   <p class="break-words font-medium text-slate-800 dark:text-slate-100">

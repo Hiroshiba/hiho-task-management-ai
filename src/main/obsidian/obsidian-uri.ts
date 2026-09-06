@@ -98,5 +98,5 @@ export function createObsidianOpenUri(
   const url = new URL("obsidian://open");
   url.searchParams.set("vault", validatedInput.vault_id);
   url.searchParams.set("file", validatedInput.relative_path);
-  return obsidianOpenUriSchema.parse(url.href);
+  return obsidianOpenUriSchema.parse(url.href.replaceAll("+", "%20"));
 }
