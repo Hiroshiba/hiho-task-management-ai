@@ -13,8 +13,6 @@ import {
   ipcGuiEditResultSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
-  ipcObsidianSearchInputSchema,
-  ipcObsidianValidateInputSchema,
   ipcGuiEditInputSchema,
   ipcSyncStateEventSchema,
   ipcSyncResultSchema,
@@ -22,8 +20,6 @@ import {
   type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcGuiEditResult,
-  type IpcObsidianNoteSummary,
-  type IpcObsidianSearchResult,
   type IpcSyncResult,
   type IpcSyncStateEvent,
 } from "../../shared/ipc";
@@ -246,10 +242,7 @@ const { addToast } = useToast();
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const taskFeedback = ref<Feedback | undefined>();
-const obsidianNotes = ref<readonly IpcObsidianNoteSummary[]>([]);
-const obsidianSearchResults = ref<readonly IpcObsidianSearchResult[]>([]);
 const obsidianStatuses = ref<ReadonlyMap<string, ObsidianLinkStatus>>(new Map());
-const obsidianBusy = ref(false);
 const registeredVaultIds = ref<readonly string[]>([]);
 const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
 const guiEditStates = ref(new Map<string, GuiEditRequestState>());
@@ -2075,71 +2068,6 @@ async function loadObsidianVaults(): Promise<void> {
   }
 }
 
-async function listObsidian(vaultId: string): Promise<void> {
-  const context = captureTaskDetailContext();
-  const trimmedVaultId = vaultId.trim();
-  if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    if (isCurrentTaskDetailContext(context)) {
-      setTaskFeedback("warning", "登録済みのVaultだけを指定してください。");
-    }
-    return;
-  }
-  obsidianBusy.value = true;
-  try {
-    const input = ipcObsidianValidateInputSchema.parse({ vault_id: trimmedVaultId });
-    const result = await taskHub.obsidian.listNotes(input.vault_id);
-    if (!isCurrentTaskDetailContext(context)) {
-      return;
-    }
-    if (isFailure(result)) {
-      showTaskFailure(result);
-      return;
-    }
-    obsidianNotes.value = result.value;
-    obsidianSearchResults.value = [];
-  } catch {
-    if (isCurrentTaskDetailContext(context)) {
-      showTaskUnexpectedFailure();
-    }
-  } finally {
-    obsidianBusy.value = false;
-  }
-}
-
-async function searchObsidian(input: { readonly vaultId: string; readonly query: string }): Promise<void> {
-  const context = captureTaskDetailContext();
-  const trimmedVaultId = input.vaultId.trim();
-  if (!registeredVaultIds.value.includes(trimmedVaultId)) {
-    if (isCurrentTaskDetailContext(context)) {
-      setTaskFeedback("warning", "登録済みのVaultだけを指定してください。");
-    }
-    return;
-  }
-  obsidianBusy.value = true;
-  try {
-    const validated = ipcObsidianSearchInputSchema.parse({
-      vault_id: trimmedVaultId,
-      query: input.query,
-    });
-    const result = await taskHub.obsidian.search(validated);
-    if (!isCurrentTaskDetailContext(context)) {
-      return;
-    }
-    if (isFailure(result)) {
-      showTaskFailure(result);
-      return;
-    }
-    obsidianSearchResults.value = result.value;
-    obsidianNotes.value = [];
-  } catch {
-    if (isCurrentTaskDetailContext(context)) {
-      showTaskUnexpectedFailure();
-    }
-  } finally {
-    obsidianBusy.value = false;
-  }
-}
-
 async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
   const generation = obsidianStatusGeneration;
   if (!registeredVaultIds.value.includes(link.vault_id)) {
@@ -3319,14 +3247,9 @@ onUnmounted(() => {
                 :task-edit-markers="taskEditMarkers"
                 :read-available="canReadLocal"
                 :obsidian-vault-ids="registeredVaultIds"
-                :obsidian-notes="obsidianNotes"
-                :obsidian-search-results="obsidianSearchResults"
                 :obsidian-statuses="obsidianStatuses"
-                :obsidian-busy="obsidianBusy"
                 :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
                 @edit="applyGuiEdit"
-                @list-obsidian="listObsidian"
-                @search-obsidian="searchObsidian"
                 @check-obsidian="checkObsidianLink"
                 @open-obsidian="openObsidianLink"
                 @reanalyze-obsidian-notes="reanalyzeObsidianNotes"
