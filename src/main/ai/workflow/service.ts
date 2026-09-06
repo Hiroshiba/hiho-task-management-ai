@@ -1203,6 +1203,7 @@ function createTurnPrompt(
     `基準コンテキスト: ${serializedContext}`,
     "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
     "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
+    "Obsidianは登録済みVaultの読み取り専用で必要なノートを確認できます。情報質問ではno_proposalを返し、変更案を作成しないでください。",
     `利用者要求の一般根拠locator: ${prepared.user_message_locator}`,
     "一般根拠locatorは完了・取り下げの根拠ではありません。",
     `固定検証済みの完了・取り下げ根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,

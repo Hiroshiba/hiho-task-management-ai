@@ -87,6 +87,7 @@ import {
   type CodexSessionConnectionFactory,
   type CodexSessionStartResult,
 } from "../codex/session";
+import type { CodexObsidianReadPort } from "../codex/obsidian";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -1143,11 +1144,13 @@ export class TaskHubApplication {
       configOverrides: [],
     });
     this.codexConnectionFactory = connectionFactory;
+    this.obsidian = new ObsidianReadService(this.database);
     this.codexSession = new CodexSessionService({
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
       tmpDirectoryPath: this.codexWorkspace.tmpDirectoryPath,
       expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
+      obsidianReader: this.createCodexObsidianReadPort(),
       readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
       connectionFactory,
       snapshotProvider: () => this.createTaskctlSnapshot(),
@@ -1160,7 +1163,6 @@ export class TaskHubApplication {
       openAuthorizationUrl: options.open_codex_authorization_url,
     });
     this.readModel = new ReadModelService(this.database);
-    this.obsidian = new ObsidianReadService(this.database);
     this.cleanupAggregation = new CleanupAggregationService(
       this.database,
       this.obsidian,
@@ -4337,6 +4339,7 @@ export class TaskHubApplication {
       agentsFilePath: workspace.agentsFilePath,
       tmpDirectoryPath: workspace.tmpDirectoryPath,
       expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
+      obsidianReader: this.createCodexObsidianReadPort(),
       readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
       additionalUnixSocketPaths: externalToolEndpoint == null
         ? []
@@ -4907,6 +4910,25 @@ export class TaskHubApplication {
         });
         await this.options.open_obsidian_url(uri, signal);
       },
+    };
+  }
+
+  private createCodexObsidianReadPort(): CodexObsidianReadPort {
+    return {
+      listVaults: (signal) => {
+        validateAbortSignal(signal);
+        throwIfAborted(signal);
+        return this.database.getVaultMappings()
+          .map((mapping) => mapping.vault_id)
+          .sort(compareStrings);
+      },
+      listNotes: (vaultId, signal) => this.obsidian.listNotes(vaultId, signal),
+      searchNotes: (vaultId, query, signal) =>
+        this.obsidian.searchNotes(vaultId, query, signal),
+      readNote: (vaultId, relativePath, signal) =>
+        this.obsidian.readNote(vaultId, relativePath, signal),
+      recentNotes: (vaultId, limit, signal) =>
+        this.obsidian.recentNotes(vaultId, limit, signal),
     };
   }
 }

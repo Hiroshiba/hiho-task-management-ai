@@ -48,6 +48,13 @@ import {
   type TaskctlResponse,
   type TaskctlSnapshot,
 } from "../taskctl";
+import {
+  codexObsidianQuerySchema,
+  codexObsidianResponseSchema,
+  type CodexObsidianQuery,
+  type CodexObsidianResponse,
+} from "../obsidian";
+import { ObsidianReadError } from "../../obsidian";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
 import { codexResponseSchema, type CodexResponse } from "../../../shared/ai";
 import {
@@ -157,6 +164,14 @@ const taskctlDynamicToolSpec = {
   inputSchema: z.toJSONSchema(taskctlQuerySchema, { target: "draft-07" }),
 } satisfies Record<string, unknown>;
 
+const obsidianDynamicToolName = "obsidian";
+const obsidianDynamicToolSpec = {
+  type: "function",
+  name: obsidianDynamicToolName,
+  description: "登録済みObsidian Vaultを読み取るdynamic toolです。",
+  inputSchema: z.toJSONSchema(codexObsidianQuerySchema, { target: "draft-07" }),
+} satisfies Record<string, unknown>;
+
 function createDynamicToolResponseTooLarge(): TaskctlResponse {
   return taskctlResponseSchema.parse({
     ok: false,
@@ -181,6 +196,38 @@ function serializeDynamicToolResponse(response: TaskctlResponse): DynamicToolCal
   const serializedFallback = z.string().parse(JSON.stringify(fallback));
   if (Buffer.byteLength(serializedFallback, "utf8") > maximumDynamicToolResponseBytes) {
     throw new CodexSessionError("taskctl応答のサイズ上限を確認できません。");
+  }
+  return {
+    contentItems: [{ type: "inputText", text: serializedFallback }],
+    success: false,
+  };
+}
+
+function createObsidianDynamicToolResponseTooLarge(): CodexObsidianResponse {
+  return codexObsidianResponseSchema.parse({
+    ok: false,
+    error: {
+      code: "response_too_large",
+      message: "Obsidian応答が大きすぎます。",
+    },
+  });
+}
+
+function serializeObsidianDynamicToolResponse(
+  response: CodexObsidianResponse,
+): DynamicToolCallResponse {
+  const validatedResponse = codexObsidianResponseSchema.parse(response);
+  const serialized = z.string().parse(JSON.stringify(validatedResponse));
+  if (Buffer.byteLength(serialized, "utf8") <= maximumDynamicToolResponseBytes) {
+    return {
+      contentItems: [{ type: "inputText", text: serialized }],
+      success: validatedResponse.ok,
+    };
+  }
+  const fallback = createObsidianDynamicToolResponseTooLarge();
+  const serializedFallback = z.string().parse(JSON.stringify(fallback));
+  if (Buffer.byteLength(serializedFallback, "utf8") > maximumDynamicToolResponseBytes) {
+    throw new CodexSessionError("Obsidian応答のサイズ上限を確認できません。");
   }
   return {
     contentItems: [{ type: "inputText", text: serializedFallback }],
@@ -1524,7 +1571,7 @@ export class CodexSessionService {
         this.receiveDiagnostic(diagnostic);
       });
       this.removeDynamicToolListener = candidate.onDynamicToolCall(
-        (params, toolSignal) => this.handleTaskctlDynamicTool(params, toolSignal),
+        (params, toolSignal) => this.handleDynamicTool(params, toolSignal),
       );
       await candidate.start(signal);
       this.assertSafetyIntact();
@@ -1870,7 +1917,7 @@ export class CodexSessionService {
       approvalPolicy: "never",
       ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
       config,
-      dynamicTools: [taskctlDynamicToolSpec],
+      dynamicTools: [taskctlDynamicToolSpec, obsidianDynamicToolSpec],
     };
     const validatedParams = threadStartParamsSchema.parse(params);
     this.threadSettingsNotification = undefined;
@@ -1908,6 +1955,19 @@ export class CodexSessionService {
     this.assertSafetyIntact();
   }
 
+  private async handleDynamicTool(
+    params: DynamicToolCallParams,
+    signal: AbortSignal,
+  ): Promise<DynamicToolCallResponse> {
+    if (params.tool === taskctlDynamicToolName) {
+      return this.handleTaskctlDynamicTool(params, signal);
+    }
+    if (params.tool === obsidianDynamicToolName) {
+      return this.handleObsidianDynamicTool(params, signal);
+    }
+    throw new CodexSessionError("dynamic toolの名前が不正です。");
+  }
+
   private async handleTaskctlDynamicTool(
     params: DynamicToolCallParams,
     signal: AbortSignal,
@@ -1942,6 +2002,162 @@ export class CodexSessionService {
     const response = await this.broker.executeQuery(params.arguments);
     assertNotAborted();
     return serializeDynamicToolResponse(response);
+  }
+
+  private async handleObsidianDynamicTool(
+    params: DynamicToolCallParams,
+    signal: AbortSignal,
+  ): Promise<DynamicToolCallResponse> {
+    validateAbortSignal(signal);
+    if (signal.aborted) {
+      throw new TaskctlAbortError();
+    }
+    if (params.namespace != null) {
+      throw new CodexSessionError("obsidian dynamic toolのnamespaceが不正です。");
+    }
+    if (params.tool !== obsidianDynamicToolName) {
+      throw new CodexSessionError("obsidian dynamic toolの名前が不正です。");
+    }
+    const activeTurn = this.activeTurn;
+    if (activeTurn == null || activeTurn.phase !== "running") {
+      throw new CodexSessionStateError();
+    }
+    if (params.threadId !== activeTurn.threadId || params.turnId !== activeTurn.turnId) {
+      throw new CodexSessionError("obsidian dynamic toolのターンが不正です。");
+    }
+    const currentThreadId = this.threadId;
+    if (currentThreadId == null || params.threadId !== currentThreadId) {
+      throw new CodexSessionError("obsidian dynamic toolのスレッドが不正です。");
+    }
+    const assertNotAborted = (): void => {
+      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
+        throw new TaskctlAbortError();
+      }
+    };
+    assertNotAborted();
+    const parsed = codexObsidianQuerySchema.safeParse(params.arguments);
+    if (!parsed.success) {
+      assertNotAborted();
+      return serializeObsidianDynamicToolResponse({
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "Obsidian要求の形式が不正です。",
+        },
+      });
+    }
+    const operationController = new AbortController();
+    const abortOperation = (source: AbortSignal): void => {
+      operationController.abort(source.reason);
+    };
+    const onToolAbort = (): void => {
+      abortOperation(signal);
+    };
+    const onTurnAbort = (): void => {
+      abortOperation(activeTurn.signal);
+    };
+    signal.addEventListener("abort", onToolAbort, { once: true });
+    activeTurn.signal.addEventListener("abort", onTurnAbort, { once: true });
+    if (signal.aborted) {
+      onToolAbort();
+    }
+    if (activeTurn.signal.aborted || activeTurn.abortRequested) {
+      onTurnAbort();
+    }
+    try {
+      const response = await this.executeObsidianQuery(
+        parsed.data,
+        operationController.signal,
+      );
+      assertNotAborted();
+      return serializeObsidianDynamicToolResponse(response);
+    } catch (error: unknown) {
+      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
+        assertNotAborted();
+      }
+      if (!(error instanceof ObsidianReadError)) {
+        throw error;
+      }
+      assertNotAborted();
+      return serializeObsidianDynamicToolResponse({
+        ok: false,
+        error: {
+          code: error.code,
+          message: error.message,
+        },
+      });
+    } finally {
+      signal.removeEventListener("abort", onToolAbort);
+      activeTurn.signal.removeEventListener("abort", onTurnAbort);
+    }
+  }
+
+  private async executeObsidianQuery(
+    query: CodexObsidianQuery,
+    signal: AbortSignal,
+  ): Promise<CodexObsidianResponse> {
+    switch (query.command) {
+      case "vaults": {
+        const vaultIds = await this.options.obsidianReader.listVaults(signal);
+        return {
+          ok: true,
+          command: "vaults",
+          data: { vault_ids: [...vaultIds] },
+        };
+      }
+      case "list": {
+        const notes = await this.options.obsidianReader.listNotes(query.vault_id, signal);
+        return {
+          ok: true,
+          command: "list",
+          data: { vault_id: query.vault_id, notes: [...notes] },
+        };
+      }
+      case "search": {
+        const notes = await this.options.obsidianReader.searchNotes(
+          query.vault_id,
+          query.query,
+          signal,
+        );
+        return {
+          ok: true,
+          command: "search",
+          data: {
+            vault_id: query.vault_id,
+            query: query.query,
+            notes: [...notes],
+          },
+        };
+      }
+      case "read": {
+        const note = await this.options.obsidianReader.readNote(
+          query.vault_id,
+          query.relative_path,
+          signal,
+        );
+        return {
+          ok: true,
+          command: "read",
+          data: { vault_id: query.vault_id, note },
+        };
+      }
+      case "recent": {
+        const notes = await this.options.obsidianReader.recentNotes(
+          query.vault_id,
+          query.limit,
+          signal,
+        );
+        return {
+          ok: true,
+          command: "recent",
+          data: {
+            vault_id: query.vault_id,
+            limit: query.limit,
+            notes: [...notes],
+          },
+        };
+      }
+    }
   }
 
   private validateStoredThreadSettingsNotification(threadId: string): void {
