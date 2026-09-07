@@ -137,6 +137,11 @@ type TaskDataRefreshResult =
 type ActiveSyncReload =
   | { readonly kind: "idle" }
   | {
+      readonly kind: "initial_loading";
+      readonly generation: number;
+      readonly completion: Promise<TaskDataRefreshResult>;
+    }
+  | {
       readonly kind: "loading";
       readonly sync_at: string;
       readonly generation: number;
@@ -1504,7 +1509,19 @@ function startTaskDataRefresh(): TaskDataRefreshRequest {
 }
 
 async function reloadTaskData(): Promise<TaskDataRefreshResult> {
+  activeSyncReload = { kind: "idle" };
   return startTaskDataRefresh().completion;
+}
+
+function startInitialTaskDataRefresh(): Promise<TaskDataRefreshResult> {
+  const request = startTaskDataRefresh();
+  activeSyncReload = {
+    kind: "initial_loading",
+    generation: request.generation,
+    completion: request.completion,
+  };
+  void finalizeSyncReload(request.generation, request.completion);
+  return request.completion;
 }
 
 function syncTimestamp(value: string): number {
@@ -1526,14 +1543,45 @@ async function finalizeSyncReload(generation: number, completion: Promise<TaskDa
   try {
     await completion;
   } catch {
-    if (activeSyncReload.kind === "loading" && activeSyncReload.generation === generation) {
+    if (
+      activeSyncReload.kind !== "idle"
+      && activeSyncReload.generation === generation
+      && activeSyncReload.completion === completion
+    ) {
       showUnexpectedFailure();
     }
   } finally {
-    if (activeSyncReload.kind === "loading" && activeSyncReload.generation === generation) {
+    if (
+      activeSyncReload.kind !== "idle"
+      && activeSyncReload.generation === generation
+      && activeSyncReload.completion === completion
+    ) {
       activeSyncReload = { kind: "idle" };
     }
   }
+}
+
+async function completeInitialSyncReload(
+  syncAt: string,
+  generation: number,
+  completion: Promise<TaskDataRefreshResult>,
+): Promise<TaskDataRefreshResult> {
+  const result = await completion;
+  if (taskDataGeneration !== generation) {
+    return reloadTaskDataAfterSuccessfulSync(syncAt);
+  }
+  if (result.kind !== "applied" || loadedAtOrAfter(syncAt)) {
+    return result;
+  }
+  const request = startTaskDataRefresh();
+  activeSyncReload = {
+    kind: "loading",
+    sync_at: syncAt,
+    generation: request.generation,
+    completion: request.completion,
+  };
+  void finalizeSyncReload(request.generation, request.completion);
+  return request.completion;
 }
 
 function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefreshResult> {
@@ -1543,6 +1591,23 @@ function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefr
   if (activeSyncReload.kind === "loading"
     && syncTimestamp(activeSyncReload.sync_at) >= syncTimestamp(syncAt)) {
     return activeSyncReload.completion;
+  }
+  if (activeSyncReload.kind === "initial_loading" && lastLoadedSuccessfulSyncAt == null) {
+    const initialGeneration = activeSyncReload.generation;
+    const initialCompletion = activeSyncReload.completion;
+    const completion = completeInitialSyncReload(
+      syncAt,
+      initialGeneration,
+      initialCompletion,
+    );
+    activeSyncReload = {
+      kind: "loading",
+      sync_at: syncAt,
+      generation: initialGeneration,
+      completion,
+    };
+    void finalizeSyncReload(initialGeneration, completion);
+    return completion;
   }
   const request = startTaskDataRefresh();
   activeSyncReload = {
@@ -1563,7 +1628,7 @@ function applySetupState(value: unknown): void {
   setCodexFromSetup(parsed);
   if (parsed.kind === "ready") {
     screen.value = rendererScreenStateSchema.parse({ kind: "dashboard" });
-    void reloadTaskData();
+    void startInitialTaskDataRefresh();
     if (!wasConfigured && !wasLoading && !asanaAuthenticationStateLoaded.value) {
       void loadAsanaAuthenticationState();
     }
