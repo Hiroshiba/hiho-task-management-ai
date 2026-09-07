@@ -285,6 +285,7 @@ let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
 let clockTimer: number | undefined;
+let isMounted = false;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
 let asanaAuthenticationStateLoadInProgress = false;
@@ -3272,14 +3273,34 @@ async function initialize(): Promise<void> {
   await loadInitialExternalAgentState();
 }
 
+async function waitForStartupAndInitialize(): Promise<void> {
+  try {
+    const result = await taskHub.app.waitForStartup();
+    if (!isMounted) {
+      return;
+    }
+    if (isFailure(result)) {
+      setScreenError(result);
+      return;
+    }
+    await initialize();
+  } catch {
+    if (isMounted) {
+      screen.value = createErrorScreenState("operation_failed", failureText("operation_failed"));
+    }
+  }
+}
+
 onMounted(() => {
+  isMounted = true;
   clockTimer = window.setInterval(() => {
     currentAsOf.value = new Date().toISOString();
   }, 60_000);
-  void initialize();
+  void waitForStartupAndInitialize();
 });
 
 onBeforeUnmount(() => {
+  isMounted = false;
   clearAsanaAuthorizationCode();
   asanaAuthenticationBusy.value = false;
   asanaAuthenticationStateRequestBusy.value = false;

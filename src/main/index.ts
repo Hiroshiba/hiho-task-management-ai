@@ -17,6 +17,7 @@ import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
+import { createStartupGate, type StartupGate } from "./startup-gate";
 import {
   PersistentErrorLog,
   type PersistentErrorLogContext,
@@ -59,6 +60,7 @@ let mainWindowRegistry: IpcHandlerRegistry | undefined;
 let taskHubApplication: TaskHubApplication | undefined;
 let lifecycleController: AbortController | undefined;
 let windowCreationPromise: Promise<void> | undefined;
+let applicationStartPromise: Promise<void> | undefined;
 let backgroundOperations: Promise<void> = Promise.resolve();
 let shutdownState: ShutdownState = { kind: "running" };
 let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
@@ -68,6 +70,7 @@ let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
 let persistentErrorLog: PersistentErrorLog | undefined;
 let uncaughtExceptionMonitorRegistered = false;
+const startupGate = createStartupGate();
 
 registerUncaughtExceptionMonitor();
 const singleInstanceLockAcquired = app.requestSingleInstanceLock();
@@ -375,7 +378,16 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
       if (application == null) {
         throw new Error("TaskHubアプリケーションが初期化されていません。");
       }
-      await ensureMainWindow(getRendererUrl(), application);
+      const controller = lifecycleController;
+      if (controller == null) {
+        throw new Error("アプリケーションのライフサイクルが初期化されていません。");
+      }
+      await ensureMainWindow(
+        getRendererUrl(),
+        application,
+        startupGate,
+        controller.signal,
+      );
       if (!showAndFocusMainWindow()) {
         throw new Error("TaskHubメインウィンドウを表示できません。");
       }
@@ -467,7 +479,11 @@ function enqueueBackgroundOperation(
 }
 
 function scheduleForegroundSync(): void {
-  if (foregroundScheduled || shutdownState.kind !== "running") {
+  if (
+    foregroundScheduled
+    || shutdownState.kind !== "running"
+    || !startupGate.isReady()
+  ) {
     return;
   }
   foregroundScheduled = true;
@@ -506,7 +522,11 @@ function updateOnlineMonitorState(
 }
 
 function scheduleOnlinePoll(): void {
-  if (onlinePollScheduled || shutdownState.kind !== "running") {
+  if (
+    onlinePollScheduled
+    || shutdownState.kind !== "running"
+    || !startupGate.isReady()
+  ) {
     return;
   }
   onlinePollScheduled = true;
@@ -597,11 +617,97 @@ function showAndFocusMainWindow(): boolean {
   return true;
 }
 
+type MainWindowReadyWait = {
+  readonly promise: Promise<void>;
+  readonly reject: (error: unknown) => void;
+};
+
+function createMainWindowReadyWait(
+  window: BrowserWindow,
+  signal: AbortSignal,
+): MainWindowReadyWait {
+  let settled = false;
+  let resolvePromise: ((value?: void | PromiseLike<void>) => void) | undefined;
+  let rejectPromise: ((reason?: unknown) => void) | undefined;
+
+  function cleanup(): void {
+    window.removeListener("ready-to-show", onReadyToShow);
+    window.removeListener("closed", onClosed);
+    signal.removeEventListener("abort", onAbort);
+  }
+
+  function rejectReady(error: unknown): void {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    cleanup();
+    if (rejectPromise == null) {
+      throw new Error("メインウィンドウの表示待機を初期化できません。");
+    }
+    rejectPromise(error);
+  }
+
+  function resolveReady(): void {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    cleanup();
+    if (resolvePromise == null) {
+      throw new Error("メインウィンドウの表示待機を初期化できません。");
+    }
+    resolvePromise();
+  }
+
+  function onReadyToShow(): void {
+    try {
+      if (window.isDestroyed()) {
+        rejectReady(new Error("メインウィンドウが破棄されました。"));
+        return;
+      }
+      if (!showAndFocusMainWindow()) {
+        rejectReady(new Error("メインウィンドウを表示できません。"));
+        return;
+      }
+    } catch (error) {
+      rejectReady(error);
+      return;
+    }
+    resolveReady();
+  }
+
+  function onClosed(): void {
+    rejectReady(new Error("メインウィンドウが閉じられました。"));
+  }
+
+  function onAbort(): void {
+    rejectReady(new Error("メインウィンドウの表示待機が中断されました。"));
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+  }
+
+  const promise = new Promise<void>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  window.once("ready-to-show", onReadyToShow);
+  window.once("closed", onClosed);
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) {
+    onAbort();
+  }
+  return { promise, reject: rejectReady };
+}
+
 async function createMainWindow(
   rendererUrl: string,
   application: TaskHubApplication,
+  gate: StartupGate,
+  signal: AbortSignal,
 ): Promise<void> {
-  if (shutdownState.kind !== "running") {
+  if (shutdownState.kind !== "running" || signal.aborted) {
     return;
   }
   const window = new BrowserWindow({
@@ -622,6 +728,7 @@ async function createMainWindow(
     rendererWebContents: window.webContents,
     rendererUrl,
     ports: application.getIpcPorts(),
+    startupGate: gate,
     diagnostic: {
       record: (error) => {
         recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", error);
@@ -632,14 +739,10 @@ async function createMainWindow(
 
   mainWindow = window;
   mainWindowRegistry = registry;
+  let readyToShow: MainWindowReadyWait | undefined;
   try {
     configureWindowSecurity(window, rendererUrl);
     registry.register(ipcMain);
-    window.once("ready-to-show", () => {
-      if (!window.isDestroyed()) {
-        showAndFocusMainWindow();
-      }
-    });
     window.on("focus", scheduleForegroundSync);
     window.on("close", (event) => {
       if (process.platform === "darwin" && shutdownState.kind === "running") {
@@ -654,19 +757,25 @@ async function createMainWindow(
         mainWindow = undefined;
       }
     });
-    if (app.isPackaged) {
-      const parsedRendererUrl = new URL(rendererUrl);
-      await window.loadFile(fileURLToPath(rendererUrl), { search: parsedRendererUrl.search });
-    } else {
-      await window.loadURL(rendererUrl);
-    }
+    readyToShow = createMainWindowReadyWait(window, signal);
+    const loadPromise = Promise.resolve().then(() => app.isPackaged
+      ? window.loadFile(
+        fileURLToPath(rendererUrl),
+        { search: new URL(rendererUrl).search },
+      )
+      : window.loadURL(rendererUrl));
+    await Promise.all([loadPromise, readyToShow.promise]);
   } catch (error) {
+    readyToShow?.reject(error);
     disposeMainWindowRegistry(registry);
     if (mainWindow === window) {
       mainWindow = undefined;
     }
     if (!window.isDestroyed()) {
       window.destroy();
+    }
+    if (signal.aborted || shutdownState.kind !== "running") {
+      return;
     }
     throw error;
   }
@@ -675,8 +784,10 @@ async function createMainWindow(
 function ensureMainWindow(
   rendererUrl: string,
   application: TaskHubApplication,
+  gate: StartupGate,
+  signal: AbortSignal,
 ): Promise<void> {
-  if (shutdownState.kind !== "running") {
+  if (shutdownState.kind !== "running" || signal.aborted) {
     return Promise.resolve();
   }
   if (mainWindow != null && !mainWindow.isDestroyed()) {
@@ -685,14 +796,50 @@ function ensureMainWindow(
   if (windowCreationPromise != null) {
     return windowCreationPromise;
   }
-  windowCreationPromise = createMainWindow(rendererUrl, application).finally(() => {
+  windowCreationPromise = createMainWindow(
+    rendererUrl,
+    application,
+    gate,
+    signal,
+  ).finally(() => {
     windowCreationPromise = undefined;
   });
   return windowCreationPromise;
 }
 
+function yieldToRenderer(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+async function startApplication(
+  application: TaskHubApplication,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    await application.start(signal);
+    if (signal.aborted || shutdownState.kind !== "running") {
+      startupGate.markStopped();
+      return;
+    }
+    startOperationalEventMonitoring();
+    startupGate.markReady();
+  } catch (error) {
+    if (signal.aborted || shutdownState.kind !== "running") {
+      startupGate.markStopped();
+      return;
+    }
+    recordPersistentError("main", "app.error", "bootstrap", error);
+    recordDiagnostic("app.error", "error");
+    console.error("アプリケーションの起動に失敗しました。");
+    startupGate.markFailed(error);
+  }
+}
+
 async function stopApplication(): Promise<void> {
   lifecycleController?.abort();
+  startupGate.markStopped();
   stopOperationalEventMonitoring();
   const registry = mainWindowRegistry;
   if (registry != null) {
@@ -706,6 +853,10 @@ async function stopApplication(): Promise<void> {
       recordDiagnostic("ipc.error", "error");
     }
     versionIpcRegistered = false;
+  }
+  const startPromise = applicationStartPromise;
+  if (startPromise != null) {
+    await startPromise;
   }
   await backgroundOperations;
   const application = taskHubApplication;
@@ -730,19 +881,35 @@ async function bootstrap(): Promise<void> {
   lifecycleController = controller;
   const application = createTaskHubApplication(controller);
   taskHubApplication = application;
-  await application.start(controller.signal);
   registerVersionIpcHandler(rendererUrl);
-  startOperationalEventMonitoring();
-  await ensureMainWindow(rendererUrl, application);
-
   app.on("activate", () => {
     if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
-      void ensureMainWindow(rendererUrl, application).catch((error) => {
+      void ensureMainWindow(
+        rendererUrl,
+        application,
+        startupGate,
+        controller.signal,
+      ).catch((error) => {
+        if (controller.signal.aborted || shutdownState.kind !== "running") {
+          return;
+        }
         recordPersistentError("main", "app.error", "main_window", error);
         recordDiagnostic("app.error", "error");
       });
     }
   });
+  await ensureMainWindow(
+    rendererUrl,
+    application,
+    startupGate,
+    controller.signal,
+  );
+  await yieldToRenderer();
+  if (controller.signal.aborted || shutdownState.kind !== "running") {
+    return;
+  }
+  applicationStartPromise = startApplication(application, controller.signal);
+  await applicationStartPromise;
 }
 
 app.on("window-all-closed", () => {

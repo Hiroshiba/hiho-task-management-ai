@@ -539,6 +539,7 @@ export const ipcFailureSchema = failureSchema;
 export const ipcAppVersionSchema = appVersionSchema;
 export const ipcChannelSchema = z.enum([
   "app:get-version",
+  "app:wait-for-startup",
   "asana:get-authentication-state",
   "asana:begin-reauthentication",
   "asana:complete-reauthentication",
@@ -597,6 +598,7 @@ export const ipcChannelSchema = z.enum([
 ]);
 
 export const ipcAppVersionResponseSchema = responseSchema(appVersionSchema);
+export const ipcAppStartupResponseSchema = responseSchema(completedResultSchema);
 export const ipcReadModelOverviewInputSchema = readModelOverviewRequestSchema;
 export const ipcReadModelTaskDetailInputSchema = readModelTaskDetailRequestSchema;
 export const ipcReadModelOverviewResponseSchema = responseSchema(viewModelOverviewSchema);
@@ -738,6 +740,7 @@ export type IpcSyncStateEvent = z.infer<typeof syncStateEventSchema>;
 export type IpcAiStatus = z.infer<typeof aiStatusSchema>;
 export type IpcEmptyRequest = undefined;
 export type IpcAppVersion = string;
+export type IpcAppStartupResponse = z.infer<typeof completedResultSchema>;
 export type IpcReadModelOverview = ViewModelOverview;
 export type IpcReadModelTaskDetail = ViewModelTaskDetail;
 
