@@ -7,10 +7,18 @@ import {
   type AiWorkflowTurnRequest,
 } from "../../shared/ai-workflow";
 import AiPanel from "./AiPanel.vue";
+import ExternalProposalPanel from "./ExternalProposalPanel.vue";
+import type {
+  ExternalAgentGuiApproveInput,
+  ExternalAgentGuiEditInput,
+  ExternalAgentGuiRejectInput,
+} from "../../shared/external-agent";
 import type {
   AiSessionFeedback,
   AiSessionStatus,
   AiSessionView,
+  RendererExternalAgentEditResult,
+  RendererExternalAgentState,
 } from "./state";
 
 type AiPanelApi = {
@@ -30,6 +38,10 @@ const props = defineProps<{
   sessions: readonly AiSessionView[];
   tasks: readonly AiTaskReference[];
   selectedSessionId?: string | undefined;
+  externalAgentState: RendererExternalAgentState;
+  externalAgentBusy: boolean;
+  externalAgentEditResult?: RendererExternalAgentEditResult | undefined;
+  externalReviewRequestId?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -44,12 +56,18 @@ const emit = defineEmits<{
   (event: "complete", sessionId: string): void;
   (event: "cancel", sessionId: string): void;
   (event: "select-task", sessionId: string, taskGid: string): void;
+  (event: "external-set-enabled", enabled: boolean): void;
+  (event: "external-edit", input: ExternalAgentGuiEditInput): void;
+  (event: "external-approve", input: ExternalAgentGuiApproveInput): void;
+  (event: "external-reject", input: ExternalAgentGuiRejectInput): void;
 }>();
 
 const dialogElement = ref<HTMLElement | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 const mobileDetailVisible = ref(false);
 const panelRefs = new Map<string, AiPanelApi>();
+const activeTab = ref<"internal" | "external">("internal");
+const pendingExternalReviewRequestId = ref<string | undefined>();
 
 const selectedSession = computed(() => {
   if (props.selectedSessionId == null) {
@@ -149,6 +167,11 @@ function selectSession(sessionId: string): void {
   emit("select-session", sessionId);
 }
 
+function startNewSession(): void {
+  activeTab.value = "internal";
+  emit("new-session");
+}
+
 function showSessionList(): void {
   mobileDetailVisible.value = false;
 }
@@ -222,10 +245,25 @@ watch(() => props.open, async (open) => {
   if (!open) {
     return;
   }
+  if (pendingExternalReviewRequestId.value != null) {
+    activeTab.value = "external";
+    pendingExternalReviewRequestId.value = undefined;
+  }
   mobileDetailVisible.value = props.selectedSessionId != null;
   await nextTick();
   closeButton.value?.focus();
 });
+
+watch(() => props.externalReviewRequestId, (requestId) => {
+  if (requestId == null) {
+    return;
+  }
+  if (props.open) {
+    activeTab.value = "external";
+    return;
+  }
+  pendingExternalReviewRequestId.value = requestId;
+}, { immediate: true });
 
 watch(() => props.selectedSessionId, (sessionId) => {
   if (props.open && sessionId != null) {
@@ -279,7 +317,40 @@ watch(() => props.selectedSessionId, (sessionId) => {
           閉じる
         </button>
       </header>
-      <div class="min-h-0 flex flex-1 flex-col md:grid md:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
+      <nav
+        class="flex shrink-0 border-b border-slate-200 px-4 dark:border-slate-700 sm:px-6"
+        role="tablist"
+        aria-label="AIアシスタントの表示"
+      >
+        <button
+          type="button"
+          role="tab"
+          class="border-b-2 px-1 py-3 text-sm font-medium"
+          :class="activeTab === 'internal'
+            ? 'border-sky-600 text-sky-700 dark:border-sky-400 dark:text-sky-300'
+            : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'"
+          :aria-selected="activeTab === 'internal'"
+          @click="activeTab = 'internal'"
+        >
+          内部の依頼
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="ml-5 border-b-2 px-1 py-3 text-sm font-medium"
+          :class="activeTab === 'external'
+            ? 'border-sky-600 text-sky-700 dark:border-sky-400 dark:text-sky-300'
+            : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'"
+          :aria-selected="activeTab === 'external'"
+          @click="activeTab = 'external'"
+        >
+          外部からの提案
+        </button>
+      </nav>
+      <div
+        v-show="activeTab === 'internal'"
+        class="min-h-0 flex flex-1 flex-col md:grid md:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]"
+      >
         <aside
           class="min-h-0 flex-1 overflow-y-auto border-b border-slate-200 dark:border-slate-700 md:block md:border-b-0 md:border-r"
           :class="mobileDetailVisible ? 'hidden' : 'block'"
@@ -293,7 +364,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
               type="button"
               class="primary-button"
               :disabled="!props.canStartNewSession || props.creatingSession"
-              @click="emit('new-session')"
+              @click="startNewSession"
             >
               {{ props.creatingSession ? "開始中" : "新しい依頼" }}
             </button>
@@ -454,6 +525,38 @@ watch(() => props.selectedSessionId, (sessionId) => {
             </div>
           </template>
         </main>
+      </div>
+      <div
+        v-show="activeTab === 'external'"
+        class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
+        role="tabpanel"
+        aria-label="外部からの提案"
+      >
+        <template v-if="props.externalAgentState.kind === 'ready'">
+          <ExternalProposalPanel
+            :state="props.externalAgentState.value"
+            :busy="props.externalAgentBusy"
+            :edit-result="props.externalAgentEditResult"
+            @set-enabled="(enabled) => emit('external-set-enabled', enabled)"
+            @edit="(input) => emit('external-edit', input)"
+            @approve="(input) => emit('external-approve', input)"
+            @reject="(input) => emit('external-reject', input)"
+          />
+        </template>
+        <p
+          v-else-if="props.externalAgentState.kind === 'loading'"
+          class="rounded-md bg-slate-100 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          role="status"
+        >
+          外部連携の状態を読み込んでいます。
+        </p>
+        <p
+          v-else
+          class="rounded-md bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:bg-rose-950 dark:text-rose-100"
+          role="alert"
+        >
+          {{ props.externalAgentState.message }}
+        </p>
       </div>
     </section>
   </div>

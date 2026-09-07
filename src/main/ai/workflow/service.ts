@@ -395,6 +395,7 @@ type PreparedTurn = {
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline: BaselineSnapshot;
   readonly baseline_snapshot_hash: string;
+  readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
   readonly taskctl_snapshot: TaskctlSnapshot;
   readonly user_message_locator: string;
   readonly explicit_split_request_locators: readonly string[];
@@ -408,6 +409,7 @@ type StoredProposal = {
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline: BaselineSnapshot;
   readonly baseline_snapshot_hash: string;
+  readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
   readonly basic_validation: ProposalValidationResult;
   readonly graph_validation: GraphValidationResult;
   readonly selected_operation_ids: readonly string[];
@@ -422,10 +424,13 @@ export type TrustedExternalStatusEvidence = Extract<
 
 /** Asana適用前に再取得状態を準備する入力です。 */
 export type ApprovalPreparationInput = {
+  readonly proposal_id: string;
   readonly proposal: Proposal;
   readonly baseline_snapshot: BaselineSnapshot;
+  readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
   readonly graph_validation_result: GraphValidationResult;
   readonly selected_operation_ids: readonly string[];
+  readonly created_via: string;
 };
 
 /** AIターンへ渡す同期済み状態を供給する関数の型です。 */
@@ -437,6 +442,13 @@ export type AiWorkflowSnapshotProvider = (
 export type AiWorkflowTaskctlSnapshotProvider = (
   signal: AbortSignal,
 ) => TaskctlSnapshot | PromiseLike<TaskctlSnapshot>;
+
+/** 提案基準に対応するCustom external dataを供給する関数の型です。 */
+export type AiWorkflowBaselineExternalDataProvider = (
+  baseline: BaselineSnapshot,
+  signal: AbortSignal,
+) => AsanaProposalApplicationInput["baseline_external_data"]
+  | PromiseLike<AsanaProposalApplicationInput["baseline_external_data"]>;
 
 /** ターン単位で外部ツールの構造化状態記録を収集する境界です。 */
 export interface AiWorkflowExternalStatusEvidenceCollector {
@@ -474,6 +486,7 @@ export interface AiWorkflowOptions {
   readonly session: AiWorkflowSessionPort;
   readonly snapshotProvider: AiWorkflowSnapshotProvider;
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
+  readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
   readonly externalStatusEvidenceCollector: AiWorkflowExternalStatusEvidenceCollector;
   readonly applicationCoordinator: Pick<AsanaProposalApplicationCoordinator, "apply">;
   readonly prepareApprovalInput: AiWorkflowApprovalInputProvider;
@@ -503,6 +516,11 @@ const snapshotProviderSchema = z.custom<AiWorkflowSnapshotProvider>(
 const taskctlSnapshotProviderSchema = z.custom<AiWorkflowTaskctlSnapshotProvider>(
   (value) => typeof value === "function",
   "taskctlスナップショット供給関数が必要です。",
+);
+
+const baselineExternalDataProviderSchema = z.custom<AiWorkflowBaselineExternalDataProvider>(
+  (value) => typeof value === "function",
+  "基準Custom external data供給関数が必要です。",
 );
 
 const externalStatusEvidenceCollectorSchema = z.custom<
@@ -569,6 +587,7 @@ const aiWorkflowOptionsSchema = z
     session: sessionPortSchema,
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
+    baselineExternalDataProvider: baselineExternalDataProviderSchema,
     externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
     applicationCoordinator: applicationCoordinatorSchema,
     prepareApprovalInput: approvalInputProviderSchema,
@@ -2129,6 +2148,7 @@ function createStoredProposal(
     snapshot: prepared.snapshot,
     baseline: prepared.baseline,
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
+    baseline_external_data: prepared.baseline_external_data,
     basic_validation: basic,
     graph_validation: graph,
     selected_operation_ids: eligibleOperationIds(proposal, graph),
@@ -2137,18 +2157,42 @@ function createStoredProposal(
   };
 }
 
-function createProposalView(stored: StoredProposal): AiWorkflowProposalView {
-  const selected = [...stored.selected_operation_ids];
-  const view = {
-    proposal_id: stored.proposal_id,
-    baseline_snapshot_hash: stored.baseline_snapshot_hash,
-    proposal: sanitizeProposalForRenderer(stored.proposal),
-    basic_validation: toWorkflowValidation(stored.basic_validation),
-    graph_validation: toWorkflowValidation(stored.graph_validation),
+export type WorkflowProposalViewInput = {
+  readonly proposal_id: string;
+  readonly proposal: Proposal;
+  readonly snapshot: AiWorkflowSnapshot;
+  readonly baseline_snapshot_hash: string;
+  readonly basic_validation: ProposalValidationResult;
+  readonly graph_validation: GraphValidationResult;
+  readonly selected_operation_ids: readonly string[];
+};
+
+/** 保持中の提案と検証結果をRenderer向け表示値へ変換します。 */
+export function createWorkflowProposalView(
+  input: WorkflowProposalViewInput,
+): AiWorkflowProposalView {
+  const selected = [...input.selected_operation_ids];
+  return aiWorkflowProposalViewSchema.parse({
+    proposal_id: identifierSchema.parse(input.proposal_id),
+    baseline_snapshot_hash: input.baseline_snapshot_hash,
+    proposal: sanitizeProposalForRenderer(input.proposal),
+    basic_validation: toWorkflowValidation(input.basic_validation),
+    graph_validation: toWorkflowValidation(input.graph_validation),
     selected_operation_ids: selected,
-    impact: calculateWorkflowImpact(stored.snapshot, stored.proposal, selected),
-  };
-  return aiWorkflowProposalViewSchema.parse(view);
+    impact: calculateWorkflowImpact(input.snapshot, input.proposal, selected),
+  });
+}
+
+function createProposalView(stored: StoredProposal): AiWorkflowProposalView {
+  return createWorkflowProposalView({
+    proposal_id: stored.proposal_id,
+    proposal: stored.proposal,
+    snapshot: stored.snapshot,
+    baseline_snapshot_hash: stored.baseline_snapshot_hash,
+    basic_validation: stored.basic_validation,
+    graph_validation: stored.graph_validation,
+    selected_operation_ids: stored.selected_operation_ids,
+  });
 }
 
 function preserveSelection(
@@ -2298,6 +2342,12 @@ export class AiWorkflowService {
               const snapshot = aiWorkflowSnapshotSchema.parse(rawSnapshot);
               const baseline = createBaselineSnapshot(snapshot);
               const baselineSnapshotHash = hashBaselineSnapshot(baseline);
+              const baselineExternalData = await this.options.baselineExternalDataProvider(
+                baseline,
+                turnSignal,
+              );
+              const validatedBaselineExternalData = asanaProposalApplicationInputSchema
+                .shape.baseline_external_data.parse(baselineExternalData);
               const rawTaskctlSnapshot = await this.options.taskctlSnapshotProvider(turnSignal);
               const taskctlSnapshot = taskctlSnapshotSchema.parse(rawTaskctlSnapshot);
               assertTaskctlSnapshotMatchesBaseline(snapshot, baseline, taskctlSnapshot);
@@ -2312,6 +2362,7 @@ export class AiWorkflowService {
                 snapshot,
                 baseline,
                 baseline_snapshot_hash: baselineSnapshotHash,
+                baseline_external_data: validatedBaselineExternalData,
                 taskctl_snapshot: taskctlSnapshot,
                 user_message_locator: userMessageLocator,
                 explicit_split_request_locators: explicitSplitRequestLocators,
@@ -2541,10 +2592,13 @@ export class AiWorkflowService {
     }
     const approvalInput = await this.options.prepareApprovalInput(
       {
+        proposal_id: stored.proposal_id,
         proposal: stored.proposal,
         baseline_snapshot: stored.baseline,
+        baseline_external_data: stored.baseline_external_data,
         graph_validation_result: stored.graph_validation,
         selected_operation_ids: selectedOperationIds,
+        created_via: "codex",
       },
       signal,
     );

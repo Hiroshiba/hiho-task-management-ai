@@ -45,6 +45,22 @@ import {
   type AiWorkflowTurnResult,
 } from "../ai-workflow";
 import {
+  externalAgentGuiApproveInputSchema,
+  externalAgentGuiChangedStateSchema,
+  externalAgentGuiEditInputSchema,
+  externalAgentGuiGetStateInputSchema,
+  externalAgentGuiRejectInputSchema,
+  externalAgentGuiSetEnabledInputSchema,
+  externalAgentGuiStateSchema,
+  type ExternalAgentGuiApproveInput,
+  type ExternalAgentGuiChangedState,
+  type ExternalAgentGuiEditInput,
+  type ExternalAgentGuiGetStateInput,
+  type ExternalAgentGuiRejectInput,
+  type ExternalAgentGuiSetEnabledInput,
+  type ExternalAgentGuiState,
+} from "../external-agent";
+import {
   viewModelOverviewSchema,
   viewModelTaskDetailSchema,
   type ViewModelOverview,
@@ -565,6 +581,14 @@ export const ipcChannelSchema = z.enum([
   "ai:status:subscribe",
   "ai:status:unsubscribe",
   "ai:status",
+  "external-agent:get-state",
+  "external-agent:set-enabled",
+  "external-agent:edit",
+  "external-agent:approve",
+  "external-agent:reject",
+  "external-agent:state:subscribe",
+  "external-agent:state:unsubscribe",
+  "external-agent:state",
   "obsidian:validate-vault",
   "obsidian:list-vaults",
   "obsidian:resolve-path",
@@ -646,6 +670,17 @@ export const ipcAiApprovalResponseSchema = responseSchema(aiWorkflowApprovalResu
 export const ipcAiCloseSessionInputSchema = identifierSchema;
 export const ipcAiCloseSessionResponseSchema = responseSchema(completedResultSchema);
 export { ipcAiDeltaEventSchema };
+export const ipcExternalAgentGetStateInputSchema = externalAgentGuiGetStateInputSchema;
+export const ipcExternalAgentGetStateResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentSetEnabledInputSchema = externalAgentGuiSetEnabledInputSchema;
+export const ipcExternalAgentSetEnabledResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentEditInputSchema = externalAgentGuiEditInputSchema;
+export const ipcExternalAgentEditResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentApproveInputSchema = externalAgentGuiApproveInputSchema;
+export const ipcExternalAgentApproveResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentRejectInputSchema = externalAgentGuiRejectInputSchema;
+export const ipcExternalAgentRejectResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentStateEventSchema = externalAgentGuiChangedStateSchema;
 export const ipcObsidianValidateInputSchema = z.object({ vault_id: vaultIdSchema }).strict();
 export const ipcObsidianValidateResponseSchema = responseSchema(obsidianVaultResultSchema);
 export const ipcObsidianListVaultsInputSchema = emptyRequestSchema;
@@ -689,6 +724,13 @@ export type IpcAiRejectInput = z.infer<typeof ipcAiRejectInputSchema>;
 export type IpcAiApprovalInput = z.infer<typeof ipcAiApprovalInputSchema>;
 export type IpcAiApprovalResult = z.infer<typeof aiWorkflowApprovalResultSchema>;
 export type IpcAiCloseSessionInput = z.infer<typeof ipcAiCloseSessionInputSchema>;
+export type IpcExternalAgentGuiState = ExternalAgentGuiState;
+export type IpcExternalAgentGuiChangedState = ExternalAgentGuiChangedState;
+export type IpcExternalAgentGuiGetStateInput = ExternalAgentGuiGetStateInput;
+export type IpcExternalAgentGuiSetEnabledInput = ExternalAgentGuiSetEnabledInput;
+export type IpcExternalAgentGuiEditInput = ExternalAgentGuiEditInput;
+export type IpcExternalAgentGuiApproveInput = ExternalAgentGuiApproveInput;
+export type IpcExternalAgentGuiRejectInput = ExternalAgentGuiRejectInput;
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;
 export type IpcObsidianVaultList = z.infer<typeof obsidianVaultListResultSchema>;
 export type IpcObsidianPathResult = z.infer<typeof obsidianPathResultSchema>;

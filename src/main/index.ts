@@ -370,6 +370,16 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
       recordDiagnostic("app.error", "error");
     },
     diagnostic: recordServiceDiagnostic,
+    open_external_agent_review: async () => {
+      const application = taskHubApplication;
+      if (application == null) {
+        throw new Error("TaskHubアプリケーションが初期化されていません。");
+      }
+      await ensureMainWindow(getRendererUrl(), application);
+      if (!showAndFocusMainWindow()) {
+        throw new Error("TaskHubメインウィンドウを表示できません。");
+      }
+    },
   });
 }
 

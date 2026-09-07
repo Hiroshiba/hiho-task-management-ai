@@ -24,6 +24,7 @@ import {
   AsanaOAuthTransportError,
 } from "../auth/asana-oauth";
 import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage";
+import { ExternalAgentServiceError } from "../external-agent";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -55,6 +56,17 @@ import {
   ipcChannelSchema,
   ipcEmptyRequestSchema,
   ipcFailureSchema,
+  ipcExternalAgentApproveInputSchema,
+  ipcExternalAgentApproveResponseSchema,
+  ipcExternalAgentEditInputSchema,
+  ipcExternalAgentEditResponseSchema,
+  ipcExternalAgentGetStateInputSchema,
+  ipcExternalAgentGetStateResponseSchema,
+  ipcExternalAgentRejectInputSchema,
+  ipcExternalAgentRejectResponseSchema,
+  ipcExternalAgentSetEnabledInputSchema,
+  ipcExternalAgentSetEnabledResponseSchema,
+  ipcExternalAgentStateEventSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
   ipcObsidianListVaultsInputSchema,
@@ -114,6 +126,11 @@ import {
   type IpcSetupVaultChoiceInput,
   type IpcSetupWorkspaceSelectionInput,
   type IpcFailure,
+  type IpcExternalAgentGuiApproveInput,
+  type IpcExternalAgentGuiEditInput,
+  type IpcExternalAgentGuiRejectInput,
+  type IpcExternalAgentGuiSetEnabledInput,
+  type IpcExternalAgentGuiState,
   type IpcGuiEditInput,
   type IpcGuiEditResult,
   type IpcObsidianPathResult,
@@ -193,6 +210,28 @@ export interface IpcGuiEditPort {
   apply(input: IpcGuiEditInput, signal: AbortSignal): MaybePromise<IpcGuiEditResult>;
 }
 
+/** 外部連携GUIの提案操作をIPCへ提供するポートです。 */
+export interface IpcExternalAgentPort {
+  getState(): MaybePromise<IpcExternalAgentGuiState>;
+  setEnabled(
+    input: IpcExternalAgentGuiSetEnabledInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcExternalAgentGuiState>;
+  edit(
+    input: IpcExternalAgentGuiEditInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcExternalAgentGuiState>;
+  approve(
+    input: IpcExternalAgentGuiApproveInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcExternalAgentGuiState>;
+  reject(
+    input: IpcExternalAgentGuiRejectInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcExternalAgentGuiState>;
+  onChanged?(listener: (state: IpcExternalAgentGuiState) => void): () => void;
+}
+
 /** AIワークフローをIPCへ提供するポートです。 */
 export interface IpcAiPort {
   getStatus(): MaybePromise<IpcAiStatus>;
@@ -224,6 +263,7 @@ export interface IpcServicePorts {
   readonly sync?: IpcSyncPort;
   readonly setup?: IpcSetupPort;
   readonly gui?: IpcGuiEditPort;
+  readonly externalAgent?: IpcExternalAgentPort;
   readonly ai?: IpcAiPort;
   readonly obsidian?: IpcObsidianPort;
 }
@@ -268,6 +308,28 @@ const failureMessages: Record<IpcFailure["code"], string> = {
 };
 
 function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
+  if (error instanceof ExternalAgentServiceError) {
+    switch (error.code) {
+      case "invalid_request":
+        return "invalid_request";
+      case "not_found":
+        return "not_found";
+      case "stale_revision":
+      case "context_changed":
+      case "context_mismatch":
+      case "request_id_reused":
+      case "conflict":
+        return "conflict";
+      case "disabled":
+      case "unavailable":
+      case "offline":
+      case "setup_required":
+      case "capacity_exceeded":
+        return "unavailable";
+      case "unknown_result":
+        return "operation_failed";
+    }
+  }
   if (error instanceof AsanaOAuthTokenEndpointError) {
     switch (error.code) {
       case "invalid_client":
@@ -363,6 +425,7 @@ export class IpcHandlerRegistry {
   private readonly syncSubscribers = new Set<WebContents>();
   private readonly aiSubscribers = new Set<WebContents>();
   private readonly aiStatusSubscribers = new Set<WebContents>();
+  private readonly externalAgentSubscribers = new Set<WebContents>();
   private readonly activeAbortControllers = new Set<AbortController>();
   private registeredIpcMain: IpcMain | undefined;
   private disposed = false;
@@ -401,6 +464,7 @@ export class IpcHandlerRegistry {
     this.syncSubscribers.clear();
     this.aiSubscribers.clear();
     this.aiStatusSubscribers.clear();
+    this.externalAgentSubscribers.clear();
     this.registeredIpcMain = undefined;
   }
 
@@ -720,6 +784,71 @@ export class IpcHandlerRegistry {
     );
     this.registerHandle(
       ipcMain,
+      "external-agent:get-state",
+      ipcExternalAgentGetStateInputSchema,
+      ipcExternalAgentGetStateResponseSchema,
+      async () => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.getState();
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "external-agent:set-enabled",
+      ipcExternalAgentSetEnabledInputSchema,
+      ipcExternalAgentSetEnabledResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.setEnabled(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "external-agent:edit",
+      ipcExternalAgentEditInputSchema,
+      ipcExternalAgentEditResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.edit(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "external-agent:approve",
+      ipcExternalAgentApproveInputSchema,
+      ipcExternalAgentApproveResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.approve(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "external-agent:reject",
+      ipcExternalAgentRejectInputSchema,
+      ipcExternalAgentRejectResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.reject(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
       "ai:start-turn",
       ipcAiTurnInputSchema,
       ipcAiTurnResponseSchema,
@@ -1018,6 +1147,16 @@ export class IpcHandlerRegistry {
       "ai:status:unsubscribe",
       this.aiStatusSubscribers,
     );
+    this.registerSubscription(
+      ipcMain,
+      "external-agent:state:subscribe",
+      this.externalAgentSubscribers,
+    );
+    this.registerSubscription(
+      ipcMain,
+      "external-agent:state:unsubscribe",
+      this.externalAgentSubscribers,
+    );
   }
 
   private registerSubscription(
@@ -1081,6 +1220,18 @@ export class IpcHandlerRegistry {
           status,
           this.aiStatusSubscribers,
           "ai:status",
+        );
+      });
+      this.cleanup.push(remove);
+    }
+    const externalAgent = this.options.ports.externalAgent;
+    if (externalAgent?.onChanged != null) {
+      const remove = externalAgent.onChanged((state) => {
+        this.sendServiceEvent(
+          ipcExternalAgentStateEventSchema,
+          state,
+          this.externalAgentSubscribers,
+          "external-agent:state",
         );
       });
       this.cleanup.push(remove);

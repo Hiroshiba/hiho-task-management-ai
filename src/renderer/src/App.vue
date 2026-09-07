@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ipcAiApprovalInputSchema,
   ipcAiCloseSessionInputSchema,
@@ -43,6 +43,17 @@ import {
   type AiWorkflowTurnRequest,
 } from "../../shared/ai-workflow";
 import {
+  externalAgentGuiApproveInputSchema,
+  externalAgentGuiEditInputSchema,
+  externalAgentGuiRejectInputSchema,
+  externalAgentGuiSetEnabledInputSchema,
+  externalAgentGuiStateSchema,
+  type ExternalAgentGuiApproveInput,
+  type ExternalAgentGuiEditInput,
+  type ExternalAgentGuiRejectInput,
+  type ExternalAgentGuiState,
+} from "../../shared/external-agent";
+import {
   viewModelOverviewSchema,
   viewModelTaskDetailSchema,
   type ViewModelOverview,
@@ -71,6 +82,8 @@ import {
   type RendererConnectionState,
   type RendererFailure,
   type RendererFilter,
+  type RendererExternalAgentEditResult,
+  type RendererExternalAgentState,
   type RendererGuiEdit,
   type RendererTaskEditMarker,
   type RendererTaskEditMarkerUpdate,
@@ -238,6 +251,9 @@ const aiDialogRef = ref<AiSessionDialogApi | null>(null);
 const aiDialogReturnFocus = ref<HTMLElement | null>(null);
 const aiSessionCreating = ref(false);
 const aiDialogFeedback = ref<Feedback | undefined>();
+const externalAgentState = ref<RendererExternalAgentState>({ kind: "loading" });
+const externalAgentBusy = ref(false);
+const externalAgentEditResult = ref<RendererExternalAgentEditResult | undefined>();
 const { addToast } = useToast();
 const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
@@ -250,6 +266,7 @@ const taskEditMarkers = ref(new Map<string, RendererTaskEditMarker>());
 let removeSyncSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
+let removeExternalAgentSubscription: (() => void) | undefined;
 let clockTimer: number | undefined;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
@@ -385,14 +402,30 @@ const aiSessionViews = computed<readonly AiSessionView[]>(() => aiSessions.value
     can_send_ai: aiSessionCanSend(session),
     ai_send_disabled_reason: aiSessionDisabledReason(session),
   })));
+const externalAgentWaitingCount = computed(() => {
+  if (externalAgentState.value.kind !== "ready") {
+    return 0;
+  }
+  return externalAgentState.value.value.proposals.filter((proposal) =>
+    proposal.state.kind === "pending_approval"
+  ).length;
+});
+const externalAgentRunningCount = computed(() => {
+  if (externalAgentState.value.kind !== "ready") {
+    return 0;
+  }
+  return externalAgentState.value.value.proposals.filter((proposal) =>
+    proposal.state.kind === "approving"
+  ).length;
+});
 const aiWaitingCount = computed(() => aiSessions.value.filter((session) =>
   session.status === "waiting_answer"
     || session.status === "waiting_approval"
     || session.status === "error"
-).length);
+).length + externalAgentWaitingCount.value);
 const aiRunningCount = computed(() => aiSessions.value.filter((session) =>
   session.status === "running"
-).length);
+).length + externalAgentRunningCount.value);
 const canOpenAiAssistant = computed(() => configured.value);
 const canStartNewAiSession = computed(() => canAcceptWrite.value
   && codexState.value.kind === "ready");
@@ -631,6 +664,138 @@ function displayFailure(value: IpcFailure): RendererFailure {
     code: value.code,
     message: failureText(value.code),
   });
+}
+
+function applyExternalAgentState(value: ExternalAgentGuiState): void {
+  externalAgentState.value = {
+    kind: "ready",
+    value: externalAgentGuiStateSchema.parse(value),
+  };
+}
+
+function showExternalAgentUnexpectedFailure(): void {
+  if (externalAgentState.value.kind === "loading") {
+    externalAgentState.value = {
+      kind: "error",
+      message: "外部提案の状態を取得できませんでした。もう一度お試しください。",
+    };
+  }
+  setAiDialogFeedback("failure", "外部提案の状態を更新できませんでした。もう一度お試しください。");
+}
+
+async function loadInitialExternalAgentState(): Promise<void> {
+  try {
+    const result = await taskHub.externalAgent.getState();
+    if (isFailure(result)) {
+      externalAgentState.value = { kind: "error", message: displayFailure(result).message };
+      return;
+    }
+    applyExternalAgentState(result.value);
+  } catch {
+    showExternalAgentUnexpectedFailure();
+  }
+}
+
+async function setExternalAgentEnabled(enabled: boolean): Promise<void> {
+  if (externalAgentBusy.value) {
+    return;
+  }
+  externalAgentBusy.value = true;
+  setAiDialogFeedback("progress", "外部連携の設定を更新しています。");
+  try {
+    const result = await taskHub.externalAgent.setEnabled(
+      externalAgentGuiSetEnabledInputSchema.parse({ enabled }),
+    );
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return;
+    }
+    applyExternalAgentState(result.value);
+    setAiDialogFeedback("success", enabled ? "外部連携を有効にしました。" : "外部連携を停止しました。");
+  } catch {
+    showExternalAgentUnexpectedFailure();
+  } finally {
+    externalAgentBusy.value = false;
+  }
+}
+
+async function editExternalAgentProposal(input: ExternalAgentGuiEditInput): Promise<void> {
+  if (externalAgentBusy.value) {
+    return;
+  }
+  externalAgentEditResult.value = undefined;
+  externalAgentBusy.value = true;
+  setAiDialogFeedback("progress", "外部提案を更新しています。");
+  try {
+    const result = await taskHub.externalAgent.edit(externalAgentGuiEditInputSchema.parse(input));
+    if (isFailure(result)) {
+      externalAgentEditResult.value = {
+        kind: "failed",
+        proposal_id: input.proposal_id,
+        revision: input.revision,
+      };
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return;
+    }
+    applyExternalAgentState(result.value);
+    externalAgentEditResult.value = {
+      kind: "saved",
+      proposal_id: input.proposal_id,
+      revision: input.revision,
+    };
+    setAiDialogFeedback("success", "外部提案を更新しました。");
+  } catch {
+    externalAgentEditResult.value = {
+      kind: "failed",
+      proposal_id: input.proposal_id,
+      revision: input.revision,
+    };
+    setAiDialogFeedback("failure", "外部提案を更新できませんでした。入力内容を確認して再試行してください。");
+  } finally {
+    externalAgentBusy.value = false;
+  }
+}
+
+async function approveExternalAgentProposal(input: ExternalAgentGuiApproveInput): Promise<void> {
+  if (externalAgentBusy.value) {
+    return;
+  }
+  externalAgentBusy.value = true;
+  setAiDialogFeedback("progress", "外部提案を承認しています。");
+  try {
+    const result = await taskHub.externalAgent.approve(externalAgentGuiApproveInputSchema.parse(input));
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return;
+    }
+    applyExternalAgentState(result.value);
+    setAiDialogFeedback("success", "外部提案の承認を受け付けました。");
+  } catch {
+    showExternalAgentUnexpectedFailure();
+  } finally {
+    externalAgentBusy.value = false;
+  }
+}
+
+async function rejectExternalAgentProposal(input: ExternalAgentGuiRejectInput): Promise<void> {
+  if (externalAgentBusy.value) {
+    return;
+  }
+  externalAgentBusy.value = true;
+  setAiDialogFeedback("progress", "外部提案を却下しています。");
+  try {
+    const result = await taskHub.externalAgent.reject(externalAgentGuiRejectInputSchema.parse(input));
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return;
+    }
+    applyExternalAgentState(result.value);
+    setAiDialogFeedback("success", "外部提案を却下しました。");
+  } catch {
+    showExternalAgentUnexpectedFailure();
+  } finally {
+    externalAgentBusy.value = false;
+  }
 }
 
 function syncFailureStateFromIpc(value: IpcFailure): RendererSyncState {
@@ -2519,6 +2684,14 @@ function openAiAssistant(): void {
   aiDialogVisible.value = true;
 }
 
+watch(() => externalAgentState.value.kind === "ready"
+  ? externalAgentState.value.value.review_target?.request_id
+  : undefined, (requestId) => {
+  if (requestId != null) {
+    openAiAssistant();
+  }
+});
+
 function closeAiAssistant(): void {
   aiDialogVisible.value = false;
   const target = aiDialogReturnFocus.value;
@@ -2983,6 +3156,17 @@ async function initialize(): Promise<void> {
     setFeedback("failure", "Codex状態を購読できませんでした。");
   }
   try {
+    removeExternalAgentSubscription = taskHub.externalAgent.onChanged((value) => {
+      try {
+        applyExternalAgentState(value);
+      } catch {
+        showExternalAgentUnexpectedFailure();
+      }
+    });
+  } catch {
+    showExternalAgentUnexpectedFailure();
+  }
+  try {
     const result = await taskHub.setup.getState();
     if (isFailure(result)) {
       setScreenError(result);
@@ -3000,6 +3184,7 @@ async function initialize(): Promise<void> {
     await loadAsanaAuthenticationState();
   }
   await loadInitialCodexStatus();
+  await loadInitialExternalAgentState();
 }
 
 onMounted(() => {
@@ -3028,6 +3213,9 @@ onUnmounted(() => {
   }
   if (removeAiStatusSubscription != null) {
     removeAiStatusSubscription();
+  }
+  if (removeExternalAgentSubscription != null) {
+    removeExternalAgentSubscription();
   }
 });
 </script>
@@ -3067,6 +3255,12 @@ onUnmounted(() => {
       :sessions="aiSessionViews"
       :tasks="aiTaskReferences"
       :selected-session-id="aiSelectedSessionId"
+      :external-agent-state="externalAgentState"
+      :external-agent-busy="externalAgentBusy"
+      :external-agent-edit-result="externalAgentEditResult"
+      :external-review-request-id="externalAgentState.kind === 'ready'
+        ? externalAgentState.value.review_target?.request_id
+        : undefined"
       @close="closeAiAssistant"
       @new-session="startAiSession"
       @select-session="selectAiSession"
@@ -3078,6 +3272,10 @@ onUnmounted(() => {
       @complete="completeAiSession"
       @cancel="cancelAiSession"
       @select-task="selectAiSessionTask"
+      @external-set-enabled="setExternalAgentEnabled"
+      @external-edit="editExternalAgentProposal"
+      @external-approve="approveExternalAgentProposal"
+      @external-reject="rejectExternalAgentProposal"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:flex-1 lg:min-h-0 lg:px-6">
       <p

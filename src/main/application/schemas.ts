@@ -87,6 +87,7 @@ const applicationOptionsSchema = z
     open_path: functionSchema,
     notify_unexpected_error: functionSchema,
     diagnostic: functionSchema,
+    open_external_agent_review: functionSchema,
   })
   .strict();
 
@@ -112,6 +113,7 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
   ) => Promise<void> | void;
   readonly notify_unexpected_error: (error: unknown) => void;
   readonly diagnostic: (error: unknown, channel: string) => void;
+  readonly open_external_agent_review: () => Promise<void> | void;
 };
 
 /** アプリケーションの状態を検証するスキーマです。 */

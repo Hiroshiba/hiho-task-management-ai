@@ -9,7 +9,7 @@ pnpm install
 pnpm run dev
 ```
 
-WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。対応する機能名は`app`、`asana`、`readModel`、`sync`、`setup`、`gui`、`ai`、`obsidian`です。
+WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。対応する機能名は`app`、`asana`、`readModel`、`sync`、`setup`、`gui`、`externalAgent`、`ai`、`obsidian`です。
 
 WebフロントはViteだけを起動します。
 
@@ -58,3 +58,17 @@ pnpm run package
 7. 再認証も同じ方式で行います。
 
 認証待ち時間やローカルコールバックURLの入力は不要です。Client Secretは会話、Issue、ログへ貼らないでください。
+
+## 外部Codexからの利用
+
+Windowsでは同じPCのWSL、macOSでは同じMacのターミナルから利用します。TaskHubを起動し、Asanaの初回設定と同期を済ませてください。
+
+1. AIアシスタントの「外部からの提案」を開き、外部連携を有効にします。
+2. 表示された登録コマンドを、Codexを使うターミナルで実行します。
+3. Codexから `$taskhub 今着手できるタスクを5件教えて` のように呼び出します。
+
+Codexの権限設定で実行が制限される場合は、画面にある実行許可を設定するコマンドを利用し、Codexを再起動します。
+
+新規タスクの追加は承認待ちの提案になります。TaskHubの「外部からの提案」で内容を確認し、承認するとAsanaへ反映します。
+
+SkillとCLIはTaskHubの起動時に更新されます。詳しい動作と更新方針は[要件・設計書の外部Codex連携](docs/requirements_and_design.md#128-外部codexからの利用)にまとめています。

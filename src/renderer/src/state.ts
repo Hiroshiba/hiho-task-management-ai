@@ -31,9 +31,13 @@ import {
 import type {
   ViewModelOverview,
   ViewModelTaskDetail,
-  ViewModelTaskRow,
 } from "../../shared/view-model";
-import { viewModelOverviewSchema } from "../../shared/view-model";
+import type { ExternalAgentGuiState } from "../../shared/external-agent";
+import {
+  filterTaskRows as sharedFilterTaskRows,
+  taskFilterSchema,
+  type TaskFilter,
+} from "../../shared/view-model";
 
 const rendererFailureCodeSchema = z.enum([
   "invalid_request",
@@ -146,20 +150,21 @@ export const rendererCodexStateSchema = z.discriminatedUnion("kind", [
 /** Rendererが表示するCodex状態の型です。 */
 export type RendererCodexState = z.infer<typeof rendererCodexStateSchema>;
 
-export const rendererFilterSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("normal") }).strict(),
-  z.object({ kind: z.literal("include_full_block") }).strict(),
-  z.object({ kind: z.literal("include_completed") }).strict(),
-  z.object({ kind: z.literal("include_withdrawn") }).strict(),
-  z.object({ kind: z.literal("unclassified") }).strict(),
-  z.object({ kind: z.literal("area"), area: z.string().min(1) }).strict(),
-  z.object({ kind: z.literal("overdue") }).strict(),
-  z.object({ kind: z.literal("completion_confirmation") }).strict(),
-  z.object({ kind: z.literal("cleanup") }).strict(),
-]);
+export const rendererFilterSchema = taskFilterSchema;
 
 /** Rendererの一覧フィルターを表す型です。 */
-export type RendererFilter = z.infer<typeof rendererFilterSchema>;
+export type RendererFilter = TaskFilter;
+
+export type RendererExternalAgentState =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly value: ExternalAgentGuiState }
+  | { readonly kind: "error"; readonly message: string };
+
+export type RendererExternalAgentEditResult = {
+  readonly kind: "saved" | "failed";
+  readonly proposal_id: string;
+  readonly revision: number;
+};
 
 export const rendererScreenStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("loading") }).strict(),
@@ -518,65 +523,13 @@ export function dueRelativeLabel(
   return `期限超過 ${Math.abs(days)}日`;
 }
 
-function hasReason(row: ViewModelTaskRow, code: string): boolean {
-  if (row.block_reason?.code === code) {
-    return true;
-  }
-  if (row.kind !== "excluded") {
-    return false;
-  }
-  return row.exclusion_reasons.some((reason) => reason.code === code);
-}
-
-function isOverdue(
-  row: ViewModelTaskRow,
-  asOf: string,
-): boolean {
-  if (row.due.kind === "none") {
-    return false;
-  }
-  if (row.due.kind === "on") {
-    return row.due.value < jstCalendarDate(asOf);
-  }
-  const dueAt = Date.parse(row.due.value);
-  const current = Date.parse(asOf);
-  if (!Number.isFinite(dueAt) || !Number.isFinite(current)) {
-    throw new Error("期限日時を比較できません。");
-  }
-  return dueAt < current;
-}
-
 /** 一覧フィルターを適用して決定論的なタスク行を返します。 */
 export function filterTaskRows(
   overview: ViewModelOverview,
   filter: RendererFilter,
   asOf: string,
-): readonly ViewModelTaskRow[] {
-  const validatedOverview = viewModelOverviewSchema.parse(overview);
-  const validatedFilter = rendererFilterSchema.parse(filter);
-  const validatedAsOf = isoDateTimeSchema.parse(asOf);
-  return validatedOverview.tasks.filter((row) => {
-    switch (validatedFilter.kind) {
-      case "normal":
-        return row.kind === "ranked";
-      case "include_full_block":
-        return row.kind === "ranked" || row.block_state === "full";
-      case "include_completed":
-        return row.kind === "ranked" || row.status === "completed";
-      case "include_withdrawn":
-        return row.kind === "ranked" || row.status === "withdrawn";
-      case "unclassified":
-        return row.area === "未分類";
-      case "area":
-        return row.area === validatedFilter.area;
-      case "overdue":
-        return isOverdue(row, validatedAsOf);
-      case "completion_confirmation":
-        return hasReason(row, "completion_confirmation");
-      case "cleanup":
-        return row.kind === "unavailable" || row.warning_count > 0;
-    }
-  });
+): readonly ViewModelOverview["tasks"][number][] {
+  return sharedFilterTaskRows(overview, filter, asOf);
 }
 
 /** 画面状態を初期設定画面へ遷移させます。 */
