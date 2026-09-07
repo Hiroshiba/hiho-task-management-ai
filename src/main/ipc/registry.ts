@@ -10,6 +10,13 @@ import {
   isApplicationUrl,
 } from "../security";
 import {
+  StartupGateAbortedError,
+  StartupGateFailedError,
+  StartupGateNotReadyError,
+  StartupGateStoppedError,
+  type StartupGate,
+} from "../startup-gate";
+import {
   AsanaOAuthCredentialStateError,
   AsanaOAuthHttpError,
   AsanaOAuthOutOfBandAbortedError,
@@ -47,6 +54,7 @@ import {
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
   ipcAsanaAuthenticationStateResponseSchema,
+  ipcAppStartupResponseSchema,
   ipcAsanaGetAuthenticationStateInputSchema,
   ipcAsanaBeginReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -274,6 +282,7 @@ export interface IpcHandlerRegistryOptions {
   readonly rendererUrl: string;
   readonly ports: IpcServicePorts;
   readonly diagnostic: IpcDiagnosticPort;
+  readonly startupGate: StartupGate;
 }
 
 class IpcCapabilityUnavailableError extends Error {
@@ -308,6 +317,18 @@ const failureMessages: Record<IpcFailure["code"], string> = {
 };
 
 function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
+  if (error instanceof StartupGateNotReadyError) {
+    return "unavailable";
+  }
+  if (error instanceof StartupGateFailedError) {
+    return "operation_failed";
+  }
+  if (
+    error instanceof StartupGateStoppedError
+    || error instanceof StartupGateAbortedError
+  ) {
+    return "aborted";
+  }
   if (error instanceof ExternalAgentServiceError) {
     switch (error.code) {
       case "invalid_request":
@@ -387,6 +408,12 @@ function validateOptions(options: IpcHandlerRegistryOptions): void {
   }
   if (typeof options?.ports !== "object" || options.ports == null) {
     throw new TypeError("IPCサービスポートが必要です。");
+  }
+  if (
+    typeof options?.startupGate?.assertReady !== "function"
+    || typeof options.startupGate.waitForStartup !== "function"
+  ) {
+    throw new TypeError("IPC起動ゲートが必要です。");
   }
 }
 
@@ -469,6 +496,16 @@ export class IpcHandlerRegistry {
   }
 
   private registerInvokeHandlers(ipcMain: IpcMain): void {
+    this.registerHandleBeforeStartup(
+      ipcMain,
+      "app:wait-for-startup",
+      ipcEmptyRequestSchema,
+      ipcAppStartupResponseSchema,
+      async (_input, signal) => {
+        await this.options.startupGate.waitForStartup(signal);
+        return createCompletedValue();
+      },
+    );
     this.registerHandle(
       ipcMain,
       "asana:get-authentication-state",
@@ -1049,6 +1086,41 @@ export class IpcHandlerRegistry {
     responseSchema: z.ZodType<IpcResponse<TOutput>>,
     operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
   ): void {
+    this.registerHandleWithStartupGate(
+      ipcMain,
+      channel,
+      inputSchema,
+      responseSchema,
+      operation,
+      true,
+    );
+  }
+
+  private registerHandleBeforeStartup<TInput, TOutput>(
+    ipcMain: IpcMain,
+    channel: string,
+    inputSchema: z.ZodType<TInput>,
+    responseSchema: z.ZodType<IpcResponse<TOutput>>,
+    operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
+  ): void {
+    this.registerHandleWithStartupGate(
+      ipcMain,
+      channel,
+      inputSchema,
+      responseSchema,
+      operation,
+      false,
+    );
+  }
+
+  private registerHandleWithStartupGate<TInput, TOutput>(
+    ipcMain: IpcMain,
+    channel: string,
+    inputSchema: z.ZodType<TInput>,
+    responseSchema: z.ZodType<IpcResponse<TOutput>>,
+    operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
+    requiresStartupReady: boolean,
+  ): void {
     const validatedChannel = ipcChannelSchema.parse(channel);
     ipcMain.handle(validatedChannel, (event, payload: unknown) =>
       this.execute(
@@ -1058,6 +1130,7 @@ export class IpcHandlerRegistry {
         inputSchema,
         responseSchema,
         operation,
+        requiresStartupReady,
       ));
     this.cleanup.push(() => {
       ipcMain.removeHandler(validatedChannel);
@@ -1071,6 +1144,7 @@ export class IpcHandlerRegistry {
     inputSchema: z.ZodType<TInput>,
     responseSchema: z.ZodType<IpcResponse<TOutput>>,
     operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
+    requiresStartupReady: boolean,
   ): Promise<IpcResponse<TOutput>> {
     const controller = new AbortController();
     this.activeAbortControllers.add(controller);
@@ -1093,11 +1167,24 @@ export class IpcHandlerRegistry {
         return responseSchema.parse(this.createFailure("invalid_request"));
       }
       try {
+        if (requiresStartupReady) {
+          this.options.startupGate.assertReady();
+        }
         const value = await operation(input, controller.signal);
         return responseSchema.parse({ kind: "ok", value });
       } catch (error: unknown) {
         if (error instanceof IpcCapabilityUnavailableError) {
           return responseSchema.parse(this.createFailure("not_configured"));
+        }
+        if (
+          error instanceof StartupGateNotReadyError
+          || error instanceof StartupGateFailedError
+          || error instanceof StartupGateStoppedError
+          || error instanceof StartupGateAbortedError
+        ) {
+          return responseSchema.parse(
+            this.createFailure(ipcFailureCodeForError(error)),
+          );
         }
         this.options.diagnostic.record(error, channel);
         const code = ipcFailureCodeForError(error);

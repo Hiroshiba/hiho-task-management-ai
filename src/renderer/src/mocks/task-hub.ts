@@ -20,6 +20,7 @@ import {
   ipcAiStatusEventSchema,
   ipcAiTurnInputSchema,
   ipcAiTurnResponseSchema,
+  ipcAppStartupResponseSchema,
   ipcAppVersionSchema,
   ipcAsanaAuthenticationStateResponseSchema,
   ipcAsanaAuthenticationStateSchema,
@@ -976,6 +977,8 @@ export function createMockTaskHubApi(): TaskHubApi {
   const api: TaskHubApi = {
     app: {
       getVersion: () => Promise.resolve().then(() => ipcAppVersionSchema.parse("0.1.0-mock")),
+      waitForStartup: () => Promise.resolve().then(() =>
+        ipcAppStartupResponseSchema.parse(ok({ completed: true }))),
     },
     asana: {
       getAuthenticationState: () => Promise.resolve().then(() => {

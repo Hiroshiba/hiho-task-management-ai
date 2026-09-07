@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import {
   ipcAiApprovalInputSchema,
   ipcAiCloseSessionInputSchema,
@@ -60,8 +70,7 @@ import {
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import AppHeader from "./AppHeader.vue";
-import AiSessionDialog from "./AiSessionDialog.vue";
-import SetupWizard from "./SetupWizard.vue";
+import type AiSessionDialog from "./AiSessionDialog.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
@@ -96,6 +105,8 @@ import { useTaskHub } from "./task-hub";
 import { useToast } from "./useToast";
 
 const taskHub = useTaskHub();
+
+const SetupWizard = defineAsyncComponent(() => import("./SetupWizard.vue"));
 
 type SetupAction =
   | { readonly kind: "start" }
@@ -136,6 +147,11 @@ type TaskDataRefreshResult =
 
 type ActiveSyncReload =
   | { readonly kind: "idle" }
+  | {
+      readonly kind: "initial_loading";
+      readonly generation: number;
+      readonly completion: Promise<TaskDataRefreshResult>;
+    }
   | {
       readonly kind: "loading";
       readonly sync_at: string;
@@ -246,6 +262,7 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiSessions = ref<AiSessionRecord[]>([]);
 const aiDialogVisible = ref(false);
+const aiDialogComponent = shallowRef<typeof AiSessionDialog>();
 const aiSelectedSessionId = ref<string | undefined>();
 const aiDialogRef = ref<AiSessionDialogApi | null>(null);
 const aiDialogReturnFocus = ref<HTMLElement | null>(null);
@@ -268,6 +285,7 @@ let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
 let clockTimer: number | undefined;
+let isMounted = false;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
 let asanaAuthenticationStateLoadInProgress = false;
@@ -1504,7 +1522,19 @@ function startTaskDataRefresh(): TaskDataRefreshRequest {
 }
 
 async function reloadTaskData(): Promise<TaskDataRefreshResult> {
+  activeSyncReload = { kind: "idle" };
   return startTaskDataRefresh().completion;
+}
+
+function startInitialTaskDataRefresh(): Promise<TaskDataRefreshResult> {
+  const request = startTaskDataRefresh();
+  activeSyncReload = {
+    kind: "initial_loading",
+    generation: request.generation,
+    completion: request.completion,
+  };
+  void finalizeSyncReload(request.generation, request.completion);
+  return request.completion;
 }
 
 function syncTimestamp(value: string): number {
@@ -1526,14 +1556,45 @@ async function finalizeSyncReload(generation: number, completion: Promise<TaskDa
   try {
     await completion;
   } catch {
-    if (activeSyncReload.kind === "loading" && activeSyncReload.generation === generation) {
+    if (
+      activeSyncReload.kind !== "idle"
+      && activeSyncReload.generation === generation
+      && activeSyncReload.completion === completion
+    ) {
       showUnexpectedFailure();
     }
   } finally {
-    if (activeSyncReload.kind === "loading" && activeSyncReload.generation === generation) {
+    if (
+      activeSyncReload.kind !== "idle"
+      && activeSyncReload.generation === generation
+      && activeSyncReload.completion === completion
+    ) {
       activeSyncReload = { kind: "idle" };
     }
   }
+}
+
+async function completeInitialSyncReload(
+  syncAt: string,
+  generation: number,
+  completion: Promise<TaskDataRefreshResult>,
+): Promise<TaskDataRefreshResult> {
+  const result = await completion;
+  if (taskDataGeneration !== generation) {
+    return reloadTaskDataAfterSuccessfulSync(syncAt);
+  }
+  if (result.kind !== "applied" || loadedAtOrAfter(syncAt)) {
+    return result;
+  }
+  const request = startTaskDataRefresh();
+  activeSyncReload = {
+    kind: "loading",
+    sync_at: syncAt,
+    generation: request.generation,
+    completion: request.completion,
+  };
+  void finalizeSyncReload(request.generation, request.completion);
+  return request.completion;
 }
 
 function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefreshResult> {
@@ -1543,6 +1604,23 @@ function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefr
   if (activeSyncReload.kind === "loading"
     && syncTimestamp(activeSyncReload.sync_at) >= syncTimestamp(syncAt)) {
     return activeSyncReload.completion;
+  }
+  if (activeSyncReload.kind === "initial_loading" && lastLoadedSuccessfulSyncAt == null) {
+    const initialGeneration = activeSyncReload.generation;
+    const initialCompletion = activeSyncReload.completion;
+    const completion = completeInitialSyncReload(
+      syncAt,
+      initialGeneration,
+      initialCompletion,
+    );
+    activeSyncReload = {
+      kind: "loading",
+      sync_at: syncAt,
+      generation: initialGeneration,
+      completion,
+    };
+    void finalizeSyncReload(initialGeneration, completion);
+    return completion;
   }
   const request = startTaskDataRefresh();
   activeSyncReload = {
@@ -1563,7 +1641,7 @@ function applySetupState(value: unknown): void {
   setCodexFromSetup(parsed);
   if (parsed.kind === "ready") {
     screen.value = rendererScreenStateSchema.parse({ kind: "dashboard" });
-    void reloadTaskData();
+    void startInitialTaskDataRefresh();
     if (!wasConfigured && !wasLoading && !asanaAuthenticationStateLoaded.value) {
       void loadAsanaAuthenticationState();
     }
@@ -2676,10 +2754,19 @@ function appendDelta(delta: { readonly session_id: string; readonly delta: strin
   }
 }
 
-function openAiAssistant(): void {
+async function openAiAssistant(): Promise<void> {
   if (!aiDialogVisible.value) {
     const activeElement = document.activeElement;
     aiDialogReturnFocus.value = activeElement instanceof HTMLElement ? activeElement : null;
+  }
+  if (aiDialogComponent.value == null) {
+    try {
+      const module = await import("./AiSessionDialog.vue");
+      aiDialogComponent.value = module.default;
+    } catch (error) {
+      showUnexpectedFailure();
+      throw error;
+    }
   }
   aiDialogVisible.value = true;
 }
@@ -2688,7 +2775,7 @@ watch(() => externalAgentState.value.kind === "ready"
   ? externalAgentState.value.value.review_target?.request_id
   : undefined, (requestId) => {
   if (requestId != null) {
-    openAiAssistant();
+    void openAiAssistant();
   }
 });
 
@@ -2764,7 +2851,7 @@ async function createAiSession(taskGid: string | undefined): Promise<string | un
 }
 
 async function startAiSession(): Promise<void> {
-  openAiAssistant();
+  await openAiAssistant();
   if (!canStartNewAiSession.value) {
     setAiDialogFeedback(unavailableFeedbackKind(), "新しいAI依頼は現在利用できません。");
     return;
@@ -2776,8 +2863,7 @@ async function startAiSession(): Promise<void> {
   await nextTick();
   const dialog = aiDialogRef.value;
   if (dialog == null) {
-    showAiSessionFocusFailure(sessionId);
-    return;
+    throw new Error("AIダイアログがマウントされていません。");
   }
   switch (dialog.focusSessionInput(sessionId)) {
     case "focused":
@@ -2879,7 +2965,7 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
   });
-  openAiAssistant();
+  await openAiAssistant();
   const sessionId = await createAiSession(taskGid);
   if (sessionId == null) {
     return;
@@ -3187,14 +3273,34 @@ async function initialize(): Promise<void> {
   await loadInitialExternalAgentState();
 }
 
+async function waitForStartupAndInitialize(): Promise<void> {
+  try {
+    const result = await taskHub.app.waitForStartup();
+    if (!isMounted) {
+      return;
+    }
+    if (isFailure(result)) {
+      setScreenError(result);
+      return;
+    }
+    await initialize();
+  } catch {
+    if (isMounted) {
+      screen.value = createErrorScreenState("operation_failed", failureText("operation_failed"));
+    }
+  }
+}
+
 onMounted(() => {
+  isMounted = true;
   clockTimer = window.setInterval(() => {
     currentAsOf.value = new Date().toISOString();
   }, 60_000);
-  void initialize();
+  void waitForStartupAndInitialize();
 });
 
 onBeforeUnmount(() => {
+  isMounted = false;
   clearAsanaAuthorizationCode();
   asanaAuthenticationBusy.value = false;
   asanaAuthenticationStateRequestBusy.value = false;
@@ -3246,7 +3352,9 @@ onUnmounted(() => {
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
     />
-    <AiSessionDialog
+    <component
+      :is="aiDialogComponent"
+      v-if="aiDialogComponent != null"
       ref="aiDialogRef"
       :open="aiDialogVisible"
       :can-start-new-session="canStartNewAiSession"
