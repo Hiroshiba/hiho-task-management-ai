@@ -1196,6 +1196,7 @@ function applicationReasonLabel(reason: string): string {
                   :tasks="props.tasks"
                   :creations="creations"
                   :disabled="!props.canWrite"
+                  :mode="{ kind: 'full' }"
                   @save="saveEditedOperation"
                   @cancel="cancelEditing"
                 />

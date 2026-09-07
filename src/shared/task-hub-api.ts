@@ -18,6 +18,11 @@ import type {
   IpcFailure,
   IpcGuiEditInput,
   IpcGuiEditResult,
+  IpcExternalAgentGuiApproveInput,
+  IpcExternalAgentGuiEditInput,
+  IpcExternalAgentGuiRejectInput,
+  IpcExternalAgentGuiSetEnabledInput,
+  IpcExternalAgentGuiState,
   IpcObsidianPathResult,
   IpcObsidianVaultList,
   IpcObsidianVaultResult,
@@ -91,6 +96,14 @@ export interface TaskHubApi {
   };
   readonly gui: {
     readonly apply: (input: IpcGuiEditInput) => IpcResult<IpcGuiEditResult>;
+  };
+  readonly externalAgent: {
+    readonly getState: () => IpcResult<IpcExternalAgentGuiState>;
+    readonly setEnabled: (input: IpcExternalAgentGuiSetEnabledInput) => IpcResult<IpcExternalAgentGuiState>;
+    readonly edit: (input: IpcExternalAgentGuiEditInput) => IpcResult<IpcExternalAgentGuiState>;
+    readonly approve: (input: IpcExternalAgentGuiApproveInput) => IpcResult<IpcExternalAgentGuiState>;
+    readonly reject: (input: IpcExternalAgentGuiRejectInput) => IpcResult<IpcExternalAgentGuiState>;
+    readonly onChanged: IpcSubscription<IpcExternalAgentGuiState>;
   };
   readonly ai: {
     readonly getStatus: () => IpcResult<IpcAiStatus>;

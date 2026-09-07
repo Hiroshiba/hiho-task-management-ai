@@ -12,6 +12,7 @@ const mockFeatureNameSchema = z.enum([
   "sync",
   "setup",
   "gui",
+  "externalAgent",
   "ai",
   "obsidian",
 ]);
@@ -106,6 +107,9 @@ export function createTaskHubApi(search: string, nativeApi: TaskHubApi | undefin
     },
     get gui() {
       return selectTaskHubNamespace("gui", mockSelection, nativeApi);
+    },
+    get externalAgent() {
+      return selectTaskHubNamespace("externalAgent", mockSelection, nativeApi);
     },
     get ai() {
       return selectTaskHubNamespace("ai", mockSelection, nativeApi);

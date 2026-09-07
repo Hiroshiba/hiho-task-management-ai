@@ -31,6 +31,17 @@ import {
   ipcFailureSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
+  ipcExternalAgentApproveInputSchema,
+  ipcExternalAgentApproveResponseSchema,
+  ipcExternalAgentEditInputSchema,
+  ipcExternalAgentEditResponseSchema,
+  ipcExternalAgentGetStateInputSchema,
+  ipcExternalAgentGetStateResponseSchema,
+  ipcExternalAgentRejectInputSchema,
+  ipcExternalAgentRejectResponseSchema,
+  ipcExternalAgentSetEnabledInputSchema,
+  ipcExternalAgentSetEnabledResponseSchema,
+  ipcExternalAgentStateEventSchema,
   ipcObsidianListVaultsInputSchema,
   ipcObsidianListVaultsResponseSchema,
   ipcObsidianOpenNoteInputSchema,
@@ -80,6 +91,11 @@ import {
   type IpcCodexDelta,
   type IpcFailure,
   type IpcGuiEditInput,
+  type IpcExternalAgentGuiApproveInput,
+  type IpcExternalAgentGuiEditInput,
+  type IpcExternalAgentGuiRejectInput,
+  type IpcExternalAgentGuiSetEnabledInput,
+  type IpcExternalAgentGuiState,
   type IpcSetupAsanaAuthorizationBeginInput,
   type IpcSetupAsanaAuthorizationCancelInput,
   type IpcSetupAsanaAuthorizationCompleteInput,
@@ -96,6 +112,10 @@ import {
   aiWorkflowProposalViewSchema,
   aiWorkflowTurnResultSchema,
 } from "../../../shared/ai-workflow";
+import {
+  externalAgentGuiStateSchema,
+  externalAgentProposalSchema,
+} from "../../../shared/external-agent";
 import {
   type Dependency,
 } from "../../../shared/domain";
@@ -132,6 +152,10 @@ const SNAPSHOT_HASH = "0".repeat(64);
 const GROUP_ID = "mock-group";
 const OPERATION_ID = "mock-operation";
 const PROPOSAL_ID = "mock-proposal";
+const EXTERNAL_GROUP_ID = "mock-external-group";
+const EXTERNAL_OPERATION_ID = "mock-external-operation";
+const EXTERNAL_PROPOSAL_ID = "mock-external-proposal";
+const EXTERNAL_REQUEST_ID = "mock-external-request";
 const TASK_GIDS = [PRIMARY_TASK_GID, "mock-task-2", "mock-task-3"];
 
 function ok<T>(value: T): MockResult<T> {
@@ -615,6 +639,79 @@ function createProposalView(title: string): IpcAiProposalView {
   });
 }
 
+function createExternalProposal(): IpcExternalAgentGuiState["proposals"][number] {
+  const view = aiWorkflowProposalViewSchema.parse({
+    proposal_id: EXTERNAL_PROPOSAL_ID,
+    baseline_snapshot_hash: SNAPSHOT_HASH,
+    proposal: {
+      title: "外部エージェントからの新規タスク提案",
+      groups: [{
+        group_id: EXTERNAL_GROUP_ID,
+        atomic: true,
+        operations: [{
+          operation: "create_task",
+          operation_id: EXTERNAL_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "外部エージェントが明示的に提出した独立タスクです。",
+          basis: "explicit",
+          confidence: 0.92,
+          evidence_refs: [{
+            kind: "external_tool",
+            locator: "mock-external-codex",
+            excerpt: "独立タスクとして追加してください。",
+          }],
+          temporary_ref: "mock-external-task",
+          creation: { kind: "single_task" },
+          before: { kind: "absent" },
+          after: {
+            title: "外部エージェントからの新規タスク",
+            notes: "外部提案の説明です。",
+            status: "not_started",
+            importance: 4,
+            area: "開発",
+            due: { kind: "due_on", due_on: "2026-09-20" },
+          },
+        }],
+      }],
+    },
+    basic_validation: {
+      operations: [{ kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_OPERATION_ID }],
+      groups: [{
+        group_id: EXTERNAL_GROUP_ID,
+        atomic: true,
+        applicable: true,
+        operation_ids: [EXTERNAL_OPERATION_ID],
+      }],
+    },
+    graph_validation: {
+      operations: [{ kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_OPERATION_ID }],
+      groups: [{
+        group_id: EXTERNAL_GROUP_ID,
+        atomic: true,
+        applicable: true,
+        operation_ids: [EXTERNAL_OPERATION_ID],
+      }],
+    },
+    selected_operation_ids: [EXTERNAL_OPERATION_ID],
+    impact: {
+      impacted_task_count: 0,
+      impacted_task_gids: [],
+      rank_changes: [],
+    },
+  });
+  return externalAgentProposalSchema.parse({
+    proposal_id: EXTERNAL_PROPOSAL_ID,
+    operation_id: EXTERNAL_OPERATION_ID,
+    request_id: EXTERNAL_REQUEST_ID,
+    instance_id: "mock-external-instance",
+    context_id: "mock-external-context",
+    revision: 1,
+    source: "external_tool",
+    state: { kind: "pending_approval" },
+    view,
+  });
+}
+
 function selectedOperationIds(selection: IpcAiSelectionInput["selection"]): string[] {
   switch (selection.kind) {
     case "all":
@@ -643,6 +740,16 @@ function findMockAiSession(
 export function createMockTaskHubApi(): TaskHubApi {
   const details = createInitialDetails();
   let overview = createOverview(details, SYNC_AT, SYNC_AT);
+  let externalAgentState: IpcExternalAgentGuiState = externalAgentGuiStateSchema.parse({
+    enabled: false,
+    bridge: { kind: "running" },
+    registration: {
+      command: "taskhub external-agent register --transport windows-pipe",
+      allow_execution_command: "taskhub external-agent register --transport windows-pipe --allow-execution",
+      instructions: "外部Codexで登録commandを一度実行し、固定ランチャーだけを実行許可へ追加してから外部Codexを再起動してください。",
+    },
+    proposals: [createExternalProposal()],
+  });
   const setupState: IpcSetupState = ipcSetupStateSchema.parse({
     kind: "ready",
     step: "ready",
@@ -687,6 +794,7 @@ export function createMockTaskHubApi(): TaskHubApi {
   const syncListeners = new Set<(value: IpcSyncStateEvent) => void>();
   const aiDeltaListeners = new Set<(value: IpcCodexDelta) => void>();
   const aiStatusListeners = new Set<(value: IpcAiStatus) => void>();
+  const externalAgentListeners = new Set<(value: IpcExternalAgentGuiState) => void>();
   const aiStatus = ipcAiStatusEventSchema.parse({ kind: "ready", model: "mock-model" });
   function setupResult(): MockResult<IpcSetupState> {
     return ipcSetupStateResponseSchema.parse(ok(setupState));
@@ -695,6 +803,145 @@ export function createMockTaskHubApi(): TaskHubApi {
   function syncResultState(value: IpcSyncStateEvent): void {
     syncState = ipcSyncStateEventSchema.parse(value);
     notify(syncListeners, syncState);
+  }
+
+  function updateExternalAgentState(value: IpcExternalAgentGuiState): IpcExternalAgentGuiState {
+    externalAgentState = externalAgentGuiStateSchema.parse(value);
+    notify(externalAgentListeners, ipcExternalAgentStateEventSchema.parse(externalAgentState));
+    return externalAgentState;
+  }
+
+  function findExternalProposal(proposalId: string): IpcExternalAgentGuiState["proposals"][number] | undefined {
+    return externalAgentState.proposals.find((proposal) => proposal.proposal_id === proposalId);
+  }
+
+  function replaceExternalProposal(
+    proposal: IpcExternalAgentGuiState["proposals"][number],
+  ): IpcExternalAgentGuiState {
+    const replaced = externalAgentState.proposals.map((candidate) =>
+      candidate.proposal_id === proposal.proposal_id ? proposal : candidate);
+    return updateExternalAgentState({ ...externalAgentState, proposals: replaced });
+  }
+
+  function externalAgentEdit(
+    input: IpcExternalAgentGuiEditInput,
+  ): MockResult<IpcExternalAgentGuiState> {
+    const parsedInput = ipcExternalAgentEditInputSchema.parse(input);
+    const proposal = findExternalProposal(parsedInput.proposal_id);
+    if (proposal == null) {
+      return failure("not_found", "指定した外部提案がmockにありません。");
+    }
+    if (proposal.revision !== parsedInput.revision) {
+      return failure("conflict", "外部提案の版がmockの状態と一致しません。");
+    }
+    if (proposal.state.kind !== "pending_approval") {
+      return failure("conflict", "承認待ちの外部提案だけ編集できます。");
+    }
+    const operations = proposal.view.proposal.groups.flatMap((group) => group.operations);
+    const operation = operations[0];
+    if (operation == null || operation.operation !== "create_task") {
+      throw new Error("mockの外部提案操作が不正です。");
+    }
+    if (operation.operation_id !== parsedInput.operation_id) {
+      return failure("not_found", "指定した外部提案操作がmockにありません。");
+    }
+    const groups = proposal.view.proposal.groups.map((group) => ({
+      ...group,
+      operations: group.operations.map((candidate) => {
+        if (candidate.operation_id !== parsedInput.operation_id) {
+          return candidate;
+        }
+        if (candidate.operation !== "create_task") {
+          throw new Error("mockの外部提案操作が不正です。");
+        }
+        return {
+          ...candidate,
+          after: {
+            ...candidate.after,
+            title: parsedInput.title,
+            ...(parsedInput.notes == null ? {} : { notes: parsedInput.notes }),
+            ...(parsedInput.status == null ? {} : { status: parsedInput.status }),
+            ...(parsedInput.importance == null ? {} : { importance: parsedInput.importance }),
+            ...(parsedInput.area == null ? {} : { area: parsedInput.area }),
+            ...(parsedInput.due == null ? {} : { due: parsedInput.due }),
+          },
+        };
+      }),
+    }));
+    const nextProposal = externalAgentProposalSchema.parse({
+      ...proposal,
+      revision: proposal.revision + 1,
+      view: aiWorkflowProposalViewSchema.parse({
+        ...proposal.view,
+        proposal: { ...proposal.view.proposal, groups },
+      }),
+    });
+    return ipcExternalAgentEditResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
+  }
+
+  function externalAgentApprove(
+    input: IpcExternalAgentGuiApproveInput,
+  ): MockResult<IpcExternalAgentGuiState> {
+    const parsedInput = ipcExternalAgentApproveInputSchema.parse(input);
+    const proposal = findExternalProposal(parsedInput.proposal_id);
+    if (proposal == null) {
+      return failure("not_found", "指定した外部提案がmockにありません。");
+    }
+    if (proposal.revision !== parsedInput.revision) {
+      return failure("conflict", "外部提案の版がmockの状態と一致しません。");
+    }
+    if (proposal.state.kind !== "pending_approval") {
+      return failure("conflict", "承認待ちの外部提案だけ承認できます。");
+    }
+    const operation = proposal.view.proposal.groups.flatMap((group) => group.operations)[0];
+    if (operation == null || operation.operation !== "create_task") {
+      throw new Error("mockの外部提案操作が不正です。");
+    }
+    const result = aiWorkflowApprovalResultSchema.parse({
+      proposal_id: proposal.proposal_id,
+      application: {
+        outcome: "applied",
+        operations: [{
+          group_id: EXTERNAL_GROUP_ID,
+          operation_id: EXTERNAL_OPERATION_ID,
+          task_gid: "mock-external-task-gid",
+          outcome: "applied",
+          reason_code: "applied",
+        }],
+        groups: [{
+          group_id: EXTERNAL_GROUP_ID,
+          atomic: true,
+          outcome: "applied",
+          operation_ids: [EXTERNAL_OPERATION_ID],
+        }],
+      },
+    });
+    const nextProposal = externalAgentProposalSchema.parse({
+      ...proposal,
+      state: { kind: "finished", result },
+    });
+    return ipcExternalAgentApproveResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
+  }
+
+  function externalAgentReject(
+    input: IpcExternalAgentGuiRejectInput,
+  ): MockResult<IpcExternalAgentGuiState> {
+    const parsedInput = ipcExternalAgentRejectInputSchema.parse(input);
+    const proposal = findExternalProposal(parsedInput.proposal_id);
+    if (proposal == null) {
+      return failure("not_found", "指定した外部提案がmockにありません。");
+    }
+    if (proposal.revision !== parsedInput.revision) {
+      return failure("conflict", "外部提案の版がmockの状態と一致しません。");
+    }
+    if (proposal.state.kind !== "pending_approval") {
+      return failure("conflict", "承認待ちの外部提案だけ却下できます。");
+    }
+    const nextProposal = externalAgentProposalSchema.parse({
+      ...proposal,
+      state: { kind: "rejected" },
+    });
+    return ipcExternalAgentRejectResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
   }
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -901,6 +1148,31 @@ export function createMockTaskHubApi(): TaskHubApi {
           reason_code: "applied",
         }));
       })),
+    },
+    externalAgent: {
+      getState: () => Promise.resolve().then(() => {
+        ipcExternalAgentGetStateInputSchema.parse({});
+        return ipcExternalAgentGetStateResponseSchema.parse(ok(externalAgentState));
+      }),
+      setEnabled: (input: IpcExternalAgentGuiSetEnabledInput) => Promise.resolve().then(() => {
+        const parsedInput = ipcExternalAgentSetEnabledInputSchema.parse(input);
+        return ipcExternalAgentSetEnabledResponseSchema.parse(ok(
+          updateExternalAgentState({ ...externalAgentState, enabled: parsedInput.enabled }),
+        ));
+      }),
+      edit: (input: IpcExternalAgentGuiEditInput) => Promise.resolve().then(() => externalAgentEdit(input)),
+      approve: (input: IpcExternalAgentGuiApproveInput) => Promise.resolve().then(() => externalAgentApprove(input)),
+      reject: (input: IpcExternalAgentGuiRejectInput) => Promise.resolve().then(() => externalAgentReject(input)),
+      onChanged: (listener) => {
+        if (typeof listener !== "function") {
+          throw new TypeError("外部連携状態リスナーには関数を指定してください。");
+        }
+        externalAgentListeners.add(listener);
+        notify(externalAgentListeners, ipcExternalAgentStateEventSchema.parse(externalAgentState));
+        return () => {
+          externalAgentListeners.delete(listener);
+        };
+      },
     },
     ai: {
       getStatus: () => Promise.resolve().then(() => {

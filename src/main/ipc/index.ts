@@ -4,6 +4,7 @@ export {
   type IpcAiPort,
   type IpcAsanaPort,
   type IpcDiagnosticPort,
+  type IpcExternalAgentPort,
   type IpcGuiEditPort,
   type IpcHandlerRegistryOptions,
   type IpcObsidianPort,

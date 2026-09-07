@@ -15,8 +15,15 @@ import {
   type ObsidianLink,
   type ParentWorkMode,
 } from "../../shared/domain";
+import {
+  externalAgentGuiEditInputSchema,
+  type ExternalAgentGuiEditInput,
+} from "../../shared/external-agent";
 
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
+type EditorMode =
+  | { readonly kind: "full" }
+  | { readonly kind: "external-create"; readonly revision: number };
 type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
 type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" }>["after"];
 type ProposalDueValue = Extract<ProposalOperation, { operation: "set_due" }>["after"];
@@ -76,10 +83,12 @@ const props = defineProps<{
   tasks: readonly { readonly gid: string; readonly title: string }[];
   creations: readonly CreateTaskOperation[];
   disabled: boolean;
+  mode: EditorMode;
 }>();
 
 const emit = defineEmits<{
   (event: "save", input: AiWorkflowOperationEdit): void;
+  (event: "external-save", input: ExternalAgentGuiEditInput): void;
   (event: "cancel"): void;
 }>();
 
@@ -398,6 +407,28 @@ function obsidianLinksAfter(): readonly ObsidianLink[] {
   }));
 }
 
+function externalCreateInputValue(): unknown {
+  const operation = props.operation;
+  if (operation.operation !== "create_task") {
+    throw new Error("外部提案の編集対象はタスク作成でなければなりません。");
+  }
+  if (props.mode.kind !== "external-create") {
+    throw new Error("外部提案の編集モードが不正です。");
+  }
+  const state = form.value;
+  return {
+    proposal_id: props.proposalId,
+    operation_id: operation.operation_id,
+    revision: props.mode.revision,
+    title: state.title,
+    ...(state.notesSpecified ? { notes: state.notes } : {}),
+    ...(state.statusSpecified ? { status: state.status } : {}),
+    ...(state.importanceSpecified ? { importance: state.importance } : {}),
+    ...(state.areaSpecified ? { area: state.area } : {}),
+    ...(state.dueSpecified ? { due: dueAfter() } : {}),
+  };
+}
+
 function confidenceValue(value: number | string): number {
   if (typeof value === "string" && value.trim().length === 0) {
     throw new FormInputError("信頼度を入力してください。");
@@ -465,6 +496,26 @@ function editedAfter(operation: ProposalOperation): unknown {
 }
 
 function save(): void {
+  if (props.mode.kind === "external-create") {
+    let inputValue: unknown;
+    try {
+      inputValue = externalCreateInputValue();
+    } catch (error) {
+      if (error instanceof FormInputError) {
+        form.value.error = error.message;
+        return;
+      }
+      throw error;
+    }
+    const inputResult = externalAgentGuiEditInputSchema.safeParse(inputValue);
+    if (!inputResult.success) {
+      form.value.error = "作成内容を確認してください。";
+      return;
+    }
+    form.value.error = "";
+    emit("external-save", inputResult.data);
+    return;
+  }
   const operation = props.operation;
   let editedValue: unknown;
   try {
@@ -789,7 +840,7 @@ function isoToDatetimeLocal(value: string): string {
         </p>
       </fieldset>
       <fieldset
-        v-if="operation.creation.kind === 'split_child'"
+        v-if="props.mode.kind === 'full' && operation.creation.kind === 'split_child'"
         class="field-group sm:col-span-2"
       >
         <legend class="field-label">
@@ -802,7 +853,10 @@ function isoToDatetimeLocal(value: string): string {
           分割元の親タスクに固定されています。
         </p>
       </fieldset>
-      <fieldset class="field-group">
+      <fieldset
+        v-if="props.mode.kind === 'full'"
+        class="field-group"
+      >
         <legend class="field-label">
           親タスクの作業範囲
         </legend>
@@ -831,7 +885,10 @@ function isoToDatetimeLocal(value: string): string {
           </option>
         </select>
       </fieldset>
-      <fieldset class="field-group sm:col-span-2">
+      <fieldset
+        v-if="props.mode.kind === 'full'"
+        class="field-group sm:col-span-2"
+      >
         <legend class="field-label">
           依存するタスク
         </legend>
@@ -911,7 +968,10 @@ function isoToDatetimeLocal(value: string): string {
           </button>
         </div>
       </fieldset>
-      <fieldset class="field-group sm:col-span-2">
+      <fieldset
+        v-if="props.mode.kind === 'full'"
+        class="field-group sm:col-span-2"
+      >
         <legend class="field-label">
           Obsidianリンク
         </legend>
@@ -1306,7 +1366,10 @@ function isoToDatetimeLocal(value: string): string {
       状態を取り下げに変更します。
     </div>
 
-    <label class="field-label border-t border-slate-200 pt-4 dark:border-slate-700">
+    <label
+      v-if="props.mode.kind === 'full'"
+      class="field-label border-t border-slate-200 pt-4 dark:border-slate-700"
+    >
       根拠の場所
       <input
         v-model="form.evidenceLocator"
