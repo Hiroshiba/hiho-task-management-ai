@@ -5,6 +5,7 @@ import {
   Menu,
   net,
   powerMonitor,
+  screen,
   session,
   shell,
 } from "electron";
@@ -30,6 +31,7 @@ import {
   assertTrustedIpcSender,
   isApplicationUrl,
 } from "./security";
+import { WindowStateController, WindowStateStore } from "./window-state";
 
 const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
@@ -56,6 +58,7 @@ type OnlineMonitorState =
 
 let mainWindow: BrowserWindow | undefined;
 let mainWindowRegistry: IpcHandlerRegistry | undefined;
+let mainWindowStateController: WindowStateController | undefined;
 let taskHubApplication: TaskHubApplication | undefined;
 let lifecycleController: AbortController | undefined;
 let windowCreationPromise: Promise<void> | undefined;
@@ -604,6 +607,10 @@ async function createMainWindow(
   if (shutdownState.kind !== "running") {
     return;
   }
+  const windowStateStore = new WindowStateStore(
+    join(app.getPath("userData"), "window-state.json"),
+  );
+  const savedWindowState = windowStateStore.load();
   const window = new BrowserWindow({
     show: false,
     icon: app.isPackaged
@@ -618,6 +625,18 @@ async function createMainWindow(
       preload: join(__dirname, "../preload/index.cjs"),
     },
   });
+  const windowStateController = new WindowStateController(
+    window,
+    windowStateStore,
+    () => {
+      const primaryDisplay = screen.getPrimaryDisplay();
+      return [
+        primaryDisplay,
+        ...screen.getAllDisplays().filter((display) => display.id !== primaryDisplay.id),
+      ];
+    },
+    savedWindowState,
+  );
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,
@@ -631,10 +650,13 @@ async function createMainWindow(
   });
 
   mainWindow = window;
+  mainWindowStateController = windowStateController;
   mainWindowRegistry = registry;
   try {
     configureWindowSecurity(window, rendererUrl);
     registry.register(ipcMain);
+    windowStateController.attach();
+    windowStateController.restore(savedWindowState);
     window.once("ready-to-show", () => {
       if (!window.isDestroyed()) {
         showAndFocusMainWindow();
@@ -650,6 +672,9 @@ async function createMainWindow(
       disposeMainWindowRegistry(registry);
     });
     window.once("closed", () => {
+      if (mainWindowStateController === windowStateController) {
+        mainWindowStateController = undefined;
+      }
       if (mainWindow === window) {
         mainWindow = undefined;
       }
@@ -662,6 +687,9 @@ async function createMainWindow(
     }
   } catch (error) {
     disposeMainWindowRegistry(registry);
+    if (mainWindowStateController === windowStateController) {
+      mainWindowStateController = undefined;
+    }
     if (mainWindow === window) {
       mainWindow = undefined;
     }
@@ -759,6 +787,7 @@ app.on("before-quit", (event) => {
   if (shutdownState.kind === "stopping") {
     return;
   }
+  mainWindowStateController?.flush();
   shutdownState = { kind: "stopping" };
   void stopApplication().then(() => {
     shutdownState = { kind: "stopped" };
