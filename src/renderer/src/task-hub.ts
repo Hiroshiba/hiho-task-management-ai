@@ -1,7 +1,6 @@
 import { inject, type InjectionKey } from "vue";
 import { z } from "zod";
 import type { TaskHubApi } from "../../shared/task-hub-api";
-import { createMockTaskHubApi } from "./mocks/task-hub";
 
 export const taskHubApiInjectionKey: InjectionKey<TaskHubApi> = Symbol("taskHubApi");
 
@@ -84,11 +83,19 @@ function selectTaskHubNamespace<Name extends MockFeatureName>(
 }
 
 /** URLのmock指定に応じたRenderer APIを作成します。 */
-export function createTaskHubApi(search: string, nativeApi: TaskHubApi | undefined): TaskHubApi {
+export async function createTaskHubApi(search: string, nativeApi: TaskHubApi | undefined): Promise<TaskHubApi> {
   const selectedFeatures = parseMockFeatureNames(search);
-  const mockSelection: MockApiSelection = selectedFeatures.size === 0
-    ? { kind: "none" }
-    : { kind: "selected", features: selectedFeatures, api: createMockTaskHubApi() };
+  let mockSelection: MockApiSelection;
+  if (selectedFeatures.size === 0) {
+    mockSelection = { kind: "none" };
+  } else {
+    const { createMockTaskHubApi } = await import("./mocks/task-hub");
+    mockSelection = {
+      kind: "selected",
+      features: selectedFeatures,
+      api: createMockTaskHubApi(),
+    };
+  }
   return {
     get app() {
       return selectTaskHubNamespace("app", mockSelection, nativeApi);
