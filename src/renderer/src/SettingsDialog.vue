@@ -16,6 +16,7 @@ import type {
 const props = defineProps<{
   state: RendererExternalAgentState;
   busy: boolean;
+  restoreFocus: boolean;
   feedback?: AiSessionFeedback | undefined;
 }>();
 
@@ -76,6 +77,12 @@ function setEnabled(event: Event): void {
   }
   emit("set-enabled", input.checked);
 }
+
+function handleCloseAutoFocus(event: Event): void {
+  if (!props.restoreFocus) {
+    event.preventDefault();
+  }
+}
 </script>
 
 <template>
@@ -83,6 +90,7 @@ function setEnabled(event: Event): void {
     <DialogOverlay class="fixed inset-0 bg-slate-950/50" />
     <DialogContent
       class="fixed left-1/2 top-1/2 flex max-h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900 sm:max-h-[calc(100vh-3rem)] sm:w-[calc(100vw-3rem)]"
+      @close-auto-focus="handleCloseAutoFocus"
     >
       <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 dark:border-slate-700 sm:px-6">
         <div class="min-w-0">

@@ -3371,6 +3371,7 @@ onUnmounted(() => {
       <SettingsDialog
         :state="externalAgentState"
         :busy="externalAgentBusy"
+        :restore-focus="!aiDialogVisible"
         :feedback="settingsDialogFeedback"
         @set-enabled="setExternalAgentEnabled"
       />
