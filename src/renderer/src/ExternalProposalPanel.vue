@@ -4,7 +4,6 @@ import {
   externalAgentGuiApproveInputSchema,
   externalAgentGuiEditInputSchema,
   externalAgentGuiRejectInputSchema,
-  type ExternalAgentBridgeState,
   type ExternalAgentGuiApproveInput,
   type ExternalAgentGuiEditInput,
   type ExternalAgentGuiRejectInput,
@@ -32,7 +31,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "set-enabled", enabled: boolean): void;
   (event: "edit", input: ExternalAgentGuiEditInput): void;
   (event: "approve", input: ExternalAgentGuiApproveInput): void;
   (event: "reject", input: ExternalAgentGuiRejectInput): void;
@@ -110,28 +108,6 @@ watch(
     editingProposal.value = undefined;
   },
 );
-
-function bridgeLabel(bridge: ExternalAgentBridgeState): string {
-  switch (bridge.kind) {
-    case "stopped":
-      return "停止中";
-    case "running":
-      return "稼働中";
-    case "unavailable":
-      return `利用不可・${bridge.message}`;
-  }
-}
-
-function bridgeClass(bridge: ExternalAgentBridgeState): string {
-  switch (bridge.kind) {
-    case "stopped":
-      return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-100";
-    case "running":
-      return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100";
-    case "unavailable":
-      return "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-100";
-  }
-}
 
 function createOperationFor(proposal: ExternalAgentProposal): CreateTaskOperation | undefined {
   return proposal.view.proposal.groups
@@ -332,14 +308,6 @@ function cancelEditing(): void {
   editingProposal.value = undefined;
 }
 
-function setEnabled(event: Event): void {
-  const input = event.target;
-  if (!(input instanceof HTMLInputElement)) {
-    throw new Error("外部連携の有効化入力が不正です。");
-  }
-  emit("set-enabled", input.checked);
-}
-
 function edit(input: ExternalAgentGuiEditInput): void {
   const parsedInput = externalAgentGuiEditInputSchema.parse(input);
   emit("edit", parsedInput);
@@ -364,66 +332,6 @@ function reject(): void {
 
 <template>
   <div class="min-w-0 space-y-5">
-    <section class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div class="min-w-0">
-          <h3 class="text-base font-semibold text-slate-900 dark:text-slate-100">
-            外部連携
-          </h3>
-          <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            外部エージェントから届いた提案を確認します。
-          </p>
-        </div>
-        <span
-          class="shrink-0 rounded-full px-2 py-1 text-xs"
-          :class="bridgeClass(props.state.bridge)"
-        >
-          連携: {{ bridgeLabel(props.state.bridge) }}
-        </span>
-      </div>
-      <label class="mt-4 flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
-        <input
-          type="checkbox"
-          class="mt-0.5 size-4 shrink-0"
-          :checked="props.state.enabled"
-          :disabled="props.busy"
-          @change="setEnabled"
-        >
-        <span>
-          外部連携を有効にする
-          <span class="mt-1 block text-xs text-slate-600 dark:text-slate-400">
-            外部からの一覧参照と新規タスク提案を受け付けます。
-          </span>
-        </span>
-      </label>
-      <details class="mt-4 rounded-md border border-slate-200 p-3 dark:border-slate-700">
-        <summary class="cursor-pointer text-sm font-medium text-slate-800 dark:text-slate-100">
-          連携登録の案内
-        </summary>
-        <div class="mt-3 space-y-3 text-sm text-slate-700 dark:text-slate-300">
-          <p class="whitespace-pre-wrap break-words">
-            {{ props.state.registration.instructions }}
-          </p>
-          <p>Codexを使うWSLまたはMacのターミナルで、次のコマンドを実行してください。</p>
-          <div class="min-w-0">
-            <p class="text-xs text-slate-600 dark:text-slate-400">
-              登録コマンド
-            </p>
-            <code class="mt-1 block overflow-x-auto rounded bg-slate-100 p-2 text-xs dark:bg-slate-800">{{ props.state.registration.command }}</code>
-          </div>
-          <div class="min-w-0">
-            <p class="text-xs text-slate-600 dark:text-slate-400">
-              実行許可を設定するコマンド
-            </p>
-            <code class="mt-1 block overflow-x-auto rounded bg-slate-100 p-2 text-xs dark:bg-slate-800">{{ props.state.registration.allow_execution_command }}</code>
-          </div>
-          <p class="text-xs text-slate-600 dark:text-slate-400">
-            固定ランチャーだけを許可し、登録後は外部Codexを再起動してください。
-          </p>
-        </div>
-      </details>
-    </section>
-
     <section class="grid min-w-0 gap-4 lg:grid-cols-[minmax(13rem,18rem)_minmax(0,1fr)]">
       <div class="min-w-0 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
         <div class="flex items-center justify-between gap-2 px-1 pb-3">
