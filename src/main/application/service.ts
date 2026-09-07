@@ -1153,6 +1153,9 @@ export class TaskHubApplication {
       this.codexWorkspace.codexHomePath,
       process.execPath,
     );
+    const onCodexError = (error: unknown): void => {
+      this.options.diagnostic(error, "codex");
+    };
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
       environment: codexEnvironment,
@@ -1163,7 +1166,7 @@ export class TaskHubApplication {
       },
       capabilities: { experimentalApi: true },
       configOverrides: [],
-    });
+    }, onCodexError);
     this.codexConnectionFactory = connectionFactory;
     this.obsidian = new ObsidianReadService(this.database);
     this.codexSession = new CodexSessionService({
@@ -1174,6 +1177,7 @@ export class TaskHubApplication {
       obsidianReader: this.createCodexObsidianReadPort(),
       readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
       connectionFactory,
+      onError: onCodexError,
       snapshotProvider: () => this.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
     });
@@ -4471,6 +4475,9 @@ export class TaskHubApplication {
         ? []
         : [externalToolEndpoint],
       connectionFactory: this.codexConnectionFactory,
+      onError: (error: unknown): void => {
+        this.options.diagnostic(error, "codex");
+      },
       snapshotProvider: () => this.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
     });

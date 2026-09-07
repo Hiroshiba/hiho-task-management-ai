@@ -92,6 +92,13 @@ const maxQueuedWrites = 128;
 const gracefulStopTimeoutMs = 1_000;
 const forcedStopTimeoutMs = 1_000;
 
+type CodexErrorHandler = (error: unknown) => void;
+
+const codexErrorHandlerSchema = z.custom<CodexErrorHandler>(
+  (value) => typeof value === "function",
+  "Codexエラー記録関数が必要です。",
+);
+
 const rpcResponseResultSchema = z
   .object({
     id: codexRpcIdSchema,
@@ -161,7 +168,7 @@ type ConnectionState = "created" | "starting" | "ready" | "failed" | "stopping" 
 export type CodexNotificationListener =
   (notification: CodexNotification) => void | PromiseLike<void>;
 
-/** 本文を含まないCodex診断を受け取る購読関数の型です。 */
+/** Codex診断を受け取る購読関数の型です。 */
 export type CodexDiagnosticListener =
   (diagnostic: CodexDiagnostic) => void | PromiseLike<void>;
 
@@ -300,6 +307,7 @@ export class CodexAppServerConnection {
   private readonly diagnostics: CodexDiagnostic[] = [];
   private readonly notificationListeners = new Set<CodexNotificationListener>();
   private readonly diagnosticListeners = new Set<CodexDiagnosticListener>();
+  private readonly onError: CodexErrorHandler;
   private stderrLineCount = 0;
   private stdoutLineBytes = 0;
   private stderrLineBytes = 0;
@@ -313,7 +321,7 @@ export class CodexAppServerConnection {
   private writeQueue: Promise<void> = Promise.resolve();
   private queuedWrites = 0;
 
-  public constructor(options: CodexConnectionOptions) {
+  public constructor(options: CodexConnectionOptions, onError: CodexErrorHandler) {
     const validatedOptions = codexConnectionOptionsSchema.parse(options);
     this.executable = validatedOptions.executable ?? "codex";
     const sourceEnvironment = validatedOptions.environment ?? process.env;
@@ -322,6 +330,7 @@ export class CodexAppServerConnection {
     this.capabilities = validatedOptions.capabilities;
     this.requestTimeoutMs = validatedOptions.requestTimeoutMs ?? defaultRequestTimeoutMs;
     this.configOverrides = validatedOptions.configOverrides;
+    this.onError = codexErrorHandlerSchema.parse(onError);
   }
 
   /** Codex CLIを検査してapp-serverを初期化します。 */
@@ -364,8 +373,8 @@ export class CodexAppServerConnection {
       this.failConnection(error);
       try {
         await this.stop();
-      } catch {
-        this.emitDiagnostic({ kind: "stop_error", code: "stop_error" });
+      } catch (stopError: unknown) {
+        this.emitDiagnostic({ kind: "stop_error", code: "stop_error", error: stopError });
       }
       throw error;
     }
@@ -571,7 +580,7 @@ export class CodexAppServerConnection {
     };
   }
 
-  /** 本文を含まない診断の購読を登録します。 */
+  /** Codex診断の購読を登録します。 */
   public onDiagnostic(listener: CodexDiagnosticListener): () => void {
     this.diagnosticListeners.add(listener);
     return () => {
@@ -579,7 +588,7 @@ export class CodexAppServerConnection {
     };
   }
 
-  /** 保持中の本文なし診断を読み出します。 */
+  /** 保持中のCodex診断を読み出します。 */
   public getDiagnostics(): readonly CodexDiagnostic[] {
     return [...this.diagnostics];
   }
@@ -794,8 +803,8 @@ export class CodexAppServerConnection {
     this.stdoutReader.on("line", (line: string) => {
       this.handleStdoutLine(line);
     });
-    this.stderrReader.on("line", () => {
-      this.handleStderrLine();
+    this.stderrReader.on("line", (line: string) => {
+      this.handleStderrLine(line);
     });
     child.on("exit", (exitCode: number | null, signal: NodeJS.Signals | null) => {
       this.handleChildExit(exitCode, signal);
@@ -1027,7 +1036,7 @@ export class CodexAppServerConnection {
     } catch (error: unknown) {
       const connectionError = this.toConnectionError(error);
       this.failConnection(connectionError);
-      this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
+      this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error", error: connectionError });
     }
   }
 
@@ -1047,7 +1056,7 @@ export class CodexAppServerConnection {
           new Error("Codex app-server応答の行サイズが上限を超えました。"),
         );
         this.failConnection(protocolError);
-        this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error" });
+        this.emitDiagnostic({ kind: "protocol_error", code: "protocol_error", error: protocolError });
         return;
       }
     }
@@ -1151,6 +1160,7 @@ export class CodexAppServerConnection {
         this.emitDiagnostic({
           kind: "protocol_error",
           code: "protocol_error",
+          error: parsedParams.error,
         });
         this.sendServerRequestError(
           request.id,
@@ -1181,9 +1191,14 @@ export class CodexAppServerConnection {
   ): void {
     const key = responseIdKey(id);
     if (this.dynamicToolRequests.has(key)) {
+      const protocolError = new CodexProtocolError(
+        "invalid_message",
+        new Error("Codex dynamic tool要求IDが重複しています。"),
+      );
       this.emitDiagnostic({
         kind: "protocol_error",
         code: "protocol_error",
+        error: protocolError,
       });
       this.sendServerRequestError(
         id,
@@ -1209,7 +1224,7 @@ export class CodexAppServerConnection {
         }
         return this.writeMessage({ id, result: response });
       },
-      () => this.respondDynamicToolError(id, controller),
+      (error: unknown) => this.respondDynamicToolError(id, controller, error),
     ).catch((error: unknown) => {
       this.failConnection(error);
     }).finally(() => {
@@ -1222,6 +1237,7 @@ export class CodexAppServerConnection {
   private respondDynamicToolError(
     id: CodexRpcId,
     controller: AbortController,
+    error: unknown,
   ): Promise<void> {
     if (
       controller.signal.aborted
@@ -1234,6 +1250,7 @@ export class CodexAppServerConnection {
     this.emitDiagnostic({
       kind: "protocol_error",
       code: "protocol_error",
+      error,
     });
     return this.writeMessage({
       id,
@@ -1264,13 +1281,14 @@ export class CodexAppServerConnection {
     this.dynamicToolRequests.clear();
   }
 
-  private handleStderrLine(): void {
+  private handleStderrLine(line: string): void {
     this.stderrLineCount += 1;
     this.stderrLineBytes = 0;
     this.emitDiagnostic({
       kind: "stderr",
       code: "stderr_output",
       lineCount: this.stderrLineCount,
+      line,
     });
   }
 
@@ -1369,8 +1387,8 @@ export class CodexAppServerConnection {
       try {
         const result = listener(notification);
         this.handleListenerResult(result, "notification");
-      } catch {
-        this.reportListenerError("notification");
+      } catch (error: unknown) {
+        this.reportListenerError("notification", error);
       }
     }
   }
@@ -1386,8 +1404,8 @@ export class CodexAppServerConnection {
       try {
         const result = listener(diagnostic);
         this.handleListenerResult(result, "diagnostic");
-      } catch {
-        this.storeListenerError("diagnostic");
+      } catch (error: unknown) {
+        this.storeListenerError("diagnostic", error);
       }
     }
   }
@@ -1399,29 +1417,32 @@ export class CodexAppServerConnection {
     if (result == null) {
       return;
     }
-    void Promise.resolve(result).catch(() => {
-      this.reportListenerError(source);
+    void Promise.resolve(result).catch((error: unknown) => {
+      this.reportListenerError(source, error);
     });
   }
 
-  private reportListenerError(source: "notification" | "diagnostic"): void {
+  private reportListenerError(source: "notification" | "diagnostic", error: unknown): void {
     if (source === "notification") {
       this.emitDiagnostic({
         kind: "listener_error",
         code: "listener_error",
         source,
+        error,
       });
       return;
     }
-    this.storeListenerError(source);
+    this.storeListenerError(source, error);
   }
 
-  private storeListenerError(source: "notification" | "diagnostic"): void {
+  private storeListenerError(source: "notification" | "diagnostic", error: unknown): void {
     this.storeDiagnostic({
       kind: "listener_error",
       code: "listener_error",
       source,
+      error,
     });
+    this.onError(error);
   }
 
   private storeDiagnostic(diagnostic: CodexDiagnostic): void {
@@ -1464,15 +1485,15 @@ export class CodexAppServerConnection {
       if (child.stdin != null && !child.stdin.destroyed) {
         child.stdin.destroy();
       }
-    } catch {
-      this.emitDiagnostic({ kind: "stop_error", code: "stop_error" });
+    } catch (error: unknown) {
+      this.emitDiagnostic({ kind: "stop_error", code: "stop_error", error });
     }
     try {
       if (this.isProcessTreeRunning(child)) {
         this.signalProcessTree(child, "SIGTERM");
       }
-    } catch {
-      this.emitDiagnostic({ kind: "stop_error", code: "stop_error" });
+    } catch (error: unknown) {
+      this.emitDiagnostic({ kind: "stop_error", code: "stop_error", error });
     }
   }
 

@@ -1224,12 +1224,14 @@ export const codexDiagnosticSchema = z.discriminatedUnion("kind", [
       kind: z.literal("stderr"),
       code: z.literal("stderr_output"),
       lineCount: z.number().int().positive(),
+      line: z.string(),
     })
     .strict(),
   z
     .object({
       kind: z.literal("protocol_error"),
       code: z.literal("protocol_error"),
+      error: z.unknown(),
     })
     .strict(),
   z
@@ -1245,12 +1247,14 @@ export const codexDiagnosticSchema = z.discriminatedUnion("kind", [
       kind: z.literal("listener_error"),
       code: z.literal("listener_error"),
       source: z.enum(["notification", "diagnostic"]),
+      error: z.unknown(),
     })
     .strict(),
   z
     .object({
       kind: z.literal("stop_error"),
       code: z.literal("stop_error"),
+      error: z.unknown(),
     })
     .strict(),
 ]);

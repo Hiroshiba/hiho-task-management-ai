@@ -47,6 +47,12 @@ pnpm run package:dir
 pnpm run package
 ```
 
+## エラーログ
+
+エラーは `app.getPath('logs')/taskhub-error.log` にJSONL形式で保存します。Windows版の通常の保存先は `%APPDATA%\TaskHub\logs\taskhub-error.log` です。ローテーションしたログも同じディレクトリに残ります。
+
+発生日時と処理区分に加え、`error_message` にエラーメッセージ、`stack_trace` にスタックトレース、`cause_chain` と `aggregate_errors` に元の例外を記録します。外部連携の失敗などは共通の `app.error` として記録されるため、診断コードだけでなくエラーメッセージと元の例外を確認してください。
+
 ## Asana接続
 
 1. Asana Developer Consoleで個人用の非公開OAuthアプリを作成します。

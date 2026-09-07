@@ -97,7 +97,9 @@ export class CodexProcessExitError extends Error {
   public readonly signal: string | null;
 
   public constructor(exitCode: number | null, signal: string | null) {
-    super("Codex app-serverプロセスが異常終了しました。");
+    super(
+      `Codex app-serverプロセスが異常終了しました。終了コードは${exitCode == null ? "ありません" : exitCode}、シグナルは${signal == null ? "ありません" : signal}。`,
+    );
     this.name = "CodexProcessExitError";
     this.exitCode = exitCode;
     this.signal = signal;
