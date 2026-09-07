@@ -855,6 +855,7 @@ function isConnectionShape(value: unknown): value is CodexSessionConnection {
 /** Codexセッションで利用する実接続ファクトリを作成します。 */
 export function createCodexAppServerConnectionFactory(
   options: CodexConnectionOptions,
+  onError: CodexSessionOptions["onError"],
 ): CodexSessionConnectionFactory {
   const validatedOptions = codexConnectionOptionsSchema.parse(options);
   if (validatedOptions.configOverrides.length !== 0) {
@@ -872,7 +873,7 @@ export function createCodexAppServerConnectionFactory(
       ...validatedOptions,
       configOverrides,
     });
-    return new CodexAppServerConnection(connectionOptions);
+    return new CodexAppServerConnection(connectionOptions, onError);
   };
 }
 
@@ -1466,7 +1467,7 @@ export class CodexSessionService {
     this.frozenTaskctlSnapshot = undefined;
   }
 
-  /** 本文を含まないセッション診断を取得します。 */
+  /** セッション診断の概要を取得します。 */
   public getDiagnostics(): CodexSessionDiagnostic[] {
     return codexSessionDiagnosticsSchema.parse(
       this.diagnostics.map((diagnostic) => ({
@@ -2279,28 +2280,31 @@ export class CodexSessionService {
         this.recordDiagnostic("connection_server_request_rejected", undefined);
         break;
       case "protocol_error":
-        this.recordDiagnostic("connection_protocol_error", undefined);
+        this.recordDiagnostic("connection_protocol_error", diagnostic.error);
         if (isSafetyCriticalState(this.state)) {
-          this.markSafetyViolation(undefined);
+          this.markSafetyViolation(diagnostic.error);
         }
         break;
       case "stderr":
-        this.recordDiagnostic("connection_stderr", undefined);
+        this.recordDiagnostic("connection_stderr", new Error(diagnostic.line));
         break;
       case "listener_error":
-        this.recordDiagnostic("connection_listener_error", undefined);
+        this.recordDiagnostic("connection_listener_error", diagnostic.error);
         break;
       case "stop_error":
-        this.recordDiagnostic("connection_stop_error", undefined);
+        this.recordDiagnostic("connection_stop_error", diagnostic.error);
         break;
-      case "process_exit":
-        this.recordDiagnostic("connection_process_exit", undefined);
-        this.handleProcessExit(diagnostic);
+      case "process_exit": {
+        const processExitError = new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal);
+        this.handleProcessExit(processExitError);
         break;
+      }
     }
   }
 
-  private handleProcessExit(diagnostic: Extract<CodexDiagnostic, { kind: "process_exit" }>): void {
+  private handleProcessExit(
+    processExitError: CodexProcessExitError,
+  ): void {
     if (
       !this.successfullyStarted
       || (
@@ -2311,23 +2315,24 @@ export class CodexSessionService {
     ) {
       return;
     }
+    this.recordDiagnostic("connection_process_exit", processExitError);
     const active = this.activeTurn;
     if (active != null) {
       this.finishTurn(
         active,
-        new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal),
+        processExitError,
       );
     }
     if (this.restartPromise != null) {
       return;
     }
     if (this.restartCount > 0) {
-      void this.disableAi(new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal));
+      void this.disableAi(processExitError);
       return;
     }
     const signal = this.lifecycleSignal;
     if (signal == null || signal.aborted) {
-      void this.disableAi(new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal));
+      void this.disableAi(processExitError);
       return;
     }
     this.restartCount += 1;
@@ -2527,8 +2532,9 @@ export class CodexSessionService {
       return;
     }
     if (active.completion.status !== "completed") {
-      this.recordDiagnostic("turn_error", undefined);
-      this.finishTurn(active, new CodexSessionTurnError(active.completion.error));
+      const error = new CodexSessionTurnError(active.completion.error);
+      this.recordDiagnostic("turn_error", error);
+      this.finishTurn(active, error);
       return;
     }
     const finalItem = active.finalItem;
@@ -2658,6 +2664,14 @@ export class CodexSessionService {
       this.diagnostics.shift();
     }
     this.diagnostics.push({ code, cause });
+    if (
+      code !== "connection_unknown_notification"
+      && code !== "connection_server_request_rejected"
+      && code !== "restart_started"
+      && code !== "restart_completed"
+    ) {
+      this.options.onError(cause);
+    }
   }
 
 }

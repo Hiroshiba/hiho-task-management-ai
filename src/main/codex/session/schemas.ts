@@ -92,6 +92,11 @@ const snapshotProviderSchema = z.custom<TaskctlSnapshotProvider>(
   "taskctlスナップショット供給関数が必要です。",
 );
 
+const errorHandlerSchema = z.custom<(error: unknown) => void>(
+  (value) => typeof value === "function",
+  "Codexエラー記録関数が必要です。",
+);
+
 /** Codex app-serverをセッションから利用する接続境界です。 */
 export interface CodexSessionConnection {
   start(signal: AbortSignal): Promise<void>;
@@ -188,6 +193,7 @@ export const codexSessionOptionsSchema = z
       })
       .optional(),
     connectionFactory: connectionFactorySchema,
+    onError: errorHandlerSchema,
     snapshotProvider: snapshotProviderSchema,
     syncBeforeTurn: syncBeforeTurnSchema,
   })
