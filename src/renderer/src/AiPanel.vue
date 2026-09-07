@@ -86,9 +86,6 @@ function focusMessageInput(): "focused" | "unavailable" {
   if (input == null) {
     return "unavailable";
   }
-  if (input.disabled) {
-    return "unavailable";
-  }
   input.focus();
   return "focused";
 }
@@ -1051,7 +1048,6 @@ function applicationReasonLabel(reason: string): string {
                 :key="option"
                 type="button"
                 class="choice-button"
-                :disabled="!props.canSendAi"
                 @click="message = option"
               >
                 {{ option }}
@@ -1447,7 +1443,6 @@ function applicationReasonLabel(reason: string): string {
             ref="messageInput"
             v-model="message"
             class="text-input min-h-24"
-            :disabled="!props.canSendAi"
             placeholder="例: 今週着手すべきタスクを教えてください"
           /></label><button
             type="submit"
