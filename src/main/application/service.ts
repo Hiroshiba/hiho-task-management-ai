@@ -104,6 +104,7 @@ import {
   AsanaProposalOperationWriter,
   asanaPostWriteSynchronizationResultSchema,
   type AsanaProposalApplicationInput,
+  type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
   type PostWriteSynchronizationFailureCode,
   type PostWriteSynchronizationResult,
@@ -138,6 +139,11 @@ import {
   type ExternalToolDefinition,
   type ExternalToolDisabledReason,
 } from "../external-tools";
+import {
+  ExternalAgentService,
+  type ExternalAgentBaseline,
+} from "../external-agent";
+import { ExternalAgentBridge } from "../external-agent/transport";
 import {
   SetupCheckpointStore,
 } from "./checkpoint";
@@ -198,6 +204,7 @@ import {
   type IpcAiPort,
   type IpcAsanaPort,
   type IpcGuiEditPort,
+  type IpcExternalAgentPort,
   type IpcObsidianPort,
   type IpcReadModelPort,
   type IpcServicePorts,
@@ -644,6 +651,17 @@ function contextFromState(state: SetupState): OperationalContext | undefined {
   }
 }
 
+function asanaOperationContextKey(context: OperationalContext): string {
+  return canonicalizeJson({
+    device_id: context.device_id,
+    client_id: context.client_id,
+    workspace_gid: context.workspace_gid,
+    project_gid: context.project_gid,
+    section_gids: context.section_gids,
+    tag_gids: context.tag_gids,
+  });
+}
+
 function clientIdFromState(state: SetupState): string | undefined {
   if ("context" in state) {
     return state.context.client_id;
@@ -1026,6 +1044,9 @@ export class TaskHubApplication {
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
+  private readonly externalAgentInstanceId = identifierSchema.parse(randomUUID());
+  private readonly externalAgent: ExternalAgentService;
+  private readonly externalAgentBridge: ExternalAgentBridge;
   private externalToolRegistry: ExternalToolRegistry | undefined;
   private asanaReauthenticationOperation: AsanaReauthenticationOperation = {
     kind: "idle",
@@ -1168,6 +1189,39 @@ export class TaskHubApplication {
       this.obsidian,
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
+    const externalAgentBridge = new ExternalAgentBridge({
+      userDataPath: this.codexWorkspace.userDataPath,
+      handleRequest: (input, signal) => {
+        return externalAgent.handleRequest(input, signal);
+      },
+      onError: (error) => {
+        this.options.diagnostic(error, "external_agent");
+      },
+    });
+    this.externalAgentBridge = externalAgentBridge;
+    const externalAgent: ExternalAgentService = new ExternalAgentService({
+      app_version: this.options.app_version,
+      instance_id: this.externalAgentInstanceId,
+      lifecycle_signal: this.options.lifecycle_signal,
+      now_provider: this.options.now_provider,
+      online_provider: () => this.isOnline(),
+      read_model: this.readModel,
+      operation_queue: this.operationQueue,
+      get_runtime_state: () => this.runtime?.getState(),
+      create_baseline: (signal) => this.createExternalBaseline(signal),
+      prepare_approval_input: (input, signal) =>
+        this.prepareApprovalInput(input, signal),
+      apply_proposal: (input, signal) =>
+        this.applyExternalProposal(input, signal),
+      get_journal: (proposalId, operationId) =>
+        this.database.getApplicationJournal(proposalId, operationId),
+      assert_apply_ready: () => this.assertMutationRequestAccepted(),
+      open_review: async () => {
+        await this.options.open_external_agent_review();
+      },
+      bridge: externalAgentBridge,
+    });
+    this.externalAgent = externalAgent;
     this.setup = new SetupOrchestrator({
       device_id: this.resolveDeviceId(),
       codex: {
@@ -1257,6 +1311,7 @@ export class TaskHubApplication {
     if (this.stopped) {
       throw new Error("アプリケーションは停止済みです。");
     }
+    await this.initializeExternalAgentBridge();
     const tasksVaultDiscovery = await discoverTasksVault(signal);
     if (tasksVaultDiscovery.kind === "found") {
       throwIfAborted(signal);
@@ -1301,6 +1356,8 @@ export class TaskHubApplication {
       errors.push(error);
     }
     await this.stopExternalToolConfiguration(errors);
+    await this.stopAsyncService(this.externalAgent, errors);
+    await this.stopAsyncService(this.externalAgentBridge, errors);
     this.removeRuntimeSubscription?.();
     this.removeRuntimeSubscription = undefined;
     this.syncStateListeners.clear();
@@ -1336,6 +1393,7 @@ export class TaskHubApplication {
       sync: this.createSyncPort(),
       setup: this.createSetupPort(),
       gui: this.createGuiPort(),
+      externalAgent: this.createExternalAgentPort(),
       ai: this.createAiPort(),
       obsidian: this.createObsidianPort(),
     };
@@ -1459,6 +1517,7 @@ export class TaskHubApplication {
       authorizationId: validatedInput.authorization_id,
     };
     this.operationQueue.invalidatePendingMutations("context_changed");
+    this.externalAgent.expireForContextChange();
     try {
       await this.operationQueue.enqueue({
         priority: "user",
@@ -1490,6 +1549,7 @@ export class TaskHubApplication {
       return toIpcSyncResult(synchronized.result);
     } finally {
       this.asanaReauthenticationOperation = { kind: "idle" };
+      this.configureContextFromState(this.setup.getState());
     }
   }
 
@@ -1584,7 +1644,24 @@ export class TaskHubApplication {
   private configureContextFromState(state: SetupState): void {
     const validatedState = setupStateSchema.parse(state);
     const context = contextFromState(validatedState);
+    const previousContext = this.context;
+    const previousContextKey = previousContext == null
+      ? "unconfigured"
+      : asanaOperationContextKey(previousContext);
+    const contextKey = context == null ? "unconfigured" : asanaOperationContextKey(context);
+    const contextChanged = previousContextKey !== contextKey;
     this.context = context;
+    this.externalAgent.configureContext(
+      context == null
+        ? undefined
+        : {
+            project_gid: context.project_gid,
+            source_key: asanaOperationContextKey(context),
+          },
+      );
+    if (contextChanged && previousContext != null) {
+      this.operationQueue.invalidatePendingMutations("context_changed");
+    }
     this.codexAvailability = codexAvailabilityFromState(validatedState);
     const settings = this.database.getDeviceSettings();
     this.configureAsanaFromSettings(settings);
@@ -2907,6 +2984,18 @@ export class TaskHubApplication {
     }
   }
 
+  private async initializeExternalAgentBridge(): Promise<void> {
+    try {
+      await this.externalAgentBridge.init(process.execPath);
+    } catch (error: unknown) {
+      this.recordFeatureFailure(
+        error,
+        "external_agent",
+        "外部連携ブリッジを起動できないため、外部連携を無効にしました。",
+      );
+    }
+  }
+
   private async activateReadyApplication(signal: AbortSignal): Promise<void> {
     validateAbortSignal(signal);
     if (this.readyActivated) {
@@ -3474,20 +3563,77 @@ export class TaskHubApplication {
     });
   }
 
+  private createExternalBaseline(
+    signal: AbortSignal,
+  ): Promise<ExternalAgentBaseline> {
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    const expectedContext = this.requireContext();
+    if (this.operationQueue.hasOwner(signal)) {
+      return this.operationQueue.runOwned(signal, (context) =>
+        this.createExternalBaselineOwned(context.signal),
+      );
+    }
+    return this.operationQueue.enqueue({
+      priority: "user",
+      kind: "external_snapshot",
+      signal,
+      beforeStart: () => {
+        this.assertOperationalReady();
+        this.assertAsanaReauthenticationIdle();
+        if (!this.isOnline()) {
+          throw new Error("オフライン中は外部提案の基準値を取得できません。");
+        }
+        this.assertAsanaOperationContextUnchanged(expectedContext);
+      },
+      run: (context) => this.createExternalBaselineOwned(context.signal),
+    });
+  }
+
+  private createExternalBaselineOwned(
+    signal: AbortSignal,
+  ): ExternalAgentBaseline {
+    return this.captureProposalBaselineOwned(signal, "external");
+  }
+
   private createAiSnapshotOwned(
     signal: AbortSignal,
     baselineStore: AiSessionBaselineStore,
   ): AiWorkflowSnapshot {
+    const baseline = this.captureProposalBaselineOwned(signal, "ai");
+    throwIfAborted(signal);
+    baselineStore.taskctlSnapshot = this.createTaskctlSnapshot();
+    const baselineKey = canonicalizeJson(baseline.baseline_snapshot);
+    baselineStore.externalData.set(
+      baselineKey,
+      baseline.baseline_external_data,
+    );
+    baselineStore.currentTurnKeys.add(baselineKey);
+    return baseline.snapshot;
+  }
+
+  private captureProposalBaselineOwned(
+    signal: AbortSignal,
+    purpose: "ai" | "external",
+  ): ExternalAgentBaseline {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const context = this.requireContext();
     const syncState = this.database.getSyncState(context.project_gid);
     if (syncState?.last_successful_sync_at == null) {
-      throw new Error("AIターンに必要な同期済み時刻がありません。");
+      throw new Error(
+        purpose === "ai"
+          ? "AIターンに必要な同期済み時刻がありません。"
+          : "外部提案に必要な同期済み時刻がありません。",
+      );
     }
     const metadata = this.database.getProjectMetadataCache(context.project_gid);
     if (metadata == null) {
-      throw new Error("AIターンに必要なAsanaメタデータがありません。");
+      throw new Error(
+        purpose === "ai"
+          ? "AIターンに必要なAsanaメタデータがありません。"
+          : "外部提案に必要なAsanaメタデータがありません。",
+      );
     }
     const entries = parseTaskCache(this.database.getTaskCache());
     const tasks = entries
@@ -3512,9 +3658,6 @@ export class TaskHubApplication {
       tasks,
       areas: [...areas].sort(compareStrings),
     });
-    const taskctlSnapshot = this.createTaskctlSnapshot();
-    throwIfAborted(signal);
-    baselineStore.taskctlSnapshot = taskctlSnapshot;
     const baselineExternalData: BaselineExternalData = entries
       .filter((entry) => externalDataIsValid(entry.asana_response))
       .map((entry) => {
@@ -3528,13 +3671,12 @@ export class TaskHubApplication {
         };
       })
       .sort((left, right) => compareStrings(left.task_gid, right.task_gid));
-    const baselineKey = canonicalizeJson(createBaselineSnapshot(snapshot));
-    baselineStore.externalData.set(
-      baselineKey,
-      baselineExternalData,
-    );
-    baselineStore.currentTurnKeys.add(baselineKey);
-    return snapshot;
+    throwIfAborted(signal);
+    return {
+      snapshot,
+      baseline_snapshot: createBaselineSnapshot(snapshot),
+      baseline_external_data: baselineExternalData,
+    };
   }
 
   private requireAiTaskctlSnapshot(
@@ -3548,27 +3690,6 @@ export class TaskHubApplication {
       throw new Error("AIターンのtaskctl基準スナップショットがありません。");
     }
     return snapshot;
-  }
-
-  private proposalIdFor(input: ApprovalPreparationInput): string {
-    const operationIds = input.proposal.groups.flatMap((group) =>
-      group.operations.map((operation) => operation.operation_id));
-    const proposalIds = new Set<string>();
-    for (const operationId of operationIds) {
-      const proposalId = this.proposalIds.get(operationId);
-      if (proposalId == null) {
-        throw new Error("AI変更案の操作IDに対応する適用IDがありません。");
-      }
-      proposalIds.add(proposalId);
-    }
-    if (proposalIds.size !== 1) {
-      throw new Error("AI変更案の適用IDを一意に取得できません。");
-    }
-    const proposalId = proposalIds.values().next().value;
-    if (proposalId == null) {
-      throw new Error("AI変更案の適用IDを取得できません。");
-    }
-    return identifierSchema.parse(proposalId);
   }
 
   private async collectApprovalProjectTasks(
@@ -3655,7 +3776,6 @@ export class TaskHubApplication {
   private async prepareApprovalInput(
     input: ApprovalPreparationInput,
     signal: AbortSignal,
-    baselineStore: AiSessionBaselineStore,
   ): Promise<AsanaProposalApplicationInput> {
     validateAbortSignal(signal);
     this.assertWritesAllowed();
@@ -3668,12 +3788,7 @@ export class TaskHubApplication {
     ) {
       throw new Error("AI変更案の基準スナップショット文脈が一致しません。");
     }
-    const baselineExternalData = baselineStore.externalData.get(
-      canonicalizeJson(baseline),
-    );
-    if (baselineExternalData == null) {
-      throw new Error("AI変更案の基準Custom external dataが失効しています。");
-    }
+    const baselineExternalData = input.baseline_external_data;
     const baselineTasks = baseline.tasks.map((task) => taskSchema.parse(task));
     const currentResponses = await this.collectApprovalProjectTasks(
       context.project_gid,
@@ -3693,12 +3808,12 @@ export class TaskHubApplication {
       .map((task) => task.gid)
       .sort(compareStrings);
     return {
-      proposal_id: this.proposalIdFor(input),
+      proposal_id: identifierSchema.parse(input.proposal_id),
       project_gid: context.project_gid,
       workspace_gid: context.workspace_gid,
       section_gids: context.section_gids,
       device_id: context.device_id,
-      created_via: "codex",
+      created_via: identifierSchema.parse(input.created_via),
       activity_date: todayJst(this.options.now_provider),
       baseline_external_data: baselineExternalData,
       approval_input: {
@@ -3833,6 +3948,13 @@ export class TaskHubApplication {
   private assertContextUnchanged(expected: OperationalContext): void {
     const current = this.requireContext();
     if (canonicalizeJson(current) !== canonicalizeJson(expected)) {
+      throw new AsanaOperationInvalidatedError("context_changed");
+    }
+  }
+
+  private assertAsanaOperationContextUnchanged(expected: OperationalContext): void {
+    const current = this.requireContext();
+    if (asanaOperationContextKey(current) !== asanaOperationContextKey(expected)) {
       throw new AsanaOperationInvalidatedError("context_changed");
     }
   }
@@ -4126,6 +4248,10 @@ export class TaskHubApplication {
     };
   }
 
+  private createExternalAgentPort(): IpcExternalAgentPort {
+    return this.externalAgent;
+  }
+
   private createGuiRejectedResult(
     taskGid: string,
     reasonCode:
@@ -4361,34 +4487,62 @@ export class TaskHubApplication {
       snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
       taskctlSnapshotProvider: (signal) =>
         this.requireAiTaskctlSnapshot(signal, baselineStore),
+      baselineExternalDataProvider: (baseline) => {
+        const value = baselineStore.externalData.get(canonicalizeJson(baseline));
+        if (value == null) {
+          throw new Error("AI変更案の基準Custom external dataが失効しています。");
+        }
+        return value;
+      },
       externalStatusEvidenceCollector,
       applicationCoordinator: {
-        apply: async (input, signal) => {
-          if (this.aiApplicationState !== "idle") {
-            throw new Error("AI変更案を同時に適用できません。");
-          }
-          if (!this.operationQueue.hasOwner(signal)) {
-            throw new Error("AI変更適用の実行権を所有していません。");
-          }
-          this.aiApplicationState = "applying";
-          try {
-            const result = await applicationCoordinator.apply(input, signal);
-            this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
-            this.diagnostics.record({
-              code: "proposal.application",
-              severity: "info",
-              proposal_id: result.proposal_id,
-            });
-            return result;
-          } finally {
-            this.aiApplicationState = "idle";
-          }
-        },
+        apply: (input, signal) => this.applyProposalApplication(
+          applicationCoordinator,
+          input,
+          signal,
+        ),
       },
       prepareApprovalInput: (input, signal) =>
-        this.prepareApprovalInput(input, signal, baselineStore),
+        this.prepareApprovalInput(input, signal),
       isOnline: () => this.isOnline(),
     });
+  }
+
+  private async applyProposalApplication(
+    applicationCoordinator: AsanaProposalApplicationCoordinator,
+    input: AsanaProposalApplicationInput,
+    signal: AbortSignal,
+  ): Promise<Awaited<ReturnType<AsanaProposalApplicationCoordinator["apply"]>>> {
+    if (this.aiApplicationState !== "idle") {
+      throw new Error("変更案を同時に適用できません。");
+    }
+    if (!this.operationQueue.hasOwner(signal)) {
+      throw new Error("変更案適用の実行権を所有していません。");
+    }
+    this.aiApplicationState = "applying";
+    try {
+      const result = await applicationCoordinator.apply(input, signal);
+      this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
+      this.diagnostics.record({
+        code: "proposal.application",
+        severity: "info",
+        proposal_id: result.proposal_id,
+      });
+      return result;
+    } finally {
+      this.aiApplicationState = "idle";
+    }
+  }
+
+  private applyExternalProposal(
+    input: AsanaProposalApplicationInput,
+    signal: AbortSignal,
+  ): Promise<AsanaProposalApplicationResult> {
+    return this.applyProposalApplication(
+      this.requireApplicationCoordinator(),
+      input,
+      signal,
+    );
   }
 
   private requireAiSession(sessionId: string): AiSessionRecord {

@@ -1,7 +1,9 @@
 export {
   AiWorkflowService,
   calculateWorkflowImpact,
+  createWorkflowProposalView,
   createBaselineSnapshot,
+  type AiWorkflowBaselineExternalDataProvider,
   type AiWorkflowApprovalInputProvider,
   type ApprovalPreparationInput,
   type AiWorkflowOnlineStateProvider,
@@ -11,6 +13,7 @@ export {
   type AiWorkflowExternalStatusEvidenceCollector,
   type AiWorkflowTaskctlSnapshotProvider,
   type TrustedExternalStatusEvidence,
+  type WorkflowProposalViewInput,
 } from "./service";
 export {
   AiWorkflowEditError,

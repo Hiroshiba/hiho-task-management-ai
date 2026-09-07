@@ -8,7 +8,9 @@ export type AsanaOperationKind =
   | "ai_snapshot"
   | "display_order"
   | "journal_recovery"
-  | "context_change";
+  | "context_change"
+  | "external_snapshot"
+  | "external_apply";
 export type AsanaOperationInvalidationReason =
   | "synchronization_failed"
   | "offline"
@@ -84,6 +86,8 @@ function validateOperationKind(kind: AsanaOperationKind): void {
     && kind !== "display_order"
     && kind !== "journal_recovery"
     && kind !== "context_change"
+    && kind !== "external_snapshot"
+    && kind !== "external_apply"
   ) {
     throw new TypeError("Asana操作の種別が不正です。");
   }
@@ -248,6 +252,8 @@ export class AsanaOperationQueue {
         operation.kind !== "gui_edit"
         && operation.kind !== "ai_apply"
         && operation.kind !== "ai_snapshot"
+        && operation.kind !== "external_snapshot"
+        && operation.kind !== "external_apply"
         && operation.kind !== "display_order"
       ) {
         continue;

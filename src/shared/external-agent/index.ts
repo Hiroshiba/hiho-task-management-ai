@@ -1,5 +1,6 @@
 export {
   externalAgentBridgeStateSchema,
+  externalAgentErrorCodeSchema,
   externalAgentCliInputSchema,
   externalAgentCreateProposalInputSchema,
   externalAgentErrorResponseSchema,
@@ -30,6 +31,7 @@ export {
   externalAgentTaskListResponseSchema,
   externalAgentTaskRowsSchema,
   type ExternalAgentBridgeState,
+  type ExternalAgentErrorCode,
   type ExternalAgentCliInput,
   type ExternalAgentCreateProposalInput,
   type ExternalAgentErrorResponse,

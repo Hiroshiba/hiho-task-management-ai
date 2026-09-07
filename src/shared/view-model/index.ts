@@ -25,3 +25,8 @@ export {
   type ViewModelTaskRow,
   type ViewModelUnavailableReasonCode,
 } from "./schemas";
+export {
+  filterTaskRows,
+  taskFilterSchema,
+  type TaskFilter,
+} from "./task-filter";

@@ -17,6 +17,8 @@ import {
   viewModelRankingSchema,
   viewModelTaskRowSchema,
   viewModelTaskDetailSchema,
+  taskFilterSchema,
+  type TaskFilter,
 } from "../view-model";
 
 const maximumTitleBytes = 1_024;
@@ -110,7 +112,7 @@ const bridgeUnavailableCodeSchema = z.enum([
   "unavailable",
 ]);
 
-const proposalFailureCodeSchema = z.enum([
+export const externalAgentErrorCodeSchema = z.enum([
   "invalid_request",
   "disabled",
   "context_mismatch",
@@ -118,18 +120,12 @@ const proposalFailureCodeSchema = z.enum([
   "conflict",
   "unavailable",
   "unknown_result",
-]);
-
-const externalAgentTaskFilterSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("normal") }).strict(),
-  z.object({ kind: z.literal("include_full_block") }).strict(),
-  z.object({ kind: z.literal("include_completed") }).strict(),
-  z.object({ kind: z.literal("include_withdrawn") }).strict(),
-  z.object({ kind: z.literal("unclassified") }).strict(),
-  z.object({ kind: z.literal("area"), area: areaSchema }).strict(),
-  z.object({ kind: z.literal("overdue") }).strict(),
-  z.object({ kind: z.literal("completion_confirmation") }).strict(),
-  z.object({ kind: z.literal("cleanup") }).strict(),
+  "request_id_reused",
+  "offline",
+  "setup_required",
+  "not_found",
+  "capacity_exceeded",
+  "context_changed",
 ]);
 
 /** 外部連携から提出する独立新規タスクの作成項目を検証するスキーマです。 */
@@ -150,7 +146,7 @@ export const externalAgentCreateProposalInputSchema = z
 export const externalAgentTaskListInputSchema = z
   .object({
     operation: z.literal("tasks.list"),
-    filter: externalAgentTaskFilterSchema.optional(),
+    filter: taskFilterSchema.optional(),
     query: nonBlankQuerySchema.optional(),
     limit: z.number().int().positive().max(maximumListLimit).optional(),
   })
@@ -282,7 +278,7 @@ export const externalAgentProposalStatusSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approving") }).strict(),
   z
     .object({
-      kind: z.literal("applied"),
+      kind: z.literal("finished"),
       result: aiWorkflowApprovalResultSchema,
     })
     .strict(),
@@ -296,7 +292,7 @@ export const externalAgentProposalStatusSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("failed"),
-      reason_code: proposalFailureCodeSchema,
+      reason_code: externalAgentErrorCodeSchema,
       message: nonBlankMessageSchema,
     })
     .strict(),
@@ -332,7 +328,44 @@ export const externalAgentProposalSchema = z
     ...externalAgentProposalMetadataSchema.shape,
     view: aiWorkflowProposalViewSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((proposal, context) => {
+    if (proposal.view.proposal_id !== proposal.proposal_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["view", "proposal_id"],
+        message: "提案IDと表示用提案IDが一致しません。",
+      });
+    }
+    const operations = proposal.view.proposal.groups.flatMap((group) => group.operations);
+    if (operations.length !== 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["view", "proposal", "groups"],
+        message: "外部提案は一つの操作だけを含めなければなりません。",
+      });
+    } else {
+      const operation = operations[0];
+      if (operation == null) {
+        throw new Error("外部提案の操作を取得できません。");
+      }
+      if (operation.operation_id !== proposal.operation_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["view", "proposal", "groups", 0, "operations", 0, "operation_id"],
+          message: "操作IDと表示用操作IDが一致しません。",
+        });
+      }
+    }
+    if (proposal.state.kind === "finished"
+      && proposal.state.result.proposal_id !== proposal.proposal_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["state", "result", "proposal_id"],
+        message: "適用結果の提案IDが一致しません。",
+      });
+    }
+  });
 
 /** 外部連携の提案一覧状態を検証するスキーマです。 */
 export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kind", [
@@ -396,7 +429,42 @@ export const externalAgentProposalStatusResponseSchema = z
     operation_id: identifierSchema,
     result: externalAgentProposalStatusResultSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((response, context) => {
+    if (response.result.kind === "current") {
+      if (response.result.proposal.proposal_id !== response.proposal_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "proposal", "proposal_id"],
+          message: "照会結果の提案IDが要求と一致しません。",
+        });
+      }
+      if (response.result.proposal.operation_id !== response.operation_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "proposal", "operation_id"],
+          message: "照会結果の操作IDが要求と一致しません。",
+        });
+      }
+      return;
+    }
+    if (response.result.kind === "journal") {
+      if (response.result.journal.proposal_id !== response.proposal_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "journal", "proposal_id"],
+          message: "ジャーナルの提案IDが要求と一致しません。",
+        });
+      }
+      if (response.result.journal.operation_id !== response.operation_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "journal", "operation_id"],
+          message: "ジャーナルの操作IDが要求と一致しません。",
+        });
+      }
+    }
+  });
 
 /** 外部連携の確認画面要求応答を検証するスキーマです。 */
 export const externalAgentReviewOpenResponseSchema = z
@@ -421,7 +489,7 @@ export const externalAgentResponseSchema = z.discriminatedUnion("operation", [
 export const externalAgentErrorResponseSchema = z
   .object({
     kind: z.literal("error"),
-    code: proposalFailureCodeSchema,
+    code: externalAgentErrorCodeSchema,
     message: nonBlankMessageSchema,
   })
   .strict();
@@ -511,7 +579,8 @@ export const externalAgentGuiChangedStateSchema = externalAgentGuiStateSchema;
 export type ExternalAgentCreateProposalInput = z.infer<
   typeof externalAgentCreateProposalInputSchema
 >;
-export type ExternalAgentTaskFilter = z.infer<typeof externalAgentTaskFilterSchema>;
+export type ExternalAgentTaskFilter = TaskFilter;
+export type ExternalAgentErrorCode = z.infer<typeof externalAgentErrorCodeSchema>;
 export type ExternalAgentTaskListInput = z.infer<typeof externalAgentTaskListInputSchema>;
 export type ExternalAgentTaskDetailInput = z.infer<
   typeof externalAgentTaskDetailInputSchema
