@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import {
   ipcAiApprovalInputSchema,
   ipcAiCloseSessionInputSchema,
@@ -60,8 +70,7 @@ import {
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import AppHeader from "./AppHeader.vue";
-import AiSessionDialog from "./AiSessionDialog.vue";
-import SetupWizard from "./SetupWizard.vue";
+import type AiSessionDialog from "./AiSessionDialog.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
@@ -96,6 +105,8 @@ import { useTaskHub } from "./task-hub";
 import { useToast } from "./useToast";
 
 const taskHub = useTaskHub();
+
+const SetupWizard = defineAsyncComponent(() => import("./SetupWizard.vue"));
 
 type SetupAction =
   | { readonly kind: "start" }
@@ -251,6 +262,7 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const aiSessions = ref<AiSessionRecord[]>([]);
 const aiDialogVisible = ref(false);
+const aiDialogComponent = shallowRef<typeof AiSessionDialog>();
 const aiSelectedSessionId = ref<string | undefined>();
 const aiDialogRef = ref<AiSessionDialogApi | null>(null);
 const aiDialogReturnFocus = ref<HTMLElement | null>(null);
@@ -2741,10 +2753,19 @@ function appendDelta(delta: { readonly session_id: string; readonly delta: strin
   }
 }
 
-function openAiAssistant(): void {
+async function openAiAssistant(): Promise<void> {
   if (!aiDialogVisible.value) {
     const activeElement = document.activeElement;
     aiDialogReturnFocus.value = activeElement instanceof HTMLElement ? activeElement : null;
+  }
+  if (aiDialogComponent.value == null) {
+    try {
+      const module = await import("./AiSessionDialog.vue");
+      aiDialogComponent.value = module.default;
+    } catch (error) {
+      showUnexpectedFailure();
+      throw error;
+    }
   }
   aiDialogVisible.value = true;
 }
@@ -2753,7 +2774,7 @@ watch(() => externalAgentState.value.kind === "ready"
   ? externalAgentState.value.value.review_target?.request_id
   : undefined, (requestId) => {
   if (requestId != null) {
-    openAiAssistant();
+    void openAiAssistant();
   }
 });
 
@@ -2829,7 +2850,7 @@ async function createAiSession(taskGid: string | undefined): Promise<string | un
 }
 
 async function startAiSession(): Promise<void> {
-  openAiAssistant();
+  await openAiAssistant();
   if (!canStartNewAiSession.value) {
     setAiDialogFeedback(unavailableFeedbackKind(), "新しいAI依頼は現在利用できません。");
     return;
@@ -2841,8 +2862,7 @@ async function startAiSession(): Promise<void> {
   await nextTick();
   const dialog = aiDialogRef.value;
   if (dialog == null) {
-    showAiSessionFocusFailure(sessionId);
-    return;
+    throw new Error("AIダイアログがマウントされていません。");
   }
   switch (dialog.focusSessionInput(sessionId)) {
     case "focused":
@@ -2944,7 +2964,7 @@ async function reanalyzeObsidianNotes(taskGid: string): Promise<void> {
   const request = aiWorkflowTurnRequestSchema.parse({
     message: `タスクGID ${taskGid} について、登録済みVaultを検索して関連ノートを再解析してください。明確に関連すると判断できる候補だけを、Obsidianリンクの追加または修正の変更案として提示してください。変更を自動適用せず、必ず承認待ちの変更案にしてください。`,
   });
-  openAiAssistant();
+  await openAiAssistant();
   const sessionId = await createAiSession(taskGid);
   if (sessionId == null) {
     return;
@@ -3311,7 +3331,9 @@ onUnmounted(() => {
       @begin-reauthentication="beginAsanaReauthentication"
       @recheck-authentication-state="recheckAsanaAuthenticationState"
     />
-    <AiSessionDialog
+    <component
+      :is="aiDialogComponent"
+      v-if="aiDialogComponent != null"
       ref="aiDialogRef"
       :open="aiDialogVisible"
       :can-start-new-session="canStartNewAiSession"

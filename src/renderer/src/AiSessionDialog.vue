@@ -252,7 +252,7 @@ watch(() => props.open, async (open) => {
   mobileDetailVisible.value = props.selectedSessionId != null;
   await nextTick();
   closeButton.value?.focus();
-});
+}, { immediate: true });
 
 watch(() => props.externalReviewRequestId, (requestId) => {
   if (requestId == null) {

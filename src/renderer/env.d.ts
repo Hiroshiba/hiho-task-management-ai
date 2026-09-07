@@ -1,5 +1,3 @@
-import type { TaskHubApi } from "../shared/task-hub-api";
-
 declare module "*.vue" {
   import type { DefineComponent } from "vue";
 
@@ -7,10 +5,6 @@ declare module "*.vue" {
   export default component;
 }
 
-declare global {
-  interface Window {
-    readonly taskHub?: TaskHubApi;
-  }
+interface Window {
+  readonly taskHub?: import("../shared/task-hub-api").TaskHubApi;
 }
-
-export {};
