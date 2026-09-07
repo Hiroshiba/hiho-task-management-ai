@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -22,60 +21,6 @@ import {
 const externalAgentPathSchema = z.string().min(1).refine((value) => {
   return value.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\/u.test(value);
 }, "絶対パスが必要です。");
-
-const windowsAclScript = String.raw`
-$ErrorActionPreference = "Stop"
-$rootPath = [Environment]::GetEnvironmentVariable("TASKHUB_EXTERNAL_AGENT_ACL_ROOT")
-$path = [Environment]::GetEnvironmentVariable("TASKHUB_EXTERNAL_AGENT_ACL_PATH")
-$kind = [Environment]::GetEnvironmentVariable("TASKHUB_EXTERNAL_AGENT_ACL_KIND")
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-if ([string]::IsNullOrEmpty($rootPath) -or [string]::IsNullOrEmpty($path) -or [string]::IsNullOrEmpty($kind)) {
-  throw "ACL input is missing."
-}
-if ($kind -eq "tree") {
-  $items = @(Get-Item -LiteralPath $rootPath -Force) + @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force)
-} else {
-  $items = @(Get-Item -LiteralPath $path -Force)
-}
-foreach ($item in $items) {
-  $acl = Get-Acl -LiteralPath $item.FullName
-  $acl.SetAccessRuleProtection($true, $false)
-  $acl.SetOwner($sid)
-  $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
-  if ($item.PSIsContainer) {
-    $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-  }
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-    $sid,
-    [System.Security.AccessControl.FileSystemRights]::FullControl,
-    $inheritance,
-    [System.Security.AccessControl.PropagationFlags]::None,
-    [System.Security.AccessControl.AccessControlType]::Allow
-  )
-  $acl.SetAccessRule($rule)
-  Set-Acl -LiteralPath $item.FullName -AclObject $acl
-  $checked = Get-Acl -LiteralPath $item.FullName
-  if ($checked.AreAccessRulesProtected -ne $true -or $checked.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) {
-    throw "ACL owner or protection verification failed."
-  }
-  $entries = @($checked.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-  if ($entries.Count -ne 1) {
-    throw "ACL entry verification failed."
-  }
-  $entry = $entries[0]
-  if ($entry.IdentityReference.Value -ne $sid.Value -or $entry.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or (($entry.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl)) {
-    throw "ACL identity or rights verification failed."
-  }
-  if ($item.PSIsContainer) {
-    $requiredInheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-    if (($entry.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance) {
-      throw "ACL inheritance verification failed."
-    }
-  } elseif ($entry.InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None) {
-    throw "ACL file inheritance verification failed."
-  }
-}
-`;
 
 export type ExternalAgentResourcePaths = {
   readonly managementDirectoryPath: string;
@@ -119,33 +64,6 @@ function assertAbsolutePath(value: string, label: string): void {
   assertPath(value, label);
   if (!value.startsWith("/") && !isWindowsAbsolutePath(value)) {
     throw new Error(`${label}は絶対パスでなければなりません。`);
-  }
-}
-
-function protectWindowsPath(filePath: string, kind: "tree" | "file"): void {
-  if (process.platform !== "win32") {
-    return;
-  }
-  const encodedScript = Buffer.from(windowsAclScript, "utf16le").toString("base64");
-  const result = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedScript],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-      env: {
-        ...process.env,
-        TASKHUB_EXTERNAL_AGENT_ACL_ROOT: filePath,
-        TASKHUB_EXTERNAL_AGENT_ACL_PATH: filePath,
-        TASKHUB_EXTERNAL_AGENT_ACL_KIND: kind,
-      },
-    },
-  );
-  if (result.error != null) {
-    throw new Error("Windows管理資源のACL設定を実行できません。", { cause: result.error });
-  }
-  if (result.status == null || result.status != 0) {
-    throw new Error("Windows管理資源のACL設定または検証に失敗しました。");
   }
 }
 
@@ -215,13 +133,9 @@ function writeManagedTextFile(
   filePath: string,
   content: string,
   label: string,
-  protectWindowsFile: boolean,
 ): void {
   assertAbsolutePath(filePath, label);
   writeSecurePersistentTextFileAtomically(filePath, content, label);
-  if (protectWindowsFile) {
-    protectWindowsPath(filePath, "file");
-  }
 }
 
 /** 外部連携の管理資源を起動時の実行先で更新します。 */
@@ -236,18 +150,16 @@ export function writeExternalAgentResources(
   ensureSecureUserDataDirectory(paths.skillDirectoryPath);
   ensureSecureUserDataDirectory(paths.skillAgentsDirectoryPath);
   ensureSecureUserDataDirectory(paths.skillScriptsDirectoryPath);
-  protectWindowsPath(paths.managementDirectoryPath, "tree");
   const mode = process.platform === "win32" ? "wsl" : "native";
-  writeManagedTextFile(join(paths.skillDirectoryPath, "SKILL.md"), createSkillDocument(), "SKILL.md", false);
-  writeManagedTextFile(join(paths.skillAgentsDirectoryPath, "openai.yaml"), createAgentMetadata(), "agents/openai.yaml", false);
+  writeManagedTextFile(join(paths.skillDirectoryPath, "SKILL.md"), createSkillDocument(), "SKILL.md");
+  writeManagedTextFile(join(paths.skillAgentsDirectoryPath, "openai.yaml"), createAgentMetadata(), "agents/openai.yaml");
   writeManagedTextFile(
     paths.launcherScriptPath,
     createExternalAgentLauncherScript({ mode, executablePath: processExecPath, clientPath: paths.clientScriptPath }),
     "scripts/taskhub",
-    false,
   );
-  writeManagedTextFile(paths.clientScriptPath, createExternalAgentClientScript(paths.connectionInfoPath), "client.cjs", false);
-  writeManagedTextFile(paths.installerScriptPath, createExternalAgentInstallerScript(), "installer.sh", false);
+  writeManagedTextFile(paths.clientScriptPath, createExternalAgentClientScript(paths.connectionInfoPath), "client.cjs");
+  writeManagedTextFile(paths.installerScriptPath, createExternalAgentInstallerScript(), "installer.sh");
   return paths;
 }
 
@@ -269,7 +181,6 @@ export function writeExternalAgentConfig(paths: ExternalAgentResourcePaths, conf
     paths.configPath,
     `${JSON.stringify(validatedConfig)}\n`,
     "外部連携設定",
-    true,
   );
 }
 
@@ -283,11 +194,10 @@ export function writeExternalAgentConnectionInfo(
     paths.connectionInfoPath,
     `${JSON.stringify(validatedDescriptor)}\n`,
     "外部連携接続情報",
-    true,
   );
 }
 
-/** 外部連携の接続情報を現在のユーザーだけが参照できる形で削除します。 */
+/** 外部連携の接続情報を削除します。 */
 export function removeExternalAgentConnectionInfo(paths: ExternalAgentResourcePaths): void {
   removeSecurePersistentFile(paths.connectionInfoPath, "外部連携接続情報");
 }
