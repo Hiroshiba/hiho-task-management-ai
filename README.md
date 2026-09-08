@@ -2,6 +2,16 @@
 
 AIが僕のタスクを管理してくれたりする仕組みやGUI
 
+## macOSで起動できない場合
+
+macOSで「TaskHub.appは壊れているため開けません」などと表示されて起動できない場合は、隔離属性の解除で起動できることがあります。信頼できる配布元から入手したTaskHub.appをアプリケーションフォルダーへ移動し、ターミナルで次のコマンドを実行してください。
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/TaskHub.app"
+```
+
+実行後にTaskHubを再度起動してください。
+
 ## 開発
 
 ```sh
