@@ -707,6 +707,24 @@ function evidenceKindLabel(
   }
 }
 
+function operationEvidenceExcerpts(operation: ProposalOperation): readonly string[] {
+  const excerpts = new Set<string>();
+  const addExcerpt = (excerpt: string | undefined): void => {
+    if (excerpt == null || excerpt.trim().length === 0) {
+      return;
+    }
+    excerpts.add(excerpt);
+  };
+  operation.evidence_refs.forEach((reference) => addExcerpt(reference.excerpt));
+  if (operation.operation === "complete" || operation.operation === "withdraw") {
+    addExcerpt(operation.status_evidence.reference.excerpt);
+  }
+  if (operation.operation === "create_task" && operation.creation.kind === "split_child") {
+    addExcerpt(operation.creation.instruction_reference.excerpt);
+  }
+  return [...excerpts];
+}
+
 function startEditing(operation: ProposalOperation): void {
   editingOperationId.value = operation.operation_id;
   localError.value = "";
@@ -1175,7 +1193,20 @@ function applicationReasonLabel(reason: string): string {
                       :key="`${evidence.kind}-${evidence.locator}`"
                       class="mr-2 inline-block"
                     >{{ evidenceKindLabel(evidence.kind) }}</span>
-                  </dd>
+                  </dd><template v-if="operationEvidenceExcerpts(operation).length > 0">
+                    <dt class="text-slate-600 dark:text-slate-400">
+                      根拠原文
+                    </dt><dd class="min-w-0 whitespace-pre-wrap break-words text-slate-800 dark:text-slate-100">
+                      <ul class="space-y-1">
+                        <li
+                          v-for="excerpt in operationEvidenceExcerpts(operation)"
+                          :key="excerpt"
+                        >
+                          「{{ excerpt }}」
+                        </li>
+                      </ul>
+                    </dd>
+                  </template>
                 </dl><button
                   type="button"
                   class="text-button mt-3"
