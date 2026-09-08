@@ -715,6 +715,7 @@ function statusTargetForOperation(
 
 /** GUI直接編集後に差分同期と順位再計算を呼び出す関数です。 */
 export type AsanaGuiEditPostApply = (
+  requiredTaskGids: readonly string[],
   signal: AbortSignal,
 ) => Promise<PostWriteSynchronizationResult>;
 
@@ -1076,7 +1077,7 @@ export class AsanaGuiEditService {
     try {
       result = resultFromWriter(input, operationId, writerResult);
     } catch (error: unknown) {
-      return this.rethrowUnexpectedAfterPostApply(error, signal);
+      return this.rethrowUnexpectedAfterPostApply(error, input.task_gid, signal);
     }
     return this.finalizePostWriteResult(result, signal);
   }
@@ -1158,10 +1159,7 @@ export class AsanaGuiEditService {
             reason_code: "read_back_mismatch",
             side_effect: "possible",
           });
-      if (attempted) {
-        return this.finalizePostWriteResult(result, signal);
-      }
-      return result;
+      return this.finalizePostWriteResult(result, signal);
     } catch (error: unknown) {
       if (attempted) {
         return this.resolvePossibleWriteError(
@@ -1180,7 +1178,7 @@ export class AsanaGuiEditService {
     signal: AbortSignal,
   ): Promise<AsanaGuiEditResult> {
     const synchronization = asanaPostWriteSynchronizationResultSchema.parse(
-      await this.postApply(signal),
+      await this.postApply([result.task_gid], signal),
     );
     if (synchronization.kind === "synchronized") {
       return result;
@@ -1205,7 +1203,11 @@ export class AsanaGuiEditService {
     operationId: string,
     signal: AbortSignal,
   ): Promise<AsanaGuiEditResult> {
-    const synchronization = await this.synchronizeAfterWriteError(error, signal);
+    const synchronization = await this.synchronizeAfterWriteError(
+      error,
+      taskGid,
+      signal,
+    );
     if (
       synchronization.kind === "recovery_required"
       && (signal.aborted || isKnownAsanaOperationalError(error))
@@ -1224,19 +1226,21 @@ export class AsanaGuiEditService {
 
   private async rethrowUnexpectedAfterPostApply(
     error: unknown,
+    taskGid: string,
     signal: AbortSignal,
   ): Promise<never> {
-    await this.synchronizeAfterWriteError(error, signal);
+    await this.synchronizeAfterWriteError(error, taskGid, signal);
     throw error;
   }
 
   private async synchronizeAfterWriteError(
     error: unknown,
+    taskGid: string,
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
     try {
       return asanaPostWriteSynchronizationResultSchema.parse(
-        await this.postApply(signal),
+        await this.postApply([taskGid], signal),
       );
     } catch (postApplyError: unknown) {
       throw new AggregateError(

@@ -548,8 +548,11 @@ async function finalizePendingJournals(
   if (pending.length === 0) {
     return;
   }
+  const requiredTaskGids = sortedUniqueTaskGids(
+    pending.map((item) => item.task_gid),
+  );
   const synchronization = asanaPostWriteSynchronizationResultSchema.parse(
-    await postApply(signal),
+    await postApply(requiredTaskGids, signal),
   );
   if (synchronization.kind === "recovery_required") {
     for (const item of pending) {
@@ -734,6 +737,18 @@ function compareOperationContexts(
     return 1;
   }
   return 0;
+}
+
+function sortedUniqueTaskGids(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => {
+    if (left < right) {
+      return -1;
+    }
+    if (left > right) {
+      return 1;
+    }
+    return 0;
+  });
 }
 
 function createTaskTemporaryReferences(
@@ -1782,5 +1797,6 @@ export type ProposalApplicationTimestampProvider = () => string;
 
 /** 適用後の同期と順位再計算を実行します。 */
 export type ProposalApplicationPostApply = (
+  requiredTaskGids: readonly string[],
   signal: AbortSignal,
 ) => Promise<PostWriteSynchronizationResult>;

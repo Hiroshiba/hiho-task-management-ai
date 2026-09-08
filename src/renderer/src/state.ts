@@ -451,22 +451,6 @@ export function blockLabel(blockState: "none" | "partial" | "full"): string {
   }
 }
 
-/** 期限表示値を日本語へ変換します。 */
-export function dueLabel(
-  due: { readonly kind: "none" }
-    | { readonly kind: "on"; readonly value: string }
-    | { readonly kind: "at"; readonly value: string },
-): string {
-  switch (due.kind) {
-    case "none":
-      return "期限なし";
-    case "on":
-      return due.value;
-    case "at":
-      return due.value;
-  }
-}
-
 function jstCalendarDate(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) {
