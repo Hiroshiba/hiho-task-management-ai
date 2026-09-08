@@ -142,6 +142,7 @@ const coordinatorInputSchema = z
     section_gids: deviceSectionGidsSchema,
     device_id: identifierSchema,
     app_version: identifierSchema,
+    required_task_gids: sortedGidArraySchema,
   })
   .strict();
 
@@ -1255,7 +1256,10 @@ export class AsanaSyncCoordinator {
         available_section_gids: sections
           .map((section) => section.gid)
           .sort(compareStrings),
-        affected_task_gids: result.affected_task_gids,
+        affected_task_gids: sortedUnique([
+          ...result.affected_task_gids,
+          ...input.required_task_gids,
+        ]),
       },
       signal,
     );
