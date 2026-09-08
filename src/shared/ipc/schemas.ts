@@ -61,6 +61,10 @@ import {
   type ExternalAgentGuiState,
 } from "../external-agent";
 import {
+  vaultMappingSchema,
+  vaultMappingsSchema,
+} from "../storage";
+import {
   viewModelOverviewSchema,
   viewModelTaskDetailSchema,
   type ViewModelOverview,
@@ -592,6 +596,8 @@ export const ipcChannelSchema = z.enum([
   "external-agent:state",
   "obsidian:validate-vault",
   "obsidian:list-vaults",
+  "obsidian:list-vault-mappings",
+  "obsidian:save-vault-mapping",
   "obsidian:resolve-path",
   "obsidian:note-exists",
   "obsidian:open-note",
@@ -687,6 +693,10 @@ export const ipcObsidianValidateInputSchema = z.object({ vault_id: vaultIdSchema
 export const ipcObsidianValidateResponseSchema = responseSchema(obsidianVaultResultSchema);
 export const ipcObsidianListVaultsInputSchema = emptyRequestSchema;
 export const ipcObsidianListVaultsResponseSchema = responseSchema(obsidianVaultListResultSchema);
+export const ipcObsidianListVaultMappingsInputSchema = emptyRequestSchema;
+export const ipcObsidianListVaultMappingsResponseSchema = responseSchema(vaultMappingsSchema);
+export const ipcObsidianSaveVaultMappingInputSchema = vaultMappingSchema;
+export const ipcObsidianSaveVaultMappingResponseSchema = responseSchema(vaultMappingsSchema);
 export const ipcObsidianPathInputSchema = z.object({ vault_id: vaultIdSchema, relative_path: relativeMarkdownPathSchema }).strict();
 export const ipcObsidianPathResponseSchema = responseSchema(obsidianPathResultSchema);
 export const ipcObsidianOpenNoteInputSchema = ipcObsidianPathInputSchema;
@@ -735,6 +745,8 @@ export type IpcExternalAgentGuiApproveInput = ExternalAgentGuiApproveInput;
 export type IpcExternalAgentGuiRejectInput = ExternalAgentGuiRejectInput;
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;
 export type IpcObsidianVaultList = z.infer<typeof obsidianVaultListResultSchema>;
+export type IpcObsidianVaultMapping = z.infer<typeof vaultMappingSchema>;
+export type IpcObsidianVaultMappings = readonly IpcObsidianVaultMapping[];
 export type IpcObsidianPathResult = z.infer<typeof obsidianPathResultSchema>;
 export type IpcSyncStateEvent = z.infer<typeof syncStateEventSchema>;
 export type IpcAiStatus = z.infer<typeof aiStatusSchema>;

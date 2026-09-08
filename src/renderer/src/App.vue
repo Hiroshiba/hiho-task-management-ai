@@ -70,6 +70,7 @@ import {
   type ViewModelOverview,
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
+import type { VaultMapping } from "../../shared/storage";
 import AppHeader from "./AppHeader.vue";
 import type AiSessionDialog from "./AiSessionDialog.vue";
 import SettingsDialog from "./SettingsDialog.vue";
@@ -272,6 +273,11 @@ const aiSessionCreating = ref(false);
 const aiDialogFeedback = ref<Feedback | undefined>();
 const settingsDialogVisible = ref(false);
 const settingsDialogFeedback = ref<Feedback | undefined>();
+const vaultMappings = ref<readonly VaultMapping[]>([]);
+const vaultMappingsLoading = ref(false);
+const vaultMappingBusy = ref(false);
+const vaultMappingFeedback = ref<Feedback | undefined>();
+const vaultSaveGeneration = ref(0);
 const externalAgentState = ref<RendererExternalAgentState>({ kind: "loading" });
 const externalAgentBusy = ref(false);
 const externalAgentEditResult = ref<RendererExternalAgentEditResult | undefined>();
@@ -298,6 +304,7 @@ let taskDetailGeneration = 0;
 let obsidianStatusGeneration = 0;
 let guiEditGeneration = 0;
 let taskEditMarkerGeneration = 0;
+let vaultMappingsLoadGeneration = 0;
 let lastLoadedSuccessfulSyncAt: string | undefined;
 let activeSyncReload: ActiveSyncReload = { kind: "idle" };
 let normalizationNotificationDisplayState: NormalizationNotificationDisplayState = {
@@ -2307,6 +2314,103 @@ async function checkObsidianLinks(links: readonly ViewModelTaskDetail["obsidian_
   }
 }
 
+function applyVaultMappings(mappings: readonly VaultMapping[]): void {
+  vaultMappings.value = mappings;
+  registeredVaultIds.value = mappings.map((mapping) => mapping.vault_id);
+}
+
+async function loadVaultMappings(): Promise<void> {
+  const generation = vaultMappingsLoadGeneration + 1;
+  vaultMappingsLoadGeneration = generation;
+  vaultMappingsLoading.value = true;
+  vaultMappingFeedback.value = undefined;
+  try {
+    const result = await taskHub.obsidian.listVaultMappings();
+    if (generation !== vaultMappingsLoadGeneration) {
+      return;
+    }
+    if (isFailure(result)) {
+      vaultMappingFeedback.value = {
+        kind: "failure",
+        message: displayFailure(result).message,
+      };
+      return;
+    }
+    applyVaultMappings(result.value);
+    if (selectedTask.value != null) {
+      await checkObsidianLinks(selectedTask.value.obsidian_links);
+    }
+  } catch {
+    if (generation === vaultMappingsLoadGeneration) {
+      vaultMappingFeedback.value = {
+        kind: "failure",
+        message: "Vault設定を読み込めませんでした。もう一度お試しください。",
+      };
+    }
+  } finally {
+    if (generation === vaultMappingsLoadGeneration) {
+      vaultMappingsLoading.value = false;
+    }
+  }
+}
+
+function vaultMappingFailureMessage(value: IpcFailure): string {
+  if (value.code === "conflict") {
+    return "AI依頼が残っている場合は「確認して閉じる」または「依頼を中止」を行い、別の処理中なら完了を待ってからVault設定を変更してください。";
+  }
+  return displayFailure(value).message;
+}
+
+async function saveVaultMapping(mapping: VaultMapping): Promise<void> {
+  if (vaultMappingBusy.value || externalAgentBusy.value) {
+    return;
+  }
+  const wasRegistered = vaultMappings.value.some((candidate) => candidate.vault_id === mapping.vault_id);
+  vaultMappingBusy.value = true;
+  vaultMappingFeedback.value = {
+    kind: "progress",
+    message: "Vault設定を保存しています。",
+  };
+  let savedMappings: readonly VaultMapping[];
+  try {
+    try {
+      const result = await taskHub.obsidian.saveVaultMapping(mapping);
+      if (isFailure(result)) {
+        vaultMappingFeedback.value = {
+          kind: "failure",
+          message: vaultMappingFailureMessage(result),
+        };
+        return;
+      }
+      savedMappings = result.value;
+    } catch {
+      vaultMappingFeedback.value = {
+        kind: "failure",
+        message: "Vault設定を保存できませんでした。入力内容を確認して再試行してください。",
+      };
+      return;
+    }
+    applyVaultMappings(savedMappings);
+    vaultSaveGeneration.value += 1;
+    vaultMappingFeedback.value = undefined;
+    addToast(
+      "success",
+      wasRegistered
+        ? `Vault「${mapping.vault_id}」のパスを更新しました。`
+        : `Vault「${mapping.vault_id}」を登録しました。`,
+    );
+    try {
+      if (selectedTask.value != null) {
+        await checkObsidianLinks(selectedTask.value.obsidian_links);
+      }
+    } catch {
+      setFeedback("warning", "Vaultを保存しましたが、ノートの状態を更新できませんでした。");
+    }
+  } finally {
+    vaultMappingBusy.value = false;
+  }
+}
+
 async function loadObsidianVaults(): Promise<void> {
   try {
     const result = await taskHub.obsidian.listVaults();
@@ -2795,6 +2899,7 @@ async function openAiAssistant(): Promise<void> {
 watch(settingsDialogVisible, (open) => {
   if (open) {
     aiDialogVisible.value = false;
+    void loadVaultMappings();
   }
 });
 
@@ -3381,11 +3486,18 @@ onUnmounted(() => {
         @recheck-authentication-state="recheckAsanaAuthenticationState"
       />
       <SettingsDialog
+        :open="settingsDialogVisible"
         :state="externalAgentState"
         :busy="externalAgentBusy"
         :restore-focus="!aiDialogVisible"
         :feedback="settingsDialogFeedback"
+        :vault-mappings="vaultMappings"
+        :vault-mappings-loading="vaultMappingsLoading"
+        :vault-busy="vaultMappingBusy"
+        :vault-feedback="vaultMappingFeedback"
+        :vault-save-generation="vaultSaveGeneration"
         @set-enabled="setExternalAgentEnabled"
+        @save-vault-mapping="saveVaultMapping"
       />
     </DialogRoot>
     <component

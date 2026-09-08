@@ -32,6 +32,7 @@ import {
 } from "../auth/asana-oauth";
 import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage";
 import { ExternalAgentServiceError } from "../external-agent";
+import { ObsidianVaultMappingConflictError } from "../obsidian";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -79,10 +80,14 @@ import {
   ipcGuiEditResponseSchema,
   ipcObsidianListVaultsInputSchema,
   ipcObsidianListVaultsResponseSchema,
+  ipcObsidianListVaultMappingsInputSchema,
+  ipcObsidianListVaultMappingsResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
+  ipcObsidianSaveVaultMappingInputSchema,
+  ipcObsidianSaveVaultMappingResponseSchema,
   ipcObsidianValidateInputSchema,
   ipcObsidianValidateResponseSchema,
   ipcReadModelOverviewInputSchema,
@@ -142,6 +147,8 @@ import {
   type IpcGuiEditInput,
   type IpcGuiEditResult,
   type IpcObsidianPathResult,
+  type IpcObsidianVaultMapping,
+  type IpcObsidianVaultMappings,
   type IpcObsidianVaultResult,
   type IpcReadModelOverview,
   type IpcReadModelTaskDetail,
@@ -255,9 +262,14 @@ export interface IpcAiPort {
   onStatus?(listener: (status: IpcAiStatus) => void): () => void;
 }
 
-/** Obsidian読み取りをIPCへ提供するポートです。 */
+/** Obsidian参照とVault設定をIPCへ提供するポートです。 */
 export interface IpcObsidianPort {
   listVaults(signal: AbortSignal): MaybePromise<readonly string[]>;
+  listVaultMappings(signal: AbortSignal): MaybePromise<IpcObsidianVaultMappings>;
+  saveVaultMapping(
+    input: IpcObsidianVaultMapping,
+    signal: AbortSignal,
+  ): MaybePromise<IpcObsidianVaultMappings>;
   validateVault(vaultId: string, signal: AbortSignal): MaybePromise<IpcObsidianVaultResult>;
   resolvePath(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
   noteExists(vaultId: string, relativePath: string, signal: AbortSignal): MaybePromise<IpcObsidianPathResult>;
@@ -350,6 +362,9 @@ function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
       case "unknown_result":
         return "operation_failed";
     }
+  }
+  if (error instanceof ObsidianVaultMappingConflictError) {
+    return "conflict";
   }
   if (error instanceof AsanaOAuthTokenEndpointError) {
     switch (error.code) {
@@ -1014,6 +1029,32 @@ export class IpcHandlerRegistry {
         }
         const vaultIds = [...await port.listVaults(signal)].sort(compareStrings);
         return { vault_ids: vaultIds };
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "obsidian:list-vault-mappings",
+      ipcObsidianListVaultMappingsInputSchema,
+      ipcObsidianListVaultMappingsResponseSchema,
+      async (_input, signal) => {
+        const port = this.options.ports.obsidian;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return [...await port.listVaultMappings(signal)];
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "obsidian:save-vault-mapping",
+      ipcObsidianSaveVaultMappingInputSchema,
+      ipcObsidianSaveVaultMappingResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.obsidian;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return [...await port.saveVaultMapping(input, signal)];
       },
     );
     this.registerHandle(

@@ -126,6 +126,8 @@ import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
   ObsidianReadService,
+  ObsidianVaultMappingConflictError,
+  validateVaultMappingPath,
 } from "../obsidian";
 import { discoverTasksVault } from "../obsidian/tasks-vault-discovery";
 import {
@@ -240,9 +242,12 @@ import {
   type IpcAsanaAuthenticationState,
   type IpcAsanaReauthenticationCancelInput,
   type IpcAsanaReauthenticationCompleteInput,
+  type IpcObsidianVaultMapping,
+  type IpcObsidianVaultMappings,
 } from "../../shared/ipc";
 import {
   deviceSettingsSchema,
+  vaultMappingSchema,
   type DeviceSettings,
   type TaskCacheEntry,
 } from "../../shared/storage";
@@ -1067,6 +1072,7 @@ export class TaskHubApplication {
   private aiSessionsConfigured = false;
   private readonly aiSessions = new Map<string, AiSessionRecord>();
   private readonly aiSessionStarts = new Map<string, AiSessionStartRecord>();
+  private vaultMappingSaveInProgress = false;
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
@@ -1316,11 +1322,16 @@ export class TaskHubApplication {
       throw new Error("アプリケーションは停止済みです。");
     }
     await this.initializeExternalAgentBridge();
-    const tasksVaultDiscovery = await discoverTasksVault(signal);
-    if (tasksVaultDiscovery.kind === "found") {
-      throwIfAborted(signal);
-      this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
-      this.updateCodexVaultPaths();
+    const hasTasksVaultMapping = this.database.getVaultMappings().some(
+      (mapping) => mapping.vault_id === "tasks",
+    );
+    if (!hasTasksVaultMapping) {
+      const tasksVaultDiscovery = await discoverTasksVault(signal);
+      if (tasksVaultDiscovery.kind === "found") {
+        throwIfAborted(signal);
+        this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
+        this.updateCodexVaultPaths();
+      }
     }
     this.recordDiagnostic("app.start", "info");
     await this.reconcileExternalToolsAtStartup(signal);
@@ -4256,6 +4267,57 @@ export class TaskHubApplication {
     return this.externalAgent;
   }
 
+  private assertVaultMappingSaveAllowed(): void {
+    if (this.stopped) {
+      throw new ObsidianVaultMappingConflictError();
+    }
+    if (
+      this.externalToolConfigurationOperation.kind === "running"
+      || this.aiSessionStarts.size > 0
+      || this.aiSessions.size > 0
+    ) {
+      throw new ObsidianVaultMappingConflictError();
+    }
+    const codexState = this.codexSession.getState();
+    if (
+      codexState !== "created"
+      && codexState !== "authentication_required"
+      && codexState !== "ready"
+    ) {
+      throw new ObsidianVaultMappingConflictError();
+    }
+  }
+
+  private async saveVaultMapping(
+    input: IpcObsidianVaultMapping,
+    signal: AbortSignal,
+  ): Promise<IpcObsidianVaultMappings> {
+    this.assertOperationalReady();
+    validateAbortSignal(signal);
+    throwIfAborted(signal);
+    if (this.vaultMappingSaveInProgress) {
+      throw new ObsidianVaultMappingConflictError();
+    }
+    this.assertVaultMappingSaveAllowed();
+    this.vaultMappingSaveInProgress = true;
+    try {
+      const requestedMapping = vaultMappingSchema.parse(input);
+      const validatedVault = await validateVaultMappingPath(requestedMapping, signal);
+      throwIfAborted(signal);
+      this.assertOperationalReady();
+      this.assertVaultMappingSaveAllowed();
+      const mapping = vaultMappingSchema.parse({
+        vault_id: validatedVault.vault_id,
+        absolute_path: validatedVault.real_path,
+      });
+      this.database.saveVaultMapping(mapping);
+      this.updateCodexVaultPaths();
+      return this.database.getVaultMappings();
+    } finally {
+      this.vaultMappingSaveInProgress = false;
+    }
+  }
+
   private createGuiRejectedResult(
     taskGid: string,
     reasonCode:
@@ -5013,6 +5075,13 @@ export class TaskHubApplication {
           .map((mapping) => mapping.vault_id)
           .sort(compareStrings);
       },
+      listVaultMappings: (signal) => {
+        this.assertOperationalReady();
+        validateAbortSignal(signal);
+        throwIfAborted(signal);
+        return this.database.getVaultMappings();
+      },
+      saveVaultMapping: (input, signal) => this.saveVaultMapping(input, signal),
       validateVault: async (vaultId, signal) => {
         this.assertOperationalReady();
         const result = await this.obsidian.validateVault(vaultId, signal);
