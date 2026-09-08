@@ -56,11 +56,11 @@ import {
 } from "../../domain/normalization";
 import {
   createChildrenOnlyEvidenceLocator,
-  createTaskEvidenceLocator,
   trustedStatusEvidenceReferencesSchema,
   validateProposal,
   validateProposalGraph,
   validateSelectedProposalGraph,
+  type ExplicitSplitRequestReference,
   type GraphValidationResult,
   type ProposalValidationResult,
   type TrustedStatusEvidenceReference,
@@ -95,261 +95,48 @@ import {
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
 
-const generatedSplitRequestLocatorsSchema = z
-  .array(identifierSchema)
-  .max(1);
+type EvidenceSource =
+  | {
+      readonly kind: "user_message";
+      readonly source_id: string;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "task_notes";
+      readonly source_id: string;
+      readonly task_gid: string;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "withdraw_confirmation";
+      readonly source_id: string;
+      readonly text: string;
+      readonly target_task_gid: string;
+      readonly baseline_status: TaskSnapshot["status"];
+      readonly baseline_completed: boolean;
+    };
 
-const explicitSplitRequestPhrases: readonly string[] = [
-  "分割して",
-  "サブタスクにして",
-  "作業を細かくして",
-  "実行手順ごとにタスク化して",
-];
+type EvidenceSourceMap = ReadonlyMap<string, EvidenceSource>;
 
-const explicitSplitRequestSuffixes: readonly string[] = [
-  "ください",
-  "下さい",
-  "ほしいです",
-  "欲しいです",
-  "ほしい",
-  "欲しい",
-  "もらいたいです",
-  "もらいたい",
-  "いただきたいです",
-  "いただきたい",
-];
+type UserMessageSourceSummary =
+  | {
+      readonly kind: "user_message";
+      readonly source_id: string;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "withdraw_confirmation";
+      readonly source_id: string;
+      readonly text: string;
+      readonly target_task_gid: string;
+      readonly baseline_status: TaskSnapshot["status"];
+      readonly baseline_completed: boolean;
+    };
 
-const conflictingSplitRequestMarkers: readonly string[] = [
-  "前言撤回",
-  "分割しない",
-  "分割はしない",
-  "分割をしない",
-  "分割しなく",
-  "分割するな",
-  "サブタスクにしない",
-  "サブタスクにはしない",
-  "サブタスク化しない",
-  "細かくしない",
-  "細かくはしない",
-  "タスク化しない",
-  "タスク化はしない",
-  "分割の指示を取り消",
-  "分割指示を取り消",
-  "分割の依頼を取り消",
-  "分割依頼を取り消",
-  "分割の指示を撤回",
-  "分割指示を撤回",
-  "分割の依頼を撤回",
-  "分割依頼を撤回",
-  "分割するのをやめ",
-  "サブタスク化するのをやめ",
-  "細かくするのをやめ",
-  "タスク化するのをやめ",
-];
-
-const rejectedSplitRequestClausePrefixes: readonly string[] = [
-  "必要なら",
-  "必要であれば",
-  "必要に応じ",
-  "できれば",
-  "可能なら",
-  "可能であれば",
-  "可能性として",
-  "例えば",
-  "例として",
-  "例文",
-  "という例",
-  "一例",
-  "引用",
-  "という文",
-  "という表現",
-  "という案",
-  "以下の文",
-  "次の文",
-  "文言",
-  "仮に",
-  "もし",
-  "と仮定",
-  "かもしれ",
-];
-
-const rejectedSplitRequestClauseTails: readonly string[] = [
-  "と書いて",
-  "と入力",
-  "と表示",
-  "と発言",
-  "と言って",
-  "と言う",
-  "という例",
-  "という文",
-  "という表現",
-  "という案",
-  "と仮定",
-  "かもしれ",
-  "ますか",
-  "でしょうか",
-  "ですか",
-  "かな",
-  "かどうか",
-  "はいけない",
-  "はだめ",
-  "ほしくない",
-  "?",
-  "？",
-];
-
-const splitRequestTailDelimiters = new Set([
-  "。",
-  "、",
-  ",",
-  "！",
-  "!",
-  "；",
-  ";",
-  "\n",
-  "\r",
-]);
-
-const splitRequestClauseDelimiters = new Set([
-  "。",
-  "！",
-  "!",
-  "？",
-  "?",
-  "；",
-  ";",
-  "\n",
-  "\r",
-]);
-
-const splitRequestQuotePairs: readonly {
-  readonly open: string;
-  readonly close: string;
-}[] = [
-  { open: "「", close: "」" },
-  { open: "『", close: "』" },
-  { open: "“", close: "”" },
-  { open: "\"", close: "\"" },
-  { open: "`", close: "`" },
-];
-
-type TrustedStatusOperation = "complete" | "withdraw";
-
-type ExplicitStatusClaim = {
-  readonly target_task_gid: string;
-  readonly allowed_operation: TrustedStatusOperation;
-};
-
-type AllowedStatusPhrase = {
-  readonly phrase: string;
-  readonly operation: TrustedStatusOperation;
-};
-
-const allowedStatusPhrases: readonly AllowedStatusPhrase[] = [
-  { phrase: "完了しました", operation: "complete" },
-  { phrase: "終わりました", operation: "complete" },
-  { phrase: "完了した", operation: "complete" },
-  { phrase: "終わった", operation: "complete" },
-  { phrase: "不要になりました", operation: "withdraw" },
-  { phrase: "取り下げました", operation: "withdraw" },
-  { phrase: "中止しました", operation: "withdraw" },
-  { phrase: "不要になった", operation: "withdraw" },
-  { phrase: "取り下げた", operation: "withdraw" },
-  { phrase: "中止した", operation: "withdraw" },
-];
-
-const ambiguousStatusMarkers: readonly string[] = [
-  "未完了",
-  "完了していない",
-  "終わっていない",
-  "不要ではない",
-  "中止していない",
-  "取り下げていない",
-  "ではない",
-  "じゃない",
-  "ません",
-  "なかった",
-  "まだ",
-  "かもしれ",
-  "かも",
-  "おそらく",
-  "たぶん",
-  "と思",
-  "らしい",
-  "ようだ",
-  "ようです",
-  "はず",
-  "つもり",
-  "でしょう",
-  "未確認",
-  "不明",
-  "誤り",
-  "訂正",
-  "撤回",
-  "と書いて",
-  "と入力",
-  "と表示",
-  "と聞",
-  "と言われ",
-  "と仮定",
-  "という文",
-  "例文",
-  "引用",
-  "間違",
-  "実際は違",
-  "?",
-  "？",
-];
-
-const withdrawRequestPhrases: readonly string[] = [
-  "消してください",
-  "消して",
-  "削除してください",
-  "削除して",
-  "取り下げてください",
-  "取り下げて",
-];
-
-const withdrawRequestPoliteTails: readonly string[] = [
-  "よね",
-  "よ",
-  "ね",
-];
-
-const rejectedWithdrawRequestMarkers: readonly string[] = [
-  ...ambiguousStatusMarkers,
-  "言った",
-  "言われ",
-  "聞い",
-  "という",
-  "といった",
-  "例として",
-  "してもいい",
-  "してよい",
-  "ですか",
-  "でしょうか",
-  "かどうか",
-];
-
-const withdrawConfirmationPhrases: ReadonlySet<string> = new Set([
-  "はい",
-  "はいそれでいいです",
-  "はいそれでお願いします",
-  "それでいいです",
-  "それでお願いします",
-  "これでいいです",
-  "これでお願いします",
-  "その候補でいいです",
-  "その候補でお願いします",
-  "そのタスクでいいです",
-  "そのタスクでお願いします",
-]);
-
-const targetTerminalParticles = new Set(["は", "を", "が", ":", "："]);
-
-type WithdrawRequestPhraseMatch = {
-  readonly normalized_statement: string;
-  readonly phrase_start_index: number;
+type BoundProposalEvidence = {
+  readonly proposal: Proposal;
+  readonly explicit_split_request_references: readonly ExplicitSplitRequestReference[];
+  readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
 type PendingWithdrawConfirmation = {
@@ -397,9 +184,12 @@ type PreparedTurn = {
   readonly baseline_snapshot_hash: string;
   readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
   readonly taskctl_snapshot: TaskctlSnapshot;
-  readonly user_message_locator: string;
-  readonly explicit_split_request_locators: readonly string[];
-  readonly user_status_claims: readonly ExplicitStatusClaim[];
+  readonly user_message_source_id: string;
+  readonly user_message_sources: readonly UserMessageSourceSummary[];
+  readonly withdraw_confirmation_source_id: string | undefined;
+  readonly withdraw_confirmation_source_ids: readonly string[];
+  readonly source_map: EvidenceSourceMap;
+  readonly pending_withdraw_confirmation: PendingWithdrawConfirmation | undefined;
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
@@ -413,8 +203,9 @@ type StoredProposal = {
   readonly basic_validation: ProposalValidationResult;
   readonly graph_validation: GraphValidationResult;
   readonly selected_operation_ids: readonly string[];
-  readonly explicit_split_request_locators: readonly string[];
+  readonly explicit_split_request_references: readonly ExplicitSplitRequestReference[];
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
+  readonly source_map: EvidenceSourceMap;
 };
 
 export type TrustedExternalStatusEvidence = Extract<
@@ -645,141 +436,6 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
-function hasRejectedSplitRequestClauseTail(tail: string): boolean {
-  let clauseEnd = tail.length;
-  for (let index = 0; index < tail.length; index += 1) {
-    const character = tail.at(index);
-    if (character != null && splitRequestClauseDelimiters.has(character)) {
-      clauseEnd = index;
-      break;
-    }
-  }
-  const clauseTail = tail.slice(0, clauseEnd);
-  return rejectedSplitRequestClauseTails.some((marker) =>
-    clauseTail.includes(marker));
-}
-
-function hasSplitRequestTailBoundary(tail: string): boolean {
-  const trimmed = tail.trimStart();
-  if (trimmed.length === 0) {
-    return true;
-  }
-  const firstCharacter = trimmed.at(0);
-  if (firstCharacter == null || !splitRequestTailDelimiters.has(firstCharacter)) {
-    return false;
-  }
-  if (splitRequestClauseDelimiters.has(firstCharacter)) {
-    return true;
-  }
-  return !hasRejectedSplitRequestClauseTail(
-    trimmed.slice(firstCharacter.length).trimStart(),
-  );
-}
-
-function splitRequestClausePrefix(message: string, startIndex: number): string {
-  let clauseStart = 0;
-  for (let index = startIndex - 1; index >= 0; index -= 1) {
-    const character = message.at(index);
-    if (character != null && splitRequestClauseDelimiters.has(character)) {
-      clauseStart = index + character.length;
-      break;
-    }
-  }
-  return message.slice(clauseStart, startIndex);
-}
-
-function isInsideSplitRequestQuote(message: string, startIndex: number): boolean {
-  const prefix = message.slice(0, startIndex);
-  for (const pair of splitRequestQuotePairs) {
-    if (pair.open !== pair.close) {
-      if (prefix.lastIndexOf(pair.open) > prefix.lastIndexOf(pair.close)) {
-        return true;
-      }
-      continue;
-    }
-    let quoteCount = 0;
-    let quoteIndex = prefix.indexOf(pair.open);
-    while (quoteIndex >= 0) {
-      quoteCount += 1;
-      quoteIndex = prefix.indexOf(pair.open, quoteIndex + pair.open.length);
-    }
-    if (quoteCount % 2 !== 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isExistingTaskReorganization(
-  clausePrefix: string,
-  phrase: string,
-): boolean {
-  if (phrase !== "サブタスクにして" || !clausePrefix.includes("既存")) {
-    return false;
-  }
-  return clausePrefix.includes("複数")
-    || clausePrefix.includes("親の下")
-    || clausePrefix.includes("配下")
-    || clausePrefix.includes("親タスク");
-}
-
-function hasRejectedSplitRequestContext(
-  message: string,
-  phrase: string,
-  startIndex: number,
-): boolean {
-  if (isInsideSplitRequestQuote(message, startIndex)) {
-    return true;
-  }
-  const clausePrefix = splitRequestClausePrefix(message, startIndex);
-  if (
-    rejectedSplitRequestClausePrefixes.some((marker) =>
-      clausePrefix.includes(marker))
-  ) {
-    return true;
-  }
-  return isExistingTaskReorganization(clausePrefix, phrase);
-}
-
-function hasExplicitSplitRequestPhrase(message: string): boolean {
-  for (const phrase of explicitSplitRequestPhrases) {
-    let startIndex = message.indexOf(phrase);
-    while (startIndex >= 0) {
-      if (!hasRejectedSplitRequestContext(message, phrase, startIndex)) {
-        const tail = message.slice(startIndex + phrase.length);
-        if (hasSplitRequestTailBoundary(tail)) {
-          return true;
-        }
-        const trimmedTail = tail.trimStart();
-        for (const suffix of explicitSplitRequestSuffixes) {
-          if (
-            trimmedTail.startsWith(suffix)
-            && hasSplitRequestTailBoundary(trimmedTail.slice(suffix.length))
-          ) {
-            return true;
-          }
-        }
-      }
-      startIndex = message.indexOf(phrase, startIndex + phrase.length);
-    }
-  }
-  return false;
-}
-
-function createExplicitSplitRequestLocators(
-  message: string,
-  userMessageLocator: string,
-): readonly string[] {
-  const rejected = conflictingSplitRequestMarkers.some((marker) =>
-    message.includes(marker));
-  if (rejected || !hasExplicitSplitRequestPhrase(message)) {
-    return generatedSplitRequestLocatorsSchema.parse([]);
-  }
-  return generatedSplitRequestLocatorsSchema.parse([
-    `${userMessageLocator}#explicit-split-request`,
-  ]);
-}
-
 function createTaskSnapshot(task: Task): TaskSnapshot {
   const base = {
     gid: task.gid,
@@ -828,252 +484,6 @@ export function createBaselineSnapshot(
   });
 }
 
-function addTaskReferenceToken(
-  index: Map<string, Set<string>>,
-  token: string,
-  taskGid: string,
-): void {
-  const existing = index.get(token);
-  if (existing == null) {
-    index.set(token, new Set([taskGid]));
-    return;
-  }
-  existing.add(taskGid);
-}
-
-function createTaskReferenceIndex(
-  tasks: readonly Task[],
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const index = new Map<string, Set<string>>();
-  for (const task of tasks) {
-    addTaskReferenceToken(index, task.gid, task.gid);
-    addTaskReferenceToken(index, `task:${task.gid}`, task.gid);
-    addTaskReferenceToken(index, `GID:${task.gid}`, task.gid);
-    addTaskReferenceToken(index, `GID：${task.gid}`, task.gid);
-    addTaskReferenceToken(index, `GID ${task.gid}`, task.gid);
-    const titleTokens = [
-      task.title,
-      `「${task.title}」`,
-      `『${task.title}』`,
-      `【${task.title}】`,
-      `"${task.title}"`,
-      `'${task.title}'`,
-      `タスク:${task.title}`,
-      `タスク：${task.title}`,
-      `対象:${task.title}`,
-      `対象：${task.title}`,
-    ];
-    for (const token of titleTokens) {
-      addTaskReferenceToken(index, token, task.gid);
-    }
-  }
-  return index;
-}
-
-function resolveTaskReference(
-  rawReference: string,
-  index: ReadonlyMap<string, ReadonlySet<string>>,
-): string | undefined {
-  const trimmed = rawReference.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  const candidates = new Set([trimmed]);
-  const finalCharacter = trimmed.at(-1);
-  if (finalCharacter != null && targetTerminalParticles.has(finalCharacter)) {
-    const withoutParticle = trimmed.slice(0, -1).trim();
-    if (withoutParticle.length > 0) {
-      candidates.add(withoutParticle);
-    }
-  }
-  let resolved: string | undefined;
-  for (const candidate of candidates) {
-    const matchedTaskGids = index.get(candidate);
-    if (matchedTaskGids == null) {
-      continue;
-    }
-    for (const taskGid of matchedTaskGids) {
-      if (resolved != null && resolved !== taskGid) {
-        return undefined;
-      }
-      resolved = taskGid;
-    }
-  }
-  return resolved;
-}
-
-function stripWithdrawRequestPoliteTail(statement: string): string {
-  let trimmed = statement.trim();
-  for (const tail of withdrawRequestPoliteTails) {
-    if (!trimmed.endsWith(tail)) {
-      continue;
-    }
-    trimmed = trimmed.slice(0, -tail.length).trimEnd();
-    break;
-  }
-  return trimmed;
-}
-
-function matchWithdrawRequestPhrase(
-  statement: string,
-): WithdrawRequestPhraseMatch | undefined {
-  const normalizedStatement = stripWithdrawRequestPoliteTail(statement);
-  let matched: WithdrawRequestPhraseMatch | undefined;
-  for (const phrase of withdrawRequestPhrases) {
-    if (!normalizedStatement.endsWith(phrase)) {
-      continue;
-    }
-    if (matched != null) {
-      return undefined;
-    }
-    matched = {
-      normalized_statement: normalizedStatement,
-      phrase_start_index: normalizedStatement.length - phrase.length,
-    };
-  }
-  return matched;
-}
-
-function hasRejectedWithdrawRequestContext(
-  statement: string,
-  phraseStartIndex: number,
-): boolean {
-  if (isInsideSplitRequestQuote(statement, phraseStartIndex)) {
-    return true;
-  }
-  const prefix = splitRequestClausePrefix(statement, phraseStartIndex);
-  return rejectedWithdrawRequestMarkers.some((marker) => prefix.includes(marker));
-}
-
-function splitWithdrawRequestStatements(text: string): readonly string[] {
-  return text
-    .split(/[。\n\r！？!?；;]+/u)
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0);
-}
-
-function parseExplicitWithdrawRequest(
-  statement: string,
-  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
-): ExplicitStatusClaim | undefined {
-  const matched = matchWithdrawRequestPhrase(statement);
-  if (matched == null || hasRejectedWithdrawRequestContext(
-    matched.normalized_statement,
-    matched.phrase_start_index,
-  )) {
-    return undefined;
-  }
-  const rawReference = matched.normalized_statement.slice(
-    0,
-    matched.phrase_start_index,
-  );
-  const targetTaskGid = resolveTaskReference(rawReference, taskReferenceIndex);
-  if (targetTaskGid == null) {
-    return undefined;
-  }
-  return {
-    target_task_gid: targetTaskGid,
-    allowed_operation: "withdraw",
-  };
-}
-
-function detectExplicitWithdrawClaims(
-  text: string,
-  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
-): readonly ExplicitStatusClaim[] {
-  if (rejectedWithdrawRequestMarkers.some((marker) => text.includes(marker))) {
-    return [];
-  }
-  const statements = splitWithdrawRequestStatements(text);
-  if (statements.length !== 1) {
-    return [];
-  }
-  const statement = statements[0];
-  if (statement == null) {
-    throw new AiWorkflowError("取り下げ依頼の文を取得できません。");
-  }
-  const claim = parseExplicitWithdrawRequest(statement, taskReferenceIndex);
-  return claim == null ? [] : [claim];
-}
-
-function parseExplicitStatusStatement(
-  statement: string,
-  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
-): ExplicitStatusClaim | undefined {
-  const trimmed = statement.trim();
-  let matchedPhrase: AllowedStatusPhrase | undefined;
-  for (const allowedPhrase of allowedStatusPhrases) {
-    if (!trimmed.endsWith(allowedPhrase.phrase)) {
-      continue;
-    }
-    if (matchedPhrase != null) {
-      return undefined;
-    }
-    matchedPhrase = allowedPhrase;
-  }
-  if (matchedPhrase == null) {
-    return undefined;
-  }
-  const rawReference = trimmed.slice(0, -matchedPhrase.phrase.length);
-  const targetTaskGid = resolveTaskReference(rawReference, taskReferenceIndex);
-  if (targetTaskGid == null) {
-    return undefined;
-  }
-  return {
-    target_task_gid: targetTaskGid,
-    allowed_operation: matchedPhrase.operation,
-  };
-}
-
-function detectExplicitStatusClaims(
-  text: string,
-  taskReferenceIndex: ReadonlyMap<string, ReadonlySet<string>>,
-): readonly ExplicitStatusClaim[] {
-  if (ambiguousStatusMarkers.some((marker) => text.includes(marker))) {
-    return [];
-  }
-  const operationsByTask = new Map<string, Set<TrustedStatusOperation>>();
-  for (const statement of text.split(/[。\n\r！？!?；;]+/u)) {
-    const claim = parseExplicitStatusStatement(statement, taskReferenceIndex);
-    if (claim == null) {
-      continue;
-    }
-    const operations = operationsByTask.get(claim.target_task_gid);
-    if (operations == null) {
-      operationsByTask.set(
-        claim.target_task_gid,
-        new Set([claim.allowed_operation]),
-      );
-      continue;
-    }
-    operations.add(claim.allowed_operation);
-  }
-  const claims: ExplicitStatusClaim[] = [];
-  for (const [taskGid, operations] of operationsByTask) {
-    if (operations.size !== 1) {
-      continue;
-    }
-    for (const operation of operations) {
-      claims.push({
-        target_task_gid: taskGid,
-        allowed_operation: operation,
-      });
-    }
-  }
-  return claims.sort((left, right) =>
-    compareStrings(left.target_task_gid, right.target_task_gid));
-}
-
-function normalizeWithdrawConfirmationText(text: string): string {
-  return text
-    .trim()
-    .replace(/[ \t\n\r、。！!]/gu, "");
-}
-
-function isExplicitWithdrawConfirmation(text: string): boolean {
-  return withdrawConfirmationPhrases.has(normalizeWithdrawConfirmationText(text));
-}
-
 function findTaskByGid(
   snapshot: AiWorkflowSnapshot,
   taskGid: string,
@@ -1092,47 +502,26 @@ function isPendingWithdrawConfirmationValid(
   snapshot: AiWorkflowSnapshot,
   pending: PendingWithdrawConfirmation,
 ): boolean {
-  const task = findTaskByGid(snapshot, pending.target_task_gid);
-  return task != null
-    && task.status === pending.baseline_status
-    && task.completed === pending.baseline_completed
-    && (task.status === "not_started" || task.status === "in_progress")
-    && task.completed === false;
+  return isWithdrawConfirmationTargetCurrent(
+    snapshot,
+    pending.target_task_gid,
+    pending.baseline_status,
+    pending.baseline_completed,
+  );
 }
 
-function createUserStatusClaims(
+function isWithdrawConfirmationTargetCurrent(
   snapshot: AiWorkflowSnapshot,
-  message: string,
-  pending: PendingWithdrawConfirmation | undefined,
-): readonly ExplicitStatusClaim[] {
-  const taskReferenceIndex = createTaskReferenceIndex(snapshot.tasks);
-  const claims = [
-    ...detectExplicitStatusClaims(message, taskReferenceIndex),
-    ...detectExplicitWithdrawClaims(message, taskReferenceIndex),
-  ];
-  if (
-    pending != null
-    && isExplicitWithdrawConfirmation(message)
-    && isPendingWithdrawConfirmationValid(snapshot, pending)
-  ) {
-    claims.push({
-      target_task_gid: pending.target_task_gid,
-      allowed_operation: "withdraw",
-    });
-  }
-  const uniqueClaims = new Map<string, ExplicitStatusClaim>();
-  for (const claim of claims) {
-    uniqueClaims.set(
-      `${claim.allowed_operation}\u0000${claim.target_task_gid}`,
-      claim,
-    );
-  }
-  return [...uniqueClaims.values()].sort((left, right) => {
-    const targetOrder = compareStrings(left.target_task_gid, right.target_task_gid);
-    return targetOrder !== 0
-      ? targetOrder
-      : compareStrings(left.allowed_operation, right.allowed_operation);
-  });
+  targetTaskGid: string,
+  baselineStatus: TaskSnapshot["status"],
+  baselineCompleted: boolean,
+): boolean {
+  const task = findTaskByGid(snapshot, targetTaskGid);
+  return task != null
+    && task.status === baselineStatus
+    && task.completed === baselineCompleted
+    && (task.status === "not_started" || task.status === "in_progress")
+    && task.completed === false;
 }
 
 function allChildrenAreCompleted(
@@ -1148,37 +537,160 @@ function allChildrenAreCompleted(
   });
 }
 
-function createTrustedStatusEvidence(
+function createUserMessageSourceId(turnId: string): string {
+  return `user-message:${identifierSchema.parse(turnId)}`;
+}
+
+function createTaskNotesSourceId(turnId: string, taskGid: string): string {
+  return `task-notes:${identifierSchema.parse(turnId)}:${gidSchema.parse(taskGid)}`;
+}
+
+function createWithdrawConfirmationSourceId(turnId: string): string {
+  return `withdraw-confirmation:${identifierSchema.parse(turnId)}`;
+}
+
+function isWithdrawConfirmationSourceCurrent(
+  source: Extract<EvidenceSource, { readonly kind: "withdraw_confirmation" }>,
   snapshot: AiWorkflowSnapshot,
-  userMessageLocator: string,
-  userStatusClaims: readonly ExplicitStatusClaim[],
-  externalEvidence: readonly TrustedExternalStatusEvidence[],
-): readonly TrustedStatusEvidenceReference[] {
-  const taskReferenceIndex = createTaskReferenceIndex(snapshot.tasks);
-  const tasksByGid = new Map(snapshot.tasks.map((task) => [task.gid, task]));
-  const promptReferences: TrustedStatusEvidenceReference[] = [];
-  for (const claim of userStatusClaims) {
-    promptReferences.push({
-      kind: "user_message",
-      locator: `${userMessageLocator}#${claim.allowed_operation}:${claim.target_task_gid}`,
-      target_task_gid: claim.target_task_gid,
-      allowed_operation: claim.allowed_operation,
+): boolean {
+  return isWithdrawConfirmationTargetCurrent(
+    snapshot,
+    source.target_task_gid,
+    source.baseline_status,
+    source.baseline_completed,
+  );
+}
+
+function createEvidenceSourceMap(
+  turnId: string,
+  message: string,
+  snapshot: AiWorkflowSnapshot,
+  completedEvidenceSources: ReadonlyMap<string, EvidenceSource>,
+  pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined,
+): {
+  readonly user_message_source_id: string;
+  readonly user_message_sources: readonly UserMessageSourceSummary[];
+  readonly withdraw_confirmation_source_id: string | undefined;
+  readonly withdraw_confirmation_source_ids: readonly string[];
+  readonly source_map: EvidenceSourceMap;
+} {
+  const userMessageSourceId = createUserMessageSourceId(turnId);
+  const sources = new Map<string, EvidenceSource>();
+  const userMessageSources: UserMessageSourceSummary[] = [];
+  const withdrawConfirmationSourceIds: string[] = [];
+  for (const source of completedEvidenceSources.values()) {
+    if (source.kind === "user_message") {
+      sources.set(source.source_id, source);
+      userMessageSources.push({
+        kind: "user_message",
+        source_id: source.source_id,
+        text: source.text,
+      });
+      continue;
+    }
+    if (
+      source.kind === "withdraw_confirmation"
+      && isWithdrawConfirmationSourceCurrent(source, snapshot)
+    ) {
+      sources.set(source.source_id, source);
+      userMessageSources.push({
+        kind: "withdraw_confirmation",
+        source_id: source.source_id,
+        text: source.text,
+        target_task_gid: source.target_task_gid,
+        baseline_status: source.baseline_status,
+        baseline_completed: source.baseline_completed,
+      });
+      withdrawConfirmationSourceIds.push(source.source_id);
+    }
+  }
+  sources.set(userMessageSourceId, {
+    kind: "user_message",
+    source_id: userMessageSourceId,
+    text: message,
+  });
+  userMessageSources.push({
+    kind: "user_message",
+    source_id: userMessageSourceId,
+    text: message,
+  });
+  const withdrawConfirmationSourceId = pendingWithdrawConfirmation == null
+    ? undefined
+    : createWithdrawConfirmationSourceId(turnId);
+  if (withdrawConfirmationSourceId != null && pendingWithdrawConfirmation != null) {
+    sources.set(withdrawConfirmationSourceId, {
+      kind: "withdraw_confirmation",
+      source_id: withdrawConfirmationSourceId,
+      text: message,
+      target_task_gid: pendingWithdrawConfirmation.target_task_gid,
+      baseline_status: pendingWithdrawConfirmation.baseline_status,
+      baseline_completed: pendingWithdrawConfirmation.baseline_completed,
+    });
+    userMessageSources.push({
+      kind: "withdraw_confirmation",
+      source_id: withdrawConfirmationSourceId,
+      text: message,
+      target_task_gid: pendingWithdrawConfirmation.target_task_gid,
+      baseline_status: pendingWithdrawConfirmation.baseline_status,
+      baseline_completed: pendingWithdrawConfirmation.baseline_completed,
+    });
+    withdrawConfirmationSourceIds.push(withdrawConfirmationSourceId);
+  }
+  for (const task of snapshot.tasks) {
+    const sourceId = createTaskNotesSourceId(turnId, task.gid);
+    sources.set(sourceId, {
+      kind: "task_notes",
+      source_id: sourceId,
+      task_gid: task.gid,
+      text: task.notes,
     });
   }
+  return {
+    user_message_source_id: userMessageSourceId,
+    user_message_sources: userMessageSources,
+    withdraw_confirmation_source_id: withdrawConfirmationSourceId,
+    withdraw_confirmation_source_ids: withdrawConfirmationSourceIds,
+    source_map: sources,
+  };
+}
+
+function createStatusEvidenceLocator(
+  sourceId: string,
+  operation: "complete" | "withdraw",
+  taskGid: string,
+): string {
+  return `${sourceId}#${operation}:${gidSchema.parse(taskGid)}`;
+}
+
+function createSplitInstructionLocator(
+  sourceId: string,
+  parent: ProposalTarget,
+): string {
+  const parentKey = parent.kind === "existing"
+    ? `gid:${gidSchema.parse(parent.gid)}`
+    : `ref:${identifierSchema.parse(parent.ref)}`;
+  return `${sourceId}#split-parent:${parentKey}`;
+}
+
+function verifiedSourceExcerpt(
+  source: EvidenceSource,
+  excerpt: string | undefined,
+): string | undefined {
+  if (excerpt == null || excerpt.trim().length === 0 || !source.text.includes(excerpt)) {
+    return undefined;
+  }
+  return excerpt;
+}
+
+function createTrustedStatusEvidence(
+  snapshot: AiWorkflowSnapshot,
+  externalEvidence: readonly TrustedExternalStatusEvidence[],
+): readonly TrustedStatusEvidenceReference[] {
+  const tasksByGid = new Map(snapshot.tasks.map((task) => [task.gid, task]));
+  const promptReferences: TrustedStatusEvidenceReference[] = [];
   const sortedTasks = [...snapshot.tasks].sort((left, right) =>
     compareStrings(left.gid, right.gid));
   for (const task of sortedTasks) {
-    const taskClaims = detectExplicitStatusClaims(task.notes, taskReferenceIndex)
-      .filter((claim) => claim.target_task_gid === task.gid);
-    for (const claim of taskClaims) {
-      promptReferences.push({
-        kind: "task",
-        locator: `${createTaskEvidenceLocator(task.gid)}#notes-${claim.allowed_operation}`,
-        target_task_gid: task.gid,
-        allowed_operation: claim.allowed_operation,
-        validation_kind: "explicit_text",
-      });
-    }
     if (allChildrenAreCompleted(task, tasksByGid)) {
       promptReferences.push({
         kind: "task",
@@ -1194,6 +706,347 @@ function createTrustedStatusEvidence(
     ...externalEvidence,
   ];
   return trustedStatusEvidenceReferencesSchema.parse(references);
+}
+
+type StatusOperation = Extract<
+  ProposalOperation,
+  { readonly operation: "complete" | "withdraw" }
+>;
+
+type UserStatusEvidence = Extract<
+  StatusOperation["status_evidence"],
+  { readonly kind: "user_explicit" }
+>;
+
+type TaskNotesStatusEvidence = Extract<
+  StatusOperation["status_evidence"],
+  { readonly kind: "task_or_note_explicit" }
+>;
+
+type SplitTaskOperation = Extract<
+  ProposalOperation,
+  { readonly operation: "create_task" }
+>;
+
+type SplitTaskCreation = Extract<
+  SplitTaskOperation["creation"],
+  { readonly kind: "split_child" }
+>;
+
+function stripStatusEvidenceExcerpt(
+  operation: StatusOperation,
+): StatusOperation["status_evidence"] {
+  const evidence = operation.status_evidence;
+  if (evidence.kind === "user_explicit") {
+    return {
+      kind: "user_explicit",
+      reference: {
+        kind: "user_message",
+        locator: evidence.reference.locator,
+      },
+    };
+  }
+  if (evidence.kind === "task_or_note_explicit") {
+    if (evidence.reference.kind === "task") {
+      return {
+        kind: "task_or_note_explicit",
+        reference: {
+          kind: "task",
+          locator: evidence.reference.locator,
+        },
+      };
+    }
+    return {
+      kind: "task_or_note_explicit",
+      reference: {
+        kind: "obsidian",
+        locator: evidence.reference.locator,
+      },
+    };
+  }
+  if (evidence.kind === "external_structured_status") {
+    return {
+      ...evidence,
+      reference: {
+        kind: "external_tool",
+        locator: evidence.reference.locator,
+      },
+    };
+  }
+  return {
+    kind: "children_only_all_completed",
+    reference: {
+      kind: "task",
+      locator: evidence.reference.locator,
+    },
+  };
+}
+
+function stripSplitInstructionExcerpt(
+  operation: SplitTaskOperation,
+): SplitTaskCreation["instruction_reference"] {
+  if (operation.creation.kind !== "split_child") {
+    throw new Error("分割作成の根拠を通常作成へ適用できません。");
+  }
+  return {
+    kind: "user_message",
+    locator: operation.creation.instruction_reference.locator,
+  };
+}
+
+function isWithdrawConfirmationEvidenceValid(
+  operation: StatusOperation,
+  source: Extract<EvidenceSource, { readonly kind: "withdraw_confirmation" }>,
+  prepared: PreparedTurn,
+): boolean {
+  if (
+    operation.operation !== "withdraw"
+    || operation.target.kind !== "existing"
+  ) {
+    return false;
+  }
+  const baselineTask = findBaselineTaskByGid(
+    prepared.baseline,
+    operation.target.gid,
+  );
+  return isWithdrawConfirmationSourceCurrent(source, prepared.snapshot)
+    && operation.target.gid === source.target_task_gid
+    && baselineTask != null
+    && baselineTask.status === source.baseline_status
+    && baselineTask.completed === source.baseline_completed;
+}
+
+function bindStatusEvidence(
+  operation: StatusOperation,
+  prepared: PreparedTurn,
+): {
+  readonly evidence: StatusOperation["status_evidence"];
+  readonly trusted_reference: TrustedStatusEvidenceReference | undefined;
+} {
+  const evidence = operation.status_evidence;
+  const invalid = {
+    evidence: stripStatusEvidenceExcerpt(operation),
+    trusted_reference: undefined,
+  };
+  if (evidence.kind === "user_explicit") {
+    if (
+      operation.target.kind !== "existing"
+      || findTaskByGid(prepared.snapshot, operation.target.gid) == null
+    ) {
+      return invalid;
+    }
+    const source = prepared.source_map.get(evidence.reference.locator);
+    if (
+      source == null
+      || (source.kind !== "user_message" && source.kind !== "withdraw_confirmation")
+      || (
+        source.kind === "withdraw_confirmation"
+        && !isWithdrawConfirmationEvidenceValid(operation, source, prepared)
+      )
+    ) {
+      return invalid;
+    }
+    const excerpt = verifiedSourceExcerpt(source, evidence.reference.excerpt);
+    if (excerpt == null) {
+      return invalid;
+    }
+    const locator = createStatusEvidenceLocator(
+      source.source_id,
+      operation.operation,
+      operation.target.gid,
+    );
+    const reference: UserStatusEvidence["reference"] = {
+      kind: "user_message",
+      locator,
+      excerpt,
+    };
+    return {
+      evidence: { ...evidence, reference },
+      trusted_reference: {
+        kind: "user_message",
+        locator,
+        target_task_gid: operation.target.gid,
+        allowed_operation: operation.operation,
+        excerpt,
+      },
+    };
+  }
+  if (evidence.kind === "task_or_note_explicit") {
+    if (
+      operation.target.kind !== "existing"
+      || evidence.reference.kind !== "task"
+      || findTaskByGid(prepared.snapshot, operation.target.gid) == null
+    ) {
+      return invalid;
+    }
+    const source = prepared.source_map.get(evidence.reference.locator);
+    if (
+      source == null
+      || source.kind !== "task_notes"
+      || source.task_gid !== operation.target.gid
+    ) {
+      return invalid;
+    }
+    const excerpt = verifiedSourceExcerpt(source, evidence.reference.excerpt);
+    if (excerpt == null) {
+      return invalid;
+    }
+    const locator = createStatusEvidenceLocator(
+      source.source_id,
+      operation.operation,
+      operation.target.gid,
+    );
+    const reference: TaskNotesStatusEvidence["reference"] = {
+      kind: "task",
+      locator,
+      excerpt,
+    };
+    return {
+      evidence: { ...evidence, reference },
+      trusted_reference: {
+        kind: "task",
+        locator,
+        target_task_gid: operation.target.gid,
+        allowed_operation: operation.operation,
+        validation_kind: "explicit_text",
+        excerpt,
+      },
+    };
+  }
+  return invalid;
+}
+
+function bindSplitInstructionReference(
+  operation: SplitTaskOperation,
+  prepared: PreparedTurn,
+): {
+  readonly reference: SplitTaskCreation["instruction_reference"];
+  readonly split_reference: ExplicitSplitRequestReference | undefined;
+} {
+  if (operation.creation.kind !== "split_child") {
+    throw new Error("分割作成の根拠を通常作成へ適用できません。");
+  }
+  const reference = operation.creation.instruction_reference;
+  const invalid = {
+    reference: stripSplitInstructionExcerpt(operation),
+    split_reference: undefined,
+  };
+  if (
+    operation.creation.parent.kind === "existing"
+    && findTaskByGid(prepared.snapshot, operation.creation.parent.gid) == null
+  ) {
+    return invalid;
+  }
+  const source = prepared.source_map.get(reference.locator);
+  if (source == null || source.kind !== "user_message") {
+    return invalid;
+  }
+  const excerpt = verifiedSourceExcerpt(source, reference.excerpt);
+  if (excerpt == null) {
+    return invalid;
+  }
+  const locator = createSplitInstructionLocator(
+    source.source_id,
+    operation.creation.parent,
+  );
+  return {
+    reference: {
+      kind: "user_message",
+      locator,
+      excerpt,
+    },
+    split_reference: {
+      parent: operation.creation.parent,
+      locator,
+      excerpt,
+    },
+  };
+}
+
+function bindProposalOperationEvidence(
+  operation: ProposalOperation,
+  prepared: PreparedTurn,
+): {
+  readonly operation: ProposalOperation;
+  readonly split_reference: ExplicitSplitRequestReference | undefined;
+  readonly trusted_reference: TrustedStatusEvidenceReference | undefined;
+} {
+  if (operation.operation === "create_task") {
+    if (operation.creation.kind !== "split_child") {
+      return {
+        operation,
+        split_reference: undefined,
+        trusted_reference: undefined,
+      };
+    }
+    const bound = bindSplitInstructionReference(operation, prepared);
+    return {
+      operation: proposalOperationSchema.parse({
+        ...operation,
+        creation: {
+          ...operation.creation,
+          instruction_reference: bound.reference,
+        },
+      }),
+      split_reference: bound.split_reference,
+      trusted_reference: undefined,
+    };
+  }
+  if (operation.operation !== "complete" && operation.operation !== "withdraw") {
+    return {
+      operation,
+      split_reference: undefined,
+      trusted_reference: undefined,
+    };
+  }
+  const bound = bindStatusEvidence(operation, prepared);
+  return {
+    operation: proposalOperationSchema.parse({
+      ...operation,
+      status_evidence: bound.evidence,
+    }),
+    split_reference: undefined,
+    trusted_reference: bound.trusted_reference,
+  };
+}
+
+function bindProposalEvidence(
+  proposal: Proposal,
+  prepared: PreparedTurn,
+): BoundProposalEvidence {
+  const splitReferences = new Map<string, ExplicitSplitRequestReference>();
+  const trustedReferences = new Map<string, TrustedStatusEvidenceReference>();
+  for (const reference of prepared.trusted_status_evidence) {
+    trustedReferences.set(`${reference.kind}\u0000${reference.locator}`, reference);
+  }
+  const groups = proposal.groups.map((group) => ({
+    ...group,
+    operations: group.operations.map((operation) => {
+      const bound = bindProposalOperationEvidence(operation, prepared);
+      if (bound.split_reference != null) {
+        const reference = bound.split_reference;
+        const parent = reference.parent.kind === "existing"
+          ? `existing:${reference.parent.gid}`
+          : `temporary:${reference.parent.ref}`;
+        splitReferences.set(
+          `${parent}\u0000${reference.locator}\u0000${reference.excerpt}`,
+          reference,
+        );
+      }
+      if (bound.trusted_reference != null) {
+        const reference = bound.trusted_reference;
+        trustedReferences.set(`${reference.kind}\u0000${reference.locator}`, reference);
+      }
+      return bound.operation;
+    }),
+  }));
+  return {
+    proposal: proposalSchema.parse({ ...proposal, groups }),
+    explicit_split_request_references: [...splitReferences.values()],
+    trusted_status_evidence: trustedStatusEvidenceReferencesSchema.parse(
+      [...trustedReferences.values()],
+    ),
+  };
 }
 
 function createTurnPrompt(
@@ -1217,24 +1070,49 @@ function createTurnPrompt(
   const targetTaskContext = targetTask == null
     ? []
     : [`対象タスク文脈: GID ${targetTask.gid}、タイトル「${targetTask.title}」`];
+  const pendingConfirmationContext = prepared.pending_withdraw_confirmation == null
+    ? []
+    : [
+        `確認待ちの取り下げ対象GID: ${prepared.pending_withdraw_confirmation.target_task_gid}`,
+        "確認への同意を扱う場合は、この対象と基準状態に束縛されたwithdrawだけを提案してください。",
+      ];
+  const taskNotesSourceIdPattern = `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
+  const withdrawConfirmationSources = prepared.user_message_sources.filter(
+    (source) => source.kind === "withdraw_confirmation",
+  );
+  const withdrawConfirmationSourceContext =
+    prepared.withdraw_confirmation_source_ids.length === 0
+      ? []
+      : [
+          `確認回答用source一覧: ${canonicalizeJson(withdrawConfirmationSources)}`,
+          "確認回答用sourceにはsource ID、原文、withdraw同意の対象GID、基準status、基準completedが含まれます。これらはその対象を取り下げることへの明白な同意を根拠にするときだけ使用してください。直接の新規指示や訂正には通常の利用者原文source IDを使用してください。",
+        ];
   return [
     "TaskHubの構造化変更案だけを検討してください。",
     `基準コンテキスト: ${serializedContext}`,
     "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
     "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
     "Obsidianは登録済みVaultの読み取り専用で必要なノートを確認できます。情報質問ではno_proposalを返し、変更案を作成しないでください。",
-    `利用者要求の一般根拠locator: ${prepared.user_message_locator}`,
-    "一般根拠locatorは完了・取り下げの根拠ではありません。",
-    `固定検証済みの完了・取り下げ根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,
-    "完了・取り下げ案には一覧中の対象GID、許可操作、検証種別に一致するkindとlocatorだけを使用してください。",
-    "user_messageはuser_explicitとして使用してください。",
+    `利用者原文のsource ID: ${prepared.user_message_source_id}`,
+    `同一サービス内で保持している利用者原文source一覧: ${canonicalizeJson(prepared.user_message_sources)}`,
+    `対象タスクnotesのsource ID形式: ${taskNotesSourceIdPattern}`,
+    ...withdrawConfirmationSourceContext,
+    "completeのuser_explicitは、利用者が対象作業を完了したという事実を報告している場合だけ提案してください。単なる状態変更要求、将来の完了、推測、対象の一部だけの完了はuser_explicitの根拠にしないでください。完了事実が明白ならcompletedへの変更意図を別途要求せず提案できます。task_or_note_explicit、children_only_all_completed、external_structured_statusは、それぞれの構造化根拠と業務条件を満たす場合に利用できます。",
+    "withdrawは、利用者が対象作業を不要、中止、または取り下げる現在の意思を示し、対象が一つに定まる場合だけ提案してください。単なる削除方法の質問、将来の判断、仮定、引用、伝聞はwithdrawの意思として扱わないでください。",
+    "split_childは、対象成果を複数の子タスクへ分解して作成することを利用者が明示的に求めた場合だけ提案してください。親は既存タスクでも、この提案で作成する一時参照でも構いません。手順の列挙、例示、条件付きの提案、既存子タスクの再配置だけでは明示依頼にしないでください。",
+    "否定、引用、伝聞、仮定の文は、利用者本人の完了事実、取り下げ意思、分割依頼として扱わないでください。対象名や代名詞が複数候補になる場合、部分完了を全体完了へ拡張せず、必要な対象だけを質問してください。",
+    "対象と意味が明白な直接完了報告には確認質問を追加しないでください。意味または対象が不明な場合だけ、判断に必要な質問を行い、推測で変更案を作らないでください。",
+    "status_evidence.user_explicitまたはsplit_child.instruction_referenceのlocatorにはsource IDをそのまま指定し、excerptにはsource原文の正確な非空部分文字列を指定してください。source IDへ操作名や対象GIDのsuffixを追加しないでください。",
+    "task_or_note_explicitのtask sourceは対象タスク自身のnotes sourceだけを指定してください。Obsidian本文は完了・取り下げの根拠に使用しないでください。",
+    "アプリは応答後にsource IDとexcerptの出典、対象GID、操作、親参照を構造検証して正規参照を生成します。アプリは自然言語の意味を再判定しません。",
+    `アプリが提供する構造化状態根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,
+    "children_only_all_completedとexternal_structured_statusはアプリが提供した構造化根拠のlocatorだけを使用してください。",
     "取り下げの確認を求める場合は、no_proposalのquestionsを単一件にし、withdraw_confirmationへ候補1件のtarget_task_gidとallowed_operation=withdrawを設定してください。",
     "withdraw_confirmationは取り下げ依頼に対する候補確認だけに設定し、候補が複数、質問が複数、対象が不明、または取り下げ依頼でない場合は設定しないでください。",
-    "explicit_textはtask_or_note_explicit、children_only_all_completedは同名の構造的根拠として使用してください。",
-    "Obsidian本文はこのターンで固定検証されていないため、登録リンクやexcerptを完了・取り下げ根拠に使用しないでください。",
     "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
-    `固定検証済みの分割依頼locator: ${canonicalizeJson(prepared.explicit_split_request_locators)}`,
-    "split_childのinstruction_referenceには固定検証済み一覧のlocatorだけを使用し、一覧が空ならsplit_childを提案しないでください。",
+    "split_childのinstruction_referenceには利用者原文source IDと正確なexcerptを指定してください。意味の判定は上記条件に従い、アプリの構造検証結果から逆算しないでください。",
+    "同じ要求内または会話中に訂正や撤回がある場合は、最新の明示内容を優先して対象と操作を判断してください。",
+    ...pendingConfirmationContext,
     ...targetTaskContext,
     `利用者要求: ${request.message}`,
   ].join("\n");
@@ -1374,26 +1252,41 @@ function toWorkflowValidation(
 function sanitizeEvidenceReference(reference: {
   readonly kind: string;
   readonly locator: string;
-}): Record<string, string> {
-  return { kind: reference.kind, locator: reference.locator };
+  readonly excerpt?: string | undefined;
+}, includeExcerpt: boolean): Record<string, string> {
+  const base = { kind: reference.kind, locator: reference.locator };
+  if (!includeExcerpt || reference.excerpt == null) {
+    return base;
+  }
+  return { ...base, excerpt: reference.excerpt };
 }
 
 function sanitizeProposalOperation(operation: ProposalOperation): ProposalOperation {
   const candidate: Record<string, unknown> = {
     ...operation,
     evidence_refs: operation.evidence_refs.map((reference) =>
-      sanitizeEvidenceReference(reference)),
+      sanitizeEvidenceReference(reference, false)),
   };
   if (operation.operation === "create_task" && operation.creation.kind === "split_child") {
     candidate.creation = {
       ...operation.creation,
-      instruction_reference: sanitizeEvidenceReference(operation.creation.instruction_reference),
+      instruction_reference: sanitizeEvidenceReference(
+        operation.creation.instruction_reference,
+        true,
+      ),
     };
   }
   if (operation.operation === "complete" || operation.operation === "withdraw") {
     candidate.status_evidence = {
       ...operation.status_evidence,
-      reference: sanitizeEvidenceReference(operation.status_evidence.reference),
+      reference: sanitizeEvidenceReference(
+        operation.status_evidence.reference,
+        operation.status_evidence.kind === "user_explicit"
+          || (
+            operation.status_evidence.kind === "task_or_note_explicit"
+            && operation.status_evidence.reference.kind === "task"
+          ),
+      ),
     };
   }
   return proposalOperationSchema.parse(candidate);
@@ -2113,7 +2006,7 @@ function revalidateProposal(
     baseline_snapshot_hash: stored.baseline_snapshot_hash,
     managed_tasks: stored.snapshot.tasks,
     existing_areas: stored.snapshot.areas,
-    explicit_split_request_locators: [...stored.explicit_split_request_locators],
+    explicit_split_request_references: [...stored.explicit_split_request_references],
     trusted_status_evidence: [...stored.trusted_status_evidence],
   });
   const graph = validateProposalGraph({
@@ -2126,35 +2019,60 @@ function revalidateProposal(
 
 function createStoredProposal(
   proposalId: string,
-  proposal: Proposal,
+  bound: BoundProposalEvidence,
   prepared: PreparedTurn,
 ): StoredProposal {
   const basic = validateProposal({
-    proposal,
+    proposal: bound.proposal,
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
     managed_tasks: prepared.snapshot.tasks,
     existing_areas: prepared.snapshot.areas,
-    explicit_split_request_locators: [...prepared.explicit_split_request_locators],
-    trusted_status_evidence: [...prepared.trusted_status_evidence],
+    explicit_split_request_references: [...bound.explicit_split_request_references],
+    trusted_status_evidence: [...bound.trusted_status_evidence],
   });
   const graph = validateProposalGraph({
-    proposal,
+    proposal: bound.proposal,
     managed_tasks: prepared.snapshot.tasks,
     basic_validation_result: basic,
   });
   return {
     proposal_id: proposalId,
-    proposal,
+    proposal: bound.proposal,
     snapshot: prepared.snapshot,
     baseline: prepared.baseline,
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
     baseline_external_data: prepared.baseline_external_data,
     basic_validation: basic,
     graph_validation: graph,
-    selected_operation_ids: eligibleOperationIds(proposal, graph),
-    explicit_split_request_locators: [...prepared.explicit_split_request_locators],
-    trusted_status_evidence: [...prepared.trusted_status_evidence],
+    selected_operation_ids: eligibleOperationIds(bound.proposal, graph),
+    explicit_split_request_references: [...bound.explicit_split_request_references],
+    trusted_status_evidence: [...bound.trusted_status_evidence],
+    source_map: prepared.source_map,
   };
+}
+
+function rememberSuccessfulTurnEvidence(
+  completedEvidenceSources: Map<string, EvidenceSource>,
+  prepared: PreparedTurn,
+): void {
+  const source = prepared.source_map.get(prepared.user_message_source_id);
+  if (source == null || source.kind !== "user_message") {
+    throw new Error("成功したターンのユーザー原文を取得できません。");
+  }
+  const confirmationSourceId = prepared.withdraw_confirmation_source_id;
+  if (confirmationSourceId == null) {
+    completedEvidenceSources.set(source.source_id, source);
+    return;
+  }
+  const confirmationSource = prepared.source_map.get(confirmationSourceId);
+  if (
+    confirmationSource == null
+    || confirmationSource.kind !== "withdraw_confirmation"
+  ) {
+    throw new Error("成功したターンの確認原文を取得できません。");
+  }
+  completedEvidenceSources.set(source.source_id, source);
+  completedEvidenceSources.set(confirmationSource.source_id, confirmationSource);
 }
 
 export type WorkflowProposalViewInput = {
@@ -2272,6 +2190,7 @@ function sameSortedIds(left: readonly string[], right: readonly string[]): boole
 export class AiWorkflowService {
   private readonly options: AiWorkflowOptions;
   private readonly proposals = new Map<string, StoredProposal>();
+  private readonly completedEvidenceSources = new Map<string, EvidenceSource>();
   private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
   private readonly removeSessionDelta: () => void;
   private listenerErrorCount = 0;
@@ -2320,20 +2239,16 @@ export class AiWorkflowService {
     const turnGeneration = this.sessionGeneration;
     const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
     this.pendingWithdrawConfirmation = undefined;
+    const logicalTurnId = identifierSchema.parse(randomUUID());
     let retryCount = 0;
     while (retryCount <= 1) {
       let prepared: PreparedTurn | undefined;
       let snapshotFrozen = false;
-      const turnId = identifierSchema.parse(randomUUID());
-      const userMessageLocator = `user-message:${turnId}`;
-      const explicitSplitRequestLocators = createExplicitSplitRequestLocators(
-        request.message,
-        userMessageLocator,
-      );
+      const attemptId = identifierSchema.parse(randomUUID());
       let evidenceCollectionActive = false;
       let turnError: unknown;
       try {
-        await this.options.externalStatusEvidenceCollector.beginTurn(turnId, signal);
+        await this.options.externalStatusEvidenceCollector.beginTurn(attemptId, signal);
         evidenceCollectionActive = true;
         const turnResult = await this.options.session.startTurnWithPreparation(
           async (turnSignal): Promise<CodexSessionTurnInput> => {
@@ -2351,12 +2266,20 @@ export class AiWorkflowService {
               const rawTaskctlSnapshot = await this.options.taskctlSnapshotProvider(turnSignal);
               const taskctlSnapshot = taskctlSnapshotSchema.parse(rawTaskctlSnapshot);
               assertTaskctlSnapshotMatchesBaseline(snapshot, baseline, taskctlSnapshot);
-              const userStatusClaims = createUserStatusClaims(
-                snapshot,
+              const pendingForTurn = turnGeneration === this.sessionGeneration
+                && pendingWithdrawConfirmation != null
+                && isPendingWithdrawConfirmationValid(
+                  snapshot,
+                  pendingWithdrawConfirmation,
+                )
+                ? pendingWithdrawConfirmation
+                : undefined;
+              const sources = createEvidenceSourceMap(
+                logicalTurnId,
                 request.message,
-                turnGeneration === this.sessionGeneration
-                  ? pendingWithdrawConfirmation
-                  : undefined,
+                snapshot,
+                this.completedEvidenceSources,
+                pendingForTurn,
               );
               prepared = {
                 snapshot,
@@ -2364,15 +2287,15 @@ export class AiWorkflowService {
                 baseline_snapshot_hash: baselineSnapshotHash,
                 baseline_external_data: validatedBaselineExternalData,
                 taskctl_snapshot: taskctlSnapshot,
-                user_message_locator: userMessageLocator,
-                explicit_split_request_locators: explicitSplitRequestLocators,
-                user_status_claims: userStatusClaims,
-                trusted_status_evidence: createTrustedStatusEvidence(
-                  snapshot,
-                  userMessageLocator,
-                  userStatusClaims,
-                  [],
-                ),
+                user_message_source_id: sources.user_message_source_id,
+                user_message_sources: sources.user_message_sources,
+                withdraw_confirmation_source_id:
+                  sources.withdraw_confirmation_source_id,
+                withdraw_confirmation_source_ids:
+                  sources.withdraw_confirmation_source_ids,
+                source_map: sources.source_map,
+                pending_withdraw_confirmation: pendingForTurn,
+                trusted_status_evidence: createTrustedStatusEvidence(snapshot, []),
               };
               this.options.session.freezeTaskctlSnapshot(taskctlSnapshot);
               snapshotFrozen = true;
@@ -2394,19 +2317,14 @@ export class AiWorkflowService {
         }
         const externalEvidence = trustedExternalStatusEvidenceSchema.parse(
           await this.options.externalStatusEvidenceCollector.finishTurn(
-            turnId,
+            attemptId,
             signal,
           ),
         );
         evidenceCollectionActive = false;
         prepared = {
           ...prepared,
-          trusted_status_evidence: createTrustedStatusEvidence(
-            prepared.snapshot,
-            userMessageLocator,
-            prepared.user_status_claims,
-            externalEvidence,
-          ),
+          trusted_status_evidence: createTrustedStatusEvidence(prepared.snapshot, externalEvidence),
         };
         const response = codexResponseSchema.parse(turnResult.response);
         if (turnGeneration !== this.sessionGeneration) {
@@ -2428,17 +2346,20 @@ export class AiWorkflowService {
             retry_count: retryCount,
           });
           this.pendingWithdrawConfirmation = pending;
+          rememberSuccessfulTurnEvidence(
+            this.completedEvidenceSources,
+            prepared,
+          );
           return result;
         }
         const proposalId = identifierSchema.parse(randomUUID());
-        const stored = createStoredProposal(
-          proposalId,
+        const bound = bindProposalEvidence(
           proposalSchema.parse(response.proposal),
           prepared,
         );
-        this.storeProposal(stored);
+        const stored = createStoredProposal(proposalId, bound, prepared);
         const view = createProposalView(stored);
-        return aiWorkflowTurnResultSchema.parse({
+        const result = aiWorkflowTurnResultSchema.parse({
           kind: "proposal",
           message: response.message,
           questions: createRendererQuestions(
@@ -2449,6 +2370,12 @@ export class AiWorkflowService {
           proposal: view,
           retry_count: retryCount,
         });
+        this.storeProposal(stored);
+        rememberSuccessfulTurnEvidence(
+          this.completedEvidenceSources,
+          prepared,
+        );
+        return result;
       } catch (error: unknown) {
         turnError = error;
         if (error instanceof CodexSessionOutputValidationError && retryCount === 0) {
@@ -2463,7 +2390,7 @@ export class AiWorkflowService {
         if (evidenceCollectionActive) {
           await cancelExternalStatusEvidenceCollection(
             this.options.externalStatusEvidenceCollector,
-            turnId,
+            attemptId,
             turnError,
           );
         }
@@ -2643,6 +2570,7 @@ export class AiWorkflowService {
     this.removeSessionDelta();
     this.deltaListeners.clear();
     this.proposals.clear();
+    this.completedEvidenceSources.clear();
     this.sessionGeneration += 1;
     this.pendingWithdrawConfirmation = undefined;
     this.options.session.releaseTaskctlSnapshot();

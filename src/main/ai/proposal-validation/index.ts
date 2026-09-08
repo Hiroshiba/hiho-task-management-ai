@@ -17,7 +17,6 @@ export {
   proposalValidationInputSchema,
   proposalValidationResultSchema,
   createChildrenOnlyEvidenceLocator,
-  createTaskEvidenceLocator,
   trustedStatusEvidenceReferenceSchema,
   trustedStatusEvidenceReferencesSchema,
   validateProposal,
@@ -27,5 +26,6 @@ export {
   type ProposalValidationInput,
   type ProposalValidationOperationResult,
   type ProposalValidationResult,
+  type ExplicitSplitRequestReference,
   type TrustedStatusEvidenceReference,
 } from "./basic";
