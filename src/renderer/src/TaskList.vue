@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { dateSchema, isoDateTimeSchema } from "../../shared/domain";
 import type { ViewModelTaskRow } from "../../shared/view-model";
-import { blockLabel, dueLabel, dueRelativeLabel, importanceLabel, statusLabel } from "./state";
+import { blockLabel, dueRelativeLabel, statusLabel } from "./state";
 
 const props = defineProps<{
   rows: readonly ViewModelTaskRow[];
@@ -18,6 +19,36 @@ function rankLabel(row: ViewModelTaskRow): string {
     return "—";
   }
   return String(row.rank);
+}
+
+function taskDueLabel(row: ViewModelTaskRow): string {
+  switch (row.due.kind) {
+    case "none":
+      return "期限なし";
+    case "on": {
+      const value = dateSchema.parse(row.due.value);
+      const timestamp = Date.parse(`${value}T00:00:00+09:00`);
+      return new Intl.DateTimeFormat("ja-JP", {
+        day: "numeric",
+        month: "long",
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+      }).format(new Date(timestamp));
+    }
+    case "at": {
+      const value = isoDateTimeSchema.parse(row.due.value);
+      const timestamp = Date.parse(value);
+      return new Intl.DateTimeFormat("ja-JP", {
+        day: "numeric",
+        hour: "2-digit",
+        hourCycle: "h23",
+        minute: "2-digit",
+        month: "long",
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+      }).format(new Date(timestamp));
+    }
+  }
 }
 
 function rowWarnings(row: ViewModelTaskRow): string {
@@ -92,34 +123,66 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
         :aria-pressed="props.selectedTaskGid === row.gid"
         @click="emit('select', row.gid)"
       >
-        <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <div class="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-1">
           <div
-            class="w-8 shrink-0 text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
+            class="text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
             aria-label="順位"
           >
             {{ rankLabel(row) }}
           </div>
-          <div class="min-w-0 flex-1 basis-48">
+          <div class="min-w-0">
             <p class="truncate font-medium text-slate-900 dark:text-slate-100">
               {{ row.title }}
             </p>
           </div>
-          <div class="min-w-0 basis-full flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700 dark:text-slate-300 sm:basis-auto">
-            <span>状態 {{ statusLabel(row.status) }}</span>
-            <span>{{ importanceLabel(row.importance) }}</span>
-            <span v-if="row.due.kind !== 'none'">
-              期限 {{ dueLabel(row.due) }}
-              <span
-                v-if="dueRelativeLabel(row.due, props.asOf).length > 0"
-                class="text-xs text-amber-800 dark:text-amber-200"
-              >{{ dueRelativeLabel(row.due, props.asOf) }}</span>
-            </span>
-            <span v-if="row.block_state !== 'none'">ブロック {{ blockLabel(row.block_state) }}</span>
-          </div>
+          <dl class="col-start-2 min-w-0 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            <div class="flex min-w-0 items-baseline gap-x-1">
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                状態
+              </dt>
+              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
+                {{ statusLabel(row.status) }}
+              </dd>
+            </div>
+            <div class="flex min-w-0 items-baseline gap-x-1">
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                重要度
+              </dt>
+              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
+                {{ row.importance }}
+              </dd>
+            </div>
+            <div
+              v-if="row.due.kind !== 'none'"
+              class="flex min-w-0 items-baseline gap-x-1"
+            >
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                期限
+              </dt>
+              <dd class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-medium text-slate-800 dark:text-slate-100">
+                <span>{{ taskDueLabel(row) }}</span>
+                <span
+                  v-if="dueRelativeLabel(row.due, props.asOf).length > 0"
+                  class="text-xs font-normal text-amber-800 dark:text-amber-200"
+                >{{ dueRelativeLabel(row.due, props.asOf) }}</span>
+              </dd>
+            </div>
+            <div
+              v-if="row.block_state !== 'none'"
+              class="flex min-w-0 items-baseline gap-x-1"
+            >
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                ブロック
+              </dt>
+              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
+                {{ blockLabel(row.block_state) }}
+              </dd>
+            </div>
+          </dl>
         </div>
         <div
           v-if="hasSupplementaryInfo(row)"
-          class="mt-2 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
+          class="mt-2 ml-11 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
         >
           <span v-if="row.child_progress.total_count > 0">子タスク {{ row.child_progress.completed_count }}/{{ row.child_progress.total_count }}</span>
           <span v-if="row.has_dependencies">依存先あり</span>
