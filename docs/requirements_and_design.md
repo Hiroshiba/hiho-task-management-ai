@@ -816,6 +816,7 @@ codex app-server
 要件:
 
 - `shell: false` で実行する。
+- macOSでは、GUI起動時にもHomebrew版Codexを検出できるよう、既存のPATHを優先しながら`/opt/homebrew/bin`と`/usr/local/bin`を探索先へ追加する。
 - 標準入力・標準出力をJSONLプロトコルに使用する。
 - 接続時にAppsとPluginsを明示的に無効化する。
 - 標準エラーの本文と接続処理の元の例外を診断ログへ渡す。文字列置換で判別できる秘密値は伏せ字にし、エラーメッセージとスタックトレースを保存する。
