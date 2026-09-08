@@ -92,19 +92,19 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
         :aria-pressed="props.selectedTaskGid === row.gid"
         @click="emit('select', row.gid)"
       >
-        <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <div class="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-1">
           <div
-            class="w-8 shrink-0 text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
+            class="text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
             aria-label="順位"
           >
             {{ rankLabel(row) }}
           </div>
-          <div class="min-w-0 flex-1 basis-48">
+          <div class="min-w-0">
             <p class="truncate font-medium text-slate-900 dark:text-slate-100">
               {{ row.title }}
             </p>
           </div>
-          <div class="min-w-0 basis-full flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700 dark:text-slate-300 sm:basis-auto">
+          <div class="col-start-2 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700 dark:text-slate-300">
             <span>状態 {{ statusLabel(row.status) }}</span>
             <span>{{ importanceLabel(row.importance) }}</span>
             <span v-if="row.due.kind !== 'none'">
@@ -119,7 +119,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
         </div>
         <div
           v-if="hasSupplementaryInfo(row)"
-          class="mt-2 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
+          class="mt-2 ml-11 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-400"
         >
           <span v-if="row.child_progress.total_count > 0">子タスク {{ row.child_progress.completed_count }}/{{ row.child_progress.total_count }}</span>
           <span v-if="row.has_dependencies">依存先あり</span>
