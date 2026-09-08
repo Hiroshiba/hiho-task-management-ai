@@ -10,6 +10,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
+import { DialogRoot } from "reka-ui";
 import {
   ipcAiApprovalInputSchema,
   ipcAiCloseSessionInputSchema,
@@ -71,6 +72,7 @@ import {
 } from "../../shared/view-model";
 import AppHeader from "./AppHeader.vue";
 import type AiSessionDialog from "./AiSessionDialog.vue";
+import SettingsDialog from "./SettingsDialog.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
@@ -268,6 +270,8 @@ const aiDialogRef = ref<AiSessionDialogApi | null>(null);
 const aiDialogReturnFocus = ref<HTMLElement | null>(null);
 const aiSessionCreating = ref(false);
 const aiDialogFeedback = ref<Feedback | undefined>();
+const settingsDialogVisible = ref(false);
+const settingsDialogFeedback = ref<Feedback | undefined>();
 const externalAgentState = ref<RendererExternalAgentState>({ kind: "loading" });
 const externalAgentBusy = ref(false);
 const externalAgentEditResult = ref<RendererExternalAgentEditResult | undefined>();
@@ -622,6 +626,10 @@ function setAiDialogFeedback(kind: FeedbackKind, message: string): void {
   aiDialogFeedback.value = { kind, message };
 }
 
+function setSettingsDialogFeedback(kind: FeedbackKind, message: string): void {
+  settingsDialogFeedback.value = { kind, message };
+}
+
 function isFailure(value: unknown): value is IpcFailure {
   const parsed = ipcFailureSchema.safeParse(value);
   if (parsed.success) {
@@ -719,19 +727,19 @@ async function setExternalAgentEnabled(enabled: boolean): Promise<void> {
     return;
   }
   externalAgentBusy.value = true;
-  setAiDialogFeedback("progress", "外部連携の設定を更新しています。");
+  setSettingsDialogFeedback("progress", "外部連携の設定を更新しています。");
   try {
     const result = await taskHub.externalAgent.setEnabled(
       externalAgentGuiSetEnabledInputSchema.parse({ enabled }),
     );
     if (isFailure(result)) {
-      setAiDialogFeedback("failure", displayFailure(result).message);
+      setSettingsDialogFeedback("failure", displayFailure(result).message);
       return;
     }
     applyExternalAgentState(result.value);
-    setAiDialogFeedback("success", enabled ? "外部連携を有効にしました。" : "外部連携を停止しました。");
+    setSettingsDialogFeedback("success", enabled ? "外部連携を有効にしました。" : "外部連携を停止しました。");
   } catch {
-    showExternalAgentUnexpectedFailure();
+    setSettingsDialogFeedback("failure", "外部連携の設定を更新できませんでした。もう一度お試しください。");
   } finally {
     externalAgentBusy.value = false;
   }
@@ -2755,6 +2763,7 @@ function appendDelta(delta: { readonly session_id: string; readonly delta: strin
 }
 
 async function openAiAssistant(): Promise<void> {
+  settingsDialogVisible.value = false;
   if (!aiDialogVisible.value) {
     const activeElement = document.activeElement;
     aiDialogReturnFocus.value = activeElement instanceof HTMLElement ? activeElement : null;
@@ -2770,6 +2779,12 @@ async function openAiAssistant(): Promise<void> {
   }
   aiDialogVisible.value = true;
 }
+
+watch(settingsDialogVisible, (open) => {
+  if (open) {
+    aiDialogVisible.value = false;
+  }
+});
 
 watch(() => externalAgentState.value.kind === "ready"
   ? externalAgentState.value.value.review_target?.request_id
@@ -3328,30 +3343,39 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 lg:flex lg:h-dvh lg:flex-col">
-    <AppHeader
-      :connection-state="connectionState"
-      :configured="configured"
-      :can-manual-sync="canManualSync"
-      :can-full-sync="canManualSync"
-      :full-sync-running="activeSyncMode === 'full'"
-      :can-write="canAcceptWrite"
-      :can-open-ai-assistant="canOpenAiAssistant"
-      :ai-waiting-count="aiWaitingCount"
-      :ai-running-count="aiRunningCount"
-      :codex-state="codexState"
-      :codex-authentication-busy="setupBusy"
-      :asana-authentication-busy="asanaAuthenticationBusy"
-      :asana-authentication-state-loaded="asanaAuthenticationStateLoaded"
-      :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
-      :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
-      :asana-authentication-state="asanaAuthenticationState"
-      @sync="manualSync"
-      @full-sync="fullSync"
-      @open-ai-assistant="openAiAssistant"
-      @complete-codex-authentication="completeCodexAuthenticationFromHeader"
-      @begin-reauthentication="beginAsanaReauthentication"
-      @recheck-authentication-state="recheckAsanaAuthenticationState"
-    />
+    <DialogRoot v-model:open="settingsDialogVisible">
+      <AppHeader
+        :connection-state="connectionState"
+        :configured="configured"
+        :can-manual-sync="canManualSync"
+        :can-full-sync="canManualSync"
+        :full-sync-running="activeSyncMode === 'full'"
+        :can-write="canAcceptWrite"
+        :can-open-ai-assistant="canOpenAiAssistant"
+        :ai-waiting-count="aiWaitingCount"
+        :ai-running-count="aiRunningCount"
+        :codex-state="codexState"
+        :codex-authentication-busy="setupBusy"
+        :asana-authentication-busy="asanaAuthenticationBusy"
+        :asana-authentication-state-loaded="asanaAuthenticationStateLoaded"
+        :asana-authentication-state-needs-recheck="asanaAuthenticationStateNeedsRecheck"
+        :asana-authentication-state-request-busy="asanaAuthenticationStateRequestBusy"
+        :asana-authentication-state="asanaAuthenticationState"
+        @sync="manualSync"
+        @full-sync="fullSync"
+        @open-ai-assistant="openAiAssistant"
+        @complete-codex-authentication="completeCodexAuthenticationFromHeader"
+        @begin-reauthentication="beginAsanaReauthentication"
+        @recheck-authentication-state="recheckAsanaAuthenticationState"
+      />
+      <SettingsDialog
+        :state="externalAgentState"
+        :busy="externalAgentBusy"
+        :restore-focus="!aiDialogVisible"
+        :feedback="settingsDialogFeedback"
+        @set-enabled="setExternalAgentEnabled"
+      />
+    </DialogRoot>
     <component
       :is="aiDialogComponent"
       v-if="aiDialogComponent != null"
@@ -3380,7 +3404,6 @@ onUnmounted(() => {
       @complete="completeAiSession"
       @cancel="cancelAiSession"
       @select-task="selectAiSessionTask"
-      @external-set-enabled="setExternalAgentEnabled"
       @external-edit="editExternalAgentProposal"
       @external-approve="approveExternalAgentProposal"
       @external-reject="rejectExternalAgentProposal"

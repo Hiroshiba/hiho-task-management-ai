@@ -56,7 +56,6 @@ const emit = defineEmits<{
   (event: "complete", sessionId: string): void;
   (event: "cancel", sessionId: string): void;
   (event: "select-task", sessionId: string, taskGid: string): void;
-  (event: "external-set-enabled", enabled: boolean): void;
   (event: "external-edit", input: ExternalAgentGuiEditInput): void;
   (event: "external-approve", input: ExternalAgentGuiApproveInput): void;
   (event: "external-reject", input: ExternalAgentGuiRejectInput): void;
@@ -537,7 +536,6 @@ watch(() => props.selectedSessionId, (sessionId) => {
             :state="props.externalAgentState.value"
             :busy="props.externalAgentBusy"
             :edit-result="props.externalAgentEditResult"
-            @set-enabled="(enabled) => emit('external-set-enabled', enabled)"
             @edit="(input) => emit('external-edit', input)"
             @approve="(input) => emit('external-approve', input)"
             @reject="(input) => emit('external-reject', input)"
