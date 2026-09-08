@@ -1,4 +1,7 @@
 export {
+  ObsidianVaultMappingConflictError,
+} from "./errors";
+export {
   ObsidianReadError,
   ObsidianReadService,
   obsidianNoteReadResultSchema,
