@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import {
   CodexExecutableNotFoundError,
   CodexRequestAbortedError,
@@ -100,6 +100,19 @@ export function createSafeCodexEnvironment(
     safeEnvironment[canonicalKey] = value;
     seenWindowsKeys.add(canonicalKey);
   }
+  if (process.platform !== "darwin") {
+    return safeEnvironment;
+  }
+  const pathEntries = safeEnvironment.PATH == null
+    ? ["/usr/bin", "/bin"]
+    : safeEnvironment.PATH.split(delimiter);
+  safeEnvironment.PATH = [
+    ...new Set([
+      ...pathEntries,
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ]),
+  ].join(delimiter);
   return safeEnvironment;
 }
 
