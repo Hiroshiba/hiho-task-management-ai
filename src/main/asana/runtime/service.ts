@@ -305,24 +305,26 @@ export class AsanaSyncRuntime {
 
   /** GUI変更後の同期と後処理を実行します。 */
   public async afterGuiEdit(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (!this.operationQueueHasOwner(signal)) {
       throw new Error("GUI事後同期の実行権を所有していません。");
     }
-    return this.runOwnedAfterApply(signal);
+    return this.runOwnedAfterApply(requiredTaskGids, signal);
   }
 
   /** AI変更適用後の同期と後処理を実行します。 */
   public async afterAiApply(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (!this.operationQueueHasOwner(signal)) {
       throw new Error("AI適用後同期の実行権を所有していません。");
     }
-    return this.runOwnedAfterApply(signal);
+    return this.runOwnedAfterApply(requiredTaskGids, signal);
   }
 
   /** 通常の手動同期を実行します。 */
@@ -435,6 +437,7 @@ export class AsanaSyncRuntime {
   }
 
   private async runOwnedAfterApply(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     if (signal.aborted) {
@@ -444,7 +447,7 @@ export class AsanaSyncRuntime {
     }
     try {
       return await this.operationQueue.runOwned(signal, (context) =>
-        this.execute("delta", context.signal),
+        this.execute("delta", requiredTaskGids, context.signal),
       );
     } catch (error: unknown) {
       if (error instanceof AsanaRequestAbortedError) {
@@ -710,7 +713,7 @@ export class AsanaSyncRuntime {
         this.runningMode = mode;
         let result: AsanaSyncRuntimeInternalResult;
         try {
-          result = await this.execute(mode, operationSignal);
+          result = await this.execute(mode, [], operationSignal);
         } finally {
           removeOwnedSignal();
         }
@@ -750,6 +753,7 @@ export class AsanaSyncRuntime {
 
   private async execute(
     mode: AsanaSyncRuntimeSynchronizationMode,
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     let sideEffectStarted = false;
@@ -803,6 +807,7 @@ export class AsanaSyncRuntime {
         section_gids: this.configuration.section_gids,
         device_id: this.configuration.device_id,
         app_version: this.configuration.app_version,
+        required_task_gids: [...requiredTaskGids],
       });
       const coordinated = await this.coordinator.coordinate(input, signal);
       if (signal.aborted) {

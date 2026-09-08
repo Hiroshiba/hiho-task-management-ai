@@ -1754,11 +1754,11 @@ export class TaskHubApplication {
       this.database,
       randomUUID,
       () => createNowIso(this.options.now_provider),
-      (signal) => this.afterAiApply(signal),
+      (requiredTaskGids, signal) => this.afterAiApply(requiredTaskGids, signal),
     );
     const guiEdit = new AsanaGuiEditService(
       writer,
-      (signal) => this.afterGuiEdit(signal),
+      (requiredTaskGids, signal) => this.afterGuiEdit(requiredTaskGids, signal),
       () => this.isOnline(),
       (request, signal) => this.validateRelationGraph(request, signal),
       {
@@ -2858,6 +2858,7 @@ export class TaskHubApplication {
             section_gids: validatedInput.section_gids,
             device_id: validatedInput.device_id,
             app_version: this.options.app_version,
+            required_task_gids: [],
           },
           context.signal,
         ),
@@ -3273,19 +3274,21 @@ export class TaskHubApplication {
   }
 
   private afterGuiEdit(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
     return this.resolvePostWriteSynchronization(
-      this.requireRuntime().afterGuiEdit(signal),
+      this.requireRuntime().afterGuiEdit(requiredTaskGids, signal),
       signal,
     );
   }
 
   private async afterAiApply(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
     if (this.journalRecoveryRunning) {
-      return this.synchronizeRecoveredApplicationJournals(signal);
+      return this.synchronizeRecoveredApplicationJournals(requiredTaskGids, signal);
     }
     if (this.aiApplicationState !== "applying") {
       throw new Error("AI変更案の適用状態が同期開始条件を満たしません。");
@@ -3293,7 +3296,7 @@ export class TaskHubApplication {
     this.aiApplicationState = "synchronizing";
     try {
       return await this.resolvePostWriteSynchronization(
-        this.requireRuntime().afterAiApply(signal),
+        this.requireRuntime().afterAiApply(requiredTaskGids, signal),
         signal,
       );
     } finally {
@@ -3302,6 +3305,7 @@ export class TaskHubApplication {
   }
 
   private async synchronizeRecoveredApplicationJournals(
+    requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
     const context = this.requireContext();
@@ -3313,6 +3317,7 @@ export class TaskHubApplication {
           section_gids: context.section_gids,
           device_id: context.device_id,
           app_version: this.options.app_version,
+          required_task_gids: [...requiredTaskGids],
         },
         signal,
       );
