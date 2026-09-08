@@ -75,6 +75,16 @@ pnpm run package
 
 認証待ち時間やローカルコールバックURLの入力は不要です。Client Secretは会話、Issue、ログへ貼らないでください。
 
+## Obsidian連携
+
+初回設定でVaultの登録をスキップした場合も、後から設定できます。
+
+1. ヘッダーの「設定」を開きます。
+2. Obsidianの設定で、Vault IDとフォルダの絶対パスを入力します。
+3. 保存します。
+
+登録済みのVaultは、同じVault IDのまま参照先を変更できます。AIは登録したVaultのノートを読み取り専用で参照します。
+
 ## 外部Codexからの利用
 
 Windowsでは同じPCのWSL、macOSでは同じMacのターミナルから利用します。TaskHubを起動し、Asanaの初回設定と同期を済ませてください。

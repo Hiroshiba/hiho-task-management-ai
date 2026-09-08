@@ -25,6 +25,8 @@ import type {
   IpcExternalAgentGuiSetEnabledInput,
   IpcExternalAgentGuiState,
   IpcObsidianPathResult,
+  IpcObsidianVaultMapping,
+  IpcObsidianVaultMappings,
   IpcObsidianVaultList,
   IpcObsidianVaultResult,
   IpcReadModelOverview,
@@ -122,6 +124,8 @@ export interface TaskHubApi {
   };
   readonly obsidian: {
     readonly listVaults: () => IpcResult<IpcObsidianVaultList>;
+    readonly listVaultMappings: () => IpcResult<IpcObsidianVaultMappings>;
+    readonly saveVaultMapping: (input: IpcObsidianVaultMapping) => IpcResult<IpcObsidianVaultMappings>;
     readonly validateVault: (vaultId: string) => IpcResult<IpcObsidianVaultResult>;
     readonly resolvePath: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;
     readonly noteExists: (input: { readonly vault_id: string; readonly relative_path: string }) => IpcResult<IpcObsidianPathResult>;

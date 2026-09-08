@@ -45,10 +45,14 @@ import {
   ipcExternalAgentStateEventSchema,
   ipcObsidianListVaultsInputSchema,
   ipcObsidianListVaultsResponseSchema,
+  ipcObsidianListVaultMappingsInputSchema,
+  ipcObsidianListVaultMappingsResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianOpenNoteResponseSchema,
   ipcObsidianPathInputSchema,
   ipcObsidianPathResponseSchema,
+  ipcObsidianSaveVaultMappingInputSchema,
+  ipcObsidianSaveVaultMappingResponseSchema,
   ipcObsidianValidateInputSchema,
   ipcObsidianValidateResponseSchema,
   ipcReadModelOverviewInputSchema,
@@ -92,6 +96,8 @@ import {
   type IpcCodexDelta,
   type IpcFailure,
   type IpcGuiEditInput,
+  type IpcObsidianVaultMapping,
+  type IpcObsidianVaultMappings,
   type IpcExternalAgentGuiApproveInput,
   type IpcExternalAgentGuiEditInput,
   type IpcExternalAgentGuiRejectInput,
@@ -146,7 +152,12 @@ const PRIMARY_TASK_GID = "mock-task-1";
 const SYNC_AT = "2026-09-05T00:00:00.000Z";
 const ACTIVITY_ANCHOR_ON = "2026-09-01";
 const MOCK_VAULT_ID = "mock-vault";
+const MOCK_VAULT_PATH = "/mock/taskhub-vault";
 const MOCK_NOTE_PATH = "notes/focus.md";
+const MOCK_VAULT_MAPPING: IpcObsidianVaultMapping = {
+  vault_id: MOCK_VAULT_ID,
+  absolute_path: MOCK_VAULT_PATH,
+};
 const AUTHORIZATION_ID = "a".repeat(43);
 const AUTHORIZATION_EXPIRES_AT = "2026-12-31T23:59:59.000Z";
 const SNAPSHOT_HASH = "0".repeat(64);
@@ -791,6 +802,7 @@ export function createMockTaskHubApi(): TaskHubApi {
   });
   let nextAiSessionNumber = 1;
   let operationQueue: Promise<void> = Promise.resolve();
+  let obsidianVaultMappings: IpcObsidianVaultMappings = [MOCK_VAULT_MAPPING];
   const aiSessions = new Map<string, MockAiSessionState>();
   const syncListeners = new Set<(value: IpcSyncStateEvent) => void>();
   const aiDeltaListeners = new Set<(value: IpcCodexDelta) => void>();
@@ -1397,7 +1409,26 @@ export function createMockTaskHubApi(): TaskHubApi {
       listVaults: () => Promise.resolve().then(() => {
         ipcObsidianListVaultsInputSchema.parse(undefined);
         return ipcObsidianListVaultsResponseSchema.parse(ok(
-          { vault_ids: [MOCK_VAULT_ID] },
+          { vault_ids: obsidianVaultMappings.map((mapping) => mapping.vault_id) },
+        ));
+      }),
+      listVaultMappings: () => Promise.resolve().then(() => {
+        ipcObsidianListVaultMappingsInputSchema.parse(undefined);
+        return ipcObsidianListVaultMappingsResponseSchema.parse(ok(
+          [...obsidianVaultMappings],
+        ));
+      }),
+      saveVaultMapping: (input: IpcObsidianVaultMapping) => Promise.resolve().then(() => {
+        const parsedInput = ipcObsidianSaveVaultMappingInputSchema.parse(input);
+        const existing = obsidianVaultMappings.some(
+          (mapping) => mapping.vault_id === parsedInput.vault_id,
+        );
+        obsidianVaultMappings = existing
+          ? obsidianVaultMappings.map((mapping) =>
+            mapping.vault_id === parsedInput.vault_id ? parsedInput : mapping)
+          : [...obsidianVaultMappings, parsedInput];
+        return ipcObsidianSaveVaultMappingResponseSchema.parse(ok(
+          [...obsidianVaultMappings],
         ));
       }),
       validateVault: (vaultId: string) => Promise.resolve().then(() => {
