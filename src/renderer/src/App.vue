@@ -626,8 +626,16 @@ function setAiDialogFeedback(kind: FeedbackKind, message: string): void {
   aiDialogFeedback.value = { kind, message };
 }
 
+function clearAiDialogFeedback(): void {
+  aiDialogFeedback.value = undefined;
+}
+
 function setSettingsDialogFeedback(kind: FeedbackKind, message: string): void {
   settingsDialogFeedback.value = { kind, message };
+}
+
+function clearSettingsDialogFeedback(): void {
+  settingsDialogFeedback.value = undefined;
 }
 
 function isFailure(value: unknown): value is IpcFailure {
@@ -737,7 +745,8 @@ async function setExternalAgentEnabled(enabled: boolean): Promise<void> {
       return;
     }
     applyExternalAgentState(result.value);
-    setSettingsDialogFeedback("success", enabled ? "外部連携を有効にしました。" : "外部連携を停止しました。");
+    clearSettingsDialogFeedback();
+    addToast("success", enabled ? "外部連携を有効にしました。" : "外部連携を停止しました。");
   } catch {
     setSettingsDialogFeedback("failure", "外部連携の設定を更新できませんでした。もう一度お試しください。");
   } finally {
@@ -769,7 +778,8 @@ async function editExternalAgentProposal(input: ExternalAgentGuiEditInput): Prom
       proposal_id: input.proposal_id,
       revision: input.revision,
     };
-    setAiDialogFeedback("success", "外部提案を更新しました。");
+    clearAiDialogFeedback();
+    addToast("success", "外部提案を更新しました。");
   } catch {
     externalAgentEditResult.value = {
       kind: "failed",
@@ -795,7 +805,8 @@ async function approveExternalAgentProposal(input: ExternalAgentGuiApproveInput)
       return;
     }
     applyExternalAgentState(result.value);
-    setAiDialogFeedback("success", "外部提案の承認を受け付けました。");
+    clearAiDialogFeedback();
+    addToast("success", "外部提案の承認を受け付けました。");
   } catch {
     showExternalAgentUnexpectedFailure();
   } finally {
@@ -816,7 +827,8 @@ async function rejectExternalAgentProposal(input: ExternalAgentGuiRejectInput): 
       return;
     }
     applyExternalAgentState(result.value);
-    setAiDialogFeedback("success", "外部提案を却下しました。");
+    clearAiDialogFeedback();
+    addToast("success", "外部提案を却下しました。");
   } catch {
     showExternalAgentUnexpectedFailure();
   } finally {
