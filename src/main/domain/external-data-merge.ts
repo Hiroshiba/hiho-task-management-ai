@@ -4,11 +4,13 @@ import {
   customExternalDataSchema,
   dateSchema,
   dependenciesSchema,
+  durationSchema,
   identifierSchema,
   obsidianLinksSchema,
   parentWorkModeSchema,
   serializeCustomExternalData,
   type CustomExternalData,
+  type Duration,
   type ObsidianLink,
 } from "../../shared/domain";
 
@@ -19,6 +21,7 @@ const customExternalDataMergeFieldSchema = z.enum([
   "last_active_status",
   "parent_work_mode",
   "activity_anchor_on",
+  "duration",
 ]);
 
 const setDependenciesOperationSchema = z
@@ -61,12 +64,21 @@ const setActivityAnchorOnOperationSchema = z
   })
   .strict();
 
+const setDurationOperationSchema = z
+  .object({
+    operation: z.literal("set_duration"),
+    before: durationSchema.optional(),
+    after: durationSchema.optional(),
+  })
+  .strict();
+
 const customExternalDataMergeOperationSchema = z.discriminatedUnion("operation", [
   setDependenciesOperationSchema,
   setObsidianLinksOperationSchema,
   setLastActiveStatusOperationSchema,
   setParentWorkModeOperationSchema,
   setActivityAnchorOnOperationSchema,
+  setDurationOperationSchema,
 ]);
 
 const customExternalDataMergeOperationsSchema = z
@@ -130,6 +142,12 @@ const mergeInputSchema = z
           break;
         case "set_activity_anchor_on":
           matches = operation.before === input.baseline.activity_anchor_on;
+          break;
+        case "set_duration":
+          matches = sameOptionalJsonValue(
+            operation.before,
+            input.baseline.duration,
+          );
           break;
       }
       if (!matches) {
@@ -202,6 +220,7 @@ const mergeFieldOrder = [
   "last_active_status",
   "parent_work_mode",
   "activity_anchor_on",
+  "duration",
 ];
 
 function compareStrings(left: string, right: string): number {
@@ -226,6 +245,8 @@ function operationField(operation: CustomExternalDataMergeOperation): MergeField
       return "parent_work_mode";
     case "set_activity_anchor_on":
       return "activity_anchor_on";
+    case "set_duration":
+      return "duration";
   }
 }
 
@@ -348,6 +369,35 @@ function resolveScalar<T>(
   return { kind: "conflict", field };
 }
 
+function sameOptionalJsonValue<T>(
+  left: T | undefined,
+  right: T | undefined,
+): boolean {
+  if (left == null || right == null) {
+    return left == null && right == null;
+  }
+  return sameJsonValue(left, right);
+}
+
+function resolveOptionalJsonScalar<T>(
+  field: MergeField,
+  baseline: T | undefined,
+  current: T | undefined,
+  after: T | undefined,
+): ResolvedValue<T | undefined> {
+  if (sameOptionalJsonValue(current, baseline)) {
+    return {
+      kind: "resolved",
+      value: after,
+      changed: !sameOptionalJsonValue(current, after),
+    };
+  }
+  if (sameOptionalJsonValue(current, after)) {
+    return { kind: "resolved", value: current, changed: false };
+  }
+  return { kind: "conflict", field };
+}
+
 function resolveActivityAnchorOn(
   baseline: string,
   current: string,
@@ -465,6 +515,7 @@ function mergeData(
   let lastActiveStatus = current.last_active_status;
   let parentWorkMode = current.parent_work_mode;
   let activityAnchorOn = current.activity_anchor_on;
+  let duration: Duration | undefined = current.duration;
   let changed = false;
 
   for (const operation of sortedOperations(input.operations)) {
@@ -545,6 +596,20 @@ function mergeData(
         changed = changed || resolved.changed;
         break;
       }
+      case "set_duration": {
+        const resolved = resolveOptionalJsonScalar(
+          "duration",
+          baseline.duration,
+          current.duration,
+          operation.after,
+        );
+        if (resolved.kind === "conflict") {
+          return mergeResultSchema.parse(resolved);
+        }
+        duration = resolved.value;
+        changed = changed || resolved.changed;
+        break;
+      }
     }
   }
 
@@ -555,7 +620,7 @@ function mergeData(
     });
   }
 
-  const mergedData: CustomExternalData = {
+  const mergedDataCandidate = {
     ...current,
     rev: nextRevision(baseline.rev, current.rev),
     last_active_status: lastActiveStatus,
@@ -568,6 +633,12 @@ function mergeData(
       last_writer: input.last_writer,
     },
   };
+  if (duration == null) {
+    delete mergedDataCandidate.duration;
+  } else {
+    mergedDataCandidate.duration = duration;
+  }
+  const mergedData: CustomExternalData = customExternalDataSchema.parse(mergedDataCandidate);
   serializeCustomExternalData(mergedData);
   return mergeResultSchema.parse({
     kind: "merged",

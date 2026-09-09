@@ -132,6 +132,38 @@ export const dependencyScopeSchema = z.enum(["full", "partial"]);
 /** タスクのブロック状態を検証するスキーマです。 */
 export const blockStateSchema = z.enum(["none", "partial", "full"]);
 
+/** 所要時間の単位を検証するスキーマです。 */
+export const durationUnitSchema = z.enum([
+  "minute",
+  "hour",
+  "day",
+  "week",
+  "month",
+]);
+
+const durationValueSchema = z
+  .number()
+  .int()
+  .min(1, "所要時間は1以上で指定してください。")
+  .refine(Number.isSafeInteger, "所要時間は安全な整数で指定してください。");
+
+/** タスクの所要時間を検証するスキーマです。 */
+export const durationSchema = z
+  .object({
+    value: durationValueSchema,
+    unit: durationUnitSchema,
+  })
+  .strict()
+  .superRefine((duration, context) => {
+    if (duration.unit === "minute" && duration.value < 15) {
+      context.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "分単位の所要時間は15以上で指定してください。",
+      });
+    }
+  });
+
 /** 重要度を表すAsanaタグ名を検証するスキーマです。 */
 export const importanceTagNameSchema = z.enum([
   "TaskHub/重要度/1",
@@ -285,6 +317,7 @@ export const customExternalDataSchema = z
     rev: z.number().int().positive(),
     last_active_status: z.enum(["not_started", "in_progress"]),
     activity_anchor_on: dateSchema,
+    duration: durationSchema.optional(),
     parent_work_mode: parentWorkModeSchema,
     dependencies: dependenciesSchema,
     obsidian_links: obsidianLinksSchema,
@@ -312,6 +345,7 @@ export const taskSchema = z
     dependencies: dependenciesSchema,
     obsidian_links: obsidianLinksSchema,
     activity_anchor_on: dateSchema,
+    duration: durationSchema.optional(),
     due_on: dateSchema.optional(),
     due_at: isoDateTimeSchema.optional(),
     parent_gid: gidSchema.optional(),
@@ -339,6 +373,7 @@ export const taskSnapshotSchema = z
     dependencies: dependenciesSchema,
     obsidian_links: obsidianLinksSchema,
     activity_anchor_on: dateSchema,
+    duration: durationSchema.optional(),
     due_on: dateSchema.optional(),
     due_at: isoDateTimeSchema.optional(),
     parent_gid: gidSchema.optional(),
@@ -382,6 +417,7 @@ export const createTaskInputSchema = z
     status: taskStatusSchema.optional(),
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
+    duration: durationSchema.optional(),
     due_on: dateSchema.optional(),
     due_at: isoDateTimeSchema.optional(),
     parent_gid: gidSchema.optional(),
@@ -406,6 +442,7 @@ export const updateTaskInputSchema = z
     status: taskStatusSchema.optional(),
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
+    duration: durationSchema.optional(),
     due_on: dateSchema.optional(),
     due_at: isoDateTimeSchema.optional(),
     parent_gid: gidSchema.optional(),
@@ -532,6 +569,8 @@ export type Importance = z.infer<typeof importanceSchema>;
 export type ParentWorkMode = z.infer<typeof parentWorkModeSchema>;
 export type DependencyScope = z.infer<typeof dependencyScopeSchema>;
 export type BlockState = z.infer<typeof blockStateSchema>;
+export type DurationUnit = z.infer<typeof durationUnitSchema>;
+export type Duration = z.infer<typeof durationSchema>;
 export type ImportanceTagName = z.infer<typeof importanceTagNameSchema>;
 export type BlockTagName = z.infer<typeof blockTagNameSchema>;
 export type AreaTagName = z.infer<typeof areaTagNameSchema>;

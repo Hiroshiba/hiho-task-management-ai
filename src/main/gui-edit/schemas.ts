@@ -5,6 +5,7 @@ import {
   createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependenciesSchema,
+  durationSchema,
   gidSchema,
   identifierSchema,
   importanceSchema,
@@ -96,6 +97,17 @@ const guiOperationSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("clear_due"),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("set_duration"),
+      value: durationSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("clear_duration"),
     })
     .strict(),
   z

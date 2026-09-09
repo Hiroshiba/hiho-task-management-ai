@@ -92,6 +92,10 @@ type ProposalDue = Extract<
   ProposalOperation,
   { operation: "set_due" }
 >["before"];
+type ProposalDuration = Extract<
+  ProposalOperation,
+  { operation: "set_duration" }
+>["before"];
 type AsanaGuiEditReadClient = Pick<AsanaReadClient, "getTask">;
 type AsanaGuiEditStatusWriteClient = Pick<
   AsanaTaskWriteClient,
@@ -287,6 +291,14 @@ function proposalParent(
     : { kind: "existing", gid: task.parent.gid };
 }
 
+function proposalDuration(
+  external: ParsedBaselineExternal,
+): ProposalDuration {
+  return external.data.duration == null
+    ? { kind: "absent" }
+    : external.data.duration;
+}
+
 function proposalOperationInput(
   input: AsanaGuiEditInput,
   operationId: string,
@@ -425,6 +437,26 @@ function buildProposalOperation(
         ...common,
         operation: "clear_due",
         before: dueFromTask(task),
+        after: { kind: "absent" },
+      });
+    case "set_duration":
+      if (external == null) {
+        throw new Error("所要時間操作にはCustom external dataが必要です。");
+      }
+      return parseProposalOperation({
+        ...common,
+        operation: "set_duration",
+        before: proposalDuration(external),
+        after: operation.value,
+      });
+    case "clear_duration":
+      if (external == null) {
+        throw new Error("所要時間操作にはCustom external dataが必要です。");
+      }
+      return parseProposalOperation({
+        ...common,
+        operation: "clear_duration",
+        before: proposalDuration(external),
         after: { kind: "absent" },
       });
     case "set_area":

@@ -5,6 +5,7 @@ import {
   createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependencyScopeSchema,
+  durationSchema,
   gidSchema,
   identifierSchema,
   importanceSchema,
@@ -154,6 +155,7 @@ const editableCreateFieldsSchema = z
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
     due: editableDueSchema.optional(),
+    duration: durationSchema.optional(),
     parent: targetSchema.optional(),
     parent_work_mode: parentWorkModeSchema.optional(),
     dependencies: editableDependenciesSchema.optional(),
@@ -169,6 +171,7 @@ const editableAfterSchema = z.union([
   editableDueSchema,
   editableDependenciesSchema,
   obsidianLinkSchema,
+  durationSchema,
   editableCreateFieldsSchema,
 ]);
 

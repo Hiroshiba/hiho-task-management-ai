@@ -56,7 +56,10 @@ import {
 } from "../obsidian";
 import { ObsidianReadError } from "../../obsidian";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
-import { codexResponseSchema, type CodexResponse } from "../../../shared/ai";
+import {
+  codexGeneratedResponseSchema,
+  type CodexGeneratedResponse,
+} from "../../../shared/ai";
 import {
   CodexSessionAbortedError,
   CodexSessionAuthenticationError,
@@ -298,7 +301,7 @@ function validateAbortSignal(signal: AbortSignal): void {
 }
 
 function createModelFormatInstruction(): string {
-  const generated = z.toJSONSchema(codexResponseSchema, { target: "draft-07" });
+  const generated = z.toJSONSchema(codexGeneratedResponseSchema, { target: "draft-07" });
   const parsed = z.object({}).passthrough().safeParse(generated);
   if (!parsed.success) {
     throw new CodexSessionCapabilityError(
@@ -360,7 +363,7 @@ function prependModelFormatInstruction(
   return codexSessionTurnInputSchema.parse(prefixedInput);
 }
 
-function parseStructuredOutput(text: string): CodexResponse {
+function parseStructuredOutput(text: string): CodexGeneratedResponse {
   let parsedEnvelope: unknown;
   try {
     parsedEnvelope = JSON.parse(text);
@@ -377,7 +380,7 @@ function parseStructuredOutput(text: string): CodexResponse {
   } catch (error: unknown) {
     throw new CodexSessionOutputValidationError(error);
   }
-  const response = codexResponseSchema.safeParse(parsedResponse);
+  const response = codexGeneratedResponseSchema.safeParse(parsedResponse);
   if (!response.success) {
     throw new CodexSessionOutputValidationError(response.error);
   }
@@ -2546,7 +2549,7 @@ export class CodexSessionService {
       this.finishTurn(active, error);
       return;
     }
-    let response: CodexResponse;
+    let response: CodexGeneratedResponse;
     try {
       response = parseStructuredOutput(finalItem.text);
     } catch (error: unknown) {
