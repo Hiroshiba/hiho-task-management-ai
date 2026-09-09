@@ -36,7 +36,7 @@ import {
   codexObsidianReadPortSchema,
 } from "../obsidian";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
-import { codexResponseSchema } from "../../../shared/ai";
+import { codexGeneratedResponseSchema } from "../../../shared/ai";
 
 const maximumPathLength = 4_096;
 const maximumModelLength = 200;
@@ -318,7 +318,7 @@ export const codexSessionTurnResultSchema = z
   .object({
     threadId: z.string().min(1).max(200),
     turnId: z.string().min(1).max(200),
-    response: codexResponseSchema,
+    response: codexGeneratedResponseSchema,
   })
   .strict();
 

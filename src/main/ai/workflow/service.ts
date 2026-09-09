@@ -4,6 +4,7 @@ import {
   baselineSnapshotSchema,
   canonicalizeJson,
   dependenciesSchema,
+  type Duration,
   gidSchema,
   identifierSchema,
   obsidianLinksSchema,
@@ -803,10 +804,13 @@ function createTaskSnapshot(task: Task): TaskSnapshot {
     : task.due_at != null
       ? { ...base, due_at: task.due_at }
       : base;
+  const withDuration = task.duration == null
+    ? withDue
+    : { ...withDue, duration: task.duration };
   if (task.parent_gid != null) {
-    return { ...withDue, parent_gid: task.parent_gid };
+    return { ...withDuration, parent_gid: task.parent_gid };
   }
-  return withDue;
+  return withDuration;
 }
 
 function createBaselineTaskSnapshots(tasks: readonly Task[]): TaskSnapshot[] {
@@ -1221,6 +1225,9 @@ function createTurnPrompt(
     "TaskHubの構造化変更案だけを検討してください。",
     `基準コンテキスト: ${serializedContext}`,
     "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
+    "新規タスクのcreate_taskには、タイトルと要求内容から見積もったdurationを必ず含めてください。見積もりは過度に精密な混合単位を避け、minute、hour、day、week、monthのいずれか一つの粗い単位で表してください。",
+    "durationは対象タスクを実行する作業量を表す所要時間です。期限までの残り期間や相手の返答待ちなどの待機期間は含めないでください。値は安全な整数とし、minuteは15以上、hour、day、week、monthは1以上にしてください。",
+    "既存タスクのdurationが未設定なら、必要に応じてset_durationの推定案を提示できます。durationが設定済みの場合は、利用者が明示的に変更または再推定を依頼したときだけ変更案を提示してください。",
     "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
     "Obsidianは登録済みVaultの読み取り専用で必要なノートを確認できます。情報質問ではno_proposalを返し、変更案を作成しないでください。",
     `利用者要求の一般根拠locator: ${prepared.user_message_locator}`,
@@ -1575,9 +1582,12 @@ function createProjectedTask(
     : after.due.kind === "due_on"
       ? { ...base, due_on: after.due.due_on }
       : { ...base, due_at: after.due.due_at };
-  const withParent = after.parent == null
+  const withDuration = after.duration == null
     ? withDue
-    : { ...withDue, parent_gid: projectedTargetGid(after.parent) };
+    : { ...withDue, duration: after.duration };
+  const withParent = after.parent == null
+    ? withDuration
+    : { ...withDuration, parent_gid: projectedTargetGid(after.parent) };
   return taskSchema.parse(withParent);
 }
 
@@ -1619,6 +1629,14 @@ function clearProjectedDue(task: Task): Task {
   return taskSchema.parse(withoutTaskFields(task, ["due_on", "due_at"]));
 }
 
+function setProjectedDuration(task: Task, duration: Duration): Task {
+  return taskSchema.parse({ ...task, duration });
+}
+
+function clearProjectedDuration(task: Task): Task {
+  return taskSchema.parse(withoutTaskFields(task, ["duration"]));
+}
+
 function sameObsidianLink(left: ObsidianLink, right: ObsidianLink): boolean {
   return left.vault_id === right.vault_id
     && left.path === right.path
@@ -1653,6 +1671,13 @@ function applyProjectedOperation(
       return;
     case "clear_due":
       replaceProjectedTask(tasks, targetGid, clearProjectedDue);
+      return;
+    case "set_duration":
+      replaceProjectedTask(tasks, targetGid, (task) =>
+        setProjectedDuration(task, operation.after));
+      return;
+    case "clear_duration":
+      replaceProjectedTask(tasks, targetGid, clearProjectedDuration);
       return;
     case "set_area":
       replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, area: operation.after }));

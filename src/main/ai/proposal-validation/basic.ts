@@ -5,6 +5,7 @@ import {
   identifierSchema,
   snapshotHashSchema,
   taskSchema,
+  type Duration,
   type Importance,
   type ObsidianLink,
   type ParentWorkMode,
@@ -375,6 +376,8 @@ type TaskDueValue =
   | { readonly kind: "due_on"; readonly due_on: string }
   | { readonly kind: "due_at"; readonly due_at: string };
 
+type TaskDurationValue = Duration | { readonly kind: "absent" };
+
 type TaskState = {
   readonly title: string;
   readonly notes: string;
@@ -382,6 +385,7 @@ type TaskState = {
   readonly importance: Importance;
   readonly area: string;
   readonly due: TaskDueValue;
+  readonly duration: TaskDurationValue;
   readonly parent: ProposalParentValue;
   readonly parent_work_mode: ParentWorkMode;
   readonly dependencies: readonly ProposalDependency[];
@@ -529,6 +533,16 @@ function sameDueValue(left: TaskDueValue, right: TaskDueValue): boolean {
   return false;
 }
 
+function sameDurationValue(
+  left: TaskDurationValue,
+  right: TaskDurationValue,
+): boolean {
+  if ("kind" in left || "kind" in right) {
+    return "kind" in left && "kind" in right;
+  }
+  return left.value === right.value && left.unit === right.unit;
+}
+
 function sameParentValue(left: ProposalParentValue, right: ProposalParentValue): boolean {
   if (left.kind === "absent" && right.kind === "absent") {
     return true;
@@ -580,6 +594,9 @@ function createTaskState(task: Task): TaskState {
     ? { kind: "absent" }
     : { kind: "existing", gid: task.parent_gid };
   const due = createTaskDueValue(task);
+  const duration: TaskDurationValue = task.duration == null
+    ? { kind: "absent" }
+    : task.duration;
   return {
     title: task.title,
     notes: task.notes,
@@ -587,6 +604,7 @@ function createTaskState(task: Task): TaskState {
     importance: task.importance,
     area: task.area,
     due,
+    duration,
     parent,
     parent_work_mode: task.parent_work_mode,
     dependencies,
@@ -616,6 +634,7 @@ function createTemporaryTaskState(
     importance: after.importance ?? 3,
     area: after.area ?? unclassifiedArea,
     due: after.due ?? { kind: "absent" },
+    duration: after.duration ?? { kind: "absent" },
     parent: after.parent ?? { kind: "absent" },
     parent_work_mode: after.parent_work_mode ?? "unknown",
     dependencies: after.dependencies ?? [],
@@ -694,6 +713,12 @@ function validateBeforeValue(
     case "clear_due":
       if (!sameDueValue(task.due, operation.before)) {
         addBeforeMismatch(operation.operation_id, "期限", errorsByOperation);
+      }
+      return;
+    case "set_duration":
+    case "clear_duration":
+      if (!sameDurationValue(task.duration, operation.before)) {
+        addBeforeMismatch(operation.operation_id, "所要時間", errorsByOperation);
       }
       return;
     case "set_area":
@@ -959,6 +984,7 @@ function createFieldUpdates(context: OperationContext): readonly FieldUpdate[] {
     if (operation.after.importance != null) fields.push("importance");
     if (operation.after.area != null) fields.push("area");
     if (operation.after.due != null) fields.push("due");
+    if (operation.after.duration != null) fields.push("duration");
     if (operation.after.parent != null) fields.push("parent");
     if (operation.after.parent_work_mode != null) fields.push("parent_work_mode");
     if (operation.after.dependencies != null) fields.push("dependencies");
@@ -996,6 +1022,9 @@ function getOperationField(
     case "set_due":
     case "clear_due":
       return "due";
+    case "set_duration":
+    case "clear_duration":
+      return "duration";
     case "set_area":
       return "area";
     case "set_dependencies":

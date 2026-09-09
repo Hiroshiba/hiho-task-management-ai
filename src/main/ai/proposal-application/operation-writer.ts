@@ -11,6 +11,7 @@ import {
   type AsanaTaskResponse,
   type CustomExternalData,
   type Dependency,
+  type Duration,
   type ObsidianLink,
 } from "../../../shared/domain";
 import {
@@ -494,6 +495,24 @@ function sameDueProposalValue(
   return canonicalizeJson(left) === canonicalizeJson(right);
 }
 
+type DurationOperationValue =
+  | Extract<NonCreateOperation, { operation: "set_duration" }>["before"]
+  | Extract<NonCreateOperation, { operation: "clear_duration" }>["after"];
+
+function optionalDuration(value: DurationOperationValue): Duration | undefined {
+  if ("kind" in value) {
+    return undefined;
+  }
+  return value;
+}
+
+function sameDurationValue(left: Duration | undefined, right: Duration | undefined): boolean {
+  if (left == null || right == null) {
+    return left == null && right == null;
+  }
+  return canonicalizeJson(left) === canonicalizeJson(right);
+}
+
 function operationUsesExternalData(operation: NonCreateOperation): boolean {
   switch (operation.operation) {
     case "complete":
@@ -596,6 +615,22 @@ function externalOperationsForOperation(
     case "clear_due":
       operations.push(externalOperationAnchor(baseline, activityDate));
       break;
+    case "set_duration":
+    case "clear_duration": {
+      const before = optionalDuration(operation.before);
+      const after = optionalDuration(operation.after);
+      if (!sameDurationValue(before, baseline.duration)) {
+        throw new Error("所要時間操作のbaselineが一致しません。");
+      }
+      if (!sameDurationValue(before, after)) {
+        operations.push({
+          operation: "set_duration",
+          before,
+          after,
+        });
+      }
+      break;
+    }
     case "set_area":
       if (operation.before !== operation.after) {
         operations.push(externalOperationAnchor(baseline, activityDate));
@@ -708,6 +743,18 @@ function classifyOperation(
         operation.before,
         { kind: "absent" },
         sameDueProposalValue,
+      );
+    }
+    case "set_duration":
+    case "clear_duration": {
+      if (external == null) {
+        throw new Error("所要時間操作にはCustom external dataが必要です。");
+      }
+      return classifyValue(
+        external.duration,
+        optionalDuration(operation.before),
+        optionalDuration(operation.after),
+        sameDurationValue,
       );
     }
     case "set_area":
@@ -878,6 +925,7 @@ function createExternalState(
       ? []
       : resolveDependencies(operation.after.dependencies, mappings),
     obsidian_links: operation.after.obsidian_links ?? [],
+    ...(operation.after.duration == null ? {} : { duration: operation.after.duration }),
   });
   return {
     gid: initialized.gid,
@@ -1019,6 +1067,18 @@ function verifyOperationAfter(
       break;
     case "clear_due":
       if (taskDueValue(task).kind !== "absent") {
+        return false;
+      }
+      break;
+    case "set_duration":
+    case "clear_duration":
+      if (
+        expectedExternal == null
+        || !sameDurationValue(
+          expectedExternal.data.duration,
+          optionalDuration(operation.after),
+        )
+      ) {
         return false;
       }
       break;
@@ -1218,6 +1278,8 @@ async function applyNonCreateAsanaOperation(
     case "set_parent_work_mode":
     case "link_obsidian":
     case "unlink_obsidian":
+    case "set_duration":
+    case "clear_duration":
       return false;
     case "set_parent": {
       const current = taskParentGid(task);
