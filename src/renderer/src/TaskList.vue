@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { dateSchema, isoDateTimeSchema } from "../../shared/domain";
 import type { ViewModelTaskRow } from "../../shared/view-model";
+import { durationLabel } from "./duration";
 import { blockLabel, dueRelativeLabel, statusLabel } from "./state";
 
 const props = defineProps<{
@@ -49,6 +50,14 @@ function taskDueLabel(row: ViewModelTaskRow): string {
       }).format(new Date(timestamp));
     }
   }
+}
+
+function taskDurationLabel(row: ViewModelTaskRow): string {
+  const duration = row.duration;
+  if (duration == null) {
+    throw new Error("所要時間がありません。");
+  }
+  return durationLabel(duration);
 }
 
 function rowWarnings(row: ViewModelTaskRow): string {
@@ -165,6 +174,17 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
                   v-if="dueRelativeLabel(row.due, props.asOf).length > 0"
                   class="text-xs font-normal text-amber-800 dark:text-amber-200"
                 >{{ dueRelativeLabel(row.due, props.asOf) }}</span>
+              </dd>
+            </div>
+            <div
+              v-if="row.duration != null"
+              class="flex min-w-0 items-baseline gap-x-1"
+            >
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                所要時間
+              </dt>
+              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
+                {{ taskDurationLabel(row) }}
               </dd>
             </div>
             <div

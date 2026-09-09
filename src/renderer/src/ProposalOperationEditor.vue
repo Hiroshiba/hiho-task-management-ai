@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { z } from "zod";
 import {
   proposalOperationSchema,
   type ProposalOperation,
@@ -19,6 +20,12 @@ import {
   externalAgentGuiEditInputSchema,
   type ExternalAgentGuiEditInput,
 } from "../../shared/external-agent";
+import {
+  durationMinimum,
+  durationUnitOptions,
+  parseDurationInput,
+  type DurationUnit,
+} from "./duration";
 
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
 type EditorMode =
@@ -27,6 +34,7 @@ type EditorMode =
 type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
 type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" }>["after"];
 type ProposalDueValue = Extract<ProposalOperation, { operation: "set_due" }>["after"];
+type ProposalDurationValue = Extract<ProposalOperation, { operation: "set_duration" }>["after"];
 type ProposalDependency = Extract<ProposalOperation, { operation: "set_dependencies" }>["after"][number];
 
 type TargetOption = {
@@ -63,6 +71,9 @@ type FormState = {
   dueValue: string;
   originalDueAt: string | undefined;
   dueSpecified: boolean;
+  durationUnit: DurationUnit;
+  durationValue: string;
+  durationSpecified: boolean;
   parentKey: string;
   parentSpecified: boolean;
   parentWorkMode: ParentWorkMode;
@@ -214,6 +225,9 @@ function initialState(): FormState {
     dueValue: "",
     originalDueAt: undefined,
     dueSpecified: false,
+    durationUnit: "minute",
+    durationValue: "",
+    durationSpecified: false,
     parentKey: "",
     parentSpecified: false,
     parentWorkMode: "unknown",
@@ -248,6 +262,10 @@ function initialState(): FormState {
       if (operation.after.due != null) {
         applyDue(state, operation.after.due);
         state.dueSpecified = true;
+      }
+      if (operation.after.duration != null) {
+        applyDuration(state, operation.after.duration);
+        state.durationSpecified = true;
       }
       if (operation.after.parent != null) {
         state.parentKey = targetKey(operation.after.parent);
@@ -288,6 +306,11 @@ function initialState(): FormState {
       return state;
     case "clear_due":
       return state;
+    case "set_duration":
+      applyDuration(state, operation.after);
+      return state;
+    case "clear_duration":
+      return state;
     case "set_area":
       state.area = operation.after;
       return state;
@@ -322,6 +345,11 @@ function applyDue(state: FormState, due: ProposalDueValue): void {
   }
   state.dueValue = isoToDatetimeLocal(due.due_at);
   state.originalDueAt = due.due_at;
+}
+
+function applyDuration(state: FormState, duration: ProposalDurationValue): void {
+  state.durationUnit = duration.unit;
+  state.durationValue = String(duration.value);
 }
 
 function createDependencyDraft(dependency: ProposalDependency): DependencyDraft {
@@ -368,6 +396,17 @@ function dueAfter(): ProposalDueValue {
   return { kind: "due_at", due_at: dueAt };
 }
 
+function durationAfter(): ProposalDurationValue {
+  try {
+    return parseDurationInput(form.value.durationUnit, form.value.durationValue);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new FormInputError("所要時間を確認してください。", { cause: error });
+    }
+    throw error;
+  }
+}
+
 function createTaskAfter(operation: CreateTaskOperation): unknown {
   const state = form.value;
   return {
@@ -377,6 +416,7 @@ function createTaskAfter(operation: CreateTaskOperation): unknown {
     ...(state.importanceSpecified ? { importance: state.importance } : {}),
     ...(state.areaSpecified ? { area: state.area } : {}),
     ...(state.dueSpecified ? { due: dueAfter() } : {}),
+    ...(state.durationSpecified ? { duration: durationAfter() } : {}),
     ...(state.parentSpecified || operationHasCreateParent(operation)
       ? { parent: targetFromKey(state.parentKey) }
       : {}),
@@ -426,6 +466,7 @@ function externalCreateInputValue(): unknown {
     ...(state.importanceSpecified ? { importance: state.importance } : {}),
     ...(state.areaSpecified ? { area: state.area } : {}),
     ...(state.dueSpecified ? { due: dueAfter() } : {}),
+    ...(state.durationSpecified ? { duration: durationAfter() } : {}),
   };
 }
 
@@ -465,6 +506,10 @@ function editedAfter(operation: ProposalOperation): unknown {
     case "set_due":
       return dueAfter();
     case "clear_due":
+      return { kind: "absent" };
+    case "set_duration":
+      return durationAfter();
+    case "clear_duration":
       return { kind: "absent" };
     case "set_area":
       return form.value.area;
@@ -839,6 +884,49 @@ function isoToDatetimeLocal(value: string): string {
           日時は日本時間で入力します。
         </p>
       </fieldset>
+      <fieldset class="field-group">
+        <legend class="field-label">
+          所要時間
+        </legend>
+        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
+          <input
+            v-model="form.durationSpecified"
+            type="checkbox"
+            :disabled="props.disabled"
+          >
+          所要時間を指定する
+        </label>
+        <div
+          v-if="form.durationSpecified"
+          class="grid min-w-0 gap-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)]"
+        >
+          <select
+            v-model="form.durationUnit"
+            class="text-input min-w-0"
+            aria-label="所要時間の単位"
+            :disabled="props.disabled"
+          >
+            <option
+              v-for="option in durationUnitOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <input
+            v-model="form.durationValue"
+            class="text-input min-w-0"
+            type="number"
+            inputmode="numeric"
+            aria-label="所要時間の数値"
+            :min="durationMinimum(form.durationUnit)"
+            step="1"
+            required
+            :disabled="props.disabled"
+          >
+        </div>
+      </fieldset>
       <fieldset
         v-if="props.mode.kind === 'full' && operation.creation.kind === 'split_child'"
         class="field-group sm:col-span-2"
@@ -1164,6 +1252,50 @@ function isoToDatetimeLocal(value: string): string {
       class="rounded-md border border-slate-200 px-3 py-3 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300"
     >
       期限を解除します。
+    </div>
+
+    <div
+      v-else-if="operation.operation === 'set_duration'"
+      class="field-group"
+    >
+      <div class="grid min-w-0 gap-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)]">
+        <label class="field-label">
+          所要時間の単位
+          <select
+            v-model="form.durationUnit"
+            class="text-input"
+            :disabled="props.disabled"
+          >
+            <option
+              v-for="option in durationUnitOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
+        <label class="field-label">
+          所要時間の数値
+          <input
+            v-model="form.durationValue"
+            class="text-input"
+            type="number"
+            inputmode="numeric"
+            :min="durationMinimum(form.durationUnit)"
+            step="1"
+            required
+            :disabled="props.disabled"
+          >
+        </label>
+      </div>
+    </div>
+
+    <div
+      v-else-if="operation.operation === 'clear_duration'"
+      class="rounded-md border border-slate-200 px-3 py-3 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-300"
+    >
+      所要時間を解除します。
     </div>
 
     <div

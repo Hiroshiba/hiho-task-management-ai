@@ -124,6 +124,7 @@ import {
   externalAgentProposalSchema,
 } from "../../../shared/external-agent";
 import {
+  durationSchema,
   type Dependency,
 } from "../../../shared/domain";
 import {
@@ -163,6 +164,7 @@ const AUTHORIZATION_EXPIRES_AT = "2026-12-31T23:59:59.000Z";
 const SNAPSHOT_HASH = "0".repeat(64);
 const GROUP_ID = "mock-group";
 const OPERATION_ID = "mock-operation";
+const DURATION_OPERATION_ID = "mock-duration-operation";
 const PROPOSAL_ID = "mock-proposal";
 const EXTERNAL_GROUP_ID = "mock-external-group";
 const EXTERNAL_OPERATION_ID = "mock-external-operation";
@@ -206,6 +208,7 @@ function createSampleDetail(
   status: ViewModelTaskDetail["status"],
   importance: ViewModelTaskDetail["importance"],
   due: ViewModelDue,
+  duration: NonNullable<ViewModelTaskDetail["duration"]>,
   area: string,
   sectionGid: string,
   rank: number,
@@ -229,6 +232,7 @@ function createSampleDetail(
     status,
     importance,
     due,
+    duration,
     area,
     block_state: "none",
     section_gid: sectionGid,
@@ -273,6 +277,7 @@ function createInitialDetails(): Map<string, ViewModelTaskDetail> {
     "in_progress",
     5,
     { kind: "on", value: "2026-09-10" },
+    { value: 15, unit: "minute" },
     "開発",
     "mock-section-in-progress",
     1,
@@ -290,6 +295,7 @@ function createInitialDetails(): Map<string, ViewModelTaskDetail> {
     "not_started",
     3,
     { kind: "none" },
+    { value: 2, unit: "hour" },
     "運用",
     "mock-section-not-started",
     2,
@@ -302,6 +308,7 @@ function createInitialDetails(): Map<string, ViewModelTaskDetail> {
     "completed",
     2,
     { kind: "at", value: "2026-09-04T15:00:00.000Z" },
+    { value: 3, unit: "day" },
     "開発",
     "mock-section-completed",
     3,
@@ -324,6 +331,7 @@ function createRow(detail: ViewModelTaskDetail, rank: number): ViewModelTaskRow 
     status: detail.status,
     importance: detail.importance,
     due: detail.due,
+    duration: detail.duration,
     block_state: detail.block_state,
     ...(detail.block_reason == null ? {} : { block_reason: detail.block_reason }),
     area: detail.area,
@@ -384,6 +392,12 @@ function removeParent(detail: ViewModelTaskDetail): Omit<ViewModelTaskDetail, "p
   const copy = { ...detail };
   delete copy.parent;
   return copy;
+}
+
+function removeDuration(detail: ViewModelTaskDetail): Omit<ViewModelTaskDetail, "duration"> {
+  const { duration, ...withoutDuration } = detail;
+  void duration;
+  return withoutDuration;
 }
 
 function dependencyReference(
@@ -534,6 +548,10 @@ function applyGuiOperation(
         },
       });
     }
+    case "set_duration":
+      return parseDetail({ ...detail, duration: operation.value });
+    case "clear_duration":
+      return parseDetail(removeDuration(detail));
     case "set_area":
       return parseDetail({ ...detail, area: operation.value });
     case "set_dependencies": {
@@ -595,7 +613,7 @@ function createSyncResult(mode: "full" | "delta", syncedAt: string): IpcSyncResu
   });
 }
 
-function createProposalView(title: string): IpcAiProposalView {
+function createProposalView(detail: ViewModelTaskDetail): IpcAiProposalView {
   return aiWorkflowProposalViewSchema.parse({
     proposal_id: PROPOSAL_ID,
     baseline_snapshot_hash: SNAPSHOT_HASH,
@@ -612,31 +630,48 @@ function createProposalView(title: string): IpcAiProposalView {
           basis: "explicit",
           confidence: 1,
           evidence_refs: [{ kind: "user_message", locator: "mock" }],
-            target: { kind: "existing", gid: PRIMARY_TASK_GID },
-          before: title,
+          target: { kind: "existing", gid: PRIMARY_TASK_GID },
+          before: detail.title,
           after: "画面確認用に整理しました",
+        }, {
+          operation: "set_duration",
+          operation_id: DURATION_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "作業内容からAIが推定した所要時間です。",
+          basis: "inferred",
+          confidence: 0.78,
+          evidence_refs: [{ kind: "user_message", locator: "mock" }],
+          target: { kind: "existing", gid: PRIMARY_TASK_GID },
+          before: detail.duration ?? { kind: "absent" },
+          after: { value: 1, unit: "week" },
         }],
       }],
     },
     basic_validation: {
-      operations: [{ kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID }],
+      operations: [
+        { kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID },
+        { kind: "valid", group_id: GROUP_ID, operation_id: DURATION_OPERATION_ID },
+      ],
       groups: [{
         group_id: GROUP_ID,
         atomic: false,
         applicable: true,
-        operation_ids: [OPERATION_ID],
+        operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
       }],
     },
     graph_validation: {
-      operations: [{ kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID }],
+      operations: [
+        { kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID },
+        { kind: "valid", group_id: GROUP_ID, operation_id: DURATION_OPERATION_ID },
+      ],
       groups: [{
         group_id: GROUP_ID,
         atomic: false,
         applicable: true,
-        operation_ids: [OPERATION_ID],
+        operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
       }],
     },
-    selected_operation_ids: [OPERATION_ID],
+    selected_operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
     impact: {
       impacted_task_count: 1,
       impacted_task_gids: [PRIMARY_TASK_GID],
@@ -682,6 +717,7 @@ function createExternalProposal(): IpcExternalAgentGuiState["proposals"][number]
             importance: 4,
             area: "開発",
             due: { kind: "due_on", due_on: "2026-09-20" },
+            duration: { value: 1, unit: "month" },
           },
         }],
       }],
@@ -727,11 +763,14 @@ function createExternalProposal(): IpcExternalAgentGuiState["proposals"][number]
 function selectedOperationIds(selection: IpcAiSelectionInput["selection"]): string[] {
   switch (selection.kind) {
     case "all":
-      return [OPERATION_ID];
+      return [OPERATION_ID, DURATION_OPERATION_ID];
     case "groups":
-      return selection.group_ids.includes(GROUP_ID) ? [OPERATION_ID] : [];
+      return selection.group_ids.includes(GROUP_ID)
+        ? [OPERATION_ID, DURATION_OPERATION_ID]
+        : [];
     case "operations":
-      return selection.operation_ids.includes(OPERATION_ID) ? [OPERATION_ID] : [];
+      return [OPERATION_ID, DURATION_OPERATION_ID]
+        .filter((operationId) => selection.operation_ids.includes(operationId));
   }
 }
 
@@ -877,6 +916,7 @@ export function createMockTaskHubApi(): TaskHubApi {
             ...(parsedInput.importance == null ? {} : { importance: parsedInput.importance }),
             ...(parsedInput.area == null ? {} : { area: parsedInput.area }),
             ...(parsedInput.due == null ? {} : { due: parsedInput.due }),
+            ...(parsedInput.duration == null ? {} : { duration: parsedInput.duration }),
           },
         };
       }),
@@ -1226,7 +1266,7 @@ export function createMockTaskHubApi(): TaskHubApi {
         });
         session.stream += delta.delta;
         notify(aiDeltaListeners, delta);
-        session.proposal = createProposalView(detail.title);
+        session.proposal = createProposalView(detail);
         return ipcAiTurnResponseSchema.parse(ok(
           aiWorkflowTurnResultSchema.parse({
             kind: "proposal",
@@ -1272,9 +1312,6 @@ export function createMockTaskHubApi(): TaskHubApi {
         if (session.proposal == null || session.proposal.proposal_id !== parsedInput.proposal_id) {
           return failure("not_found", "指定したAI変更案がmockにありません。");
         }
-        if (typeof parsedInput.after !== "string" || parsedInput.after.trim().length === 0) {
-          return failure("invalid_request", "mockではタスク名を文字列で指定してください。");
-        }
         let operationFound = false;
         const groups = session.proposal.proposal.groups.map((group) => ({
           ...group,
@@ -1283,15 +1320,26 @@ export function createMockTaskHubApi(): TaskHubApi {
               return operation;
             }
             operationFound = true;
-            if (operation.operation !== "update_title") {
-              throw new Error("mockの編集対象操作が不正です。");
+            const evidenceRefs = operation.evidence_refs.map((reference, index) =>
+              index === 0 ? { ...reference, locator: parsedInput.evidence_locator } : reference);
+            if (operation.operation === "update_title") {
+              if (typeof parsedInput.after !== "string" || parsedInput.after.trim().length === 0) {
+                throw new Error("mockではタスク名を文字列で指定してください。");
+              }
+              return {
+                ...operation,
+                after: parsedInput.after,
+                evidence_refs: evidenceRefs,
+              };
             }
-            return {
-              ...operation,
-              after: parsedInput.after,
-              evidence_refs: operation.evidence_refs.map((reference, index) =>
-                index === 0 ? { ...reference, locator: parsedInput.evidence_locator } : reference),
-            };
+            if (operation.operation === "set_duration") {
+              const durationResult = durationSchema.safeParse(parsedInput.after);
+              if (!durationResult.success) {
+                throw new Error("mockでは所要時間を指定してください。");
+              }
+              return { ...operation, after: durationResult.data, evidence_refs: evidenceRefs };
+            }
+            throw new Error("mockの編集対象操作が不正です。");
           }),
         }));
         if (!operationFound) {
@@ -1328,22 +1376,47 @@ export function createMockTaskHubApi(): TaskHubApi {
         if (selectedIds.length === 0) {
           return failure("invalid_request", "適用するAI操作を1件以上選択してください。");
         }
-        const operation = session.proposal.proposal.groups
-          .flatMap((group) => group.operations)
-          .find((candidate) => candidate.operation_id === selectedIds[0]);
-        if (operation == null) {
+        const operationEntries = session.proposal.proposal.groups.flatMap((group) =>
+          group.operations
+            .filter((operation) => selectedIds.includes(operation.operation_id))
+            .map((operation) => ({ group, operation })));
+        if (operationEntries.length !== selectedIds.length) {
           throw new Error("mockの承認対象操作が見つかりません。");
         }
-        if (operation.operation !== "update_title" || operation.target.kind !== "existing") {
+        const firstEntry = operationEntries[0];
+        if (firstEntry == null
+          || (firstEntry.operation.operation !== "update_title"
+            && firstEntry.operation.operation !== "set_duration")
+          || firstEntry.operation.target.kind !== "existing") {
           throw new Error("mockの承認対象操作が不正です。");
         }
-        const detail = details.get(operation.target.gid);
+        const targetGid = firstEntry.operation.target.gid;
+        const detail = details.get(targetGid);
         if (detail == null) {
           return failure("not_found", "承認対象タスクがmockにありません。");
         }
-        const nextDetail = parseDetail({
-          ...detail,
-          title: operation.after,
+        let nextDetail = detail;
+        for (const entry of operationEntries) {
+          const operation = entry.operation;
+          if (operation.operation !== "update_title" && operation.operation !== "set_duration") {
+            throw new Error("mockの承認対象操作が不正です。");
+          }
+          if (operation.target.kind !== "existing" || operation.target.gid !== targetGid) {
+            throw new Error("mockの承認対象操作が不正です。");
+          }
+          switch (operation.operation) {
+            case "update_title":
+              nextDetail = parseDetail({ ...nextDetail, title: operation.after });
+              break;
+            case "set_duration":
+              nextDetail = parseDetail({ ...nextDetail, duration: operation.after });
+              break;
+            default:
+              throw new Error("mockの承認対象操作が不正です。");
+          }
+        }
+        nextDetail = parseDetail({
+          ...nextDetail,
           edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
         });
         details.set(nextDetail.gid, nextDetail);
@@ -1361,19 +1434,24 @@ export function createMockTaskHubApi(): TaskHubApi {
           proposal_id: parsedInput.proposal_id,
           application: {
             outcome: "applied",
-            operations: [{
-              group_id: GROUP_ID,
-              operation_id: OPERATION_ID,
-              task_gid: operation.target.gid,
+            operations: operationEntries.map((entry) => ({
+              group_id: entry.group.group_id,
+              operation_id: entry.operation.operation_id,
+              task_gid: targetGid,
               outcome: "applied",
               reason_code: "applied",
-            }],
-            groups: [{
-              group_id: GROUP_ID,
-              atomic: false,
-              outcome: "applied",
-              operation_ids: [OPERATION_ID],
-            }],
+            })),
+            groups: operationEntries
+              .filter((entry, index, entries) => entries.findIndex((candidate) =>
+                candidate.group.group_id === entry.group.group_id) === index)
+              .map((entry) => ({
+                group_id: entry.group.group_id,
+                atomic: entry.group.atomic,
+                outcome: "applied",
+                operation_ids: operationEntries
+                  .filter((candidate) => candidate.group.group_id === entry.group.group_id)
+                  .map((candidate) => candidate.operation.operation_id),
+              })),
           },
         });
         return ipcAiApprovalResponseSchema.parse(ok(result));
