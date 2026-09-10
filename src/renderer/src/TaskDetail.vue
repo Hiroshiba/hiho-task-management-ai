@@ -12,6 +12,7 @@ import {
 } from "../../shared/domain";
 import type {
   ViewModelDependencyReference,
+  ViewModelDue,
   ViewModelTaskDetail,
   ViewModelTaskReference,
   ViewModelUnavailableReasonCode,
@@ -21,6 +22,10 @@ import {
   parseDependencyInput,
   parseObsidianLink,
   blockLabel,
+  deadlineTone,
+  deadlineToneClass,
+  dueRelativeLabel,
+  importanceToneClass,
   rendererGuiEditSchema,
   statusLabel,
   type RendererGuiEdit,
@@ -37,6 +42,7 @@ import RekaSelect from "./RekaSelect.vue";
 
 const props = defineProps<{
   task: ViewModelTaskDetail | undefined;
+  asOf: string;
   areas: readonly string[];
   canWrite: boolean;
   savingState: "idle" | "waiting_sync" | "saving";
@@ -73,6 +79,32 @@ const dependencyText = ref("");
 const parentGid = ref("");
 const parentWorkMode = ref<"children_only" | "has_own_work" | "unknown">("unknown");
 const localError = ref("");
+
+function previewDue(): ViewModelDue | undefined {
+  switch (dueKind.value) {
+    case "none":
+      return { kind: "none" };
+    case "due_on": {
+      const parsed = dateSchema.safeParse(dueValue.value);
+      return parsed.success ? { kind: "on", value: parsed.data } : undefined;
+    }
+    case "due_at": {
+      const parsed = parseDatetimeLocal(dueValue.value);
+      return parsed.kind === "valid" ? { kind: "at", value: parsed.value } : undefined;
+    }
+  }
+}
+
+const detailDeadlinePreview = computed(() => {
+  const due = previewDue();
+  if (due == null || due.kind === "none") {
+    return undefined;
+  }
+  return {
+    tone: deadlineTone(due, status.value, props.asOf),
+    label: dueRelativeLabel(due, props.asOf),
+  };
+});
 
 type FormDraft = {
   readonly editBaselineHash: string;
@@ -579,28 +611,52 @@ function selectDurationUnit(value: string | number): void {
   }
 }
 
-function datetimeLocalToIso(value: string): string {
+function assertNonNullable<T>(value: T | undefined, message: string): asserts value is T {
+  if (value == null) {
+    throw new Error(message);
+  }
+}
+
+type DatetimeLocalParseResult =
+  | { readonly kind: "valid"; readonly value: string }
+  | { readonly kind: "invalid" };
+
+function parseDatetimeLocal(value: string): DatetimeLocalParseResult {
   const matched = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/u.exec(value);
   if (matched == null) {
-    throw new Error("日時入力の形式が不正です。");
+    return { kind: "invalid" };
   }
   const datePart = matched[1];
   const hourPart = matched[2];
   const minutePart = matched[3];
-  if (datePart == null || hourPart == null || minutePart == null) {
-    throw new Error("日時入力を取得できません。");
-  }
+  assertNonNullable(datePart, "日時入力の正規表現結果に日付がありません。");
+  assertNonNullable(hourPart, "日時入力の正規表現結果に時刻がありません。");
+  assertNonNullable(minutePart, "日時入力の正規表現結果に分がありません。");
   const hour = Number(hourPart);
   const minute = Number(minutePart);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    throw new Error("日時入力の時刻が不正です。");
+    return { kind: "invalid" };
   }
-  dateSchema.parse(datePart);
+  if (!dateSchema.safeParse(datePart).success) {
+    return { kind: "invalid" };
+  }
   const timestamp = Date.parse(`${datePart}T${hourPart}:${minutePart}:00+09:00`);
   if (!Number.isFinite(timestamp)) {
+    return { kind: "invalid" };
+  }
+  const parsed = isoDateTimeSchema.safeParse(new Date(timestamp).toISOString());
+  if (!parsed.success) {
+    return { kind: "invalid" };
+  }
+  return { kind: "valid", value: parsed.data };
+}
+
+function datetimeLocalToIso(value: string): string {
+  const parsed = parseDatetimeLocal(value);
+  if (parsed.kind === "invalid") {
     throw new Error("日時入力を変換できません。");
   }
-  return isoDateTimeSchema.parse(new Date(timestamp).toISOString());
+  return parsed.value;
 }
 
 function isoToDatetimeLocal(value: string): string {
@@ -1089,7 +1145,10 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
               <label
                 class="field-label"
                 for="detail-importance"
-              >重要度<RekaSelect
+              ><span
+                class="self-start"
+                :class="importanceToneClass(importance)"
+              >重要度</span><RekaSelect
                 id="detail-importance"
                 :model-value="importance"
                 :options="importanceOptions"
@@ -1114,7 +1173,15 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
             <label
               class="field-label"
               for="detail-due-kind"
-            >期限</label>
+            ><span class="flex flex-wrap items-center gap-2">
+              <span>期限</span>
+              <span
+                v-if="detailDeadlinePreview != null"
+                class="text-xs font-normal"
+                :class="deadlineToneClass(detailDeadlinePreview.tone)"
+                role="status"
+              >{{ detailDeadlinePreview.label }}</span>
+            </span></label>
             <div class="grid min-w-0 grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)] gap-2">
               <RekaSelect
                 id="detail-due-kind"
