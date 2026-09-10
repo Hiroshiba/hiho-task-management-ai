@@ -98,6 +98,7 @@ const taskHubPermissionPathSchema = pathSchema
 
 const taskHubVerifiedPermissionProfilePathsSchema = z
   .object({
+    codexExecutablePath: taskHubPermissionPathSchema,
     workspacePath: taskHubPermissionPathSchema,
     codexHomePath: taskHubPermissionPathSchema,
     readOnlyVaultPaths: z.array(taskHubPermissionPathSchema).max(maxTaskHubPermissionVaultPaths),
@@ -109,6 +110,7 @@ const taskHubVerifiedPermissionProfilePathsSchema = z
   .strict()
   .superRefine((input, context) => {
     const filesystemKeys = [
+      input.codexExecutablePath,
       input.workspacePath,
       input.codexHomePath,
       ...input.readOnlyVaultPaths,
@@ -285,6 +287,7 @@ export function createTaskHubConnectionOverridesFromVerifiedPaths(
     [":minimal", createTomlBasicStringValue("read")],
     [":tmpdir", createTomlBasicStringValue("deny")],
     [":slash_tmp", createTomlBasicStringValue("deny")],
+    [validatedInput.codexExecutablePath, createTomlBasicStringValue("read")],
     [
       validatedInput.workspacePath,
       createTomlInlineTableValue([

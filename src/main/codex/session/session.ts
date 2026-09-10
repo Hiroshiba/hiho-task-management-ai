@@ -1927,6 +1927,7 @@ export class CodexSessionService {
       }
     }
     return createTaskHubConnectionOverridesFromVerifiedPaths({
+      codexExecutablePath: this.options.codexExecutablePath,
       workspacePath: realWorkspacePath,
       codexHomePath,
       readOnlyVaultPaths: verifiedVaultPaths,

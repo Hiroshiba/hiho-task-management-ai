@@ -1176,6 +1176,7 @@ export class TaskHubApplication {
     this.codexConnectionFactory = connectionFactory;
     this.obsidian = new ObsidianReadService(this.database);
     this.codexSession = new CodexSessionService({
+      codexExecutablePath: options.codex_executable,
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
       tmpDirectoryPath: this.codexWorkspace.tmpDirectoryPath,
@@ -4533,6 +4534,7 @@ export class TaskHubApplication {
     externalToolEndpoint: string | undefined,
   ): CodexSessionService {
     return new CodexSessionService({
+      codexExecutablePath: this.options.codex_executable,
       workspacePath: workspace.workspacePath,
       agentsFilePath: workspace.agentsFilePath,
       tmpDirectoryPath: workspace.tmpDirectoryPath,
