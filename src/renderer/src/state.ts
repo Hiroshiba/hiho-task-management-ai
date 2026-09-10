@@ -31,11 +31,13 @@ import {
 } from "../../shared/ai-workflow";
 import type {
   ViewModelOverview,
+  ViewModelDue,
   ViewModelTaskDetail,
 } from "../../shared/view-model";
 import type { ExternalAgentGuiState } from "../../shared/external-agent";
 import {
   filterTaskRows as sharedFilterTaskRows,
+  isTaskDueOverdue,
   taskFilterSchema,
   type TaskFilter,
 } from "../../shared/view-model";
@@ -487,6 +489,69 @@ function jstDayDifference(target: string, current: string): number {
   return Math.trunc((targetTimestamp - currentTimestamp) / 86_400_000);
 }
 
+type DeadlineState = "none" | "overdue" | "today" | "future";
+
+type DeadlineTone = "muted" | "overdue" | "today" | "future";
+
+function deadlineState(due: ViewModelDue, asOf: string): DeadlineState {
+  if (due.kind === "none") {
+    return "none";
+  }
+  const validatedAsOf = isoDateTimeSchema.parse(asOf);
+  if (isTaskDueOverdue(due, validatedAsOf)) {
+    return "overdue";
+  }
+  const currentDate = jstCalendarDate(validatedAsOf);
+  const targetDate = due.kind === "on"
+    ? dateSchema.parse(due.value)
+    : jstCalendarDate(isoDateTimeSchema.parse(due.value));
+  return targetDate === currentDate ? "today" : "future";
+}
+
+/** 状態と期限から警告色の表示種別を決めます。 */
+export function deadlineTone(
+  due: ViewModelDue,
+  status: TaskStatus,
+  asOf: string,
+): DeadlineTone {
+  const state = deadlineState(due, asOf);
+  if (state === "none") {
+    return "muted";
+  }
+  if (status === "completed" || status === "withdrawn") {
+    return "muted";
+  }
+  return state;
+}
+
+/** 期限状態に対応する表示色を返します。 */
+export function deadlineToneClass(tone: DeadlineTone): string {
+  switch (tone) {
+    case "muted":
+      return "text-slate-500 dark:text-slate-400";
+    case "overdue":
+      return "rounded-md bg-rose-50 px-2 py-1 text-rose-800 dark:bg-rose-950 dark:text-rose-200";
+    case "today":
+      return "rounded-md bg-amber-50 px-2 py-1 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
+    case "future":
+      return "text-slate-700 dark:text-slate-300";
+  }
+}
+
+/** 重要度に対応する表示色を返します。 */
+export function importanceToneClass(importance: Importance): string {
+  switch (importance) {
+    case 1:
+    case 2:
+    case 3:
+      return "text-slate-800 dark:text-slate-100";
+    case 4:
+      return "rounded-full bg-indigo-100 px-2 py-0.5 font-semibold text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200";
+    case 5:
+      return "rounded-full bg-violet-100 px-2 py-0.5 font-semibold text-violet-800 dark:bg-violet-950 dark:text-violet-200";
+  }
+}
+
 /** 期限をJSTの残日数表示へ変換します。 */
 export function dueRelativeLabel(
   due: { readonly kind: "none" }
@@ -498,16 +563,17 @@ export function dueRelativeLabel(
     return "";
   }
   const validatedAsOf = isoDateTimeSchema.parse(asOf);
+  const overdue = isTaskDueOverdue(due, validatedAsOf);
   const currentDate = jstCalendarDate(validatedAsOf);
   const targetDate = due.kind === "on" ? dateSchema.parse(due.value) : jstCalendarDate(isoDateTimeSchema.parse(due.value));
   const days = jstDayDifference(targetDate, currentDate);
+  if (overdue) {
+    return days === 0 ? "期限超過" : `期限超過 ${Math.abs(days)}日`;
+  }
   if (days === 0) {
     return "期限は本日";
   }
-  if (days > 0) {
-    return `期限まで ${days}日`;
-  }
-  return `期限超過 ${Math.abs(days)}日`;
+  return `期限まで ${days}日`;
 }
 
 /** 一覧フィルターを適用して決定論的なタスク行を返します。 */

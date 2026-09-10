@@ -3694,6 +3694,7 @@ onUnmounted(() => {
               </p>
               <TaskDetail
                 :task="selectedTask"
+                :as-of="currentAsOf"
                 :areas="overview.areas"
                 :can-write="canAcceptWrite && !guiEditSaving"
                 :saving-state="selectedGuiEditState?.kind ?? 'idle'"

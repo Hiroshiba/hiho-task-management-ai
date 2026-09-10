@@ -170,7 +170,13 @@ const EXTERNAL_GROUP_ID = "mock-external-group";
 const EXTERNAL_OPERATION_ID = "mock-external-operation";
 const EXTERNAL_PROPOSAL_ID = "mock-external-proposal";
 const EXTERNAL_REQUEST_ID = "mock-external-request";
-const TASK_GIDS = [PRIMARY_TASK_GID, "mock-task-2", "mock-task-3"];
+const TASK_GIDS = [
+  PRIMARY_TASK_GID,
+  "mock-task-2",
+  "mock-task-3",
+  "mock-task-4",
+  "mock-task-5",
+];
 
 function ok<T>(value: T): MockResult<T> {
   return { kind: "ok", value };
@@ -314,10 +320,38 @@ function createInitialDetails(): Map<string, ViewModelTaskDetail> {
     3,
     [],
   );
+  const fourth = createSampleDetail(
+    "mock-task-4",
+    "期限超過サンプル",
+    "同日内の期限超過表示を確認するサンプルタスクです。",
+    "in_progress",
+    4,
+    { kind: "at", value: "2026-09-09T15:00:00.000Z" },
+    { value: 1, unit: "hour" },
+    "開発",
+    "mock-section-in-progress",
+    4,
+    [],
+  );
+  const fifth = createSampleDetail(
+    "mock-task-5",
+    "取り下げ済みサンプル",
+    "取り下げ済みタスクの期限と重要度を確認するサンプルです。",
+    "withdrawn",
+    1,
+    { kind: "on", value: "2026-09-01" },
+    { value: 1, unit: "day" },
+    "運用",
+    "mock-section-withdrawn",
+    5,
+    [],
+  );
   return new Map([
     [first.gid, first],
     [second.gid, second],
     [third.gid, third],
+    [fourth.gid, fourth],
+    [fifth.gid, fifth],
   ]);
 }
 

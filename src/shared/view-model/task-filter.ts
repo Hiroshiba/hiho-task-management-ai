@@ -6,6 +6,7 @@ import {
 import {
   viewModelOverviewSchema,
   type ViewModelOverview,
+  type ViewModelDue,
   type ViewModelTaskRow,
 } from "./schemas";
 
@@ -57,19 +58,25 @@ function hasReason(row: ViewModelTaskRow, code: string): boolean {
   return row.exclusion_reasons.some((reason) => reason.code === code);
 }
 
-function isOverdue(row: ViewModelTaskRow, asOf: string): boolean {
-  if (row.due.kind === "none") {
+/** due_onとdue_atが基準時刻より前かを期限境界で判定します。 */
+export function isTaskDueOverdue(due: ViewModelDue, asOf: string): boolean {
+  const validatedAsOf = isoDateTimeSchema.parse(asOf);
+  if (due.kind === "none") {
     return false;
   }
-  if (row.due.kind === "on") {
-    return row.due.value < jstCalendarDate(asOf);
+  if (due.kind === "on") {
+    return due.value < jstCalendarDate(validatedAsOf);
   }
-  const dueAt = Date.parse(row.due.value);
-  const current = Date.parse(asOf);
+  const dueAt = Date.parse(due.value);
+  const current = Date.parse(validatedAsOf);
   if (!Number.isFinite(dueAt) || !Number.isFinite(current)) {
     throw new Error("期限日時を比較できません。");
   }
   return dueAt < current;
+}
+
+function isOverdue(row: ViewModelTaskRow, asOf: string): boolean {
+  return isTaskDueOverdue(row.due, asOf);
 }
 
 /** タスク一覧へ既存画面と同じフィルターを適用します。 */
