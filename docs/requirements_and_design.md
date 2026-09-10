@@ -958,6 +958,8 @@ CodexへAsana APIやシェル実行権限を渡す代わりに、同期済みロ
 
 AIターン開始前にオンライン同期を行う。同期に失敗した場合は、古い情報であることを明示した質問応答だけを許可するか、変更案生成を停止する。初期版では安全側に倒し、同期失敗時は変更案生成を停止する。
 
+macOSのtaskctl Unixソケットは、ユーザーデータパスやTMPDIRの長さに依存しないよう、`/private/tmp` 配下へ起動ごとの0700専用ディレクトリを作成して配置する。接続情報ファイルは専用ワークスペースの `tmp/taskctl-connection.json` に残し、ソケットの実パスだけをTaskHub権限プロファイルの `network.unix_sockets` へ許可する。
+
 ### 12.8 外部Codexからの利用
 
 通常のCodex CLIから `$taskhub` を明示して、起動中のTaskHubのタスクを参照し、新規タスクの追加案を提出できるようにする。対象はWindows上のTaskHubと同じPCのWSL、macOS上のTaskHubと同じMacのターミナルである。TaskHub内部のAIセッションやCodexへのログインは不要だが、タスク参照と追加案にはAsanaの初回設定と同期が必要になる。

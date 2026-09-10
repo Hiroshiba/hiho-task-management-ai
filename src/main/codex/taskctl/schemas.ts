@@ -57,6 +57,7 @@ const localIpcBoundarySchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("unix_socket"),
       access: z.literal("owner_only"),
+      socketDirectoryPath: absolutePathSchema,
     })
     .strict(),
 ]);
