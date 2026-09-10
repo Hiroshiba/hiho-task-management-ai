@@ -2,8 +2,10 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
   type Stats,
@@ -232,12 +234,12 @@ type TaskctlErrorCode =
   | "execution_timeout"
   | "protocol_error";
 
-function createSocketPath(tmpDirectoryPath: string): string {
+function createSocketPath(socketDirectoryPath: string): string {
   const suffix = randomBytes(12).toString("hex");
   if (process.platform === "win32") {
     return `\\\\.\\pipe\\taskhub-taskctl-${suffix}`;
   }
-  return join(tmpDirectoryPath, `taskctl-${suffix}.sock`);
+  return join(socketDirectoryPath, `taskctl-${suffix}.sock`);
 }
 
 function isWindowsPipe(socketPath: string): boolean {
@@ -250,7 +252,9 @@ function assertWindowsPipe(socketPath: string): void {
   }
 }
 
-function createLocalIpcListenConfiguration(): LocalIpcListenConfiguration {
+function createLocalIpcListenConfiguration(
+  socketDirectoryPath: string,
+): LocalIpcListenConfiguration {
   if (process.platform === "win32") {
     return {
       boundary: {
@@ -265,6 +269,7 @@ function createLocalIpcListenConfiguration(): LocalIpcListenConfiguration {
     boundary: {
       kind: "unix_socket",
       access: "owner_only",
+      socketDirectoryPath,
     },
     readableAll: false,
     writableAll: false,
@@ -287,6 +292,36 @@ function ensureTemporaryDirectory(directoryPath: string): void {
     || (process.platform !== "win32" && (securedStats.mode & 0o777) !== directoryMode)
   ) {
     throw new TaskctlBrokerError("taskctl一時ディレクトリの権限を固定できません。");
+  }
+}
+
+function createSocketDirectory(tmpDirectoryPath: string): string {
+  if (process.platform !== "darwin") {
+    return tmpDirectoryPath;
+  }
+  const macSocketDirectoryPrefix = "/private/tmp/taskhub-taskctl-";
+  let directoryPath: string;
+  try {
+    directoryPath = mkdtempSync(macSocketDirectoryPrefix);
+  } catch (error: unknown) {
+    throw new TaskctlBrokerError(
+      "macOSのtaskctlソケット用一時ディレクトリを作成できません。",
+      { cause: error },
+    );
+  }
+  try {
+    ensureTemporaryDirectory(directoryPath);
+    return directoryPath;
+  } catch (error: unknown) {
+    try {
+      rmdirSync(directoryPath);
+    } catch (cleanupError: unknown) {
+      throw new TaskctlBrokerError(
+        "macOSのtaskctlソケット用一時ディレクトリの作成後処理に失敗しました。",
+        { cause: new AggregateError([error, cleanupError]) },
+      );
+    }
+    throw error;
   }
 }
 
@@ -459,6 +494,7 @@ export class TaskctlBroker {
   private state: BrokerState = "created";
   private server: Server | undefined;
   private socketPath: string | undefined;
+  private socketDirectoryPath: string | undefined;
   private connectionInfo: TaskctlConnectionInfo | undefined;
   private readonly connections = new Map<Socket, ClientConnection>();
   private stopPromise: Promise<void> | undefined;
@@ -494,7 +530,11 @@ export class TaskctlBroker {
 
     try {
       ensureTemporaryDirectory(this.tmpDirectoryPath);
-      const socketPath = createSocketPath(this.tmpDirectoryPath);
+      const socketDirectoryPath = createSocketDirectory(this.tmpDirectoryPath);
+      if (process.platform === "darwin") {
+        this.socketDirectoryPath = socketDirectoryPath;
+      }
+      const socketPath = createSocketPath(socketDirectoryPath);
       assertWindowsPipe(socketPath);
       const connectionInfo = taskctlConnectionInfoSchema.parse({
         version: taskctlProtocolVersion,
@@ -510,7 +550,7 @@ export class TaskctlBroker {
       server.on("error", (error: Error) => {
         this.handleServerError(error);
       });
-      const listenConfiguration = createLocalIpcListenConfiguration();
+      const listenConfiguration = createLocalIpcListenConfiguration(socketDirectoryPath);
       await this.listen(server, socketPath, listenConfiguration);
       if (this.state !== "starting" || signal.aborted) {
         throw new TaskctlAbortError();
@@ -608,6 +648,11 @@ export class TaskctlBroker {
     }
     try {
       this.removeSocket();
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+    try {
+      this.removeSocketDirectory();
     } catch (error: unknown) {
       errors.push(error);
     }
@@ -732,6 +777,32 @@ export class TaskctlBroker {
     }
     assertOwned(stats, "taskctlソケット");
     unlinkSync(socketPath);
+  }
+
+  private removeSocketDirectory(): void {
+    const socketDirectoryPath = this.socketDirectoryPath;
+    if (socketDirectoryPath == null) {
+      return;
+    }
+    let stats: Stats;
+    try {
+      stats = lstatSync(socketDirectoryPath);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        this.socketDirectoryPath = undefined;
+        return;
+      }
+      throw error;
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new TaskctlBrokerError("taskctlソケット用一時ディレクトリが想定外です。");
+    }
+    assertOwned(stats, "taskctlソケット用一時ディレクトリ");
+    if ((stats.mode & 0o777) !== directoryMode) {
+      throw new TaskctlBrokerError("taskctlソケット用一時ディレクトリの権限が不正です。");
+    }
+    rmdirSync(socketDirectoryPath);
+    this.socketDirectoryPath = undefined;
   }
 
   private handleServerError(error: Error): void {

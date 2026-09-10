@@ -636,6 +636,24 @@ function validateOwnedUnixSocket(socketPath: string, label: string): void {
   }
 }
 
+function validateOwnedUnixSocketDirectory(directoryPath: string, label: string): void {
+  let stats: Stats;
+  try {
+    stats = lstatSync(directoryPath);
+  } catch (error: unknown) {
+    throw new CodexSessionCapabilityError(`${label}を確認できません。`, error);
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new CodexSessionCapabilityError(`${label}の実体が不正です。`);
+  }
+  if (typeof process.getuid !== "function") {
+    throw new CodexSessionCapabilityError(`${label}の所有者を確認できません。`);
+  }
+  if (stats.uid !== process.getuid() || (stats.mode & 0o777) !== 0o700) {
+    throw new CodexSessionCapabilityError(`${label}の所有者または権限が不正です。`);
+  }
+}
+
 function validateTaskctlConnectionInfoPath(
   connectionInfoPath: string,
   tmpDirectoryPath: string,
@@ -694,12 +712,33 @@ function validateTaskctlLocalIpc(
   if (
     result.localIpcBoundary.kind !== "unix_socket"
     || result.localIpcBoundary.access !== "owner_only"
-    || parse(resolve(result.socketPath)).dir !== tmpDirectoryPath
     || !/^taskctl-[0-9a-f]{24}\.sock$/u.test(parse(result.socketPath).base)
   ) {
     throw new CodexSessionCapabilityError(
-      "taskctlソケットを専用ワークスペースのtmp直下に限定できません。",
+      "taskctlソケットの形式を専用境界へ限定できません。",
     );
+  }
+  const socketDirectoryPath = process.platform === "darwin"
+    ? resolveVerifiedConfigurationDirectory(
+      result.localIpcBoundary.socketDirectoryPath,
+      "taskctlソケット用一時ディレクトリ",
+    )
+    : tmpDirectoryPath;
+  if (
+    result.localIpcBoundary.socketDirectoryPath !== socketDirectoryPath
+    || parse(resolve(result.socketPath)).dir !== socketDirectoryPath
+    || (process.platform === "darwin"
+      && (
+        parse(socketDirectoryPath).dir !== "/private/tmp"
+        || !/^taskhub-taskctl-[A-Za-z0-9]{6}$/u.test(parse(socketDirectoryPath).base)
+      ))
+  ) {
+    throw new CodexSessionCapabilityError(
+      "taskctlソケットを専用一時ディレクトリ直下に限定できません。",
+    );
+  }
+  if (process.platform === "darwin") {
+    validateOwnedUnixSocketDirectory(socketDirectoryPath, "taskctlソケット用一時ディレクトリ");
   }
   validateOwnedUnixSocket(result.socketPath, "taskctlソケット");
   return result.socketPath;
