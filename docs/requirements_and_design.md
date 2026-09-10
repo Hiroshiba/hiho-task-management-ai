@@ -1060,7 +1060,7 @@ Codexの最終出力は自由文だけにせず、app-serverのStructured Output
 
 各操作は次を持つ。
 
-- `operation_id`
+- `operation_id`。同じ変更案内では一意とし、別の変更案との重複は許可する。
 - 対象タスクGID、または同じ変更案内の一時参照ID。
 - 基準スナップショットのハッシュ。
 - 変更前値。

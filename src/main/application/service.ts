@@ -232,7 +232,6 @@ import {
   type IpcGuiEditResult,
   type IpcAiTurnInput,
   type IpcAiTurnResult,
-  type IpcAiProposalView,
   type IpcAiSelectionInput,
   type IpcAiEditInput,
   type IpcAiApprovalInput,
@@ -1079,7 +1078,6 @@ export class TaskHubApplication {
   private readonly syncStateListeners = new Set<(state: IpcSyncStateEvent) => void>();
   private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
   private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
-  private readonly proposalIds = new Map<string, string>();
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
@@ -4342,23 +4340,11 @@ export class TaskHubApplication {
     });
   }
 
-  private rememberProposal(record: AiSessionRecord, view: IpcAiProposalView): void {
-    for (const operation of view.proposal.groups.flatMap((group) => group.operations)) {
-      const existing = this.proposalIds.get(operation.operation_id);
-      if (existing != null && existing !== view.proposal_id) {
-        throw new Error("AI変更案の操作IDが別の変更案と重複しています。");
-      }
-      this.proposalIds.set(operation.operation_id, view.proposal_id);
-    }
-    record.proposalIds.add(view.proposal_id);
+  private rememberProposal(record: AiSessionRecord, proposalId: string): void {
+    record.proposalIds.add(proposalId);
   }
 
   private forgetProposal(record: AiSessionRecord, proposalId: string): void {
-    for (const [operationId, storedProposalId] of this.proposalIds) {
-      if (storedProposalId === proposalId) {
-        this.proposalIds.delete(operationId);
-      }
-    }
     record.proposalIds.delete(proposalId);
     const baselineKey = record.baselineStore.proposalKeys.get(proposalId);
     if (baselineKey == null) {
@@ -4954,7 +4940,7 @@ export class TaskHubApplication {
             ),
           );
           if (result.kind === "proposal") {
-            this.rememberProposal(record, result.proposal);
+            this.rememberProposal(record, result.proposal.proposal_id);
             let baselineKey: string | undefined;
             for (const key of record.baselineStore.currentTurnKeys) {
               baselineKey = key;
