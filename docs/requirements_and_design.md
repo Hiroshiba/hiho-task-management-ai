@@ -834,6 +834,7 @@ codex app-server
 
 - `shell: false` で実行する。
 - macOSでは、GUI起動時にもHomebrew版Codexを検出できるよう、既存のPATHを優先しながら`/opt/homebrew/bin`と`/usr/local/bin`を探索先へ追加する。
+- Windows以外ではPATHで検出したCodexのシンボリックリンクを実体パスへ解決し、実体パスで起動する。
 - 標準入力・標準出力をJSONLプロトコルに使用する。
 - 接続時にAppsとPluginsを明示的に無効化する。
 - 標準エラーの本文と接続処理の元の例外を診断ログへ渡す。文字列置換で判別できる秘密値は伏せ字にし、エラーメッセージとスタックトレースを保存する。
@@ -911,7 +912,7 @@ Codexターンは次の権限で開始する。
 - ネットワーク: Codexのシェルからは無効。
 - Asanaの資格情報と書き込み手段: Codexへ渡さない。
 
-Windows以外ではTaskHub専用権限プロファイルを使用する。書き込みは専用作業ディレクトリの一時領域だけに許可し、専用作業ディレクトリと登録済みObsidian Vaultを読み取れるようにする。Obsidian Vaultは読み取り専用とし、モデルが実行するシェルコマンドから `CODEX_HOME` を読み取れないようにする。
+Windows以外ではTaskHub専用権限プロファイルを使用する。書き込みは専用作業ディレクトリの一時領域だけに許可し、専用作業ディレクトリと登録済みObsidian Vaultを読み取れるようにする。Codexの起動に使う実体ファイルだけを読み取り許可へ追加し、親ディレクトリ全体は許可しない。Obsidian Vaultは読み取り専用とし、モデルが実行するシェルコマンドから `CODEX_HOME` を読み取れないようにする。
 
 WindowsではCodex標準の `workspace-write` を要求する。非昇格WindowsサンドボックスはTaskHubが必要とする分割読取制限を強制できないため、TaskHub専用権限プロファイルを使用しない。実効サンドボックスはネットワーク無効の `workspaceWrite` または、より制限の強い `readOnly` だけを許可する。`dangerFullAccess` と `externalSandbox` は許可しない。`workspaceWrite` が適用された場合は専用作業ディレクトリ全体が書き込み可能になる。どちらの場合も、モデル側コマンドから専用 `CODEX_HOME` や登録済みVaultを読み取れないことは保証しない。Asana資格情報の非共有は維持する。この制約はWindows版を実用可能にする残余リスクとして受け入れる。[R23]
 
@@ -2130,6 +2131,7 @@ OpenAI API課金は使わないが、CodexのChatGPTサブスクリプション�
 | Obsidianリンク | Custom external data | Asana説明欄 | ユーザー向けメモを汚さないため。 |
 | Asana認証 | 自己所有OAuthアプリ | PAT | Custom external dataがOAuth前提。 |
 | AI接続 | `codex app-server` とTaskHub専用 `CODEX_HOME` | OpenAI API、擬似CLI、通常のCodexホームの継承 | ChatGPTサブスクリプション認証を専用環境で使うため。 |
+| POSIX Codex起動 | PATHで検出した実体パスを起動し、そのファイルだけをTaskHubの権限プロファイルで読み取り許可 | シンボリックリンクのままの起動、Homebrew親ディレクトリ全体の許可 | macOSのsandbox helperがシンボリックリンク経由の実行を拒否するため。 |
 | Codex版の扱い | 検出した版を起動して能力確認 | 版文字列による事前拒否 | 実際に利用できる能力と権限を基準にするため。 |
 | Codex外部機能 | 接続時にAppsとPluginsを無効化し、スレッドのWeb検索を無効化 | 通常設定のMCP探索、実行時の名前変換、未知機能の許可 | TaskHubが必要とする専用ワークスペースと権限境界を保つため。 |
 | Windowsサンドボックス | Codex標準の `workspace-write` を要求し、ネットワーク無効の `workspaceWrite` または `readOnly` だけを許可 | TaskHub専用の分割読取制限、`dangerFullAccess`、`externalSandbox` | 非昇格サンドボックスが分割読取制限を強制できず、標準サンドボックスの範囲で動作させるため。 |
@@ -2201,6 +2203,7 @@ OpenAI API課金は使わないが、CodexのChatGPTサブスクリプション�
 - 順位は重要度、期限、解放効果、一部ブロック、停滞から固定式で一意に算出。
 - AIは実順位を決めず、入力値と変更を提案するだけ。
 - Codexは実際の `codex app-server` をTaskHub専用 `CODEX_HOME` でChatGPTサブスクリプション認証により起動。初回に専用ホームで一度ログインし、通常ホームの認証ファイルをコピーしない。
+- Windows以外ではPATHで検出したCodexのシンボリックリンクを実体パスへ解決し、実体ファイルだけをTaskHubの権限プロファイルで読み取り許可する。
 - 通常のCodexホームの設定、MCP定義、プラグイン、ホーム側スキル、セッションを継承しない。
 - 検出したCodex版を実際に起動し、モデル取得、TaskHub専用ワークスペースの `AGENTS.md` とスキル、プラットフォーム別の制限付き `thread/start` を確認する。Windows以外ではTaskHub専用権限プロファイルも確認する。版文字列で事前拒否しない。
 - 起動ごとに新規スレッド。過去復帰、会話同期、Git保存なし。

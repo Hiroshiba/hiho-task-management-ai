@@ -56,6 +56,8 @@ const absolutePathSchema = z
   .refine((value) => !value.includes("\0"), "パスに使用できない文字が含まれています。")
   .refine((value) => !value.includes("\n") && !value.includes("\r"), "パスに改行を指定できません。");
 
+const executablePathSchema = z.string().min(1).max(maximumPathLength);
+
 const modelSchema = z
   .string()
   .min(1, "モデルIDを空にできません。")
@@ -150,6 +152,7 @@ export const codexSessionTurnInputFactorySchema = turnInputFactorySchema;
 /** Codexセッション初期化の入力を検証するスキーマです。 */
 export const codexSessionOptionsSchema = z
   .object({
+    codexExecutablePath: executablePathSchema,
     workspacePath: absolutePathSchema,
     agentsFilePath: absolutePathSchema,
     tmpDirectoryPath: absolutePathSchema,

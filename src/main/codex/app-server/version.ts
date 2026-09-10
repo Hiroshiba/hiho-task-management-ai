@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { statSync, type Stats } from "node:fs";
+import {
+  accessSync,
+  constants,
+  realpathSync,
+  statSync,
+  type Stats,
+} from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import {
@@ -44,6 +50,12 @@ function isNoEntryError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
+function isPathSearchError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "EACCES");
+}
+
 function resolveWindowsCodexExecutable(): string {
   const candidate = join(
     homedir(),
@@ -70,9 +82,43 @@ function resolveWindowsCodexExecutable(): string {
   return candidate;
 }
 
-/** Windowsの公式Codex CLI候補を優先して実行ファイルを解決します。 */
+function resolvePosixCodexExecutable(): string {
+  const safeEnvironment = createSafeCodexEnvironment(process.env);
+  const pathEntries = safeEnvironment.PATH == null
+    ? ["/usr/bin", "/bin"]
+    : safeEnvironment.PATH.split(delimiter);
+  for (const pathEntry of pathEntries) {
+    const candidate = resolve(pathEntry.length === 0 ? "." : pathEntry, "codex");
+    let stats: Stats;
+    try {
+      accessSync(candidate, constants.X_OK);
+      stats = statSync(candidate);
+    } catch (error: unknown) {
+      if (isPathSearchError(error)) {
+        continue;
+      }
+      throw error;
+    }
+    if (!stats.isFile()) {
+      continue;
+    }
+    try {
+      return realpathSync.native(candidate);
+    } catch (error: unknown) {
+      if (isPathSearchError(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return "codex";
+}
+
+/** PATH上のCodex CLIを優先順で検出し、POSIXでは実体パスを返します。 */
 export function resolveCodexExecutable(): string {
-  return process.platform === "win32" ? resolveWindowsCodexExecutable() : "codex";
+  return process.platform === "win32"
+    ? resolveWindowsCodexExecutable()
+    : resolvePosixCodexExecutable();
 }
 
 /** Codexへ渡す環境変数を安全なOS由来の許可リストへ絞ります。 */
