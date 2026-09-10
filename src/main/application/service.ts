@@ -4288,6 +4288,7 @@ export class TaskHubApplication {
       codexState !== "created"
       && codexState !== "authentication_required"
       && codexState !== "ready"
+      && codexState !== "disabled"
     ) {
       throw new ObsidianVaultMappingConflictError();
     }
