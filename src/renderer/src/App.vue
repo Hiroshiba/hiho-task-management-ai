@@ -3029,6 +3029,9 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
       session_id: sessionId,
       message: validatedInput.message,
       ...(currentSession.task_gid == null ? {} : { target_task_gid: currentSession.task_gid }),
+      ...(pendingProposal == null
+        ? {}
+        : { base_proposal_id: pendingProposal.proposal.proposal_id }),
     });
     setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
       kind: "streaming",
@@ -3058,11 +3061,14 @@ async function startAiTurn(sessionId: string, input: AiWorkflowTurnRequest): Pro
       }));
       return;
     }
+    const retainedPendingProposal = result.value.pending_proposal_action === "keep"
+      ? pendingProposal
+      : undefined;
     setAiSessionStateAndConversation(sessionId, rendererAiStateSchema.parse({
       kind: "questions",
       message: result.value.message,
       questions: result.value.questions,
-      ...(pendingProposal == null ? {} : { pending_proposal: pendingProposal }),
+      ...(retainedPendingProposal == null ? {} : { pending_proposal: retainedPendingProposal }),
     }));
   } catch {
     if (hasAiSession(sessionId)) {

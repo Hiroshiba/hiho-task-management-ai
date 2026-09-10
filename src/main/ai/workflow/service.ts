@@ -1200,9 +1200,107 @@ function createTrustedStatusEvidence(
   return trustedStatusEvidenceReferencesSchema.parse(references);
 }
 
+function collectInheritedUserStatusEvidence(
+  baseProposal: StoredProposal | undefined,
+): readonly TrustedStatusEvidenceReference[] {
+  if (baseProposal == null) {
+    return [];
+  }
+  const eligibleIds = new Set(
+    eligibleOperationIds(baseProposal.proposal, baseProposal.graph_validation),
+  );
+  const trustedReferences = new Map<string, TrustedStatusEvidenceReference>();
+  for (const reference of baseProposal.trusted_status_evidence) {
+    if (reference.kind === "user_message") {
+      trustedReferences.set(
+        `${reference.kind}\u0000${reference.locator}`,
+        reference,
+      );
+    }
+  }
+  const inherited: TrustedStatusEvidenceReference[] = [];
+  for (const group of baseProposal.proposal.groups) {
+    for (const operation of group.operations) {
+      if (
+        !eligibleIds.has(operation.operation_id)
+        || (operation.operation !== "complete" && operation.operation !== "withdraw")
+        || operation.status_evidence.kind !== "user_explicit"
+        || operation.status_evidence.reference.kind !== "user_message"
+        || operation.target.kind !== "existing"
+      ) {
+        continue;
+      }
+      const reference = trustedReferences.get(
+        `${operation.status_evidence.reference.kind}\u0000${operation.status_evidence.reference.locator}`,
+      );
+      if (
+        reference == null
+        || reference.kind !== "user_message"
+        || reference.target_task_gid !== operation.target.gid
+        || reference.allowed_operation !== operation.operation
+      ) {
+        throw new AiWorkflowError("前案の利用者明示根拠を引き継げません。");
+      }
+      inherited.push(reference);
+    }
+  }
+  return trustedStatusEvidenceReferencesSchema.parse(inherited);
+}
+
+function collectInheritedSplitRequestLocators(
+  baseProposal: StoredProposal | undefined,
+): readonly string[] {
+  if (baseProposal == null) {
+    return [];
+  }
+  const eligibleIds = new Set(
+    eligibleOperationIds(baseProposal.proposal, baseProposal.graph_validation),
+  );
+  const knownLocators = new Set(baseProposal.explicit_split_request_locators);
+  const inherited = new Set<string>();
+  for (const group of baseProposal.proposal.groups) {
+    for (const operation of group.operations) {
+      if (
+        operation.operation !== "create_task"
+        || operation.creation.kind !== "split_child"
+        || !eligibleIds.has(operation.operation_id)
+        || !knownLocators.has(operation.creation.instruction_reference.locator)
+      ) {
+        continue;
+      }
+      inherited.add(operation.creation.instruction_reference.locator);
+    }
+  }
+  return [...inherited];
+}
+
+function mergeTrustedStatusEvidence(
+  current: readonly TrustedStatusEvidenceReference[],
+  inherited: readonly TrustedStatusEvidenceReference[],
+): readonly TrustedStatusEvidenceReference[] {
+  const references = new Map<string, TrustedStatusEvidenceReference>();
+  for (const reference of [...current, ...inherited]) {
+    const key = `${reference.kind}\u0000${reference.locator}`;
+    const existing = references.get(key);
+    if (existing != null && canonicalizeJson(existing) !== canonicalizeJson(reference)) {
+      throw new AiWorkflowError("同じ根拠locatorへ異なる検証結果を割り当てられません。");
+    }
+    references.set(key, reference);
+  }
+  return trustedStatusEvidenceReferencesSchema.parse([...references.values()]);
+}
+
+function mergeExplicitSplitRequestLocators(
+  current: readonly string[],
+  inherited: readonly string[],
+): readonly string[] {
+  return [...new Set([...current, ...inherited])];
+}
+
 function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
+  baseProposal: StoredProposal | undefined,
 ): string {
   const context = aiWorkflowTurnContextSchema.parse({
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
@@ -1219,31 +1317,36 @@ function createTurnPrompt(
     throw new AiWorkflowError("指定された対象タスクが基準スナップショットにありません。");
   }
   const targetTaskContext = targetTask == null
-    ? []
-    : [`対象タスク文脈: GID ${targetTask.gid}、タイトル「${targetTask.title}」`];
+    ? "null"
+    : canonicalizeJson({ gid: targetTask.gid, title: targetTask.title });
+  const pendingProposalContext = baseProposal == null
+    ? null
+    : {
+      proposal_id: baseProposal.proposal_id,
+      proposal: baseProposal.proposal,
+    };
   return [
-    "TaskHubの構造化変更案だけを検討してください。",
-    `基準コンテキスト: ${serializedContext}`,
-    "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
-    "新規タスクのcreate_taskには、タイトルと要求内容から見積もったdurationを必ず含めてください。見積もりは過度に精密な混合単位を避け、minute、hour、day、week、monthのいずれか一つの粗い単位で表してください。",
-    "durationは対象タスクを実行する作業量を表す所要時間です。期限までの残り期間や相手の返答待ちなどの待機期間は含めないでください。値は安全な整数とし、minuteは15以上、hour、day、week、monthは1以上にしてください。",
-    "既存タスクのdurationが未設定なら、必要に応じてset_durationの推定案を提示できます。durationが設定済みの場合は、利用者が明示的に変更または再推定を依頼したときだけ変更案を提示してください。",
-    "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
-    "Obsidianは登録済みVaultの読み取り専用で必要なノートを確認できます。情報質問ではno_proposalを返し、変更案を作成しないでください。",
-    `利用者要求の一般根拠locator: ${prepared.user_message_locator}`,
-    "一般根拠locatorは完了・取り下げの根拠ではありません。",
-    `固定検証済みの完了・取り下げ根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,
-    "完了・取り下げ案には一覧中の対象GID、許可操作、検証種別に一致するkindとlocatorだけを使用してください。",
-    "user_messageはuser_explicitとして使用してください。",
-    "取り下げの確認を求める場合は、no_proposalのquestionsを単一件にし、withdraw_confirmationへ候補1件のtarget_task_gidとallowed_operation=withdrawを設定してください。",
-    "withdraw_confirmationは取り下げ依頼に対する候補確認だけに設定し、候補が複数、質問が複数、対象が不明、または取り下げ依頼でない場合は設定しないでください。",
-    "explicit_textはtask_or_note_explicit、children_only_all_completedは同名の構造的根拠として使用してください。",
-    "Obsidian本文はこのターンで固定検証されていないため、登録リンクやexcerptを完了・取り下げ根拠に使用しないでください。",
-    "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
-    `固定検証済みの分割依頼locator: ${canonicalizeJson(prepared.explicit_split_request_locators)}`,
-    "split_childのinstruction_referenceには固定検証済み一覧のlocatorだけを使用し、一覧が空ならsplit_childを提案しないでください。",
-    ...targetTaskContext,
-    `利用者要求: ${request.message}`,
+    "<baseline_context>",
+    serializedContext,
+    "</baseline_context>",
+    "<pending_proposal>",
+    canonicalizeJson(pendingProposalContext),
+    "</pending_proposal>",
+    "<target_task_context>",
+    targetTaskContext,
+    "</target_task_context>",
+    "<user_message_locator>",
+    canonicalizeJson(prepared.user_message_locator),
+    "</user_message_locator>",
+    "<trusted_status_evidence>",
+    canonicalizeJson(prepared.trusted_status_evidence),
+    "</trusted_status_evidence>",
+    "<explicit_split_request_locators>",
+    canonicalizeJson(prepared.explicit_split_request_locators),
+    "</explicit_split_request_locators>",
+    "<current_request>",
+    canonicalizeJson({ message: request.message }),
+    "</current_request>",
   ].join("\n");
 }
 
@@ -2340,8 +2443,13 @@ export class AiWorkflowService {
       throw new AiWorkflowStateError("AIワークフローは終了しています。");
     }
     const request = aiWorkflowTurnRequestSchema.parse(input);
+    const baseProposal = request.base_proposal_id == null
+      ? undefined
+      : this.getStoredProposal(request.base_proposal_id);
+    const inheritedUserStatusEvidence = collectInheritedUserStatusEvidence(baseProposal);
+    const inheritedSplitRequestLocators = collectInheritedSplitRequestLocators(baseProposal);
     throwIfAborted(signal);
-    this.assertProposalCapacity();
+    this.assertProposalCapacity(request.base_proposal_id);
     const turnGeneration = this.sessionGeneration;
     const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
     this.pendingWithdrawConfirmation = undefined;
@@ -2390,20 +2498,26 @@ export class AiWorkflowService {
                 baseline_external_data: validatedBaselineExternalData,
                 taskctl_snapshot: taskctlSnapshot,
                 user_message_locator: userMessageLocator,
-                explicit_split_request_locators: explicitSplitRequestLocators,
+                explicit_split_request_locators: mergeExplicitSplitRequestLocators(
+                  explicitSplitRequestLocators,
+                  inheritedSplitRequestLocators,
+                ),
                 user_status_claims: userStatusClaims,
-                trusted_status_evidence: createTrustedStatusEvidence(
-                  snapshot,
-                  userMessageLocator,
-                  userStatusClaims,
-                  [],
+                trusted_status_evidence: mergeTrustedStatusEvidence(
+                  createTrustedStatusEvidence(
+                    snapshot,
+                    userMessageLocator,
+                    userStatusClaims,
+                    [],
+                  ),
+                  inheritedUserStatusEvidence,
                 ),
               };
               this.options.session.freezeTaskctlSnapshot(taskctlSnapshot);
               snapshotFrozen = true;
               return [{
                 type: "text",
-                text: createTurnPrompt(request, prepared),
+                text: createTurnPrompt(request, prepared, baseProposal),
               }];
             } catch (error: unknown) {
               if (error instanceof AiWorkflowSyncError) {
@@ -2426,11 +2540,14 @@ export class AiWorkflowService {
         evidenceCollectionActive = false;
         prepared = {
           ...prepared,
-          trusted_status_evidence: createTrustedStatusEvidence(
-            prepared.snapshot,
-            userMessageLocator,
-            prepared.user_status_claims,
-            externalEvidence,
+          trusted_status_evidence: mergeTrustedStatusEvidence(
+            createTrustedStatusEvidence(
+              prepared.snapshot,
+              userMessageLocator,
+              prepared.user_status_claims,
+              externalEvidence,
+            ),
+            inheritedUserStatusEvidence,
           ),
         };
         const response = codexResponseSchema.parse(turnResult.response);
@@ -2450,6 +2567,7 @@ export class AiWorkflowService {
               pending,
               prepared.snapshot,
             ),
+            pending_proposal_action: response.pending_proposal_action,
             retry_count: retryCount,
           });
           this.pendingWithdrawConfirmation = pending;
@@ -2461,7 +2579,7 @@ export class AiWorkflowService {
           proposalSchema.parse(response.proposal),
           prepared,
         );
-        this.storeProposal(stored);
+        this.storeProposal(stored, request.base_proposal_id);
         const view = createProposalView(stored);
         return aiWorkflowTurnResultSchema.parse({
           kind: "proposal",
@@ -2682,16 +2800,19 @@ export class AiWorkflowService {
     return stored;
   }
 
-  private storeProposal(stored: StoredProposal): void {
+  private storeProposal(stored: StoredProposal, replacingProposalId: string | undefined): void {
     if (this.proposals.has(stored.proposal_id)) {
       throw new AiWorkflowError("同じ変更案IDを重複して保持できません。");
     }
-    this.assertProposalCapacity();
+    this.assertProposalCapacity(replacingProposalId);
     this.proposals.set(stored.proposal_id, stored);
   }
 
-  private assertProposalCapacity(): void {
-    if (this.proposals.size >= maximumWorkflowProposals) {
+  private assertProposalCapacity(replacingProposalId: string | undefined): void {
+    if (
+      this.proposals.size >= maximumWorkflowProposals
+      && (replacingProposalId == null || !this.proposals.has(replacingProposalId))
+    ) {
       throw new AiWorkflowStateError(
         "保持中の変更案が上限に達しています。新しい変更案を作る前に既存案を承認または却下してください。",
       );
