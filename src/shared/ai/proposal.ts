@@ -811,6 +811,7 @@ const noProposalResponseSchema = z
     kind: z.literal("no_proposal"),
     message: messageSchema,
     questions: questionsSchema,
+    pending_proposal_action: z.enum(["keep", "discard"]),
   })
   .strict();
 

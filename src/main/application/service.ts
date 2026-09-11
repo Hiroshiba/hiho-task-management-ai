@@ -232,7 +232,6 @@ import {
   type IpcGuiEditResult,
   type IpcAiTurnInput,
   type IpcAiTurnResult,
-  type IpcAiProposalView,
   type IpcAiSelectionInput,
   type IpcAiEditInput,
   type IpcAiApprovalInput,
@@ -1079,7 +1078,6 @@ export class TaskHubApplication {
   private readonly syncStateListeners = new Set<(state: IpcSyncStateEvent) => void>();
   private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
   private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
-  private readonly proposalIds = new Map<string, string>();
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
@@ -3966,6 +3964,12 @@ export class TaskHubApplication {
     }
   }
 
+  private assertAiProposalOperationAvailable(record: AiSessionRecord): void {
+    if (record.turnInFlight || record.approvalInFlight) {
+      throw new Error("同じAIセッションでAI操作実行中は変更案を操作できません。");
+    }
+  }
+
   private assertContextUnchanged(expected: OperationalContext): void {
     const current = this.requireContext();
     if (canonicalizeJson(current) !== canonicalizeJson(expected)) {
@@ -4342,23 +4346,11 @@ export class TaskHubApplication {
     });
   }
 
-  private rememberProposal(record: AiSessionRecord, view: IpcAiProposalView): void {
-    for (const operation of view.proposal.groups.flatMap((group) => group.operations)) {
-      const existing = this.proposalIds.get(operation.operation_id);
-      if (existing != null && existing !== view.proposal_id) {
-        throw new Error("AI変更案の操作IDが別の変更案と重複しています。");
-      }
-      this.proposalIds.set(operation.operation_id, view.proposal_id);
-    }
-    record.proposalIds.add(view.proposal_id);
+  private rememberProposal(record: AiSessionRecord, proposalId: string): void {
+    record.proposalIds.add(proposalId);
   }
 
   private forgetProposal(record: AiSessionRecord, proposalId: string): void {
-    for (const [operationId, storedProposalId] of this.proposalIds) {
-      if (storedProposalId === proposalId) {
-        this.proposalIds.delete(operationId);
-      }
-    }
     record.proposalIds.delete(proposalId);
     const baselineKey = record.baselineStore.proposalKeys.get(proposalId);
     if (baselineKey == null) {
@@ -4937,6 +4929,9 @@ export class TaskHubApplication {
         if (record.turnInFlight) {
           throw new Error("同じAIセッションで複数のターンを同時に実行できません。");
         }
+        if (record.approvalInFlight) {
+          throw new Error("同じAIセッションで承認実行中はAIターンを開始できません。");
+        }
         if (record.baselineStore.currentTurnKeys.size > 0) {
           throw new Error("前回のAIターンの基準外部データが解放されていません。");
         }
@@ -4945,6 +4940,7 @@ export class TaskHubApplication {
           const request = aiWorkflowTurnRequestSchema.parse({
             message: input.message,
             target_task_gid: input.target_task_gid,
+            base_proposal_id: input.base_proposal_id,
           });
           const result = aiWorkflowTurnResultSchema.parse(
             await this.runAiSessionOperation(
@@ -4954,18 +4950,28 @@ export class TaskHubApplication {
             ),
           );
           if (result.kind === "proposal") {
-            this.rememberProposal(record, result.proposal);
+            const proposalId = result.proposal.proposal_id;
             let baselineKey: string | undefined;
             for (const key of record.baselineStore.currentTurnKeys) {
               baselineKey = key;
             }
             if (baselineKey == null) {
+              record.workflow.rejectProposal(proposalId);
               throw new Error("AI変更案に対応する基準外部データがありません。");
             }
-            record.baselineStore.proposalKeys.set(
-              result.proposal.proposal_id,
-              baselineKey,
-            );
+            this.rememberProposal(record, proposalId);
+            record.baselineStore.proposalKeys.set(proposalId, baselineKey);
+            const baseProposalId = request.base_proposal_id;
+            if (baseProposalId != null) {
+              record.workflow.rejectProposal(baseProposalId);
+              this.forgetProposal(record, baseProposalId);
+            }
+          } else if (
+            request.base_proposal_id != null
+            && result.pending_proposal_action === "discard"
+          ) {
+            record.workflow.rejectProposal(request.base_proposal_id);
+            this.forgetProposal(record, request.base_proposal_id);
           }
           return result;
         } finally {
@@ -4983,6 +4989,7 @@ export class TaskHubApplication {
       select: (input: IpcAiSelectionInput) => {
         this.assertOperationalReady();
         const record = this.requireAiSession(input.session_id);
+        this.assertAiProposalOperationAvailable(record);
         return aiWorkflowProposalViewSchema.parse(
           record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
             proposal_id: input.proposal_id,
@@ -4993,6 +5000,7 @@ export class TaskHubApplication {
       editOperation: (input: IpcAiEditInput) => {
         this.assertOperationalReady();
         const record = this.requireAiSession(input.session_id);
+        this.assertAiProposalOperationAvailable(record);
         return aiWorkflowProposalViewSchema.parse(
           record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
             proposal_id: input.proposal_id,
@@ -5005,6 +5013,7 @@ export class TaskHubApplication {
       reject: (input: IpcAiRejectInput) => {
         this.assertOperationalReady();
         const record = this.requireAiSession(input.session_id);
+        this.assertAiProposalOperationAvailable(record);
         const validatedProposalId = identifierSchema.parse(input.proposal_id);
         record.workflow.rejectProposal(validatedProposalId);
         this.forgetProposal(record, validatedProposalId);
@@ -5015,9 +5024,7 @@ export class TaskHubApplication {
       ): Promise<IpcAiApprovalResult> => {
         this.assertMutationRequestAccepted();
         const record = this.requireAiSession(input.session_id);
-        if (record.approvalInFlight) {
-          throw new Error("同じAIセッションで承認を同時に実行できません。");
-        }
+        this.assertAiProposalOperationAvailable(record);
         const request = aiWorkflowApprovalRequestSchema.parse({
           proposal_id: input.proposal_id,
           selection: input.selection,

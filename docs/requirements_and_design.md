@@ -1020,11 +1020,17 @@ Codexの最終出力は自由文だけにせず、app-serverのStructured Output
 
 ```json
 {
-  "response_json": "{\"kind\":\"no_proposal\",\"message\":\"利用者への説明\",\"questions\":[]}"
+  "response_json": "{\"kind\":\"no_proposal\",\"message\":\"利用者への説明\",\"questions\":[],\"pending_proposal_action\":\"keep\"}"
 }
 ```
 
 復号後の自由文 `message` は説明だけであり、変更の正本ではない。アプリが適用するのは、検証済み `operations` だけとする。
+
+未承認案への追加依頼では、Rendererが表示中の `proposal_id` を渡し、backendが同じAIセッションの検証済み案を `<pending_proposal>` としてCodexへ渡す。利用者が明示的に変更・撤回した操作を除いて前案を引き継ぎ、複数項目の依頼は一つの変更案にまとめる。変更前値と基準ハッシュは当該ターンの基準スナップショットから作り直す。固定指示と動的データを分け、前案と今回の要求を区切ったJSONとして渡す方針は、Prompt engineeringとReasoning best practicesに従う。[R32][R33]
+
+前案で実際に使われた `user_explicit` の状態根拠と分割依頼locatorは、当該ターンの許可一覧へ引き継ぐ。タスク状態や外部状態に依存する根拠は再検証し、確認できない場合は操作を黙って除外せず、`no_proposal` と `pending_proposal_action=keep` で利用者へ確認する。
+
+新案の保持と基準外部データの登録が成功してから、前案とその基準外部データ参照を解放する。生成失敗や確認質問では前案を保持する。全操作の明示的な撤回では `pending_proposal_action=discard` により前案を破棄し、前案がなければ状態を変更しない。承認結果が確定した案は既存の承認経路で破棄し、適用済みの案を引き継がない。指定された前案が同じセッションに存在しない場合はエラーとする。
 
 ### 13.2 許可操作
 
@@ -1060,7 +1066,7 @@ Codexの最終出力は自由文だけにせず、app-serverのStructured Output
 
 各操作は次を持つ。
 
-- `operation_id`
+- `operation_id`。同じ変更案内では一意とし、別の変更案との重複は許可する。
 - 対象タスクGID、または同じ変更案内の一時参照ID。
 - 基準スナップショットのハッシュ。
 - 変更前値。
@@ -2188,6 +2194,8 @@ OpenAI API課金は使わないが、CodexのChatGPTサブスクリプション�
 - [R29] Electron: Fuses — https://www.electronjs.org/docs/latest/tutorial/fuses
 - [R30] Obsidian: CLI — https://help.obsidian.md/cli
 - [R31] Visual Studio Code: Windows向けランチャー — https://github.com/microsoft/vscode/blob/main/resources/win32/bin/code.sh
+- [R32] OpenAI: Prompt engineering — https://developers.openai.com/api/docs/guides/prompt-engineering
+- [R33] OpenAI: Reasoning best practices — https://developers.openai.com/api/docs/guides/reasoning-best-practices
 
 ---
 

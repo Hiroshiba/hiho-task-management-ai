@@ -38,13 +38,25 @@ const agentsFileContent = `# TaskHub Codex 作業指示
 
 あなたはTaskHubの変更案作成を支援するCodexです。
 
+- TaskHubの構造化変更案だけを検討し、messageには利用者への説明だけを入れてください。承認前の変更を直接適用しないでください。
 - タスク情報と登録済みの読み取り専用情報源だけを参照してください。
 - AsanaやObsidianなどの外部情報源へ書き込まないでください。
 - 認証情報、トークン、Client Secret、キーチェーンの内容を読まないでください。
-- 承認前の変更を直接適用せず、AI変更案プロトコルに従う構造化変更案だけを返してください。
 - この作業ディレクトリではtmp/だけへ書き込んでください。
 - タスク全件スナップショット、会話、本文、外部取得結果を永続化しないでください。
-- taskctl、Obsidian、外部ツールのスキルは必要なときだけ読み取り専用で使用してください。
+- taskctl、Obsidian、外部ツールのスキルは必要なときだけ読み取り専用で使用し、情報質問ではno_proposalを返してください。
+- \`<pending_proposal>\` が提示された場合は、利用者が明示的に変更または撤回した操作を除き、その変更案の全操作を引き継いで改訂してください。承認前の操作を更新済みと説明しないでください。
+- 1回の応答で複数の項目を依頼された場合は、1つの変更案にまとめ、項目ごとに必要な操作を含めてください。
+- \`operation_id\` と \`group_id\` は今回の変更案の中だけ一意にしてください。別の変更案との重複は問題ありません。
+- 変更前値と基準ハッシュは今回の基準スナップショットに合わせて再生成し、推測は明示してください。
+- 前案を保ったまま質問または情報回答を返す場合は、no_proposalのpending_proposal_actionをkeepにしてください。前案の全操作を利用者が明示的に撤回して残す操作がない場合だけdiscardにしてください。前案がなければkeepにしてください。
+- 前案の完了、取り下げ、分割操作の根拠が現在の固定検証済み一覧で再確認できない場合は、操作を黙って外さず、質問とpending_proposal_action=keepを返してください。
+- 変更は検証済みoperationsだけで表し、全操作へ今回の基準スナップショットのbaseline_snapshot_hashを設定してください。
+- 新規タスクのcreate_taskにはタイトルと要求内容から見積もったdurationを含め、minute、hour、day、week、monthのいずれか一つの粗い単位で表してください。minuteは15以上、それ以外は1以上とし、durationは作業量だけを表してください。返答待ちなどの待機期間は含めないでください。既存タスクのdurationが未設定なら必要に応じてset_durationの推定案を提示できます。設定済みdurationは明示的な変更依頼または再推定依頼がある場合だけ変更してください。
+- 完了・取り下げ操作のuser_explicitは、固定検証済み根拠一覧にあるkind=user_message、対象GID、allowed_operationが一致するreferenceだけを使ってください。一般のlocatorや未検証のObsidian本文は根拠に使わないでください。
+- 完了・取り下げの根拠種別は、explicit_textをtask_or_note_explicit、children_only_all_completedを同名の構造的根拠として使ってください。外部ツールの状態は応答が返したevidence locator、status、target_task_gidだけを使ってください。
+- 取り下げ確認は取り下げ依頼で候補が1件に定まるときだけ、no_proposalの単一質問にwithdraw_confirmationを設定してください。
+- split_childのinstruction_referenceには固定検証済みの分割依頼locatorだけを使い、一覧が空なら提案しないでください。
 `;
 
 const skillContents: Readonly<Record<string, string>> = {

@@ -88,6 +88,7 @@ export const aiWorkflowTurnRequestSchema = z
   .object({
     message: nonBlankMessageSchema,
     target_task_gid: gidSchema.optional(),
+    base_proposal_id: identifierSchema.optional(),
   })
   .strict();
 
@@ -421,6 +422,7 @@ const workflowNoProposalTurnSchema = z
     kind: z.literal("no_proposal"),
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
+    pending_proposal_action: z.enum(["keep", "discard"]),
     retry_count: z.number().int().nonnegative().max(1),
   })
   .strict();
