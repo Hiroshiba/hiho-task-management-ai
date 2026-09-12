@@ -99,7 +99,7 @@ export function getExternalAgentResourcePaths(userDataPath: string): ExternalAge
 function createSkillDocument(): string {
   return `---
 name: taskhub
-description: TaskHubを明示的に指定した要求で一覧確認と承認済みの変更結果を取得する。
+description: TaskHubを明示的に指定した要求でタスクを参照し、変更案を提出して適用結果を確認する。
 ---
 
 # TaskHub外部連携
@@ -114,9 +114,28 @@ TaskHubへの要求は、同じランチャーを \`request\` で呼び出し、
 
 \`bash "$HOME/.agents/skills/taskhub/scripts/taskhub" request\`
 
-agent-infoの応答に従って入力を作り、承認待ちの変更を適用済みとして扱わないでください。
-変更結果で \`outcome\` が \`applied\` または \`already_applied\` の場合だけ対象を登録済みと扱ってください。
-それ以外の結果は登録済みと報告せず、承認待ち、未適用、失敗または不明として扱ってください。
+\`agent-info\` の \`capabilities\` と \`input_schema\` に従って入力を作ってください。利用者の文章をシェルの実行文字列へ埋め込まないでください。
+
+タスク参照には \`tasks.list\`、\`tasks.get\`、\`tasks.rank\`、\`tasks.graph\`、\`tasks.areas\`、\`tasks.search-local\` を使えます。読み取りだけなら \`proposal_context_id\` を省略し、現在の同期済み情報を取得します。応答の同期時刻を確認し、オフラインの情報を最新と断定しないでください。
+
+変更案ではTaskHub内部のAIと同じ17種類のタスク操作を使い、複数のグループと操作を1つの提案にまとめられます。作成、タイトルや説明の変更、期限や状態の変更、親子・依存関係、分割、完了、取り下げなどを扱います。
+
+1. \`proposals.prepare\` へ \`agent-info\` の \`instance_id\` と \`context\` 内の \`context_id\`、\`project_gid\`、新しい \`request_id\`、利用者の依頼原文を表す \`source_text\` を渡します。原文を要約やAI自身の文章に置き換えないでください。
+2. 返された \`proposal_context_id\`、\`turn_context\`、\`evidence_locator_prefix\` を保持します。変更案に必要な読み取りには、その \`proposal_context_id\` を指定して固定した基準を使ってください。
+3. \`input_schema\` に従って完全な \`proposal\` を作り、\`proposals.create\` へ渡します。準備時と同じ \`instance_id\`、\`context_id\`、\`project_gid\`、\`request_id\` と、返された \`proposal_context_id\` を使ってください。各操作の基準ハッシュには \`turn_context.baseline_snapshot_hash\`、既存タスクの変更前値には固定した読み取り結果を使います。
+4. 受付結果の \`proposal_id\` と \`operation_ids\` を保持し、\`review.open\` へ提案IDを渡してTaskHubの確認画面を開きます。利用者へ承認待ちであることを伝えてください。
+5. 結果の確認には \`proposals.status\` へ提案IDと受付時の \`operation_ids\` 全件を同じ順序で渡します。部分承認を考慮し、操作ごとの結果を確認してください。
+
+各操作の \`evidence_refs\` には \`kind=external_review\` の根拠を含めます。\`locator\` は返された \`evidence_locator_prefix\` に \`:\` とその操作の \`operation_id\` を付けた \`external-review:<proposal_context_id>:<operation_id>\` とし、\`excerpt\` は保存した \`source_text\` にそのまま含まれる空でない原文抜粋にしてください。
+
+完了と取り下げでは \`status_evidence.kind=external_review_explicit\` とし、\`status_evidence.reference\` をその操作の外部根拠と同じ種類、locator、excerptにします。分割は \`create_task\` の \`creation.kind=split_child\` で表し、\`creation.instruction_reference\` をその子操作の外部根拠と一致させ、親タスクを指定してください。完了、取り下げ、分割には、対象と操作を特定できる利用者の明示的な原文が必要です。内部AIセッションや \`user_message\` の根拠を偽装しないでください。
+
+変更の選択、編集、承認、却下はTaskHubのGUIで行います。CLIからは承認できず、選択された操作だけがGUI承認後にAsanaへ反映されます。
+
+\`proposals.status\` の \`result.kind=current\` では提案の現在状態を確認します。承認結果に含まれる各操作の \`outcome\` が \`applied\` または \`already_applied\` の場合だけ、その操作を反映済みと報告してください。\`result.kind=journals\` では各操作の \`journal.final_result\` が \`applied\` の場合だけ反映済みと扱います。\`unknown\` や記録がない操作を未適用と断定しないでください。
+
+応答喪失時に同じ要求を再送する場合は、同じ \`request_id\` と入力内容を使います。異なる内容へ同じIDを使わず、結果不明を理由に新しいIDで自動再提出しないでください。アプリ終了、接続先変更、連携の無効化で提案基準と未承認案は失効します。再起動後は保持した提案IDと操作IDで結果を照会してください。
+
 期限を指定する場合は、そのタスク自身の確定した期限だけを指定し、関連する予定や不確かな日付は説明に残してください。
 
 TaskHubが起動していない場合や応答が失敗した場合は、応答を推測せず利用できないことを返してください。
