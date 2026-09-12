@@ -310,6 +310,7 @@ function createOperationFields(
     importance: input.importance ?? 3,
     area: input.area ?? "未分類",
     ...(input.due == null ? {} : { due: input.due }),
+    ...(input.duration == null ? {} : { duration: input.duration }),
   };
   return proposalOperationSchema.parse({
     operation: "create_task",
@@ -503,6 +504,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       importance: request.importance ?? 3,
       area: request.area ?? "未分類",
       ...(request.due == null ? {} : { due: request.due }),
+      ...(request.duration == null ? {} : { duration: request.duration }),
     };
     if (request.area != null && !record.snapshot.areas.includes(request.area)) {
       throw new ExternalAgentServiceError("invalid_request", "指定した領域が現在の一覧にありません。");

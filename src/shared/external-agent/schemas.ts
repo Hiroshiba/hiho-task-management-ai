@@ -3,6 +3,7 @@ import {
   areaSchema,
   createUtf8ByteLimitedStringSchema,
   dateSchema,
+  durationSchema,
   gidSchema,
   identifierSchema,
   importanceSchema,
@@ -77,6 +78,7 @@ const proposalTaskFieldsSchema = z
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
     due: dueSchema.optional(),
+    duration: durationSchema.optional(),
   })
   .strict();
 

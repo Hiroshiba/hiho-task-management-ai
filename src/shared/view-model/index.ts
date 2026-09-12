@@ -27,6 +27,7 @@ export {
 } from "./schemas";
 export {
   filterTaskRows,
+  isTaskDueOverdue,
   taskFilterSchema,
   type TaskFilter,
 } from "./task-filter";

@@ -8,6 +8,7 @@ import {
   type CleanupItem,
   type CustomExternalData,
   type Dependency,
+  type Duration,
   type ObsidianLink,
   type ParentWorkMode,
   type Task,
@@ -46,6 +47,7 @@ type ExternalProjection = {
   readonly dependencies: readonly Dependency[];
   readonly obsidian_links: readonly ObsidianLink[];
   readonly activity_anchor_on: string;
+  readonly duration?: Duration;
   readonly graph_parent_work_mode: ParentWorkMode;
   readonly graph_dependencies: readonly Dependency[];
   readonly critical_code?: SnapshotCriticalError["code"];
@@ -359,6 +361,7 @@ function cloneExternalMetadata(data: CustomExternalData): ExternalProjection {
     dependencies: sortDependencies(data.dependencies),
     obsidian_links: sortObsidianLinks(data.obsidian_links),
     activity_anchor_on: data.activity_anchor_on,
+    ...(data.duration == null ? {} : { duration: data.duration }),
     graph_parent_work_mode: data.parent_work_mode,
     graph_dependencies: sortDependencies(data.dependencies),
   };
@@ -389,6 +392,7 @@ function previousExternalMetadata(
     dependencies: sortDependencies(previous.dependencies),
     obsidian_links: sortObsidianLinks(previous.obsidian_links),
     activity_anchor_on: previous.activity_anchor_on,
+    ...(previous.duration == null ? {} : { duration: previous.duration }),
     graph_parent_work_mode: "unknown",
     graph_dependencies: [],
   };
@@ -480,6 +484,7 @@ function createBaseTask(
     dependencies: [...external.dependencies],
     obsidian_links: [...external.obsidian_links],
     activity_anchor_on: external.activity_anchor_on,
+    ...(external.duration == null ? {} : { duration: external.duration }),
     created_at: task.created_at,
     modified_at: task.modified_at,
     ...optionalValues,

@@ -5,6 +5,7 @@ import {
   createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependencyScopeSchema,
+  durationSchema,
   gidSchema,
   identifierSchema,
   importanceSchema,
@@ -87,6 +88,7 @@ export const aiWorkflowTurnRequestSchema = z
   .object({
     message: nonBlankMessageSchema,
     target_task_gid: gidSchema.optional(),
+    base_proposal_id: identifierSchema.optional(),
   })
   .strict();
 
@@ -154,6 +156,7 @@ const editableCreateFieldsSchema = z
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
     due: editableDueSchema.optional(),
+    duration: durationSchema.optional(),
     parent: targetSchema.optional(),
     parent_work_mode: parentWorkModeSchema.optional(),
     dependencies: editableDependenciesSchema.optional(),
@@ -169,6 +172,7 @@ const editableAfterSchema = z.union([
   editableDueSchema,
   editableDependenciesSchema,
   obsidianLinkSchema,
+  durationSchema,
   editableCreateFieldsSchema,
 ]);
 
@@ -418,6 +422,7 @@ const workflowNoProposalTurnSchema = z
     kind: z.literal("no_proposal"),
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
+    pending_proposal_action: z.enum(["keep", "discard"]),
     retry_count: z.number().int().nonnegative().max(1),
   })
   .strict();

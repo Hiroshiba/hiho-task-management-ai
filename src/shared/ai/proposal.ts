@@ -4,6 +4,7 @@ import {
   createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependencyScopeSchema,
+  durationSchema,
   gidSchema,
   identifierSchema,
   importanceSchema,
@@ -107,6 +108,8 @@ const presentDueValueSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
+
+const durationValueSchema = z.union([absentValueSchema, durationSchema]);
 
 const evidenceKindSchema = z.enum([
   "user_message",
@@ -233,12 +236,17 @@ const createTaskFieldsSchema = z
     importance: importanceSchema.optional(),
     area: areaSchema.optional(),
     due: presentDueValueSchema.optional(),
+    duration: durationSchema.optional(),
     parent: targetSchema.optional(),
     parent_work_mode: parentWorkModeSchema.optional(),
     dependencies: proposalDependenciesSchema.optional(),
     obsidian_links: obsidianLinksSchema.optional(),
   })
   .strict();
+
+const generatedCreateTaskFieldsSchema = createTaskFieldsSchema.extend({
+  duration: durationSchema,
+});
 
 const splitCreationSchema = z.discriminatedUnion("kind", [
   z
@@ -269,50 +277,64 @@ const operationTargetShape = {
   target: targetSchema,
 };
 
-const createTaskOperationSchema = z
-  .object({
-    operation: z.literal("create_task"),
-    ...operationCommonShape,
-    temporary_ref: temporaryReferenceSchema,
-    creation: splitCreationSchema,
-    before: absentValueSchema,
-    after: createTaskFieldsSchema,
-  })
+const createTaskOperationBaseSchema = z.object({
+  operation: z.literal("create_task"),
+  ...operationCommonShape,
+  temporary_ref: temporaryReferenceSchema,
+  creation: splitCreationSchema,
+  before: absentValueSchema,
+});
+
+function validateCreateTaskOperation(
+  operation: {
+    readonly creation: z.infer<typeof splitCreationSchema>;
+    readonly basis: "explicit" | "inferred";
+    readonly after: { readonly parent?: z.infer<typeof targetSchema> | undefined };
+  },
+  context: z.RefinementCtx,
+): void {
+  if (operation.creation.kind === "split_child" && operation.basis !== "explicit") {
+    context.addIssue({
+      code: "custom",
+      path: ["basis"],
+      message: "分割作成は明示依頼として指定してください。",
+    });
+  }
+  if (operation.creation.kind === "split_child" && operation.after.parent == null) {
+    context.addIssue({
+      code: "custom",
+      path: ["after", "parent"],
+      message: "分割作成には親タスクを指定してください。",
+    });
+  }
+  if (operation.creation.kind === "single_task" && operation.after.parent != null) {
+    context.addIssue({
+      code: "custom",
+      path: ["after", "parent"],
+      message: "通常作成には親タスクを指定できません。",
+    });
+  }
+  if (
+    operation.creation.kind === "split_child"
+    && operation.after.parent != null
+    && !isSameTarget(operation.creation.parent, operation.after.parent)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["after", "parent"],
+      message: "分割作成の親タスク指定が一致しません。",
+    });
+  }
+}
+
+const createTaskOperationSchema = createTaskOperationBaseSchema
+  .extend({ after: createTaskFieldsSchema })
   .strict()
-  .superRefine((operation, context) => {
-    if (operation.creation.kind === "split_child" && operation.basis !== "explicit") {
-      context.addIssue({
-        code: "custom",
-        path: ["basis"],
-        message: "分割作成は明示依頼として指定してください。",
-      });
-    }
-    if (operation.creation.kind === "split_child" && operation.after.parent == null) {
-      context.addIssue({
-        code: "custom",
-        path: ["after", "parent"],
-        message: "分割作成には親タスクを指定してください。",
-      });
-    }
-    if (operation.creation.kind === "single_task" && operation.after.parent != null) {
-      context.addIssue({
-        code: "custom",
-        path: ["after", "parent"],
-        message: "通常作成には親タスクを指定できません。",
-      });
-    }
-    if (
-      operation.creation.kind === "split_child"
-      && operation.after.parent != null
-      && !isSameTarget(operation.creation.parent, operation.after.parent)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["after", "parent"],
-        message: "分割作成の親タスク指定が一致しません。",
-      });
-    }
-  });
+  .superRefine(validateCreateTaskOperation);
+
+const generatedCreateTaskOperationSchema = createTaskOperationSchema.safeExtend({
+  after: generatedCreateTaskFieldsSchema,
+});
 
 const updateTitleOperationSchema = z
   .object({
@@ -364,6 +386,24 @@ const clearDueOperationSchema = z
     operation: z.literal("clear_due"),
     ...operationTargetShape,
     before: presentDueValueSchema,
+    after: absentValueSchema,
+  })
+  .strict();
+
+const setDurationOperationSchema = z
+  .object({
+    operation: z.literal("set_duration"),
+    ...operationTargetShape,
+    before: durationValueSchema,
+    after: durationSchema,
+  })
+  .strict();
+
+const clearDurationOperationSchema = z
+  .object({
+    operation: z.literal("clear_duration"),
+    ...operationTargetShape,
+    before: durationValueSchema,
     after: absentValueSchema,
   })
   .strict();
@@ -450,15 +490,15 @@ const withdrawOperationSchema = z
   })
   .strict();
 
-/** AI変更案で許可する操作を検証するスキーマです。 */
-export const proposalOperationSchema = z.discriminatedUnion("operation", [
-  createTaskOperationSchema,
+const nonCreateOperationSchemas = [
   updateTitleOperationSchema,
   updateNotesOperationSchema,
   setStatusOperationSchema,
   setImportanceOperationSchema,
   setDueOperationSchema,
   clearDueOperationSchema,
+  setDurationOperationSchema,
+  clearDurationOperationSchema,
   setAreaOperationSchema,
   setDependenciesOperationSchema,
   setParentOperationSchema,
@@ -467,6 +507,17 @@ export const proposalOperationSchema = z.discriminatedUnion("operation", [
   unlinkObsidianOperationSchema,
   completeOperationSchema,
   withdrawOperationSchema,
+];
+
+/** AI変更案で許可する操作を検証するスキーマです。 */
+export const proposalOperationSchema = z.discriminatedUnion("operation", [
+  createTaskOperationSchema,
+  ...nonCreateOperationSchemas,
+]);
+
+const generatedProposalOperationSchema = z.discriminatedUnion("operation", [
+  generatedCreateTaskOperationSchema,
+  ...nonCreateOperationSchemas,
 ]);
 
 type ProposalOperationValue = z.infer<typeof proposalOperationSchema>;
@@ -612,6 +663,79 @@ const proposalGroupSchema = z
   })
   .strict();
 
+const generatedProposalGroupSchema = proposalGroupSchema.extend({
+  operations: z
+    .array(generatedProposalOperationSchema)
+    .min(1)
+    .max(maximumGroupOperations),
+});
+
+function validateProposalContents(
+  proposal: {
+    readonly groups: readonly {
+      readonly group_id: string;
+      readonly operations: readonly ProposalOperationValue[];
+    }[];
+  },
+  context: z.RefinementCtx,
+): void {
+  const groupIds = new Set<string>();
+  const operationIds = new Set<string>();
+  const temporaryRefs = new Set<string>();
+  let operationCount = 0;
+  proposal.groups.forEach((group, groupIndex) => {
+    if (groupIds.has(group.group_id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["groups", groupIndex, "group_id"],
+        message: "同じgroup_idを重複して指定できません。",
+      });
+    } else {
+      groupIds.add(group.group_id);
+    }
+    operationCount += group.operations.length;
+    group.operations.forEach((operation, operationIndex) => {
+      if (operationIds.has(operation.operation_id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["groups", groupIndex, "operations", operationIndex, "operation_id"],
+          message: "同じoperation_idを重複して指定できません。",
+        });
+      } else {
+        operationIds.add(operation.operation_id);
+      }
+      if (operation.operation === "create_task") {
+        if (temporaryRefs.has(operation.temporary_ref)) {
+          context.addIssue({
+            code: "custom",
+            path: ["groups", groupIndex, "operations", operationIndex, "temporary_ref"],
+            message: "同じ一時参照IDを重複して指定できません。",
+          });
+        } else {
+          temporaryRefs.add(operation.temporary_ref);
+        }
+      }
+    });
+  });
+  if (operationCount > maximumProposalOperations) {
+    context.addIssue({
+      code: "custom",
+      path: ["groups"],
+      message: `変更案全体の操作数は${maximumProposalOperations}件までです。`,
+    });
+  }
+  proposal.groups.forEach((group, groupIndex) => {
+    group.operations.forEach((operation, operationIndex) => {
+      validateOperationTemporaryTargets(
+        operation,
+        temporaryRefs,
+        ["groups", groupIndex, "operations", operationIndex],
+        context,
+      );
+    });
+  });
+}
+
 /** AI変更案の操作群を検証するスキーマです。 */
 export const proposalSchema = z
   .object({
@@ -619,63 +743,11 @@ export const proposalSchema = z
     groups: z.array(proposalGroupSchema).min(1).max(maximumProposalGroups),
   })
   .strict()
-  .superRefine((proposal, context) => {
-    const groupIds = new Set<string>();
-    const operationIds = new Set<string>();
-    const temporaryRefs = new Set<string>();
-    let operationCount = 0;
-    proposal.groups.forEach((group, groupIndex) => {
-      if (groupIds.has(group.group_id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["groups", groupIndex, "group_id"],
-          message: "同じgroup_idを重複して指定できません。",
-        });
-      } else {
-        groupIds.add(group.group_id);
-      }
-      operationCount += group.operations.length;
-      group.operations.forEach((operation, operationIndex) => {
-        if (operationIds.has(operation.operation_id)) {
-          context.addIssue({
-            code: "custom",
-            path: ["groups", groupIndex, "operations", operationIndex, "operation_id"],
-            message: "同じoperation_idを重複して指定できません。",
-          });
-        } else {
-          operationIds.add(operation.operation_id);
-        }
-        if (operation.operation === "create_task") {
-          if (temporaryRefs.has(operation.temporary_ref)) {
-            context.addIssue({
-              code: "custom",
-              path: ["groups", groupIndex, "operations", operationIndex, "temporary_ref"],
-              message: "同じ一時参照IDを重複して指定できません。",
-            });
-          } else {
-            temporaryRefs.add(operation.temporary_ref);
-          }
-        }
-      });
-    });
-    if (operationCount > maximumProposalOperations) {
-      context.addIssue({
-        code: "custom",
-        path: ["groups"],
-        message: `変更案全体の操作数は${maximumProposalOperations}件までです。`,
-      });
-    }
-    proposal.groups.forEach((group, groupIndex) => {
-      group.operations.forEach((operation, operationIndex) => {
-        validateOperationTemporaryTargets(
-          operation,
-          temporaryRefs,
-          ["groups", groupIndex, "operations", operationIndex],
-          context,
-        );
-      });
-    });
-  });
+  .superRefine(validateProposalContents);
+
+const generatedProposalSchema = proposalSchema.safeExtend({
+  groups: z.array(generatedProposalGroupSchema).min(1).max(maximumProposalGroups),
+});
 
 const withdrawConfirmationSchema = z
   .object({
@@ -730,11 +802,16 @@ const proposalResponseSchema = z
   })
   .strict();
 
+const generatedProposalResponseSchema = proposalResponseSchema.extend({
+  proposal: generatedProposalSchema,
+});
+
 const noProposalResponseSchema = z
   .object({
     kind: z.literal("no_proposal"),
     message: messageSchema,
     questions: questionsSchema,
+    pending_proposal_action: z.enum(["keep", "discard"]),
   })
   .strict();
 
@@ -744,7 +821,14 @@ export const codexResponseSchema = z.discriminatedUnion("kind", [
   noProposalResponseSchema,
 ]);
 
+/** AIが新規生成する構造化出力を検証するスキーマです。 */
+export const codexGeneratedResponseSchema = z.discriminatedUnion("kind", [
+  generatedProposalResponseSchema,
+  noProposalResponseSchema,
+]);
+
 export type ProposalOperation = z.infer<typeof proposalOperationSchema>;
 export type Proposal = z.infer<typeof proposalSchema>;
 export type ProposalGroup = z.infer<typeof proposalGroupSchema>;
 export type CodexResponse = z.infer<typeof codexResponseSchema>;
+export type CodexGeneratedResponse = z.infer<typeof codexGeneratedResponseSchema>;

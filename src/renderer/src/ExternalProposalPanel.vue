@@ -14,6 +14,7 @@ import {
 import type { ProposalOperation } from "../../shared/ai";
 import type { AiWorkflowProposalView } from "../../shared/ai-workflow";
 import type { RendererExternalAgentEditResult } from "./state";
+import { durationLabel } from "./duration";
 import ProposalOperationEditor from "./ProposalOperationEditor.vue";
 
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
@@ -286,6 +287,14 @@ function dueLabel(due: CreateTaskOperation["after"]["due"]): string {
   return due.kind === "due_on" ? due.due_on : `${due.due_at} UTC`;
 }
 
+function durationLabelFor(operation: CreateTaskOperation): string {
+  const duration = operation.after.duration;
+  if (duration == null) {
+    throw new Error("所要時間がありません。");
+  }
+  return durationLabel(duration);
+}
+
 function selectProposal(proposalId: string): void {
   selectedProposalId.value = proposalId;
   editingProposal.value = undefined;
@@ -428,6 +437,9 @@ function reject(): void {
                   </li>
                   <li v-if="requireCreateOperation().after.due != null">
                     期限: {{ dueLabel(requireCreateOperation().after.due) }}
+                  </li>
+                  <li v-if="requireCreateOperation().after.duration != null">
+                    所要時間: {{ durationLabelFor(requireCreateOperation()) }}
                   </li>
                 </ul>
               </dd>

@@ -12,6 +12,7 @@ import {
 } from "../../shared/domain";
 import type {
   ViewModelDependencyReference,
+  ViewModelDue,
   ViewModelTaskDetail,
   ViewModelTaskReference,
   ViewModelUnavailableReasonCode,
@@ -21,15 +22,27 @@ import {
   parseDependencyInput,
   parseObsidianLink,
   blockLabel,
+  deadlineTone,
+  deadlineToneClass,
+  dueRelativeLabel,
+  importanceToneClass,
   rendererGuiEditSchema,
   statusLabel,
   type RendererGuiEdit,
   type RendererTaskEditMarker,
 } from "./state";
+import {
+  durationMinimum,
+  durationUnitLabel,
+  durationUnitOptions,
+  parseDurationInput,
+  type DurationUnit,
+} from "./duration";
 import RekaSelect from "./RekaSelect.vue";
 
 const props = defineProps<{
   task: ViewModelTaskDetail | undefined;
+  asOf: string;
   areas: readonly string[];
   canWrite: boolean;
   savingState: "idle" | "waiting_sync" | "saving";
@@ -53,11 +66,45 @@ const status = ref<"not_started" | "in_progress" | "completed" | "withdrawn">("n
 const importance = ref<1 | 2 | 3 | 4 | 5>(3);
 const dueKind = ref<"none" | "due_on" | "due_at">("none");
 const dueValue = ref("");
+const durationUnit = ref<"none" | DurationUnit>("none");
+const durationValue = ref("");
+const durationInput = computed<{ readonly minimum: number } | undefined>(() => {
+  if (durationUnit.value === "none") {
+    return undefined;
+  }
+  return { minimum: durationMinimum(durationUnit.value) };
+});
 const area = ref("");
 const dependencyText = ref("");
 const parentGid = ref("");
 const parentWorkMode = ref<"children_only" | "has_own_work" | "unknown">("unknown");
 const localError = ref("");
+
+function previewDue(): ViewModelDue | undefined {
+  switch (dueKind.value) {
+    case "none":
+      return { kind: "none" };
+    case "due_on": {
+      const parsed = dateSchema.safeParse(dueValue.value);
+      return parsed.success ? { kind: "on", value: parsed.data } : undefined;
+    }
+    case "due_at": {
+      const parsed = parseDatetimeLocal(dueValue.value);
+      return parsed.kind === "valid" ? { kind: "at", value: parsed.value } : undefined;
+    }
+  }
+}
+
+const detailDeadlinePreview = computed(() => {
+  const due = previewDue();
+  if (due == null || due.kind === "none") {
+    return undefined;
+  }
+  return {
+    tone: deadlineTone(due, status.value, props.asOf),
+    label: dueRelativeLabel(due, props.asOf),
+  };
+});
 
 type FormDraft = {
   readonly editBaselineHash: string;
@@ -67,6 +114,8 @@ type FormDraft = {
   readonly importance: 1 | 2 | 3 | 4 | 5;
   readonly dueKind: "none" | "due_on" | "due_at";
   readonly dueValue: string;
+  readonly durationUnit: "none" | DurationUnit;
+  readonly durationValue: string;
   readonly area: string;
   readonly dependencyText: string;
   readonly parentGid: string;
@@ -132,6 +181,11 @@ const dueKindOptions = [
   { value: "due_at", label: "日時" },
 ];
 
+const durationUnitSelectOptions = [
+  { value: "none", label: "未設定" },
+  ...durationUnitOptions,
+];
+
 const parentWorkModeOptions = [
   { value: "children_only", label: "子タスクのみ" },
   { value: "has_own_work", label: "親自身の作業あり" },
@@ -152,6 +206,8 @@ function captureFormDraft(editBaselineHash: string): FormDraft {
     importance: importance.value,
     dueKind: dueKind.value,
     dueValue: dueValue.value,
+    durationUnit: durationUnit.value,
+    durationValue: durationValue.value,
     area: area.value,
     dependencyText: dependencyText.value,
     parentGid: parentGid.value,
@@ -180,6 +236,13 @@ function applyTaskValues(task: ViewModelTaskDetail): void {
   importance.value = task.importance;
   area.value = task.area;
   parentWorkMode.value = task.parent_work_mode;
+  if (task.duration == null) {
+    durationUnit.value = "none";
+    durationValue.value = "";
+  } else {
+    durationUnit.value = task.duration.unit;
+    durationValue.value = String(task.duration.value);
+  }
   dependencyText.value = task.dependencies.map((dependency) => `${dependency.gid}:${dependency.scope}`).join(", ");
   parentGid.value = task.parent?.gid ?? "";
   if (task.due.kind === "none") {
@@ -201,6 +264,8 @@ function applyDraft(draft: FormDraft): void {
   importance.value = draft.importance;
   dueKind.value = draft.dueKind;
   dueValue.value = draft.dueValue;
+  durationUnit.value = draft.durationUnit;
+  durationValue.value = draft.durationValue;
   area.value = draft.area;
   dependencyText.value = draft.dependencyText;
   parentGid.value = draft.parentGid;
@@ -220,6 +285,8 @@ function taskFormDraft(task: ViewModelTaskDetail): FormDraft {
     dueKind = "due_at";
     dueValue = isoToDatetimeLocal(task.due.value);
   }
+  const durationUnit = task.duration?.unit ?? "none";
+  const durationValue = task.duration == null ? "" : String(task.duration.value);
   return {
     editBaselineHash: task.edit_baseline_hash,
     title: task.title,
@@ -228,6 +295,8 @@ function taskFormDraft(task: ViewModelTaskDetail): FormDraft {
     importance: task.importance,
     dueKind,
     dueValue,
+    durationUnit,
+    durationValue,
     area: task.area,
     dependencyText: task.dependencies.map((dependency) => `${dependency.gid}:${dependency.scope}`).join(", "),
     parentGid: task.parent?.gid ?? "",
@@ -243,6 +312,8 @@ function draftDiffersFromTask(draft: FormDraft, task: ViewModelTaskDetail): bool
     || draft.importance !== serverDraft.importance
     || draft.dueKind !== serverDraft.dueKind
     || draft.dueValue !== serverDraft.dueValue
+    || draft.durationUnit !== serverDraft.durationUnit
+    || draft.durationValue !== serverDraft.durationValue
     || draft.area !== serverDraft.area
     || draft.dependencyText !== serverDraft.dependencyText
     || draft.parentGid !== serverDraft.parentGid
@@ -276,6 +347,11 @@ function applySavedOperation(
     case "clear_due":
       nextDraft.dueKind = serverDraft.dueKind;
       nextDraft.dueValue = serverDraft.dueValue;
+      break;
+    case "set_duration":
+    case "clear_duration":
+      nextDraft.durationUnit = serverDraft.durationUnit;
+      nextDraft.durationValue = serverDraft.durationValue;
       break;
     case "set_area":
       nextDraft.area = serverDraft.area;
@@ -374,6 +450,8 @@ function resetForm(task: ViewModelTaskDetail | undefined): void {
     draftDirty.value = false;
     title.value = "";
     notes.value = "";
+    durationUnit.value = "none";
+    durationValue.value = "";
     dependencyText.value = "";
     parentGid.value = "";
     restoringForm = false;
@@ -394,7 +472,7 @@ function resetForm(task: ViewModelTaskDetail | undefined): void {
 watch(() => props.task, resetForm, { immediate: true });
 
 watch(
-  [title, notes, status, importance, dueKind, dueValue, area, dependencyText, parentGid, parentWorkMode],
+  [title, notes, status, importance, dueKind, dueValue, durationUnit, durationValue, area, dependencyText, parentGid, parentWorkMode],
   () => {
     if (restoringForm || activeTaskGid.value == null) {
       return;
@@ -500,28 +578,85 @@ function selectDueKind(value: string | number): void {
   submitDueKind();
 }
 
-function datetimeLocalToIso(value: string): string {
+function submitDuration(): void {
+  if (durationUnit.value === "none") {
+    submitOperation({ kind: "clear_duration" });
+    return;
+  }
+  try {
+    submitOperation({
+      kind: "set_duration",
+      value: parseDurationInput(durationUnit.value, durationValue.value),
+    });
+  } catch {
+    localError.value = "所要時間を確認してください。";
+  }
+}
+
+function selectDurationUnit(value: string | number): void {
+  const previousUnit = durationUnit.value;
+  if (value === "none") {
+    durationUnit.value = "none";
+    durationValue.value = "";
+    submitDuration();
+    return;
+  }
+  const selectedUnit = durationUnitOptions.find((option) => option.value === value);
+  if (selectedUnit == null) {
+    throw new TypeError("所要時間の単位の形式が不正です。");
+  }
+  durationUnit.value = selectedUnit.value;
+  if (previousUnit !== selectedUnit.value && durationValue.value.trim().length > 0) {
+    submitDuration();
+  }
+}
+
+function assertNonNullable<T>(value: T | undefined, message: string): asserts value is T {
+  if (value == null) {
+    throw new Error(message);
+  }
+}
+
+type DatetimeLocalParseResult =
+  | { readonly kind: "valid"; readonly value: string }
+  | { readonly kind: "invalid" };
+
+function parseDatetimeLocal(value: string): DatetimeLocalParseResult {
   const matched = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/u.exec(value);
   if (matched == null) {
-    throw new Error("日時入力の形式が不正です。");
+    return { kind: "invalid" };
   }
   const datePart = matched[1];
   const hourPart = matched[2];
   const minutePart = matched[3];
-  if (datePart == null || hourPart == null || minutePart == null) {
-    throw new Error("日時入力を取得できません。");
-  }
+  assertNonNullable(datePart, "日時入力の正規表現結果に日付がありません。");
+  assertNonNullable(hourPart, "日時入力の正規表現結果に時刻がありません。");
+  assertNonNullable(minutePart, "日時入力の正規表現結果に分がありません。");
   const hour = Number(hourPart);
   const minute = Number(minutePart);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    throw new Error("日時入力の時刻が不正です。");
+    return { kind: "invalid" };
   }
-  dateSchema.parse(datePart);
+  if (!dateSchema.safeParse(datePart).success) {
+    return { kind: "invalid" };
+  }
   const timestamp = Date.parse(`${datePart}T${hourPart}:${minutePart}:00+09:00`);
   if (!Number.isFinite(timestamp)) {
+    return { kind: "invalid" };
+  }
+  const parsed = isoDateTimeSchema.safeParse(new Date(timestamp).toISOString());
+  if (!parsed.success) {
+    return { kind: "invalid" };
+  }
+  return { kind: "valid", value: parsed.data };
+}
+
+function datetimeLocalToIso(value: string): string {
+  const parsed = parseDatetimeLocal(value);
+  if (parsed.kind === "invalid") {
     throw new Error("日時入力を変換できません。");
   }
-  return isoDateTimeSchema.parse(new Date(timestamp).toISOString());
+  return parsed.value;
 }
 
 function isoToDatetimeLocal(value: string): string {
@@ -807,6 +942,16 @@ function staleDraftDue(draft: FormDraft): string {
   return staleDraftInput(draft.dueValue, "未入力");
 }
 
+function staleDraftDuration(draft: FormDraft): string {
+  if (draft.durationUnit === "none") {
+    return "未設定";
+  }
+  if (draft.durationValue.length === 0) {
+    return `${durationUnitLabel(draft.durationUnit)}・未入力`;
+  }
+  return `${draft.durationValue}${durationUnitLabel(draft.durationUnit)}`;
+}
+
 function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
   return [
     { label: "タイトル", value: staleDraftInput(draft.title, "未入力") },
@@ -814,6 +959,7 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
     { label: "状態", value: statusLabel(draft.status) },
     { label: "重要度", value: String(draft.importance) },
     { label: "期限", value: staleDraftDue(draft) },
+    { label: "所要時間", value: staleDraftDuration(draft) },
     { label: "領域", value: staleDraftInput(draft.area, "未設定") },
     { label: "依存関係", value: staleDraftInput(draft.dependencyText, "なし") },
     { label: "親タスク", value: staleDraftInput(draft.parentGid, "なし") },
@@ -999,7 +1145,10 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
               <label
                 class="field-label"
                 for="detail-importance"
-              >重要度<RekaSelect
+              ><span
+                class="self-start"
+                :class="importanceToneClass(importance)"
+              >重要度</span><RekaSelect
                 id="detail-importance"
                 :model-value="importance"
                 :options="importanceOptions"
@@ -1024,7 +1173,15 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
             <label
               class="field-label"
               for="detail-due-kind"
-            >期限</label>
+            ><span class="flex flex-wrap items-center gap-2">
+              <span>期限</span>
+              <span
+                v-if="detailDeadlinePreview != null"
+                class="text-xs font-normal"
+                :class="deadlineToneClass(detailDeadlinePreview.tone)"
+                role="status"
+              >{{ detailDeadlinePreview.label }}</span>
+            </span></label>
             <div class="grid min-w-0 grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)] gap-2">
               <RekaSelect
                 id="detail-due-kind"
@@ -1048,6 +1205,33 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
                 aria-label="期限日時"
                 :disabled="!props.canWrite"
                 @change="submitDue"
+              >
+            </div>
+          </div>
+          <div class="field-group min-w-0">
+            <label
+              class="field-label"
+              for="detail-duration-unit"
+            >所要時間</label>
+            <div class="grid min-w-0 grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)] gap-2">
+              <RekaSelect
+                id="detail-duration-unit"
+                :model-value="durationUnit"
+                :options="durationUnitSelectOptions"
+                :disabled="!props.canWrite"
+                @update:model-value="selectDurationUnit"
+              /><input
+                v-if="durationInput != null"
+                v-model="durationValue"
+                class="text-input min-w-0"
+                type="number"
+                inputmode="numeric"
+                :min="durationInput.minimum"
+                step="1"
+                aria-label="所要時間の数値"
+                required
+                :disabled="!props.canWrite"
+                @change="submitDuration"
               >
             </div>
           </div>

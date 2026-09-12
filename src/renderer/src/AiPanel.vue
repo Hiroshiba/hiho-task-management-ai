@@ -25,6 +25,7 @@ import {
   type RendererAiConversationEntry,
   type RendererAiState,
 } from "./state";
+import { durationLabel } from "./duration";
 import ProposalOperationEditor from "./ProposalOperationEditor.vue";
 
 type TaskTitleReference = {
@@ -38,6 +39,7 @@ type TaskLabelCandidate = {
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
 type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
 type ProposalDueValue = Extract<ProposalOperation, { operation: "set_due" }>["before"];
+type ProposalDurationValue = Extract<ProposalOperation, { operation: "set_duration" }>["before"];
 type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" }>["before"];
 type ProposalDependency = Extract<ProposalOperation, { operation: "set_dependencies" }>["after"][number];
 type CreateTaskFields = CreateTaskOperation["after"];
@@ -342,6 +344,10 @@ function operationLabel(operation: ProposalOperation): string {
       return "期限設定";
     case "clear_due":
       return "期限解除";
+    case "set_duration":
+      return "所要時間設定";
+    case "clear_duration":
+      return "所要時間解除";
     case "set_area":
       return "領域変更";
     case "set_dependencies":
@@ -493,6 +499,13 @@ function dueValueLabel(value: ProposalDueValue): string {
   }
 }
 
+function durationValueLabel(value: ProposalDurationValue): string {
+  if ("kind" in value) {
+    return "未設定";
+  }
+  return durationLabel(value);
+}
+
 function dependencyScopeLabel(scope: ProposalDependency["scope"]): string {
   return scope === "full" ? "完全依存" : "一部依存";
 }
@@ -542,6 +555,9 @@ function createTaskFieldsLines(
   if (fields.due != null) {
     lines.push(`期限: ${dueValueLabel(fields.due)}`);
   }
+  if (fields.duration != null) {
+    lines.push(`所要時間: ${durationLabel(fields.duration)}`);
+  }
   if (fields.parent != null) {
     lines.push(`親タスク: ${targetReferenceLabel(proposal, fields.parent)}`);
   }
@@ -583,6 +599,10 @@ function operationValueLines(
       return [dueValueLabel(side === "before" ? operation.before : operation.after)];
     case "clear_due":
       return [dueValueLabel(side === "before" ? operation.before : operation.after)];
+    case "set_duration":
+      return [durationValueLabel(side === "before" ? operation.before : operation.after)];
+    case "clear_duration":
+      return [durationValueLabel(side === "before" ? operation.before : operation.after)];
     case "set_area":
       return [side === "before" ? operation.before : operation.after];
     case "set_dependencies":

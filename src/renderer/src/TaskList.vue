@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { dateSchema, isoDateTimeSchema } from "../../shared/domain";
 import type { ViewModelTaskRow } from "../../shared/view-model";
-import { blockLabel, dueRelativeLabel, statusLabel } from "./state";
+import { durationLabel } from "./duration";
+import {
+  blockLabel,
+  deadlineTone,
+  deadlineToneClass,
+  dueRelativeLabel,
+  importanceToneClass,
+  statusLabel,
+} from "./state";
 
 const props = defineProps<{
   rows: readonly ViewModelTaskRow[];
@@ -51,6 +59,14 @@ function taskDueLabel(row: ViewModelTaskRow): string {
   }
 }
 
+function taskDurationLabel(row: ViewModelTaskRow): string {
+  const duration = row.duration;
+  if (duration == null) {
+    throw new Error("所要時間がありません。");
+  }
+  return durationLabel(duration);
+}
+
 function rowWarnings(row: ViewModelTaskRow): string {
   if (row.warning_count === 0) {
     return "";
@@ -67,6 +83,10 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
     row.kind === "excluded" ||
     row.kind === "unavailable"
   );
+}
+
+function rowDeadlineTone(row: ViewModelTaskRow): ReturnType<typeof deadlineTone> {
+  return deadlineTone(row.due, row.status, props.asOf);
 }
 
 </script>
@@ -148,8 +168,8 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
               <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
                 重要度
               </dt>
-              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
-                {{ row.importance }}
+              <dd class="min-w-0 break-words font-medium">
+                <span :class="importanceToneClass(row.importance)">{{ row.importance }}</span>
               </dd>
             </div>
             <div
@@ -159,12 +179,24 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
               <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
                 期限
               </dt>
-              <dd class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-medium text-slate-800 dark:text-slate-100">
-                <span>{{ taskDueLabel(row) }}</span>
+              <dd class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-medium">
+                <span class="text-slate-800 dark:text-slate-100">{{ taskDueLabel(row) }}</span>
                 <span
                   v-if="dueRelativeLabel(row.due, props.asOf).length > 0"
-                  class="text-xs font-normal text-amber-800 dark:text-amber-200"
+                  class="text-xs font-normal"
+                  :class="deadlineToneClass(rowDeadlineTone(row))"
                 >{{ dueRelativeLabel(row.due, props.asOf) }}</span>
+              </dd>
+            </div>
+            <div
+              v-if="row.duration != null"
+              class="flex min-w-0 items-baseline gap-x-1"
+            >
+              <dt class="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
+                所要時間
+              </dt>
+              <dd class="min-w-0 break-words font-medium text-slate-800 dark:text-slate-100">
+                {{ taskDurationLabel(row) }}
               </dd>
             </div>
             <div

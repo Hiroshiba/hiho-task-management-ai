@@ -4,6 +4,7 @@ import {
   baselineSnapshotSchema,
   canonicalizeJson,
   dependenciesSchema,
+  type Duration,
   gidSchema,
   identifierSchema,
   obsidianLinksSchema,
@@ -187,10 +188,11 @@ type PreparedTurn = {
   readonly user_message_source_id: string;
   readonly user_message_sources: readonly UserMessageSourceSummary[];
   readonly withdraw_confirmation_source_id: string | undefined;
-  readonly withdraw_confirmation_source_ids: readonly string[];
   readonly source_map: EvidenceSourceMap;
   readonly pending_withdraw_confirmation: PendingWithdrawConfirmation | undefined;
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
+  readonly inherited_status_evidence_aliases: readonly InheritedStatusEvidenceAlias[];
+  readonly inherited_split_instruction_aliases: readonly InheritedSplitInstructionAlias[];
 };
 
 type StoredProposal = {
@@ -459,10 +461,13 @@ function createTaskSnapshot(task: Task): TaskSnapshot {
     : task.due_at != null
       ? { ...base, due_at: task.due_at }
       : base;
+  const withDuration = task.duration == null
+    ? withDue
+    : { ...withDue, duration: task.duration };
   if (task.parent_gid != null) {
-    return { ...withDue, parent_gid: task.parent_gid };
+    return { ...withDuration, parent_gid: task.parent_gid };
   }
-  return withDue;
+  return withDuration;
 }
 
 function createBaselineTaskSnapshots(tasks: readonly Task[]): TaskSnapshot[] {
@@ -571,13 +576,11 @@ function createEvidenceSourceMap(
   readonly user_message_source_id: string;
   readonly user_message_sources: readonly UserMessageSourceSummary[];
   readonly withdraw_confirmation_source_id: string | undefined;
-  readonly withdraw_confirmation_source_ids: readonly string[];
   readonly source_map: EvidenceSourceMap;
 } {
   const userMessageSourceId = createUserMessageSourceId(turnId);
   const sources = new Map<string, EvidenceSource>();
   const userMessageSources: UserMessageSourceSummary[] = [];
-  const withdrawConfirmationSourceIds: string[] = [];
   for (const source of completedEvidenceSources.values()) {
     if (source.kind === "user_message") {
       sources.set(source.source_id, source);
@@ -601,7 +604,6 @@ function createEvidenceSourceMap(
         baseline_status: source.baseline_status,
         baseline_completed: source.baseline_completed,
       });
-      withdrawConfirmationSourceIds.push(source.source_id);
     }
   }
   sources.set(userMessageSourceId, {
@@ -634,7 +636,6 @@ function createEvidenceSourceMap(
       baseline_status: pendingWithdrawConfirmation.baseline_status,
       baseline_completed: pendingWithdrawConfirmation.baseline_completed,
     });
-    withdrawConfirmationSourceIds.push(withdrawConfirmationSourceId);
   }
   for (const task of snapshot.tasks) {
     const sourceId = createTaskNotesSourceId(turnId, task.gid);
@@ -649,7 +650,6 @@ function createEvidenceSourceMap(
     user_message_source_id: userMessageSourceId,
     user_message_sources: userMessageSources,
     withdraw_confirmation_source_id: withdrawConfirmationSourceId,
-    withdraw_confirmation_source_ids: withdrawConfirmationSourceIds,
     source_map: sources,
   };
 }
@@ -733,6 +733,21 @@ type SplitTaskCreation = Extract<
   { readonly kind: "split_child" }
 >;
 
+type InheritedStatusEvidenceAlias = {
+  readonly locator: string;
+  readonly source_id: string;
+  readonly excerpt: string;
+  readonly target_task_gid: string;
+  readonly allowed_operation: "complete" | "withdraw";
+};
+
+type InheritedSplitInstructionAlias = {
+  readonly locator: string;
+  readonly source_id: string;
+  readonly excerpt: string;
+  readonly parent: ProposalTarget;
+};
+
 function stripStatusEvidenceExcerpt(
   operation: StatusOperation,
 ): StatusOperation["status_evidence"] {
@@ -797,7 +812,8 @@ function stripSplitInstructionExcerpt(
 function isWithdrawConfirmationEvidenceValid(
   operation: StatusOperation,
   source: Extract<EvidenceSource, { readonly kind: "withdraw_confirmation" }>,
-  prepared: PreparedTurn,
+  snapshot: AiWorkflowSnapshot,
+  baseline: BaselineSnapshot,
 ): boolean {
   if (
     operation.operation !== "withdraw"
@@ -805,11 +821,8 @@ function isWithdrawConfirmationEvidenceValid(
   ) {
     return false;
   }
-  const baselineTask = findBaselineTaskByGid(
-    prepared.baseline,
-    operation.target.gid,
-  );
-  return isWithdrawConfirmationSourceCurrent(source, prepared.snapshot)
+  const baselineTask = findBaselineTaskByGid(baseline, operation.target.gid);
+  return isWithdrawConfirmationSourceCurrent(source, snapshot)
     && operation.target.gid === source.target_task_gid
     && baselineTask != null
     && baselineTask.status === source.baseline_status
@@ -841,7 +854,12 @@ function bindStatusEvidence(
       || (source.kind !== "user_message" && source.kind !== "withdraw_confirmation")
       || (
         source.kind === "withdraw_confirmation"
-        && !isWithdrawConfirmationEvidenceValid(operation, source, prepared)
+        && !isWithdrawConfirmationEvidenceValid(
+          operation,
+          source,
+          prepared.snapshot,
+          prepared.baseline,
+        )
       )
     ) {
       return invalid;
@@ -963,6 +981,70 @@ function bindSplitInstructionReference(
   };
 }
 
+function resolveInheritedStatusEvidence(
+  operation: StatusOperation,
+  prepared: PreparedTurn,
+): StatusOperation {
+  const evidence = operation.status_evidence;
+  if (evidence.kind !== "user_explicit" || evidence.reference.kind !== "user_message") {
+    return operation;
+  }
+  if (operation.target.kind !== "existing") {
+    return operation;
+  }
+  const targetTaskGid = operation.target.gid;
+  const alias = prepared.inherited_status_evidence_aliases.find(
+    (candidate) => candidate.locator === evidence.reference.locator
+      && candidate.excerpt === evidence.reference.excerpt
+      && candidate.target_task_gid === targetTaskGid
+      && candidate.allowed_operation === operation.operation,
+  );
+  if (alias == null) {
+    return operation;
+  }
+  return {
+    ...operation,
+    status_evidence: {
+      ...evidence,
+      reference: {
+        ...evidence.reference,
+        locator: alias.source_id,
+        excerpt: alias.excerpt,
+      },
+    },
+  };
+}
+
+function resolveInheritedSplitInstructionReference(
+  operation: SplitTaskOperation,
+  prepared: PreparedTurn,
+): SplitTaskOperation {
+  if (operation.creation.kind !== "split_child") {
+    return operation;
+  }
+  const parent = operation.creation.parent;
+  const reference = operation.creation.instruction_reference;
+  const alias = prepared.inherited_split_instruction_aliases.find(
+    (candidate) => candidate.locator === reference.locator
+      && candidate.excerpt === reference.excerpt
+      && canonicalizeJson(candidate.parent) === canonicalizeJson(parent),
+  );
+  if (alias == null) {
+    return operation;
+  }
+  return {
+    ...operation,
+    creation: {
+      ...operation.creation,
+      instruction_reference: {
+        ...reference,
+        locator: alias.source_id,
+        excerpt: alias.excerpt,
+      },
+    },
+  };
+}
+
 function bindProposalOperationEvidence(
   operation: ProposalOperation,
   prepared: PreparedTurn,
@@ -972,19 +1054,20 @@ function bindProposalOperationEvidence(
   readonly trusted_reference: TrustedStatusEvidenceReference | undefined;
 } {
   if (operation.operation === "create_task") {
-    if (operation.creation.kind !== "split_child") {
+    const resolved = resolveInheritedSplitInstructionReference(operation, prepared);
+    if (resolved.creation.kind !== "split_child") {
       return {
         operation,
         split_reference: undefined,
         trusted_reference: undefined,
       };
     }
-    const bound = bindSplitInstructionReference(operation, prepared);
+    const bound = bindSplitInstructionReference(resolved, prepared);
     return {
       operation: proposalOperationSchema.parse({
-        ...operation,
+        ...resolved,
         creation: {
-          ...operation.creation,
+          ...resolved.creation,
           instruction_reference: bound.reference,
         },
       }),
@@ -999,10 +1082,11 @@ function bindProposalOperationEvidence(
       trusted_reference: undefined,
     };
   }
-  const bound = bindStatusEvidence(operation, prepared);
+  const resolved = resolveInheritedStatusEvidence(operation, prepared);
+  const bound = bindStatusEvidence(resolved, prepared);
   return {
     operation: proposalOperationSchema.parse({
-      ...operation,
+      ...resolved,
       status_evidence: bound.evidence,
     }),
     split_reference: undefined,
@@ -1049,9 +1133,252 @@ function bindProposalEvidence(
   };
 }
 
+function findInheritedStatusSource(
+  baseProposal: StoredProposal,
+  sourceMap: EvidenceSourceMap,
+  snapshot: AiWorkflowSnapshot,
+  baseline: BaselineSnapshot,
+  operation: StatusOperation,
+  reference: TrustedStatusEvidenceReference,
+): InheritedStatusEvidenceAlias | undefined {
+  const operationEvidence = operation.status_evidence;
+  if (
+    reference.kind !== "user_message"
+    || operationEvidence.kind !== "user_explicit"
+    || operationEvidence.reference.kind !== "user_message"
+    || reference.excerpt == null
+    || operationEvidence.reference.excerpt == null
+  ) {
+    throw new AiWorkflowError("前案の利用者明示根拠の対応が壊れています。");
+  }
+  const target = operation.target;
+  if (
+    target.kind !== "existing"
+    || reference.target_task_gid !== target.gid
+    || reference.allowed_operation !== operation.operation
+    || reference.locator !== operationEvidence.reference.locator
+    || reference.excerpt !== operationEvidence.reference.excerpt
+  ) {
+    throw new AiWorkflowError("前案の利用者明示根拠の対応が壊れています。");
+  }
+  const targetTaskGid = target.gid;
+  const candidates = [...baseProposal.source_map.values()].filter(
+    (source): source is Extract<
+      EvidenceSource,
+      { readonly kind: "user_message" | "withdraw_confirmation" }
+    > => source.kind === "user_message" || source.kind === "withdraw_confirmation",
+  );
+  const matches = candidates.filter(
+    (source) => createStatusEvidenceLocator(
+      source.source_id,
+      operation.operation,
+      targetTaskGid,
+    ) === reference.locator,
+  );
+  if (matches.length !== 1) {
+    throw new AiWorkflowError("前案の利用者明示根拠の原文を特定できません。");
+  }
+  const baseSource = matches[0];
+  if (baseSource == null || verifiedSourceExcerpt(baseSource, reference.excerpt) == null) {
+    throw new AiWorkflowError("前案の利用者明示根拠の引用が原文にありません。");
+  }
+  if (
+    baseSource.kind === "withdraw_confirmation"
+    && !isWithdrawConfirmationEvidenceValid(
+      operation,
+      baseSource,
+      baseProposal.snapshot,
+      baseProposal.baseline,
+    )
+  ) {
+    throw new AiWorkflowError("前案の取り下げ確認根拠が基準状態へ対応していません。");
+  }
+  const currentSource = sourceMap.get(baseSource.source_id);
+  if (currentSource == null) {
+    if (baseSource.kind === "withdraw_confirmation") {
+      return undefined;
+    }
+    throw new AiWorkflowError("前案の利用者原文が現在のsource mapにありません。");
+  }
+  if (canonicalizeJson(currentSource) !== canonicalizeJson(baseSource)) {
+    throw new AiWorkflowError("前案の利用者原文が現在のsource mapと一致しません。");
+  }
+  if (
+    currentSource.kind === "withdraw_confirmation"
+    && !isWithdrawConfirmationEvidenceValid(operation, currentSource, snapshot, baseline)
+  ) {
+    return undefined;
+  }
+  if (verifiedSourceExcerpt(currentSource, reference.excerpt) == null) {
+    throw new AiWorkflowError("前案の利用者明示根拠の引用が現在の原文にありません。");
+  }
+  return {
+    locator: reference.locator,
+    source_id: currentSource.source_id,
+    excerpt: reference.excerpt,
+    target_task_gid: targetTaskGid,
+    allowed_operation: operation.operation,
+  };
+}
+
+function findInheritedSplitSource(
+  baseProposal: StoredProposal,
+  sourceMap: EvidenceSourceMap,
+  operation: SplitTaskOperation,
+  reference: ExplicitSplitRequestReference,
+): InheritedSplitInstructionAlias {
+  const creation = operation.creation;
+  if (creation.kind !== "split_child") {
+    throw new AiWorkflowError("前案の分割依頼根拠を通常作成へ適用できません。");
+  }
+  const parent = creation.parent;
+  const operationReference = creation.instruction_reference;
+  if (
+    operationReference.kind !== "user_message"
+    || operationReference.excerpt == null
+    || canonicalizeJson(reference.parent) !== canonicalizeJson(parent)
+    || reference.locator !== operationReference.locator
+    || reference.excerpt !== operationReference.excerpt
+  ) {
+    throw new AiWorkflowError("前案の分割依頼根拠の対応が壊れています。");
+  }
+  const candidates = [...baseProposal.source_map.values()].filter(
+    (source): source is Extract<EvidenceSource, { readonly kind: "user_message" }> =>
+      source.kind === "user_message",
+  );
+  const matches = candidates.filter(
+    (source) => createSplitInstructionLocator(
+      source.source_id,
+      parent,
+    ) === reference.locator,
+  );
+  if (matches.length !== 1) {
+    throw new AiWorkflowError("前案の分割依頼根拠の原文を特定できません。");
+  }
+  const baseSource = matches[0];
+  if (baseSource == null || verifiedSourceExcerpt(baseSource, reference.excerpt) == null) {
+    throw new AiWorkflowError("前案の分割依頼根拠の引用が原文にありません。");
+  }
+  const currentSource = sourceMap.get(baseSource.source_id);
+  if (currentSource == null || currentSource.kind !== "user_message") {
+    throw new AiWorkflowError("前案の分割依頼の利用者原文が現在のsource mapにありません。");
+  }
+  if (canonicalizeJson(currentSource) !== canonicalizeJson(baseSource)) {
+    throw new AiWorkflowError("前案の分割依頼の利用者原文が現在のsource mapと一致しません。");
+  }
+  if (verifiedSourceExcerpt(currentSource, reference.excerpt) == null) {
+    throw new AiWorkflowError("前案の分割依頼根拠の引用が現在の原文にありません。");
+  }
+  return {
+    locator: reference.locator,
+    source_id: currentSource.source_id,
+    excerpt: reference.excerpt,
+    parent,
+  };
+}
+
+function createInheritedEvidenceAliases(
+  baseProposal: StoredProposal | undefined,
+  sourceMap: EvidenceSourceMap,
+  snapshot: AiWorkflowSnapshot,
+  baseline: BaselineSnapshot,
+): {
+  readonly status: readonly InheritedStatusEvidenceAlias[];
+  readonly split: readonly InheritedSplitInstructionAlias[];
+} {
+  if (baseProposal == null) {
+    return { status: [], split: [] };
+  }
+  const eligibleIds = new Set(
+    eligibleOperationIds(baseProposal.proposal, baseProposal.graph_validation),
+  );
+  const trustedByLocator = new Map<string, TrustedStatusEvidenceReference>();
+  for (const reference of baseProposal.trusted_status_evidence) {
+    const key = `${reference.kind}\u0000${reference.locator}`;
+    if (trustedByLocator.has(key)) {
+      throw new AiWorkflowError("前案の信頼済み根拠locatorが重複しています。");
+    }
+    trustedByLocator.set(key, reference);
+  }
+  const splitByKey = new Map<string, ExplicitSplitRequestReference>();
+  for (const reference of baseProposal.explicit_split_request_references) {
+    const key = `${canonicalizeJson(reference.parent)}\u0000${reference.locator}\u0000${reference.excerpt}`;
+    if (splitByKey.has(key)) {
+      throw new AiWorkflowError("前案の分割依頼根拠が重複しています。");
+    }
+    splitByKey.set(key, reference);
+  }
+  const statusAliases = new Map<string, InheritedStatusEvidenceAlias>();
+  const splitAliases = new Map<string, InheritedSplitInstructionAlias>();
+  for (const group of baseProposal.proposal.groups) {
+    for (const operation of group.operations) {
+      if (!eligibleIds.has(operation.operation_id)) {
+        continue;
+      }
+      if (
+        (operation.operation === "complete" || operation.operation === "withdraw")
+        && operation.status_evidence.kind === "user_explicit"
+        && operation.status_evidence.reference.kind === "user_message"
+        && operation.target.kind === "existing"
+      ) {
+        const trusted = trustedByLocator.get(
+          `user_message\u0000${operation.status_evidence.reference.locator}`,
+        );
+        if (trusted == null) {
+          throw new AiWorkflowError("前案の利用者明示根拠が信頼済み一覧にありません。");
+        }
+        const alias = findInheritedStatusSource(
+          baseProposal,
+          sourceMap,
+          snapshot,
+          baseline,
+          operation,
+          trusted,
+        );
+        if (alias != null) {
+          const key = `${alias.locator}\u0000${alias.source_id}\u0000${alias.excerpt}\u0000${alias.target_task_gid}\u0000${alias.allowed_operation}`;
+          if (!statusAliases.has(key)) {
+            statusAliases.set(key, alias);
+          }
+        }
+      }
+      if (
+        operation.operation === "create_task"
+        && operation.creation.kind === "split_child"
+        && operation.creation.instruction_reference.kind === "user_message"
+      ) {
+        const operationReference = operation.creation.instruction_reference;
+        if (operationReference.excerpt == null) {
+          throw new AiWorkflowError("前案の分割依頼根拠の引用がありません。");
+        }
+        const key = `${canonicalizeJson(operation.creation.parent)}\u0000${operationReference.locator}\u0000${operationReference.excerpt}`;
+        const reference = splitByKey.get(key);
+        if (reference == null) {
+          throw new AiWorkflowError("前案の分割依頼根拠が信頼済み一覧にありません。");
+        }
+        const alias = findInheritedSplitSource(
+          baseProposal,
+          sourceMap,
+          operation,
+          reference,
+        );
+        const aliasKey = `${alias.locator}\u0000${alias.source_id}\u0000${alias.excerpt}\u0000${canonicalizeJson(alias.parent)}`;
+        if (!splitAliases.has(aliasKey)) {
+          splitAliases.set(aliasKey, alias);
+        }
+      }
+    }
+  }
+  return {
+    status: [...statusAliases.values()],
+    split: [...splitAliases.values()],
+  };
+}
+
 function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
+  baseProposal: StoredProposal | undefined,
 ): string {
   const context = aiWorkflowTurnContextSchema.parse({
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
@@ -1060,7 +1387,6 @@ function createTurnPrompt(
     synced_at: prepared.snapshot.synced_at,
     as_of: prepared.snapshot.as_of,
   });
-  const serializedContext = canonicalizeJson(context);
   const targetTask = request.target_task_gid == null
     ? undefined
     : findTaskByGid(prepared.snapshot, request.target_task_gid);
@@ -1068,53 +1394,57 @@ function createTurnPrompt(
     throw new AiWorkflowError("指定された対象タスクが基準スナップショットにありません。");
   }
   const targetTaskContext = targetTask == null
-    ? []
-    : [`対象タスク文脈: GID ${targetTask.gid}、タイトル「${targetTask.title}」`];
-  const pendingConfirmationContext = prepared.pending_withdraw_confirmation == null
-    ? []
-    : [
-        `確認待ちの取り下げ対象GID: ${prepared.pending_withdraw_confirmation.target_task_gid}`,
-        "確認への同意を扱う場合は、この対象と基準状態に束縛されたwithdrawだけを提案してください。",
-      ];
-  const taskNotesSourceIdPattern = `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
+    ? null
+    : { gid: targetTask.gid, title: targetTask.title };
+  const pendingProposalContext = baseProposal == null
+    ? null
+    : {
+        proposal_id: baseProposal.proposal_id,
+        proposal: baseProposal.proposal,
+      };
   const withdrawConfirmationSources = prepared.user_message_sources.filter(
     (source) => source.kind === "withdraw_confirmation",
   );
-  const withdrawConfirmationSourceContext =
-    prepared.withdraw_confirmation_source_ids.length === 0
-      ? []
-      : [
-          `確認回答用source一覧: ${canonicalizeJson(withdrawConfirmationSources)}`,
-          "確認回答用sourceにはsource ID、原文、withdraw同意の対象GID、基準status、基準completedが含まれます。これらはその対象を取り下げることへの明白な同意を根拠にするときだけ使用してください。直接の新規指示や訂正には通常の利用者原文source IDを使用してください。",
-        ];
+  const taskNotesSourceIdPattern =
+    `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
   return [
     "TaskHubの構造化変更案だけを検討してください。",
-    `基準コンテキスト: ${serializedContext}`,
-    "全操作へ同じbaseline_snapshot_hashを設定し、推測は明示してください。",
-    "taskctlは読み取り専用で必要な詳細を確認できます。承認前に外部へ書き込まないでください。",
-    "Obsidianは登録済みVaultの読み取り専用で必要なノートを確認できます。情報質問ではno_proposalを返し、変更案を作成しないでください。",
-    `利用者原文のsource ID: ${prepared.user_message_source_id}`,
-    `同一サービス内で保持している利用者原文source一覧: ${canonicalizeJson(prepared.user_message_sources)}`,
-    `対象タスクnotesのsource ID形式: ${taskNotesSourceIdPattern}`,
-    ...withdrawConfirmationSourceContext,
-    "completeのuser_explicitは、利用者が対象作業を完了したという事実を報告している場合だけ提案してください。単なる状態変更要求、将来の完了、推測、対象の一部だけの完了はuser_explicitの根拠にしないでください。完了事実が明白ならcompletedへの変更意図を別途要求せず提案できます。task_or_note_explicit、children_only_all_completed、external_structured_statusは、それぞれの構造化根拠と業務条件を満たす場合に利用できます。",
-    "withdrawは、利用者が対象作業を不要、中止、または取り下げる現在の意思を示し、対象が一つに定まる場合だけ提案してください。単なる削除方法の質問、将来の判断、仮定、引用、伝聞はwithdrawの意思として扱わないでください。",
-    "split_childは、対象成果を複数の子タスクへ分解して作成することを利用者が明示的に求めた場合だけ提案してください。親は既存タスクでも、この提案で作成する一時参照でも構いません。手順の列挙、例示、条件付きの提案、既存子タスクの再配置だけでは明示依頼にしないでください。",
-    "否定、引用、伝聞、仮定の文は、利用者本人の完了事実、取り下げ意思、分割依頼として扱わないでください。対象名や代名詞が複数候補になる場合、部分完了を全体完了へ拡張せず、必要な対象だけを質問してください。",
-    "対象と意味が明白な直接完了報告には確認質問を追加しないでください。意味または対象が不明な場合だけ、判断に必要な質問を行い、推測で変更案を作らないでください。",
-    "status_evidence.user_explicitまたはsplit_child.instruction_referenceのlocatorにはsource IDをそのまま指定し、excerptにはsource原文の正確な非空部分文字列を指定してください。source IDへ操作名や対象GIDのsuffixを追加しないでください。",
-    "task_or_note_explicitのtask sourceは対象タスク自身のnotes sourceだけを指定してください。Obsidian本文は完了・取り下げの根拠に使用しないでください。",
-    "アプリは応答後にsource IDとexcerptの出典、対象GID、操作、親参照を構造検証して正規参照を生成します。アプリは自然言語の意味を再判定しません。",
-    `アプリが提供する構造化状態根拠: ${canonicalizeJson(prepared.trusted_status_evidence)}`,
-    "children_only_all_completedとexternal_structured_statusはアプリが提供した構造化根拠のlocatorだけを使用してください。",
-    "取り下げの確認を求める場合は、no_proposalのquestionsを単一件にし、withdraw_confirmationへ候補1件のtarget_task_gidとallowed_operation=withdrawを設定してください。",
-    "withdraw_confirmationは取り下げ依頼に対する候補確認だけに設定し、候補が複数、質問が複数、対象が不明、または取り下げ依頼でない場合は設定しないでください。",
-    "外部ツールの構造化状態は、当該ターンの応答が返したevidence locator、status、target_task_gidだけを根拠に使用してください。",
-    "split_childのinstruction_referenceには利用者原文source IDと正確なexcerptを指定してください。意味の判定は上記条件に従い、アプリの構造検証結果から逆算しないでください。",
-    "同じ要求内または会話中に訂正や撤回がある場合は、最新の明示内容を優先して対象と操作を判断してください。",
-    ...pendingConfirmationContext,
-    ...targetTaskContext,
-    `利用者要求: ${request.message}`,
+    "<baseline_context>",
+    canonicalizeJson(context),
+    "</baseline_context>",
+    "<pending_proposal>",
+    canonicalizeJson(pendingProposalContext),
+    "</pending_proposal>",
+    "<target_task_context>",
+    canonicalizeJson(targetTaskContext),
+    "</target_task_context>",
+    "<user_message_sources>",
+    canonicalizeJson(prepared.user_message_sources),
+    "</user_message_sources>",
+    "<withdraw_confirmation_sources>",
+    canonicalizeJson(withdrawConfirmationSources),
+    "</withdraw_confirmation_sources>",
+    "<task_notes_source_id_pattern>",
+    canonicalizeJson({ pattern: taskNotesSourceIdPattern }),
+    "</task_notes_source_id_pattern>",
+    "<pending_withdraw_confirmation>",
+    canonicalizeJson(prepared.pending_withdraw_confirmation ?? null),
+    "</pending_withdraw_confirmation>",
+    "<inherited_status_evidence_aliases>",
+    canonicalizeJson(prepared.inherited_status_evidence_aliases),
+    "</inherited_status_evidence_aliases>",
+    "<inherited_split_instruction_aliases>",
+    canonicalizeJson(prepared.inherited_split_instruction_aliases),
+    "</inherited_split_instruction_aliases>",
+    "<trusted_status_evidence>",
+    canonicalizeJson(prepared.trusted_status_evidence),
+    "</trusted_status_evidence>",
+    "<current_request>",
+    canonicalizeJson({
+      message: request.message,
+      user_message_source_id: prepared.user_message_source_id,
+    }),
+    "</current_request>",
   ].join("\n");
 }
 
@@ -1468,9 +1798,12 @@ function createProjectedTask(
     : after.due.kind === "due_on"
       ? { ...base, due_on: after.due.due_on }
       : { ...base, due_at: after.due.due_at };
-  const withParent = after.parent == null
+  const withDuration = after.duration == null
     ? withDue
-    : { ...withDue, parent_gid: projectedTargetGid(after.parent) };
+    : { ...withDue, duration: after.duration };
+  const withParent = after.parent == null
+    ? withDuration
+    : { ...withDuration, parent_gid: projectedTargetGid(after.parent) };
   return taskSchema.parse(withParent);
 }
 
@@ -1512,6 +1845,14 @@ function clearProjectedDue(task: Task): Task {
   return taskSchema.parse(withoutTaskFields(task, ["due_on", "due_at"]));
 }
 
+function setProjectedDuration(task: Task, duration: Duration): Task {
+  return taskSchema.parse({ ...task, duration });
+}
+
+function clearProjectedDuration(task: Task): Task {
+  return taskSchema.parse(withoutTaskFields(task, ["duration"]));
+}
+
 function sameObsidianLink(left: ObsidianLink, right: ObsidianLink): boolean {
   return left.vault_id === right.vault_id
     && left.path === right.path
@@ -1546,6 +1887,13 @@ function applyProjectedOperation(
       return;
     case "clear_due":
       replaceProjectedTask(tasks, targetGid, clearProjectedDue);
+      return;
+    case "set_duration":
+      replaceProjectedTask(tasks, targetGid, (task) =>
+        setProjectedDuration(task, operation.after));
+      return;
+    case "clear_duration":
+      replaceProjectedTask(tasks, targetGid, clearProjectedDuration);
       return;
     case "set_area":
       replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, area: operation.after }));
@@ -2234,8 +2582,11 @@ export class AiWorkflowService {
       throw new AiWorkflowStateError("AIワークフローは終了しています。");
     }
     const request = aiWorkflowTurnRequestSchema.parse(input);
+    const baseProposal = request.base_proposal_id == null
+      ? undefined
+      : this.getStoredProposal(request.base_proposal_id);
     throwIfAborted(signal);
-    this.assertProposalCapacity();
+    this.assertProposalCapacity(request.base_proposal_id);
     const turnGeneration = this.sessionGeneration;
     const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
     this.pendingWithdrawConfirmation = undefined;
@@ -2281,6 +2632,12 @@ export class AiWorkflowService {
                 this.completedEvidenceSources,
                 pendingForTurn,
               );
+              const inheritedAliases = createInheritedEvidenceAliases(
+                baseProposal,
+                sources.source_map,
+                snapshot,
+                baseline,
+              );
               prepared = {
                 snapshot,
                 baseline,
@@ -2291,17 +2648,17 @@ export class AiWorkflowService {
                 user_message_sources: sources.user_message_sources,
                 withdraw_confirmation_source_id:
                   sources.withdraw_confirmation_source_id,
-                withdraw_confirmation_source_ids:
-                  sources.withdraw_confirmation_source_ids,
                 source_map: sources.source_map,
                 pending_withdraw_confirmation: pendingForTurn,
                 trusted_status_evidence: createTrustedStatusEvidence(snapshot, []),
+                inherited_status_evidence_aliases: inheritedAliases.status,
+                inherited_split_instruction_aliases: inheritedAliases.split,
               };
               this.options.session.freezeTaskctlSnapshot(taskctlSnapshot);
               snapshotFrozen = true;
               return [{
                 type: "text",
-                text: createTurnPrompt(request, prepared),
+                text: createTurnPrompt(request, prepared, baseProposal),
               }];
             } catch (error: unknown) {
               if (error instanceof AiWorkflowSyncError) {
@@ -2343,6 +2700,7 @@ export class AiWorkflowService {
               pending,
               prepared.snapshot,
             ),
+            pending_proposal_action: response.pending_proposal_action,
             retry_count: retryCount,
           });
           this.pendingWithdrawConfirmation = pending;
@@ -2370,7 +2728,7 @@ export class AiWorkflowService {
           proposal: view,
           retry_count: retryCount,
         });
-        this.storeProposal(stored);
+        this.storeProposal(stored, request.base_proposal_id);
         rememberSuccessfulTurnEvidence(
           this.completedEvidenceSources,
           prepared,
@@ -2585,16 +2943,19 @@ export class AiWorkflowService {
     return stored;
   }
 
-  private storeProposal(stored: StoredProposal): void {
+  private storeProposal(stored: StoredProposal, replacingProposalId: string | undefined): void {
     if (this.proposals.has(stored.proposal_id)) {
       throw new AiWorkflowError("同じ変更案IDを重複して保持できません。");
     }
-    this.assertProposalCapacity();
+    this.assertProposalCapacity(replacingProposalId);
     this.proposals.set(stored.proposal_id, stored);
   }
 
-  private assertProposalCapacity(): void {
-    if (this.proposals.size >= maximumWorkflowProposals) {
+  private assertProposalCapacity(replacingProposalId: string | undefined): void {
+    if (
+      this.proposals.size >= maximumWorkflowProposals
+      && (replacingProposalId == null || !this.proposals.has(replacingProposalId))
+    ) {
       throw new AiWorkflowStateError(
         "保持中の変更案が上限に達しています。新しい変更案を作る前に既存案を承認または却下してください。",
       );

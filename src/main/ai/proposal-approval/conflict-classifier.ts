@@ -3,6 +3,7 @@ import {
   canonicalizeJson,
   gidSchema,
   identifierSchema,
+  type Duration,
   type Importance,
   type ObsidianLink,
   type ParentWorkMode,
@@ -380,6 +381,8 @@ type DueValue =
   | { readonly kind: "due_on"; readonly due_on: string }
   | { readonly kind: "due_at"; readonly due_at: string };
 
+type DurationValue = Duration | { readonly kind: "absent" };
+
 type ComparableTask = {
   readonly title: string;
   readonly notes: string;
@@ -387,6 +390,7 @@ type ComparableTask = {
   readonly importance: Importance;
   readonly area: string;
   readonly due: DueValue;
+  readonly duration: DurationValue;
   readonly parent: ParentIdentity;
   readonly parent_work_mode: ParentWorkMode;
   readonly dependencies: readonly ComparableDependency[];
@@ -472,6 +476,7 @@ function currentTaskState(task: Task): ComparableTask {
     importance: task.importance,
     area: task.area,
     due: taskDueValue(task),
+    duration: task.duration == null ? { kind: "absent" } : task.duration,
     parent: targetIdentityFromTask(task),
     parent_work_mode: task.parent_work_mode,
     dependencies: task.dependencies.map((dependency) => ({
@@ -533,6 +538,16 @@ function sameDueValue(left: DueValue, right: ProposalDueValue): boolean {
     return left.due_at === right.due_at;
   }
   return false;
+}
+
+function sameDurationValue(
+  left: DurationValue,
+  right: DurationValue,
+): boolean {
+  if ("kind" in left || "kind" in right) {
+    return "kind" in left && "kind" in right;
+  }
+  return left.value === right.value && left.unit === right.unit;
 }
 
 function dependencyKey(dependency: ComparableDependency): string {
@@ -598,6 +613,12 @@ function createTaskMatchesAfter(
     return false;
   }
   if (after.due != null && canonicalizeJson(task.due) !== canonicalizeJson(after.due)) {
+    return false;
+  }
+  if (
+    after.duration != null
+    && !sameDurationValue(task.duration, after.duration)
+  ) {
     return false;
   }
   if (
@@ -694,6 +715,7 @@ function createTaskState(
     importance: after.importance ?? 3,
     area: after.area ?? "未分類",
     due: after.due ?? { kind: "absent" },
+    duration: after.duration ?? { kind: "absent" },
     parent: after.parent == null
       ? { kind: "absent" }
       : resolveParentIdentity(after.parent, resolutions),
@@ -1027,6 +1049,8 @@ function requiresExternalDataWrite(operation: ProposalOperation): boolean {
     case "set_importance":
     case "set_due":
     case "clear_due":
+    case "set_duration":
+    case "clear_duration":
     case "set_area":
     case "set_dependencies":
     case "set_parent":
@@ -1100,6 +1124,9 @@ function operationBeforeMatches(
     case "set_due":
     case "clear_due":
       return sameDueValue(task.due, operation.before);
+    case "set_duration":
+    case "clear_duration":
+      return sameDurationValue(task.duration, operation.before);
     case "set_area":
       return task.area === operation.before;
     case "set_dependencies":
@@ -1139,6 +1166,9 @@ function operationAfterMatches(
     case "set_due":
     case "clear_due":
       return sameDueValue(task.due, operation.after);
+    case "set_duration":
+    case "clear_duration":
+      return sameDurationValue(task.duration, operation.after);
     case "set_area":
       return task.area === operation.after;
     case "set_dependencies":
