@@ -1,6 +1,7 @@
 export {
   TaskctlBroker,
 } from "./broker";
+export { executeTaskctlQuery } from "./query";
 export {
   TaskctlAbortError,
   TaskctlBrokerError,

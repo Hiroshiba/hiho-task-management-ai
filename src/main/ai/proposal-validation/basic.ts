@@ -91,6 +91,15 @@ export const trustedStatusEvidenceReferenceSchema = z.discriminatedUnion("kind",
       status: z.enum(["closed", "completed", "cancelled"]),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("external_review"),
+      locator: nonBlankLocatorSchema,
+      target_task_gid: gidSchema,
+      allowed_operation: z.enum(["complete", "withdraw"]),
+      excerpt: explicitSplitRequestExcerptSchema,
+    })
+    .strict(),
 ]);
 
 /** 当該ターンへ提供された完了・取り下げ根拠集合を検証するスキーマです。 */
@@ -893,6 +902,24 @@ function validateStatusEvidence(
         operation.operation_id,
         "status_evidence_invalid",
         `${operation.operation === "complete" ? "完了" : "取り下げ"}操作に外部状態 ${evidence.status} は指定できません。`,
+      );
+    }
+    return;
+  }
+  if (evidence.kind === "external_review_explicit") {
+    if (
+      operation.target.kind !== "existing"
+      || trustedReference?.kind !== "external_review"
+      || trustedReference.target_task_gid !== operation.target.gid
+      || trustedReference.allowed_operation !== operation.operation
+      || trustedReference.excerpt !== evidence.reference.excerpt
+      || evidence.reference.excerpt == null
+    ) {
+      addError(
+        errorsByOperation,
+        operation.operation_id,
+        "status_evidence_invalid",
+        "外部レビュー原文と、完了・取り下げの対象・操作・抜粋の対応を確認できません。",
       );
     }
     return;

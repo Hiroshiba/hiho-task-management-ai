@@ -51,6 +51,7 @@ import {
   externalAgentGuiEditInputSchema,
   externalAgentGuiGetStateInputSchema,
   externalAgentGuiRejectInputSchema,
+  externalAgentGuiSelectInputSchema,
   externalAgentGuiSetEnabledInputSchema,
   externalAgentGuiStateSchema,
   type ExternalAgentGuiApproveInput,
@@ -58,6 +59,7 @@ import {
   type ExternalAgentGuiEditInput,
   type ExternalAgentGuiGetStateInput,
   type ExternalAgentGuiRejectInput,
+  type ExternalAgentGuiSelectInput,
   type ExternalAgentGuiSetEnabledInput,
   type ExternalAgentGuiState,
 } from "../external-agent";
@@ -592,6 +594,7 @@ export const ipcChannelSchema = z.enum([
   "external-agent:get-state",
   "external-agent:set-enabled",
   "external-agent:edit",
+  "external-agent:select",
   "external-agent:approve",
   "external-agent:reject",
   "external-agent:state:subscribe",
@@ -687,6 +690,8 @@ export const ipcExternalAgentSetEnabledInputSchema = externalAgentGuiSetEnabledI
 export const ipcExternalAgentSetEnabledResponseSchema = responseSchema(externalAgentGuiStateSchema);
 export const ipcExternalAgentEditInputSchema = externalAgentGuiEditInputSchema;
 export const ipcExternalAgentEditResponseSchema = responseSchema(externalAgentGuiStateSchema);
+export const ipcExternalAgentSelectInputSchema = externalAgentGuiSelectInputSchema;
+export const ipcExternalAgentSelectResponseSchema = responseSchema(externalAgentGuiStateSchema);
 export const ipcExternalAgentApproveInputSchema = externalAgentGuiApproveInputSchema;
 export const ipcExternalAgentApproveResponseSchema = responseSchema(externalAgentGuiStateSchema);
 export const ipcExternalAgentRejectInputSchema = externalAgentGuiRejectInputSchema;
@@ -744,6 +749,7 @@ export type IpcExternalAgentGuiChangedState = ExternalAgentGuiChangedState;
 export type IpcExternalAgentGuiGetStateInput = ExternalAgentGuiGetStateInput;
 export type IpcExternalAgentGuiSetEnabledInput = ExternalAgentGuiSetEnabledInput;
 export type IpcExternalAgentGuiEditInput = ExternalAgentGuiEditInput;
+export type IpcExternalAgentGuiSelectInput = ExternalAgentGuiSelectInput;
 export type IpcExternalAgentGuiApproveInput = ExternalAgentGuiApproveInput;
 export type IpcExternalAgentGuiRejectInput = ExternalAgentGuiRejectInput;
 export type IpcObsidianVaultResult = z.infer<typeof obsidianVaultResultSchema>;

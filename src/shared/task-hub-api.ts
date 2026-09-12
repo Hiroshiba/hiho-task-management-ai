@@ -22,6 +22,7 @@ import type {
   IpcExternalAgentGuiApproveInput,
   IpcExternalAgentGuiEditInput,
   IpcExternalAgentGuiRejectInput,
+  IpcExternalAgentGuiSelectInput,
   IpcExternalAgentGuiSetEnabledInput,
   IpcExternalAgentGuiState,
   IpcObsidianPathResult,
@@ -105,6 +106,7 @@ export interface TaskHubApi {
     readonly getState: () => IpcResult<IpcExternalAgentGuiState>;
     readonly setEnabled: (input: IpcExternalAgentGuiSetEnabledInput) => IpcResult<IpcExternalAgentGuiState>;
     readonly edit: (input: IpcExternalAgentGuiEditInput) => IpcResult<IpcExternalAgentGuiState>;
+    readonly select: (input: IpcExternalAgentGuiSelectInput) => IpcResult<IpcExternalAgentGuiState>;
     readonly approve: (input: IpcExternalAgentGuiApproveInput) => IpcResult<IpcExternalAgentGuiState>;
     readonly reject: (input: IpcExternalAgentGuiRejectInput) => IpcResult<IpcExternalAgentGuiState>;
     readonly onChanged: IpcSubscription<IpcExternalAgentGuiState>;

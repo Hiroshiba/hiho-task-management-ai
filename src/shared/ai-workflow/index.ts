@@ -3,6 +3,7 @@ export {
   aiWorkflowApprovalResultSchema,
   aiWorkflowImpactSchema,
   aiWorkflowOperationEditSchema,
+  aiWorkflowOperationAfterSchema,
   aiWorkflowProposalViewSchema,
   aiWorkflowSelectionRequestSchema,
   aiWorkflowSelectionSchema,

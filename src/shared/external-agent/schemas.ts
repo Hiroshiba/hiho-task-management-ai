@@ -1,57 +1,32 @@
 import { z } from "zod";
 import {
-  areaSchema,
   createUtf8ByteLimitedStringSchema,
-  dateSchema,
-  durationSchema,
   gidSchema,
   identifierSchema,
-  importanceSchema,
   isoDateTimeSchema,
 } from "../domain";
 import {
   aiWorkflowApprovalResultSchema,
+  aiWorkflowOperationEditSchema,
   aiWorkflowProposalViewSchema,
+  aiWorkflowSelectionSchema,
+  aiWorkflowTurnContextSchema,
 } from "../ai-workflow";
+import { proposalSchema } from "../ai";
 import { applicationJournalSchema } from "../storage";
 import {
-  viewModelRankingSchema,
-  viewModelTaskRowSchema,
-  viewModelTaskDetailSchema,
-  taskFilterSchema,
-  type TaskFilter,
-} from "../view-model";
+  taskctlResponseSchema,
+  taskctlSearchQuerySchema,
+} from "../taskctl";
 
-const maximumTitleBytes = 1_024;
-const maximumNotesBytes = 64 * 1_024;
-const maximumReasonBytes = 64 * 1_024;
 const maximumMessageBytes = 4 * 1_024;
-const maximumQueryBytes = 4 * 1_024;
 const maximumRegistrationBytes = 4 * 1_024;
 const maximumCapabilities = 16;
 const maximumProposals = 100;
-const maximumListLimit = 100;
+const maximumProposalOperations = 256;
 
 /** 外部連携プロトコルの版を表す定数です。 */
-export const externalAgentProtocolVersion = 1;
-
-const nonBlankTitleSchema = createUtf8ByteLimitedStringSchema(
-  maximumTitleBytes,
-).refine((value) => value.trim().length > 0, {
-  message: "タイトルを空白だけにできません。",
-});
-
-const nonBlankReasonSchema = createUtf8ByteLimitedStringSchema(
-  maximumReasonBytes,
-).refine((value) => value.trim().length > 0, {
-  message: "提案理由を空白だけにできません。",
-});
-
-const nonBlankQuerySchema = createUtf8ByteLimitedStringSchema(
-  maximumQueryBytes,
-).refine((value) => value.trim().length > 0, {
-  message: "検索条件を空白だけにできません。",
-});
+export const externalAgentProtocolVersion = 2;
 
 const nonBlankMessageSchema = createUtf8ByteLimitedStringSchema(
   maximumMessageBytes,
@@ -64,23 +39,6 @@ const registrationTextSchema = createUtf8ByteLimitedStringSchema(
 ).refine((value) => value.trim().length > 0, {
   message: "登録案内を空白だけにできません。",
 });
-
-const dueSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("due_on"), due_on: dateSchema }).strict(),
-  z.object({ kind: z.literal("due_at"), due_at: isoDateTimeSchema }).strict(),
-]);
-
-const proposalTaskFieldsSchema = z
-  .object({
-    title: nonBlankTitleSchema,
-    notes: createUtf8ByteLimitedStringSchema(maximumNotesBytes).optional(),
-    status: z.enum(["not_started", "in_progress"]).optional(),
-    importance: importanceSchema.optional(),
-    area: areaSchema.optional(),
-    due: dueSchema.optional(),
-    duration: durationSchema.optional(),
-  })
-  .strict();
 
 const uniqueCapabilitiesSchema = z
   .array(z.string())
@@ -102,6 +60,11 @@ const uniqueCapabilitiesSchema = z
 const externalAgentCapabilitySchema = z.enum([
   "tasks.list",
   "tasks.get",
+  "tasks.rank",
+  "tasks.graph",
+  "tasks.areas",
+  "tasks.search-local",
+  "proposals.prepare",
   "proposals.create",
   "proposals.status",
   "review.open",
@@ -130,46 +93,84 @@ export const externalAgentErrorCodeSchema = z.enum([
   "context_changed",
 ]);
 
-/** 外部連携から提出する独立新規タスクの作成項目を検証するスキーマです。 */
-export const externalAgentCreateProposalInputSchema = z
-  .object({
-    operation: z.literal("proposals.create"),
-    instance_id: identifierSchema,
-    context_id: identifierSchema,
-    request_id: identifierSchema,
-    project_gid: gidSchema,
-    ...proposalTaskFieldsSchema.shape,
-    reason: nonBlankReasonSchema,
-    confidence: z.number().finite().min(0).max(1),
-  })
-  .strict();
+const proposalContextIdSchema = identifierSchema.optional();
 
 /** 外部連携から取得するタスク一覧の要求を検証するスキーマです。 */
-export const externalAgentTaskListInputSchema = z
-  .object({
-    operation: z.literal("tasks.list"),
-    filter: taskFilterSchema.optional(),
-    query: nonBlankQuerySchema.optional(),
-    limit: z.number().int().positive().max(maximumListLimit).optional(),
-  })
-  .strict();
+export const externalAgentTaskListInputSchema = z.object({
+  operation: z.literal("tasks.list"),
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
 
 /** 外部連携から取得するタスク詳細の要求を検証するスキーマです。 */
-export const externalAgentTaskDetailInputSchema = z
-  .object({
-    operation: z.literal("tasks.get"),
-    task_gid: gidSchema,
-  })
-  .strict();
+export const externalAgentTaskDetailInputSchema = z.object({
+  operation: z.literal("tasks.get"),
+  gid: gidSchema,
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
+
+/** 外部連携から取得する順位情報の要求を検証するスキーマです。 */
+export const externalAgentTaskRankInputSchema = z.object({
+  operation: z.literal("tasks.rank"),
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
+
+/** 外部連携から取得するグラフ情報の要求を検証するスキーマです。 */
+export const externalAgentTaskGraphInputSchema = z.object({
+  operation: z.literal("tasks.graph"),
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
+
+/** 外部連携から取得する領域一覧の要求を検証するスキーマです。 */
+export const externalAgentTaskAreasInputSchema = z.object({
+  operation: z.literal("tasks.areas"),
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
+
+/** 外部連携から取得するローカル検索の要求を検証するスキーマです。 */
+export const externalAgentTaskSearchLocalInputSchema = z.object({
+  operation: z.literal("tasks.search-local"),
+  query: taskctlSearchQuerySchema,
+  proposal_context_id: proposalContextIdSchema,
+}).strict();
+
+/** 外部連携から提案基準を準備する要求を検証するスキーマです。 */
+export const externalAgentProposalPrepareInputSchema = z.object({
+  operation: z.literal("proposals.prepare"),
+  instance_id: identifierSchema,
+  context_id: identifierSchema,
+  project_gid: gidSchema,
+  request_id: identifierSchema,
+  source_text: nonBlankMessageSchema,
+}).strict();
+
+/** 外部連携から完全な変更案を提出する要求を検証するスキーマです。 */
+export const externalAgentCreateProposalInputSchema = z.object({
+  operation: z.literal("proposals.create"),
+  instance_id: identifierSchema,
+  context_id: identifierSchema,
+  project_gid: gidSchema,
+  request_id: identifierSchema,
+  proposal_context_id: identifierSchema,
+  proposal: proposalSchema,
+}).strict();
+
+const uniqueOperationIdsSchema = z.array(identifierSchema).min(1).max(maximumProposalOperations)
+  .superRefine((values, context) => {
+    const seen = new Set<string>();
+    values.forEach((value, index) => {
+      if (seen.has(value)) {
+        context.addIssue({ code: "custom", path: [index], message: "operation_idを重複指定できません。" });
+      }
+      seen.add(value);
+    });
+  });
 
 /** 外部連携から照会する提案の要求を検証するスキーマです。 */
-export const externalAgentProposalStatusInputSchema = z
-  .object({
-    operation: z.literal("proposals.status"),
-    proposal_id: identifierSchema,
-    operation_id: identifierSchema,
-  })
-  .strict();
+export const externalAgentProposalStatusInputSchema = z.object({
+  operation: z.literal("proposals.status"),
+  proposal_id: identifierSchema,
+  operation_ids: uniqueOperationIdsSchema,
+}).strict();
 
 /** 外部連携から確認画面を開く要求を検証するスキーマです。 */
 export const externalAgentReviewOpenInputSchema = z
@@ -183,6 +184,11 @@ export const externalAgentReviewOpenInputSchema = z
 export const externalAgentRequestInputSchema = z.discriminatedUnion("operation", [
   externalAgentTaskListInputSchema,
   externalAgentTaskDetailInputSchema,
+  externalAgentTaskRankInputSchema,
+  externalAgentTaskGraphInputSchema,
+  externalAgentTaskAreasInputSchema,
+  externalAgentTaskSearchLocalInputSchema,
+  externalAgentProposalPrepareInputSchema,
   externalAgentCreateProposalInputSchema,
   externalAgentProposalStatusInputSchema,
   externalAgentReviewOpenInputSchema,
@@ -225,35 +231,6 @@ const externalAgentContextSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
-
-/** 外部連携の読み取りスナップショットを検証するスキーマです。 */
-export const externalAgentReadSnapshotSchema = z
-  .object({
-    context_id: identifierSchema,
-    project_gid: gidSchema,
-    observed_at: isoDateTimeSchema,
-    sync_status: z.enum(["synced", "syncing", "offline"]),
-    last_successful_sync_at: isoDateTimeSchema,
-  })
-  .strict();
-
-/** 外部連携へ返す一覧行の配列を重複なく検証するスキーマです。 */
-export const externalAgentTaskRowsSchema = z
-  .array(viewModelTaskRowSchema)
-  .max(maximumListLimit)
-  .superRefine((rows, context) => {
-    const seen = new Set<string>();
-    rows.forEach((row, index) => {
-      if (seen.has(row.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "gid"],
-          message: "同じタスクGIDを重複して返せません。",
-        });
-      }
-      seen.add(row.gid);
-    });
-  });
 
 /** 外部連携のagent-info応答を検証するスキーマです。 */
 export const externalAgentInfoResponseSchema = z
@@ -314,10 +291,11 @@ export const externalAgentProposalStatusSchema = z.discriminatedUnion("kind", [
 const externalAgentProposalMetadataSchema = z
   .object({
     proposal_id: identifierSchema,
-    operation_id: identifierSchema,
     request_id: identifierSchema,
     instance_id: identifierSchema,
     context_id: identifierSchema,
+    proposal_context_id: identifierSchema,
+    operation_ids: uniqueOperationIdsSchema,
     revision: z.number().int().positive(),
     source: z.literal("external_tool"),
     state: externalAgentProposalStatusSchema,
@@ -339,25 +317,15 @@ export const externalAgentProposalSchema = z
         message: "提案IDと表示用提案IDが一致しません。",
       });
     }
-    const operations = proposal.view.proposal.groups.flatMap((group) => group.operations);
-    if (operations.length !== 1) {
+    const operationIds = proposal.view.proposal.groups.flatMap((group) =>
+      group.operations.map((operation) => operation.operation_id));
+    if (operationIds.length !== proposal.operation_ids.length
+      || operationIds.some((operationId, index) => operationId !== proposal.operation_ids[index])) {
       context.addIssue({
         code: "custom",
-        path: ["view", "proposal", "groups"],
-        message: "外部提案は一つの操作だけを含めなければなりません。",
+        path: ["operation_ids"],
+        message: "操作IDと表示用提案の操作順が一致しません。",
       });
-    } else {
-      const operation = operations[0];
-      if (operation == null) {
-        throw new Error("外部提案の操作を取得できません。");
-      }
-      if (operation.operation_id !== proposal.operation_id) {
-        context.addIssue({
-          code: "custom",
-          path: ["view", "proposal", "groups", 0, "operations", 0, "operation_id"],
-          message: "操作IDと表示用操作IDが一致しません。",
-        });
-      }
     }
     if (proposal.state.kind === "finished"
       && proposal.state.result.proposal_id !== proposal.proposal_id) {
@@ -379,8 +347,22 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
     .strict(),
   z
     .object({
-      kind: z.literal("journal"),
-      journal: applicationJournalSchema,
+      kind: z.literal("journals"),
+      results: z.array(z.object({
+        operation_id: identifierSchema,
+        result: z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("journal"), journal: applicationJournalSchema }).strict(),
+          z.object({
+            kind: z.literal("unknown"),
+            reason_code: z.enum([
+              "journal_not_found",
+              "journal_result_unknown",
+              "proposal_not_reconstructed",
+            ]),
+            message: nonBlankMessageSchema,
+          }).strict(),
+        ]),
+      }).strict()).max(maximumProposalOperations),
     })
     .strict(),
   z
@@ -396,24 +378,28 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
     .strict(),
 ]);
 
-/** 外部連携のタスク一覧応答を検証するスキーマです。 */
-export const externalAgentTaskListResponseSchema = z
-  .object({
-    operation: z.literal("tasks.list"),
-    snapshot: externalAgentReadSnapshotSchema,
-    ranking: viewModelRankingSchema,
-    rows: externalAgentTaskRowsSchema,
-  })
-  .strict();
+/** 外部連携のtaskctl読み取り応答を検証するスキーマです。 */
+export const externalAgentTaskQueryResponseSchema = z.object({
+  operation: z.enum([
+    "tasks.list",
+    "tasks.get",
+    "tasks.rank",
+    "tasks.graph",
+    "tasks.areas",
+    "tasks.search-local",
+  ]),
+  proposal_context_id: identifierSchema.optional(),
+  result: taskctlResponseSchema,
+}).strict();
 
-/** 外部連携のタスク詳細応答を検証するスキーマです。 */
-export const externalAgentTaskDetailResponseSchema = z
-  .object({
-    operation: z.literal("tasks.get"),
-    snapshot: externalAgentReadSnapshotSchema,
-    detail: viewModelTaskDetailSchema,
-  })
-  .strict();
+/** 外部連携の提案基準準備応答を検証するスキーマです。 */
+export const externalAgentProposalPrepareResponseSchema = z.object({
+  operation: z.literal("proposals.prepare"),
+  request_id: identifierSchema,
+  proposal_context_id: identifierSchema,
+  turn_context: aiWorkflowTurnContextSchema,
+  evidence_locator_prefix: nonBlankMessageSchema,
+}).strict();
 
 /** 外部連携の提案受付応答を検証するスキーマです。 */
 export const externalAgentProposalCreateResponseSchema = z
@@ -428,7 +414,7 @@ export const externalAgentProposalStatusResponseSchema = z
   .object({
     operation: z.literal("proposals.status"),
     proposal_id: identifierSchema,
-    operation_id: identifierSchema,
+    operation_ids: uniqueOperationIdsSchema,
     result: externalAgentProposalStatusResultSchema,
   })
   .strict()
@@ -441,30 +427,46 @@ export const externalAgentProposalStatusResponseSchema = z
           message: "照会結果の提案IDが要求と一致しません。",
         });
       }
-      if (response.result.proposal.operation_id !== response.operation_id) {
+      if (response.result.proposal.operation_ids.length !== response.operation_ids.length
+        || response.result.proposal.operation_ids.some((operationId, index) =>
+          operationId !== response.operation_ids[index])) {
         context.addIssue({
           code: "custom",
-          path: ["result", "proposal", "operation_id"],
-          message: "照会結果の操作IDが要求と一致しません。",
+          path: ["result", "proposal", "operation_ids"],
+          message: "照会結果の操作ID集合が要求と一致しません。",
         });
       }
       return;
     }
-    if (response.result.kind === "journal") {
-      if (response.result.journal.proposal_id !== response.proposal_id) {
+    if (response.result.kind === "journals") {
+      const resultIds = response.result.results.map((result) => result.operation_id);
+      if (resultIds.length !== response.operation_ids.length
+        || resultIds.some((operationId, index) => operationId !== response.operation_ids[index])) {
         context.addIssue({
           code: "custom",
-          path: ["result", "journal", "proposal_id"],
-          message: "ジャーナルの提案IDが要求と一致しません。",
+          path: ["result", "results"],
+          message: "照会結果の操作ID順が要求と一致しません。",
         });
       }
-      if (response.result.journal.operation_id !== response.operation_id) {
-        context.addIssue({
-          code: "custom",
-          path: ["result", "journal", "operation_id"],
-          message: "ジャーナルの操作IDが要求と一致しません。",
-        });
-      }
+      response.result.results.forEach((entry, index) => {
+        if (entry.result.kind !== "journal") {
+          return;
+        }
+        if (entry.result.journal.proposal_id !== response.proposal_id) {
+          context.addIssue({
+            code: "custom",
+            path: ["result", "results", index, "result", "journal", "proposal_id"],
+            message: "ジャーナルの提案IDが照会要求と一致しません。",
+          });
+        }
+        if (entry.result.journal.operation_id !== entry.operation_id) {
+          context.addIssue({
+            code: "custom",
+            path: ["result", "results", index, "result", "journal", "operation_id"],
+            message: "ジャーナルの操作IDが照会結果と一致しません。",
+          });
+        }
+      });
     }
   });
 
@@ -480,8 +482,8 @@ export const externalAgentReviewOpenResponseSchema = z
 
 /** 外部連携の要求応答を操作種別ごとに検証するスキーマです。 */
 export const externalAgentResponseSchema = z.discriminatedUnion("operation", [
-  externalAgentTaskListResponseSchema,
-  externalAgentTaskDetailResponseSchema,
+  externalAgentTaskQueryResponseSchema,
+  externalAgentProposalPrepareResponseSchema,
   externalAgentProposalCreateResponseSchema,
   externalAgentProposalStatusResponseSchema,
   externalAgentReviewOpenResponseSchema,
@@ -496,14 +498,16 @@ export const externalAgentErrorResponseSchema = z
   })
   .strict();
 
+/** 外部GUIから提案を選択する入力を検証するスキーマです。 */
+export const externalAgentGuiSelectInputSchema = z.object({
+  proposal_id: identifierSchema,
+  revision: z.number().int().positive(),
+  selection: aiWorkflowSelectionSchema,
+}).strict();
+
 /** 外部GUIから提案を編集する入力を検証するスキーマです。 */
-export const externalAgentGuiEditInputSchema = z
-  .object({
-    proposal_id: identifierSchema,
-    operation_id: identifierSchema,
-    revision: z.number().int().positive(),
-    ...proposalTaskFieldsSchema.shape,
-  })
+export const externalAgentGuiEditInputSchema = aiWorkflowOperationEditSchema
+  .extend({ revision: z.number().int().positive() })
   .strict();
 
 /** 外部GUIから提案を承認する入力を検証するスキーマです。 */
@@ -511,6 +515,7 @@ export const externalAgentGuiApproveInputSchema = z
   .object({
     proposal_id: identifierSchema,
     revision: z.number().int().positive(),
+    selection: aiWorkflowSelectionSchema,
   })
   .strict();
 
@@ -581,11 +586,19 @@ export const externalAgentGuiChangedStateSchema = externalAgentGuiStateSchema;
 export type ExternalAgentCreateProposalInput = z.infer<
   typeof externalAgentCreateProposalInputSchema
 >;
-export type ExternalAgentTaskFilter = TaskFilter;
 export type ExternalAgentErrorCode = z.infer<typeof externalAgentErrorCodeSchema>;
 export type ExternalAgentTaskListInput = z.infer<typeof externalAgentTaskListInputSchema>;
 export type ExternalAgentTaskDetailInput = z.infer<
   typeof externalAgentTaskDetailInputSchema
+>;
+export type ExternalAgentTaskRankInput = z.infer<typeof externalAgentTaskRankInputSchema>;
+export type ExternalAgentTaskGraphInput = z.infer<typeof externalAgentTaskGraphInputSchema>;
+export type ExternalAgentTaskAreasInput = z.infer<typeof externalAgentTaskAreasInputSchema>;
+export type ExternalAgentTaskSearchLocalInput = z.infer<
+  typeof externalAgentTaskSearchLocalInputSchema
+>;
+export type ExternalAgentProposalPrepareInput = z.infer<
+  typeof externalAgentProposalPrepareInputSchema
 >;
 export type ExternalAgentProposalStatusInput = z.infer<
   typeof externalAgentProposalStatusInputSchema
@@ -597,19 +610,17 @@ export type ExternalAgentRequestInput = z.infer<typeof externalAgentRequestInput
 export type ExternalAgentCliInput = z.infer<typeof externalAgentCliInputSchema>;
 export type ExternalAgentBridgeState = z.infer<typeof externalAgentBridgeStateSchema>;
 export type ExternalAgentSyncStatus = z.infer<typeof externalAgentSyncStatusSchema>;
-export type ExternalAgentReadSnapshot = z.infer<typeof externalAgentReadSnapshotSchema>;
-export type ExternalAgentTaskRows = z.infer<typeof externalAgentTaskRowsSchema>;
 export type ExternalAgentInfoResponse = z.infer<typeof externalAgentInfoResponseSchema>;
 export type ExternalAgentProposalStatus = z.infer<typeof externalAgentProposalStatusSchema>;
 export type ExternalAgentProposal = z.infer<typeof externalAgentProposalSchema>;
 export type ExternalAgentProposalStatusResult = z.infer<
   typeof externalAgentProposalStatusResultSchema
 >;
-export type ExternalAgentTaskListResponse = z.infer<
-  typeof externalAgentTaskListResponseSchema
+export type ExternalAgentTaskQueryResponse = z.infer<
+  typeof externalAgentTaskQueryResponseSchema
 >;
-export type ExternalAgentTaskDetailResponse = z.infer<
-  typeof externalAgentTaskDetailResponseSchema
+export type ExternalAgentProposalPrepareResponse = z.infer<
+  typeof externalAgentProposalPrepareResponseSchema
 >;
 export type ExternalAgentProposalCreateResponse = z.infer<
   typeof externalAgentProposalCreateResponseSchema
@@ -628,6 +639,7 @@ export type ExternalAgentGuiApproveInput = z.infer<
   typeof externalAgentGuiApproveInputSchema
 >;
 export type ExternalAgentGuiRejectInput = z.infer<typeof externalAgentGuiRejectInputSchema>;
+export type ExternalAgentGuiSelectInput = z.infer<typeof externalAgentGuiSelectInputSchema>;
 export type ExternalAgentGuiSetEnabledInput = z.infer<
   typeof externalAgentGuiSetEnabledInputSchema
 >;

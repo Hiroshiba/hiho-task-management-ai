@@ -1,26 +1,23 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { gidSchema } from "../../../shared/domain";
 import {
-  areaSchema,
-  dependencyGraphSchema,
-  gidSchema,
-  isoDateTimeSchema,
-  parentChildRelationSchema,
-  taskSchema,
-  type Task,
-} from "../../../shared/domain";
-import {
-  rankingCacheSchema,
-  type RankingCache,
-} from "../../../shared/storage";
+  maxSnapshotTasks,
+  taskctlQuerySchema,
+  taskctlResponseSchema,
+  taskctlSearchQuerySchema,
+  taskctlSnapshotSchema,
+  taskctlSyncStateSchema,
+  type TaskctlQuery,
+  type TaskctlRankingCache,
+  type TaskctlRankingState,
+  type TaskctlResponse,
+  type TaskctlSnapshot,
+  type TaskctlSyncState,
+  type TaskctlTask,
+} from "../../../shared/taskctl";
 
 const maxPathLength = 4_096;
-const maxSnapshotTasks = 10_000;
-const maxListResults = 1_000;
-const maxGraphTasks = 10_000;
-const maxGraphRelations = 20_000;
-const maxAreas = 500;
-const maxSearchCharacters = 200;
 const maxRequestBytes = 64 * 1024;
 const maxResponseBytes = 512 * 1024;
 const maxJsonDepth = 24;
@@ -65,68 +62,6 @@ const localIpcBoundarySchema = z.discriminatedUnion("kind", [
 const socketPathSchema = process.platform === "win32"
   ? windowsPipeSocketPathSchema
   : absolutePathSchema;
-
-const syncedStateSchema = z
-  .object({
-    kind: z.literal("synced"),
-    synced_at: isoDateTimeSchema,
-  })
-  .strict();
-
-const unavailableStateSchema = z
-  .object({
-    kind: z.literal("unavailable"),
-  })
-  .strict();
-
-/** taskctlが参照する同期状態を検証するスキーマです。 */
-export const taskctlSyncStateSchema = z.discriminatedUnion("kind", [
-  syncedStateSchema,
-  unavailableStateSchema,
-]);
-
-const availableRankingSchema = z
-  .object({
-    kind: z.literal("available"),
-    cache: rankingCacheSchema,
-  })
-  .strict();
-
-const unavailableRankingSchema = z
-  .object({
-    kind: z.literal("unavailable"),
-  })
-  .strict();
-
-const taskListSchema = z
-  .array(taskSchema)
-  .max(maxSnapshotTasks)
-  .superRefine((tasks, context) => {
-    const seen = new Set<string>();
-    for (const [index, task] of tasks.entries()) {
-      if (seen.has(task.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "gid"],
-          message: "同じタスクGIDをスナップショットへ重複して指定できません。",
-        });
-        continue;
-      }
-      seen.add(task.gid);
-    }
-  });
-
-/** taskctlが参照する読み取り専用スナップショットを検証するスキーマです。 */
-export const taskctlSnapshotSchema = z
-  .object({
-    sync: taskctlSyncStateSchema,
-    tasks: taskListSchema,
-    ranking: z.discriminatedUnion("kind", [
-      availableRankingSchema,
-      unavailableRankingSchema,
-    ]),
-  })
-  .strict();
 
 const capabilitySchema = z.string().regex(/^[0-9a-f]{64}$/u, {
   message: "taskctlの起動単位能力値が不正です。",
@@ -173,63 +108,6 @@ export const taskctlBrokerStartResultSchema = z
       });
     }
   });
-
-const searchQuerySchema = z
-  .string()
-  .min(1, "検索文字列を空にできません。")
-  .max(maxSearchCharacters)
-  .refine(
-    (value) => [...value].length <= maxSearchCharacters,
-    "検索文字数が上限を超えています。",
-  );
-
-const listQuerySchema = z
-  .object({
-    command: z.literal("list"),
-  })
-  .strict();
-
-const getQuerySchema = z
-  .object({
-    command: z.literal("get"),
-    gid: gidSchema,
-  })
-  .strict();
-
-const rankQuerySchema = z
-  .object({
-    command: z.literal("rank"),
-  })
-  .strict();
-
-const graphQuerySchema = z
-  .object({
-    command: z.literal("graph"),
-  })
-  .strict();
-
-const areasQuerySchema = z
-  .object({
-    command: z.literal("areas"),
-  })
-  .strict();
-
-const searchQueryRequestSchema = z
-  .object({
-    command: z.literal("search-local"),
-    query: searchQuerySchema,
-  })
-  .strict();
-
-/** taskctl読み取り要求を検証するスキーマです。 */
-export const taskctlQuerySchema = z.discriminatedUnion("command", [
-  listQuerySchema,
-  getQuerySchema,
-  rankQuerySchema,
-  graphQuerySchema,
-  areasQuerySchema,
-  searchQueryRequestSchema,
-]);
 
 const listRequestSchema = z
   .object({
@@ -282,7 +160,7 @@ const searchRequestSchema = z
     version: z.literal(taskctlProtocolVersion),
     capability: capabilitySchema,
     command: z.literal("search-local"),
-    query: searchQuerySchema,
+    query: taskctlSearchQuerySchema,
     format: z.literal("json"),
   })
   .strict();
@@ -295,21 +173,6 @@ export const taskctlRequestSchema = z.discriminatedUnion("command", [
   graphRequestSchema,
   areasRequestSchema,
   searchRequestSchema,
-]);
-
-const taskctlErrorCodeSchema = z.enum([
-  "client_error",
-  "invalid_request",
-  "capability_invalid",
-  "connection_limit",
-  "broker_stopped",
-  "snapshot_unavailable",
-  "snapshot_invalid",
-  "task_not_found",
-  "result_limit",
-  "response_too_large",
-  "execution_timeout",
-  "protocol_error",
 ]);
 
 const taskctlDiagnosticCodeSchema = z.enum([
@@ -336,137 +199,16 @@ export const taskctlDiagnosticsSchema = z
   .array(taskctlDiagnosticSchema)
   .max(maxDiagnostics);
 
-const taskctlErrorSchema = z
-  .object({
-    code: taskctlErrorCodeSchema,
-    message: z.string().min(1).max(200),
-  })
-  .strict();
-
-const listResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("list"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        tasks: z.array(taskSchema).max(maxListResults),
-      })
-      .strict(),
-  })
-  .strict();
-
-const getResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("get"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        task: taskSchema,
-      })
-      .strict(),
-  })
-  .strict();
-
-const rankResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("rank"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        ranking: z.discriminatedUnion("kind", [
-          availableRankingSchema,
-          unavailableRankingSchema,
-        ]),
-      })
-      .strict(),
-  })
-  .strict();
-
-const graphResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("graph"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        tasks: z.array(taskSchema).max(maxGraphTasks),
-        dependencies: dependencyGraphSchema.max(maxGraphTasks),
-        parent_relations: z
-          .array(parentChildRelationSchema)
-          .max(maxGraphRelations),
-      })
-      .strict(),
-  })
-  .strict();
-
-const areasResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("areas"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        areas: z.array(areaSchema).max(maxAreas),
-      })
-      .strict(),
-  })
-  .strict();
-
-const searchResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("search-local"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        query: searchQuerySchema,
-        tasks: z.array(taskSchema).max(maxListResults),
-      })
-      .strict(),
-  })
-  .strict();
-
-const errorResponseSchema = z
-  .object({
-    ok: z.literal(false),
-    error: taskctlErrorSchema,
-    sync: taskctlSyncStateSchema,
-  })
-  .strict();
-
-/** taskctlの全応答を検証するスキーマです。 */
-export const taskctlResponseSchema = z.union([
-  listResponseSchema,
-  getResponseSchema,
-  rankResponseSchema,
-  graphResponseSchema,
-  areasResponseSchema,
-  searchResponseSchema,
-  errorResponseSchema,
-]);
-
-export type TaskctlSyncState = z.infer<typeof taskctlSyncStateSchema>;
 export type TaskctlDiagnostic = z.infer<typeof taskctlDiagnosticSchema>;
-export type TaskctlRankingState = z.infer<
-  typeof availableRankingSchema | typeof unavailableRankingSchema
->;
-export type TaskctlSnapshot = z.infer<typeof taskctlSnapshotSchema>;
 export type TaskctlConnectionInfo = z.infer<typeof taskctlConnectionInfoSchema>;
 export type TaskctlBrokerOptions = z.infer<typeof taskctlBrokerOptionsSchema>;
 export type TaskctlBrokerStartResult = z.infer<
   typeof taskctlBrokerStartResultSchema
 >;
-export type TaskctlQuery = z.infer<typeof taskctlQuerySchema>;
 export type TaskctlRequest = z.infer<typeof taskctlRequestSchema>;
-export type TaskctlResponse = z.infer<typeof taskctlResponseSchema>;
 export type TaskctlSnapshotProvider = () =>
   | TaskctlSnapshot
   | PromiseLike<TaskctlSnapshot>;
-export type TaskctlTask = Task;
-export type TaskctlRankingCache = RankingCache;
 
 export {
   maxConnections,
@@ -476,7 +218,21 @@ export {
   maxRequestBytes,
   maxResponseBytes,
   maxSnapshotTasks,
+  taskctlQuerySchema,
+  taskctlResponseSchema,
+  taskctlSnapshotSchema,
+  taskctlSyncStateSchema,
   taskctlProtocolVersion,
+};
+
+export type {
+  TaskctlQuery,
+  TaskctlRankingCache,
+  TaskctlRankingState,
+  TaskctlResponse,
+  TaskctlSnapshot,
+  TaskctlSyncState,
+  TaskctlTask,
 };
 
 /** taskctl要求が正しい読み取り専用要求か判定します。 */
