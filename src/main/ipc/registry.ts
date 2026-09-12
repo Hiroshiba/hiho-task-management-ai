@@ -73,6 +73,8 @@ import {
   ipcExternalAgentGetStateResponseSchema,
   ipcExternalAgentRejectInputSchema,
   ipcExternalAgentRejectResponseSchema,
+  ipcExternalAgentSelectInputSchema,
+  ipcExternalAgentSelectResponseSchema,
   ipcExternalAgentSetEnabledInputSchema,
   ipcExternalAgentSetEnabledResponseSchema,
   ipcExternalAgentStateEventSchema,
@@ -142,6 +144,7 @@ import {
   type IpcExternalAgentGuiApproveInput,
   type IpcExternalAgentGuiEditInput,
   type IpcExternalAgentGuiRejectInput,
+  type IpcExternalAgentGuiSelectInput,
   type IpcExternalAgentGuiSetEnabledInput,
   type IpcExternalAgentGuiState,
   type IpcGuiEditInput,
@@ -234,6 +237,10 @@ export interface IpcExternalAgentPort {
   ): MaybePromise<IpcExternalAgentGuiState>;
   edit(
     input: IpcExternalAgentGuiEditInput,
+    signal: AbortSignal,
+  ): MaybePromise<IpcExternalAgentGuiState>;
+  select(
+    input: IpcExternalAgentGuiSelectInput,
     signal: AbortSignal,
   ): MaybePromise<IpcExternalAgentGuiState>;
   approve(
@@ -871,6 +878,19 @@ export class IpcHandlerRegistry {
           throw new IpcCapabilityUnavailableError();
         }
         return port.edit(input, signal);
+      },
+    );
+    this.registerHandle(
+      ipcMain,
+      "external-agent:select",
+      ipcExternalAgentSelectInputSchema,
+      ipcExternalAgentSelectResponseSchema,
+      async (input, signal) => {
+        const port = this.options.ports.externalAgent;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.select(input, signal);
       },
     );
     this.registerHandle(

@@ -1214,7 +1214,7 @@ export class TaskHubApplication {
       lifecycle_signal: this.options.lifecycle_signal,
       now_provider: this.options.now_provider,
       online_provider: () => this.isOnline(),
-      read_model: this.readModel,
+      get_taskctl_snapshot: () => this.createTaskctlSnapshot(),
       operation_queue: this.operationQueue,
       get_runtime_state: () => this.runtime?.getState(),
       create_baseline: (signal) => this.createExternalBaseline(signal),
@@ -3612,7 +3612,18 @@ export class TaskHubApplication {
   private createExternalBaselineOwned(
     signal: AbortSignal,
   ): ExternalAgentBaseline {
-    return this.captureProposalBaselineOwned(signal, "external");
+    const baseline = this.captureProposalBaselineOwned(signal, "external");
+    throwIfAborted(signal);
+    const taskctlSnapshot = this.createTaskctlSnapshot();
+    throwIfAborted(signal);
+    if (
+      taskctlSnapshot.sync.kind !== "synced"
+      || taskctlSnapshot.sync.synced_at !== baseline.snapshot.synced_at
+      || canonicalizeJson(taskctlSnapshot.tasks) !== canonicalizeJson(baseline.snapshot.tasks)
+    ) {
+      throw new Error("外部提案の基準値とtaskctl基準値が一致しません。");
+    }
+    return { ...baseline, taskctl_snapshot: taskctlSnapshot };
   }
 
   private createAiSnapshotOwned(
@@ -3634,7 +3645,7 @@ export class TaskHubApplication {
   private captureProposalBaselineOwned(
     signal: AbortSignal,
     purpose: "ai" | "external",
-  ): ExternalAgentBaseline {
+  ): Omit<ExternalAgentBaseline, "taskctl_snapshot"> {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const context = this.requireContext();

@@ -116,6 +116,7 @@ const evidenceKindSchema = z.enum([
   "task",
   "obsidian",
   "external_tool",
+  "external_review",
 ]);
 
 const evidenceReferenceSchema = z
@@ -158,6 +159,14 @@ const externalToolEvidenceReferenceSchema = z
   })
   .strict();
 
+const externalReviewEvidenceReferenceSchema = z
+  .object({
+    kind: z.literal("external_review"),
+    locator: nonBlankEvidenceTextSchema,
+    excerpt: createUtf8ByteLimitedStringSchema(maximumEvidenceBytes).optional(),
+  })
+  .strict();
+
 const taskOrNoteEvidenceReferenceSchema = z.discriminatedUnion("kind", [
   taskEvidenceReferenceSchema,
   obsidianEvidenceReferenceSchema,
@@ -186,6 +195,12 @@ const statusEvidenceSchema = z.discriminatedUnion("kind", [
       kind: z.literal("external_structured_status"),
       reference: externalToolEvidenceReferenceSchema,
       status: z.enum(["closed", "completed", "cancelled"]),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("external_review_explicit"),
+      reference: externalReviewEvidenceReferenceSchema,
     })
     .strict(),
   z
@@ -258,7 +273,10 @@ const splitCreationSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("split_child"),
       parent: targetSchema,
-      instruction_reference: userMessageEvidenceReferenceSchema,
+      instruction_reference: z.union([
+        userMessageEvidenceReferenceSchema,
+        externalReviewEvidenceReferenceSchema,
+      ]),
     })
     .strict(),
 ]);
@@ -744,6 +762,14 @@ export const proposalSchema = z
   })
   .strict()
   .superRefine(validateProposalContents);
+
+/** 外部レビュー原文へ結び付ける操作単位の正規locatorを作成します。 */
+export function createExternalReviewEvidenceLocator(
+  proposalContextId: string,
+  operationId: string,
+): string {
+  return `external-review:${identifierSchema.parse(proposalContextId)}:${identifierSchema.parse(operationId)}`;
+}
 
 const generatedProposalSchema = proposalSchema.safeExtend({
   groups: z.array(generatedProposalGroupSchema).min(1).max(maximumProposalGroups),

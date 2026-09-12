@@ -39,7 +39,6 @@ import {
   type AiWorkflowImpact,
   type AiWorkflowOperationEdit,
   type AiWorkflowProposalView,
-  type AiWorkflowSelection,
   type AiWorkflowSelectionRequest,
   type AiWorkflowSnapshot,
   type AiWorkflowTurnRequest,
@@ -60,7 +59,6 @@ import {
   trustedStatusEvidenceReferencesSchema,
   validateProposal,
   validateProposalGraph,
-  validateSelectedProposalGraph,
   type ExplicitSplitRequestReference,
   type GraphValidationResult,
   type ProposalValidationResult,
@@ -92,6 +90,12 @@ import {
   AiWorkflowStateError,
   AiWorkflowSyncError,
 } from "./errors";
+import {
+  assertSelectedProposalGraphIsSafe,
+  eligibleOperationIds,
+  preserveSelection,
+  resolveSelectedOperationIds,
+} from "./selection";
 
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
@@ -165,20 +169,6 @@ type WorkflowValidation = {
   }[];
 };
 
-type ValidationOperation = {
-  readonly kind: "valid" | "invalid";
-  readonly group_id: string;
-  readonly operation_id: string;
-  readonly errors?: readonly { readonly code: string; readonly message: string }[];
-};
-
-type ValidationGroup = {
-  readonly group_id: string;
-  readonly atomic: boolean;
-  readonly applicable: boolean;
-  readonly operation_ids: readonly string[];
-};
-
 type PreparedTurn = {
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline: BaselineSnapshot;
@@ -220,9 +210,13 @@ export type ApprovalPreparationInput = {
   readonly proposal_id: string;
   readonly proposal: Proposal;
   readonly baseline_snapshot: BaselineSnapshot;
+  readonly baseline_snapshot_hash: string;
   readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
+  readonly existing_areas: readonly string[];
   readonly graph_validation_result: GraphValidationResult;
   readonly selected_operation_ids: readonly string[];
+  readonly explicit_split_request_references: readonly ExplicitSplitRequestReference[];
+  readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
   readonly created_via: string;
 };
 
@@ -788,6 +782,15 @@ function stripStatusEvidenceExcerpt(
       },
     };
   }
+  if (evidence.kind === "external_review_explicit") {
+    return {
+      kind: "external_review_explicit",
+      reference: {
+        kind: "external_review",
+        locator: evidence.reference.locator,
+      },
+    };
+  }
   return {
     kind: "children_only_all_completed",
     reference: {
@@ -804,7 +807,7 @@ function stripSplitInstructionExcerpt(
     throw new Error("分割作成の根拠を通常作成へ適用できません。");
   }
   return {
-    kind: "user_message",
+    kind: operation.creation.instruction_reference.kind,
     locator: operation.creation.instruction_reference.locator,
   };
 }
@@ -1595,7 +1598,7 @@ function sanitizeProposalOperation(operation: ProposalOperation): ProposalOperat
   const candidate: Record<string, unknown> = {
     ...operation,
     evidence_refs: operation.evidence_refs.map((reference) =>
-      sanitizeEvidenceReference(reference, false)),
+      sanitizeEvidenceReference(reference, reference.kind === "external_review")),
   };
   if (operation.operation === "create_task" && operation.creation.kind === "split_child") {
     candidate.creation = {
@@ -1615,7 +1618,8 @@ function sanitizeProposalOperation(operation: ProposalOperation): ProposalOperat
           || (
             operation.status_evidence.kind === "task_or_note_explicit"
             && operation.status_evidence.reference.kind === "task"
-          ),
+          )
+          || operation.status_evidence.kind === "external_review_explicit",
       ),
     };
   }
@@ -1643,59 +1647,6 @@ function operationMap(proposal: Proposal): Map<string, ProposalOperation> {
     }
   }
   return operations;
-}
-
-function groupMap(proposal: Proposal): Map<string, Proposal["groups"][number]> {
-  const groups = new Map<string, Proposal["groups"][number]>();
-  for (const group of proposal.groups) {
-    if (groups.has(group.group_id)) {
-      throw new AiWorkflowError("変更案のgroup_idが重複しています。");
-    }
-    groups.set(group.group_id, group);
-  }
-  return groups;
-}
-
-function validationOperationMap(
-  result: ProposalValidationResult | GraphValidationResult,
-): Map<string, ValidationOperation> {
-  const map = new Map<string, ValidationOperation>();
-  for (const operation of result.operations) {
-    map.set(operation.operation_id, operation);
-  }
-  return map;
-}
-
-function validationGroupMap(
-  result: ProposalValidationResult | GraphValidationResult,
-): Map<string, ValidationGroup> {
-  const map = new Map<string, ValidationGroup>();
-  for (const group of result.groups) {
-    map.set(group.group_id, group);
-  }
-  return map;
-}
-
-function eligibleOperationIds(
-  proposal: Proposal,
-  graphValidation: GraphValidationResult,
-): readonly string[] {
-  const operationResults = validationOperationMap(graphValidation);
-  const groupResults = validationGroupMap(graphValidation);
-  const selected: string[] = [];
-  for (const group of proposal.groups) {
-    const validationGroup = groupResults.get(group.group_id);
-    if (validationGroup == null || !validationGroup.applicable) {
-      continue;
-    }
-    for (const operation of group.operations) {
-      const validation = operationResults.get(operation.operation_id);
-      if (validation?.kind === "valid") {
-        selected.push(operation.operation_id);
-      }
-    }
-  }
-  return selected;
 }
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
@@ -2191,157 +2142,6 @@ export function calculateWorkflowImpact(
   });
 }
 
-function resolveSelectedOperationIds(
-  stored: StoredProposal,
-  selection: AiWorkflowSelection,
-): readonly string[] {
-  const operationResults = validationOperationMap(stored.graph_validation);
-  const groupResults = validationGroupMap(stored.graph_validation);
-  const groups = groupMap(stored.proposal);
-  const operations = operationMap(stored.proposal);
-  const selected = new Set<string>();
-
-  if (selection.kind === "all") {
-    for (const operationId of eligibleOperationIds(stored.proposal, stored.graph_validation)) {
-      selected.add(operationId);
-    }
-  } else if (selection.kind === "groups") {
-    for (const groupId of selection.group_ids) {
-      const group = groups.get(groupId);
-      const validationGroup = groupResults.get(groupId);
-      if (group == null || validationGroup == null) {
-        throw new AiWorkflowSelectionError(`指定したグループ ${groupId} が存在しません。`);
-      }
-      if (!validationGroup.applicable) {
-        throw new AiWorkflowSelectionError(`グループ ${groupId} は適用可能ではありません。`);
-      }
-      for (const operation of group.operations) {
-        const validation = operationResults.get(operation.operation_id);
-        if (validation?.kind === "valid") {
-          selected.add(operation.operation_id);
-        } else if (group.atomic) {
-          throw new AiWorkflowSelectionError(`グループ ${groupId} に無効な操作があります。`);
-        }
-      }
-    }
-  } else {
-    for (const operationId of selection.operation_ids) {
-      const operation = operations.get(operationId);
-      const validation = operationResults.get(operationId);
-      if (operation == null || validation == null) {
-        throw new AiWorkflowSelectionError(`指定した操作 ${operationId} が存在しません。`);
-      }
-      if (validation.kind !== "valid") {
-        throw new AiWorkflowSelectionError(`操作 ${operationId} は適用可能ではありません。`);
-      }
-      const group = groups.get(validation.group_id);
-      const validationGroup = groupResults.get(validation.group_id);
-      if (group == null || validationGroup == null) {
-        throw new AiWorkflowSelectionError(`操作 ${operationId} のグループが存在しません。`);
-      }
-      if (group.atomic) {
-        if (!validationGroup.applicable) {
-          throw new AiWorkflowSelectionError(`atomicグループ ${group.group_id} は適用可能ではありません。`);
-        }
-        for (const member of group.operations) {
-          if (operationResults.get(member.operation_id)?.kind !== "valid") {
-            throw new AiWorkflowSelectionError(`atomicグループ ${group.group_id} に無効な操作があります。`);
-          }
-          selected.add(member.operation_id);
-        }
-      } else {
-        selected.add(operationId);
-      }
-    }
-  }
-
-  if (selected.size === 0) {
-    throw new AiWorkflowSelectionError("適用可能な操作が選択されていません。");
-  }
-  const selectedCreates = new Set(
-    [...selected]
-      .map((operationId) => operations.get(operationId))
-      .filter(
-        (operation): operation is Extract<ProposalOperation, { readonly operation: "create_task" }> =>
-          operation?.operation === "create_task",
-      )
-      .map((operation) => operation.temporary_ref),
-  );
-  for (const operationId of selected) {
-    const operation = operations.get(operationId);
-    if (operation == null) {
-      throw new AiWorkflowSelectionError(`指定した操作 ${operationId} が存在しません。`);
-    }
-    const temporaryRefs = collectTemporaryReferences(operation);
-    for (const temporaryRef of temporaryRefs) {
-      if (!selectedCreates.has(temporaryRef)) {
-        throw new AiWorkflowSelectionError(`一時参照 ${temporaryRef} の作成操作が選択されていません。`);
-      }
-    }
-  }
-  return stored.proposal.groups.flatMap((group) =>
-    group.operations
-      .filter((operation) => selected.has(operation.operation_id))
-      .map((operation) => operation.operation_id),
-  );
-}
-
-function collectTemporaryReferences(operation: ProposalOperation): readonly string[] {
-  const references: string[] = [];
-  const addTarget = (target: ProposalTarget): void => {
-    if (target.kind === "temporary") {
-      references.push(target.ref);
-    }
-  };
-  if (operation.operation === "create_task") {
-    if (operation.creation.kind === "split_child") {
-      addTarget(operation.creation.parent);
-    }
-    if (operation.after.parent != null) {
-      addTarget(operation.after.parent);
-    }
-    for (const dependency of operation.after.dependencies ?? []) {
-      addTarget(dependency.target);
-    }
-    return references;
-  }
-  addTarget(operation.target);
-  if (operation.operation === "set_dependencies") {
-    for (const dependency of operation.before) {
-      addTarget(dependency.target);
-    }
-    for (const dependency of operation.after) {
-      addTarget(dependency.target);
-    }
-  }
-  if (operation.operation === "set_parent") {
-    if (operation.before.kind !== "absent") {
-      addTarget(operation.before);
-    }
-    if (operation.after.kind !== "absent") {
-      addTarget(operation.after);
-    }
-  }
-  return references;
-}
-
-function assertSelectedProposalGraphIsSafe(
-  stored: StoredProposal,
-  selectedOperationIds: readonly string[],
-): void {
-  const result = validateSelectedProposalGraph({
-    proposal: stored.proposal,
-    managed_tasks: stored.snapshot.tasks,
-    selected_operation_ids: [...selectedOperationIds],
-    temporary_ref_mappings: [],
-  });
-  if (result.kind === "unsafe") {
-    throw new AiWorkflowSelectionError(
-      "選択した操作だけを適用すると依存関係または親子関係に新しい循環が生じます。",
-    );
-  }
-}
-
 function revalidateProposal(
   proposal: Proposal,
   stored: StoredProposal,
@@ -2459,45 +2259,6 @@ function createProposalView(stored: StoredProposal): AiWorkflowProposalView {
     graph_validation: stored.graph_validation,
     selected_operation_ids: stored.selected_operation_ids,
   });
-}
-
-function preserveSelection(
-  proposal: Proposal,
-  graphValidation: GraphValidationResult,
-  previousOperationIds: readonly string[],
-): readonly string[] {
-  const previous = new Set(previousOperationIds);
-  const operationResults = validationOperationMap(graphValidation);
-  const groupResults = validationGroupMap(graphValidation);
-  const selected = new Set<string>();
-  for (const group of proposal.groups) {
-    const groupValidation = groupResults.get(group.group_id);
-    if (groupValidation == null || !groupValidation.applicable) {
-      continue;
-    }
-    const validMembers = group.operations.filter(
-      (operation) => operationResults.get(operation.operation_id)?.kind === "valid",
-    );
-    if (group.atomic) {
-      const selectedMember = validMembers.some((operation) => previous.has(operation.operation_id));
-      if (selectedMember && validMembers.length === group.operations.length) {
-        for (const operation of validMembers) {
-          selected.add(operation.operation_id);
-        }
-      }
-      continue;
-    }
-    for (const operation of validMembers) {
-      if (previous.has(operation.operation_id)) {
-        selected.add(operation.operation_id);
-      }
-    }
-  }
-  return proposal.groups.flatMap((group) =>
-    group.operations
-      .filter((operation) => selected.has(operation.operation_id))
-      .map((operation) => operation.operation_id),
-  );
 }
 
 function createApplicationSummary(
@@ -2824,23 +2585,16 @@ export class AiWorkflowService {
       validation.graph,
       stored.selected_operation_ids,
     );
-    let selectedGraphSafety: ReturnType<typeof validateSelectedProposalGraph>;
     try {
-      selectedGraphSafety = validateSelectedProposalGraph({
+      assertSelectedProposalGraphIsSafe({
         proposal: editedProposal,
-        managed_tasks: stored.snapshot.tasks,
-        selected_operation_ids: [...selectedOperationIds],
-        temporary_ref_mappings: [],
-      });
+        snapshot: stored.snapshot,
+        graph_validation: validation.graph,
+      }, selectedOperationIds);
     } catch (error: unknown) {
       throw new AiWorkflowEditError(
         "編集後の選択操作を依存・親子グラフへ投影できません。",
         error,
-      );
-    }
-    if (selectedGraphSafety.kind === "unsafe") {
-      throw new AiWorkflowEditError(
-        "編集後の選択操作だけを適用すると依存関係または親子関係に新しい循環が生じます。",
       );
     }
     const updated: StoredProposal = {
@@ -2880,9 +2634,13 @@ export class AiWorkflowService {
         proposal_id: stored.proposal_id,
         proposal: stored.proposal,
         baseline_snapshot: stored.baseline,
+        baseline_snapshot_hash: stored.baseline_snapshot_hash,
         baseline_external_data: stored.baseline_external_data,
+        existing_areas: stored.snapshot.areas,
         graph_validation_result: stored.graph_validation,
         selected_operation_ids: selectedOperationIds,
+        explicit_split_request_references: [...stored.explicit_split_request_references],
+        trusted_status_evidence: [...stored.trusted_status_evidence],
         created_via: "codex",
       },
       signal,

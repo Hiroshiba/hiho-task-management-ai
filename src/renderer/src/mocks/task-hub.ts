@@ -40,6 +40,8 @@ import {
   ipcExternalAgentGetStateResponseSchema,
   ipcExternalAgentRejectInputSchema,
   ipcExternalAgentRejectResponseSchema,
+  ipcExternalAgentSelectInputSchema,
+  ipcExternalAgentSelectResponseSchema,
   ipcExternalAgentSetEnabledInputSchema,
   ipcExternalAgentSetEnabledResponseSchema,
   ipcExternalAgentStateEventSchema,
@@ -101,6 +103,7 @@ import {
   type IpcExternalAgentGuiApproveInput,
   type IpcExternalAgentGuiEditInput,
   type IpcExternalAgentGuiRejectInput,
+  type IpcExternalAgentGuiSelectInput,
   type IpcExternalAgentGuiSetEnabledInput,
   type IpcExternalAgentGuiState,
   type IpcSetupAsanaAuthorizationBeginInput,
@@ -114,6 +117,10 @@ import {
   type IpcSyncResult,
   type IpcSyncStateEvent,
 } from "../../../shared/ipc";
+import {
+  createExternalReviewEvidenceLocator,
+  proposalOperationSchema,
+} from "../../../shared/ai";
 import {
   aiWorkflowApprovalResultSchema,
   aiWorkflowProposalViewSchema,
@@ -171,9 +178,15 @@ const SPLIT_OPERATION_ID = "mock-split-operation";
 const DURATION_OPERATION_ID = "mock-duration-operation";
 const PROPOSAL_ID = "mock-proposal";
 const EXTERNAL_GROUP_ID = "mock-external-group";
-const EXTERNAL_OPERATION_ID = "mock-external-operation";
+const EXTERNAL_COMPLETE_GROUP_ID = "mock-external-complete-group";
+const EXTERNAL_SPLIT_GROUP_ID = "mock-external-split-group";
+const EXTERNAL_TITLE_OPERATION_ID = "mock-external-title-operation";
+const EXTERNAL_DURATION_OPERATION_ID = "mock-external-duration-operation";
+const EXTERNAL_COMPLETE_OPERATION_ID = "mock-external-complete-operation";
+const EXTERNAL_SPLIT_OPERATION_ID = "mock-external-split-operation";
 const EXTERNAL_PROPOSAL_ID = "mock-external-proposal";
 const EXTERNAL_REQUEST_ID = "mock-external-request";
+const EXTERNAL_PROPOSAL_CONTEXT_ID = "mock-external-proposal-context";
 const TASK_GIDS = [
   PRIMARY_TASK_GID,
   "mock-task-2",
@@ -839,65 +852,212 @@ function createExternalProposal(): IpcExternalAgentGuiState["proposals"][number]
     proposal_id: EXTERNAL_PROPOSAL_ID,
     baseline_snapshot_hash: SNAPSHOT_HASH,
     proposal: {
-      title: "外部エージェントからの新規タスク提案",
+      title: "外部エージェントからの複数操作提案",
       groups: [{
         group_id: EXTERNAL_GROUP_ID,
-        atomic: true,
+        atomic: false,
+        operations: [{
+          operation: "update_title",
+          operation_id: EXTERNAL_TITLE_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "外部エージェントが既存タスクのタイトル変更を明示しました。",
+          basis: "explicit",
+          confidence: 1,
+          evidence_refs: [{
+            kind: "external_review",
+            locator: createExternalReviewEvidenceLocator(
+              EXTERNAL_PROPOSAL_CONTEXT_ID,
+              EXTERNAL_TITLE_OPERATION_ID,
+            ),
+            excerpt: "今日の集中タスクのタイトルを整理してください。",
+          }],
+          target: { kind: "existing", gid: PRIMARY_TASK_GID },
+          before: "今日の集中タスク",
+          after: "外部確認用に整理したタスク",
+        }, {
+          operation: "set_duration",
+          operation_id: EXTERNAL_DURATION_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "外部エージェントが作業時間の見積もりを明示しました。",
+          basis: "explicit",
+          confidence: 1,
+          evidence_refs: [{
+            kind: "external_review",
+            locator: createExternalReviewEvidenceLocator(
+              EXTERNAL_PROPOSAL_CONTEXT_ID,
+              EXTERNAL_DURATION_OPERATION_ID,
+            ),
+            excerpt: "集中タスクの作業時間を一週間として見積もってください。",
+          }],
+          target: { kind: "existing", gid: PRIMARY_TASK_GID },
+          before: { value: 15, unit: "minute" },
+          after: { value: 1, unit: "week" },
+        }],
+      }, {
+        group_id: EXTERNAL_COMPLETE_GROUP_ID,
+        atomic: false,
+        operations: [{
+          operation: "complete",
+          operation_id: EXTERNAL_COMPLETE_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "外部エージェントが週次レビューの完了を明示しました。",
+          basis: "explicit",
+          confidence: 1,
+          evidence_refs: [{
+            kind: "external_review",
+            locator: createExternalReviewEvidenceLocator(
+              EXTERNAL_PROPOSAL_CONTEXT_ID,
+              EXTERNAL_COMPLETE_OPERATION_ID,
+            ),
+            excerpt: "週次レビューが終わったので完了にしてください。",
+          }],
+          target: { kind: "existing", gid: "mock-task-2" },
+          before: "not_started",
+          after: "completed",
+          status_evidence: {
+            kind: "external_review_explicit",
+            reference: {
+              kind: "external_review",
+              locator: createExternalReviewEvidenceLocator(
+                EXTERNAL_PROPOSAL_CONTEXT_ID,
+                EXTERNAL_COMPLETE_OPERATION_ID,
+              ),
+              excerpt: "週次レビューが終わったので完了にしてください。",
+            },
+          },
+        }],
+      }, {
+        group_id: EXTERNAL_SPLIT_GROUP_ID,
+        atomic: false,
         operations: [{
           operation: "create_task",
-          operation_id: EXTERNAL_OPERATION_ID,
+          operation_id: EXTERNAL_SPLIT_OPERATION_ID,
           baseline_snapshot_hash: SNAPSHOT_HASH,
-          reason: "外部エージェントが明示的に提出した独立タスクです。",
+          reason: "外部エージェントが集中タスクの分割を明示しました。",
           basis: "explicit",
-          confidence: 0.92,
+          confidence: 1,
           evidence_refs: [{
-            kind: "external_tool",
-            locator: "mock-external-codex",
-            excerpt: "独立タスクとして追加してください。",
+            kind: "external_review",
+            locator: createExternalReviewEvidenceLocator(
+              EXTERNAL_PROPOSAL_CONTEXT_ID,
+              EXTERNAL_SPLIT_OPERATION_ID,
+            ),
+            excerpt: "今日の集中タスクを調査用の子タスクに分けてください。",
           }],
-          temporary_ref: "mock-external-task",
-          creation: { kind: "single_task" },
+          temporary_ref: "mock-external-split-child",
+          creation: {
+            kind: "split_child",
+            parent: { kind: "existing", gid: PRIMARY_TASK_GID },
+            instruction_reference: {
+              kind: "external_review",
+              locator: createExternalReviewEvidenceLocator(
+                EXTERNAL_PROPOSAL_CONTEXT_ID,
+                EXTERNAL_SPLIT_OPERATION_ID,
+              ),
+              excerpt: "今日の集中タスクを調査用の子タスクに分けてください。",
+            },
+          },
           before: { kind: "absent" },
           after: {
-            title: "外部エージェントからの新規タスク",
-            notes: "外部提案の説明です。",
+            title: "集中タスクの外部調査",
+            notes: "集中タスクを進めるための外部調査です。",
             status: "not_started",
-            importance: 4,
+            importance: 5,
             area: "開発",
-            due: { kind: "due_on", due_on: "2026-09-20" },
-            duration: { value: 1, unit: "month" },
+            duration: { value: 1, unit: "hour" },
+            parent: { kind: "existing", gid: PRIMARY_TASK_GID },
           },
         }],
       }],
     },
     basic_validation: {
-      operations: [{ kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_OPERATION_ID }],
-      groups: [{
-        group_id: EXTERNAL_GROUP_ID,
-        atomic: true,
-        applicable: true,
-        operation_ids: [EXTERNAL_OPERATION_ID],
-      }],
+      operations: [
+        { kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_TITLE_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_DURATION_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_COMPLETE_GROUP_ID, operation_id: EXTERNAL_COMPLETE_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_SPLIT_GROUP_ID, operation_id: EXTERNAL_SPLIT_OPERATION_ID },
+      ],
+      groups: [
+        {
+          group_id: EXTERNAL_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_TITLE_OPERATION_ID, EXTERNAL_DURATION_OPERATION_ID],
+        },
+        {
+          group_id: EXTERNAL_COMPLETE_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_COMPLETE_OPERATION_ID],
+        },
+        {
+          group_id: EXTERNAL_SPLIT_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_SPLIT_OPERATION_ID],
+        },
+      ],
     },
     graph_validation: {
-      operations: [{ kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_OPERATION_ID }],
-      groups: [{
-        group_id: EXTERNAL_GROUP_ID,
-        atomic: true,
-        applicable: true,
-        operation_ids: [EXTERNAL_OPERATION_ID],
-      }],
+      operations: [
+        { kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_TITLE_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_GROUP_ID, operation_id: EXTERNAL_DURATION_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_COMPLETE_GROUP_ID, operation_id: EXTERNAL_COMPLETE_OPERATION_ID },
+        { kind: "valid", group_id: EXTERNAL_SPLIT_GROUP_ID, operation_id: EXTERNAL_SPLIT_OPERATION_ID },
+      ],
+      groups: [
+        {
+          group_id: EXTERNAL_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_TITLE_OPERATION_ID, EXTERNAL_DURATION_OPERATION_ID],
+        },
+        {
+          group_id: EXTERNAL_COMPLETE_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_COMPLETE_OPERATION_ID],
+        },
+        {
+          group_id: EXTERNAL_SPLIT_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [EXTERNAL_SPLIT_OPERATION_ID],
+        },
+      ],
     },
-    selected_operation_ids: [EXTERNAL_OPERATION_ID],
+    selected_operation_ids: [
+      EXTERNAL_TITLE_OPERATION_ID,
+      EXTERNAL_DURATION_OPERATION_ID,
+      EXTERNAL_COMPLETE_OPERATION_ID,
+      EXTERNAL_SPLIT_OPERATION_ID,
+    ],
     impact: {
-      impacted_task_count: 0,
-      impacted_task_gids: [],
-      rank_changes: [],
+      impacted_task_count: 2,
+      impacted_task_gids: [PRIMARY_TASK_GID, "mock-task-2"],
+      rank_changes: [{
+        task_gid: PRIMARY_TASK_GID,
+        before_state: "ranked",
+        before_rank: 1,
+        after_state: "ranked",
+        after_rank: 1,
+      }, {
+        task_gid: "mock-task-2",
+        before_state: "ranked",
+        before_rank: 2,
+        after_state: "excluded",
+      }],
     },
   });
   return externalAgentProposalSchema.parse({
     proposal_id: EXTERNAL_PROPOSAL_ID,
-    operation_id: EXTERNAL_OPERATION_ID,
+    proposal_context_id: EXTERNAL_PROPOSAL_CONTEXT_ID,
+    operation_ids: [
+      EXTERNAL_TITLE_OPERATION_ID,
+      EXTERNAL_DURATION_OPERATION_ID,
+      EXTERNAL_COMPLETE_OPERATION_ID,
+      EXTERNAL_SPLIT_OPERATION_ID,
+    ],
     request_id: EXTERNAL_REQUEST_ID,
     instance_id: "mock-external-instance",
     context_id: "mock-external-context",
@@ -928,6 +1088,100 @@ function selectedOperationIds(selection: IpcAiSelectionInput["selection"]): stri
     case "operations":
       return selection.operation_ids.filter((operationId) => AI_OPERATION_IDS.includes(operationId));
   }
+}
+
+type ExternalProposal = IpcExternalAgentGuiState["proposals"][number];
+type ExternalProposalOperation =
+  ExternalProposal["view"]["proposal"]["groups"][number]["operations"][number];
+type ExternalSelectionResolution =
+  | { readonly kind: "ok"; readonly operation_ids: readonly string[] }
+  | { readonly kind: "invalid"; readonly message: string };
+
+function externalOperationIds(proposal: ExternalProposal): readonly string[] {
+  return proposal.view.proposal.groups.flatMap((group) =>
+    group.operations.map((operation) => operation.operation_id));
+}
+
+function externalOperationGroupId(proposal: ExternalProposal, operationId: string): string {
+  const group = proposal.view.proposal.groups.find((candidate) =>
+    candidate.operations.some((operation) => operation.operation_id === operationId));
+  if (group == null) {
+    throw new Error("外部提案操作のグループがmockにありません。");
+  }
+  return group.group_id;
+}
+
+function externalCreatedTaskGid(operation: ExternalProposalOperation): string {
+  if (operation.operation !== "create_task") {
+    throw new Error("外部提案の作成操作ではありません。");
+  }
+  return `mock-external-created-${operation.temporary_ref}`;
+}
+
+function externalOperationTaskGid(
+  proposal: ExternalProposal,
+  operation: ExternalProposalOperation,
+): string {
+  if (operation.operation === "create_task") {
+    return externalCreatedTaskGid(operation);
+  }
+  const target = operation.target;
+  if (target.kind === "existing") {
+    return target.gid;
+  }
+  const createOperation = proposal.view.proposal.groups
+    .flatMap((group) => group.operations)
+    .find((candidate) =>
+      candidate.operation === "create_task"
+      && candidate.temporary_ref === target.ref);
+  if (createOperation == null) {
+    throw new Error("外部提案の一時対象に対応する作成操作がありません。");
+  }
+  return externalCreatedTaskGid(createOperation);
+}
+
+function resolveExternalSelection(
+  proposal: ExternalProposal,
+  selection: IpcExternalAgentGuiSelectInput["selection"],
+): ExternalSelectionResolution {
+  const operationIds = externalOperationIds(proposal);
+  const operationIdSet = new Set(operationIds);
+  const selectedOperationIdSet = new Set<string>();
+  if (selection.kind === "all") {
+    return { kind: "ok", operation_ids: operationIds };
+  }
+  if (selection.kind === "groups") {
+    const selectedGroupIds = new Set(selection.group_ids);
+    for (const groupId of selectedGroupIds) {
+      const group = proposal.view.proposal.groups.find((candidate) => candidate.group_id === groupId);
+      if (group == null) {
+        return { kind: "invalid", message: `指定した外部提案グループ ${groupId} がmockにありません。` };
+      }
+      group.operations.forEach((operation) => selectedOperationIdSet.add(operation.operation_id));
+    }
+  } else {
+    for (const operationId of selection.operation_ids) {
+      if (!operationIdSet.has(operationId)) {
+        return { kind: "invalid", message: `指定した外部提案操作 ${operationId} がmockにありません。` };
+      }
+      const group = proposal.view.proposal.groups.find((candidate) =>
+        candidate.operations.some((operation) => operation.operation_id === operationId));
+      if (group == null) {
+        throw new Error("外部提案操作のグループがmockにありません。");
+      }
+      if (group.atomic) {
+        group.operations.forEach((operation) => selectedOperationIdSet.add(operation.operation_id));
+      } else {
+        selectedOperationIdSet.add(operationId);
+      }
+    }
+  }
+  const selectedOperationIds = operationIds.filter((operationId) =>
+    selectedOperationIdSet.has(operationId));
+  if (selectedOperationIds.length === 0) {
+    return { kind: "invalid", message: "適用する外部提案操作を選択してください。" };
+  }
+  return { kind: "ok", operation_ids: selectedOperationIds };
 }
 
 function notify<T>(listeners: ReadonlySet<(value: T) => void>, value: T): void {
@@ -1046,35 +1300,27 @@ export function createMockTaskHubApi(): TaskHubApi {
       return failure("conflict", "承認待ちの外部提案だけ編集できます。");
     }
     const operations = proposal.view.proposal.groups.flatMap((group) => group.operations);
-    const operation = operations[0];
-    if (operation == null || operation.operation !== "create_task") {
-      throw new Error("mockの外部提案操作が不正です。");
-    }
-    if (operation.operation_id !== parsedInput.operation_id) {
+    const operation = operations.find((candidate) => candidate.operation_id === parsedInput.operation_id);
+    if (operation == null) {
       return failure("not_found", "指定した外部提案操作がmockにありません。");
     }
+    const editedOperation = proposalOperationSchema.parse({
+      ...operation,
+      after: parsedInput.after,
+      basis: "explicit",
+      confidence: 1,
+      evidence_refs: [
+        ...operation.evidence_refs,
+        { kind: "external_review", locator: parsedInput.evidence_locator },
+      ],
+    });
     const groups = proposal.view.proposal.groups.map((group) => ({
       ...group,
       operations: group.operations.map((candidate) => {
         if (candidate.operation_id !== parsedInput.operation_id) {
           return candidate;
         }
-        if (candidate.operation !== "create_task") {
-          throw new Error("mockの外部提案操作が不正です。");
-        }
-        return {
-          ...candidate,
-          after: {
-            ...candidate.after,
-            title: parsedInput.title,
-            ...(parsedInput.notes == null ? {} : { notes: parsedInput.notes }),
-            ...(parsedInput.status == null ? {} : { status: parsedInput.status }),
-            ...(parsedInput.importance == null ? {} : { importance: parsedInput.importance }),
-            ...(parsedInput.area == null ? {} : { area: parsedInput.area }),
-            ...(parsedInput.due == null ? {} : { due: parsedInput.due }),
-            ...(parsedInput.duration == null ? {} : { duration: parsedInput.duration }),
-          },
-        };
+        return editedOperation;
       }),
     }));
     const nextProposal = externalAgentProposalSchema.parse({
@@ -1086,6 +1332,35 @@ export function createMockTaskHubApi(): TaskHubApi {
       }),
     });
     return ipcExternalAgentEditResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
+  }
+
+  function externalAgentSelect(
+    input: IpcExternalAgentGuiSelectInput,
+  ): MockResult<IpcExternalAgentGuiState> {
+    const parsedInput = ipcExternalAgentSelectInputSchema.parse(input);
+    const proposal = findExternalProposal(parsedInput.proposal_id);
+    if (proposal == null) {
+      return failure("not_found", "指定した外部提案がmockにありません。");
+    }
+    if (proposal.revision !== parsedInput.revision) {
+      return failure("conflict", "外部提案の版がmockの状態と一致しません。");
+    }
+    if (proposal.state.kind !== "pending_approval") {
+      return failure("conflict", "承認待ちの外部提案だけ選択を変更できます。");
+    }
+    const resolvedSelection = resolveExternalSelection(proposal, parsedInput.selection);
+    if (resolvedSelection.kind === "invalid") {
+      return failure("invalid_request", resolvedSelection.message);
+    }
+    const nextProposal = externalAgentProposalSchema.parse({
+      ...proposal,
+      revision: proposal.revision + 1,
+      view: aiWorkflowProposalViewSchema.parse({
+        ...proposal.view,
+        selected_operation_ids: resolvedSelection.operation_ids,
+      }),
+    });
+    return ipcExternalAgentSelectResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
   }
 
   function externalAgentApprove(
@@ -1102,31 +1377,43 @@ export function createMockTaskHubApi(): TaskHubApi {
     if (proposal.state.kind !== "pending_approval") {
       return failure("conflict", "承認待ちの外部提案だけ承認できます。");
     }
-    const operation = proposal.view.proposal.groups.flatMap((group) => group.operations)[0];
-    if (operation == null || operation.operation !== "create_task") {
-      throw new Error("mockの外部提案操作が不正です。");
+    const resolvedSelection = resolveExternalSelection(proposal, parsedInput.selection);
+    if (resolvedSelection.kind === "invalid") {
+      return failure("invalid_request", resolvedSelection.message);
     }
+    const selectedOperationIdSet = new Set(resolvedSelection.operation_ids);
+    const selectedOperations = proposal.view.proposal.groups.flatMap((group) =>
+      group.operations.filter((operation) => selectedOperationIdSet.has(operation.operation_id)));
     const result = aiWorkflowApprovalResultSchema.parse({
       proposal_id: proposal.proposal_id,
       application: {
         outcome: "applied",
-        operations: [{
-          group_id: EXTERNAL_GROUP_ID,
-          operation_id: EXTERNAL_OPERATION_ID,
-          task_gid: "mock-external-task-gid",
+        operations: selectedOperations.map((operation) => ({
+          group_id: externalOperationGroupId(proposal, operation.operation_id),
+          operation_id: operation.operation_id,
+          task_gid: externalOperationTaskGid(proposal, operation),
           outcome: "applied",
           reason_code: "applied",
-        }],
-        groups: [{
-          group_id: EXTERNAL_GROUP_ID,
-          atomic: true,
-          outcome: "applied",
-          operation_ids: [EXTERNAL_OPERATION_ID],
-        }],
+        })),
+        groups: proposal.view.proposal.groups
+          .map((group) => ({
+            group_id: group.group_id,
+            atomic: group.atomic,
+            outcome: "applied",
+            operation_ids: group.operations
+              .filter((operation) => selectedOperationIdSet.has(operation.operation_id))
+              .map((operation) => operation.operation_id),
+          }))
+          .filter((group) => group.operation_ids.length > 0),
       },
     });
     const nextProposal = externalAgentProposalSchema.parse({
       ...proposal,
+      revision: proposal.revision + 1,
+      view: aiWorkflowProposalViewSchema.parse({
+        ...proposal.view,
+        selected_operation_ids: resolvedSelection.operation_ids,
+      }),
       state: { kind: "finished", result },
     });
     return ipcExternalAgentApproveResponseSchema.parse(ok(replaceExternalProposal(nextProposal)));
@@ -1372,6 +1659,7 @@ export function createMockTaskHubApi(): TaskHubApi {
         ));
       }),
       edit: (input: IpcExternalAgentGuiEditInput) => Promise.resolve().then(() => externalAgentEdit(input)),
+      select: (input: IpcExternalAgentGuiSelectInput) => Promise.resolve().then(() => externalAgentSelect(input)),
       approve: (input: IpcExternalAgentGuiApproveInput) => Promise.resolve().then(() => externalAgentApprove(input)),
       reject: (input: IpcExternalAgentGuiRejectInput) => Promise.resolve().then(() => externalAgentReject(input)),
       onChanged: (listener) => {

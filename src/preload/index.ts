@@ -40,6 +40,8 @@ import {
   ipcExternalAgentGetStateResponseSchema,
   ipcExternalAgentRejectInputSchema,
   ipcExternalAgentRejectResponseSchema,
+  ipcExternalAgentSelectInputSchema,
+  ipcExternalAgentSelectResponseSchema,
   ipcExternalAgentSetEnabledInputSchema,
   ipcExternalAgentSetEnabledResponseSchema,
   ipcExternalAgentStateEventSchema,
@@ -260,6 +262,12 @@ const api: TaskHubApi = {
       "external-agent:edit",
       ipcExternalAgentEditInputSchema,
       ipcExternalAgentEditResponseSchema,
+      input,
+    ),
+    select: (input) => invoke(
+      "external-agent:select",
+      ipcExternalAgentSelectInputSchema,
+      ipcExternalAgentSelectResponseSchema,
       input,
     ),
     approve: (input) => invoke(

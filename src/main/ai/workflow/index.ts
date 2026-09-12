@@ -16,6 +16,12 @@ export {
   type WorkflowProposalViewInput,
 } from "./service";
 export {
+  assertSelectedProposalGraphIsSafe,
+  eligibleOperationIds,
+  preserveSelection,
+  resolveSelectedOperationIds,
+} from "./selection";
+export {
   AiWorkflowEditError,
   AiWorkflowError,
   AiWorkflowOfflineError,

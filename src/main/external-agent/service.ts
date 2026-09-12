@@ -9,19 +9,24 @@ import {
   type BaselineSnapshot,
 } from "../../shared/domain";
 import {
+  createExternalReviewEvidenceLocator,
   proposalOperationSchema,
   proposalSchema,
   type Proposal,
-  type ProposalOperation,
 } from "../../shared/ai";
 import {
   aiWorkflowApprovalResultSchema,
+  aiWorkflowSelectionSchema,
+  aiWorkflowTurnContextSchema,
   type AiWorkflowProposalView,
   type AiWorkflowSnapshot,
+  type AiWorkflowSelection,
 } from "../../shared/ai-workflow";
 import {
   validateProposal,
   validateProposalGraph,
+  type ExplicitSplitRequestReference,
+  type TrustedStatusEvidenceReference,
   type GraphValidationResult,
   type ProposalValidationResult,
 } from "../ai/proposal-validation";
@@ -33,6 +38,11 @@ import {
 } from "../ai/proposal-application";
 import {
   createWorkflowProposalView,
+  eligibleOperationIds,
+  preserveSelection,
+  resolveSelectedOperationIds,
+  assertSelectedProposalGraphIsSafe,
+  AiWorkflowSelectionError,
   type ApprovalPreparationInput,
 } from "../ai/workflow";
 import {
@@ -41,25 +51,32 @@ import {
   type AsanaOperationKind,
 } from "../asana/operation-queue";
 import type { AsanaSyncRuntimeState } from "../asana/runtime";
-import type { ReadModelService } from "../read-model";
 import type { ApplicationJournal } from "../../shared/storage";
 import type {
   ExternalAgentBridgeState,
   ExternalAgentCreateProposalInput,
+  ExternalAgentProposalPrepareInput,
   ExternalAgentErrorCode,
   ExternalAgentGuiApproveInput,
   ExternalAgentGuiEditInput,
   ExternalAgentGuiState,
   ExternalAgentGuiRejectInput,
+  ExternalAgentGuiSelectInput,
   ExternalAgentGuiSetEnabledInput,
   ExternalAgentInfoResponse,
   ExternalAgentProposal,
   ExternalAgentProposalStatus,
+  ExternalAgentProposalStatusResult,
   ExternalAgentRequestInput,
   ExternalAgentResponse,
-  ExternalAgentTaskDetailResponse,
+  ExternalAgentTaskQueryResponse,
   ExternalAgentTaskListInput,
-  ExternalAgentTaskListResponse,
+  ExternalAgentTaskDetailInput,
+  ExternalAgentTaskRankInput,
+  ExternalAgentTaskGraphInput,
+  ExternalAgentTaskAreasInput,
+  ExternalAgentTaskSearchLocalInput,
+  ExternalAgentProposalPrepareResponse,
   ExternalAgentProposalCreateResponse,
   ExternalAgentProposalStatusResponse,
   ExternalAgentReviewOpenResponse,
@@ -70,30 +87,30 @@ import {
   externalAgentGuiApproveInputSchema,
   externalAgentGuiEditInputSchema,
   externalAgentGuiRejectInputSchema,
+  externalAgentGuiSelectInputSchema,
   externalAgentGuiStateSchema,
   externalAgentInfoResponseSchema,
   externalAgentProposalCreateResponseSchema,
+  externalAgentProposalPrepareResponseSchema,
   externalAgentProposalSchema,
   externalAgentProposalStatusResponseSchema,
   externalAgentProposalStatusResultSchema,
-  externalAgentReadSnapshotSchema,
   externalAgentRequestInputSchema,
   externalAgentReviewOpenResponseSchema,
-  externalAgentTaskDetailResponseSchema,
-  externalAgentTaskListResponseSchema,
+  externalAgentTaskQueryResponseSchema,
   externalAgentProtocolVersion,
 } from "../../shared/external-agent";
-import {
-  filterTaskRows,
-  taskFilterSchema,
-  type ViewModelOverview,
-  type ViewModelTaskRow,
-} from "../../shared/view-model";
 import type { IpcExternalAgentPort } from "../ipc";
 import type {
   ExternalAgentBridge,
 } from "./transport";
 import { hashBaselineSnapshot } from "../domain/snapshot-hash";
+import {
+  executeTaskctlQuery,
+  taskctlSnapshotSchema,
+  type TaskctlQuery,
+  type TaskctlSnapshot,
+} from "../codex/taskctl";
 
 const maximumRequests = 100;
 const externalAgentOperationKind: AsanaOperationKind = "external_apply";
@@ -108,6 +125,7 @@ export type ExternalAgentBaseline = {
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline_snapshot: BaselineSnapshot;
   readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
+  readonly taskctl_snapshot: TaskctlSnapshot;
 };
 
 type ExternalAgentBridgePort = Pick<
@@ -128,7 +146,7 @@ export type ExternalAgentServiceOptions = {
   readonly lifecycle_signal: AbortSignal;
   readonly now_provider: () => Date;
   readonly online_provider: () => boolean;
-  readonly read_model: Pick<ReadModelService, "getOverview" | "getTaskDetail">;
+  readonly get_taskctl_snapshot: () => TaskctlSnapshot;
   readonly operation_queue: Pick<AsanaOperationQueue, "enqueue" | "invalidatePendingMutations">;
   readonly get_runtime_state: () => AsanaSyncRuntimeState | undefined;
   readonly create_baseline: (
@@ -156,14 +174,21 @@ export type ExternalAgentServiceOptions = {
 
 type ExternalProposalRecord = {
   readonly proposal_id: string;
-  readonly operation_id: string;
   readonly request_id: string;
   readonly instance_id: string;
   readonly context_id: string;
+  readonly proposal_context_id: string;
+  readonly operation_ids: readonly string[];
+  readonly source_text: string;
+  readonly evidence_locator_prefix: string;
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline_snapshot: BaselineSnapshot;
   readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
+  readonly taskctl_snapshot: TaskctlSnapshot;
+  readonly turn_context: z.infer<typeof aiWorkflowTurnContextSchema>;
   proposal: Proposal;
+  explicit_split_request_references: readonly ExplicitSplitRequestReference[];
+  trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
   graph_validation: GraphValidationResult;
   selected_operation_ids: readonly string[];
   view: AiWorkflowProposalView;
@@ -178,28 +203,64 @@ type ExternalAgentRequestFailure =
 type RequestRecord =
   | {
       readonly kind: "pending";
-      readonly digest: string;
+      readonly prepare_digest: string;
+      readonly create_digest: string;
       readonly proposal_id: string;
-      readonly operation_id: string;
       readonly creation: Promise<ExternalProposalRecord | undefined>;
     }
   | {
       readonly kind: "accepted";
-      readonly digest: string;
+      readonly prepare_digest: string;
+      readonly create_digest: string;
       readonly proposal_id: string;
-      readonly operation_id: string;
       readonly creation: Promise<ExternalProposalRecord>;
     }
   | {
       readonly kind: "failed";
-      readonly digest: string;
+      readonly prepare_digest: string;
+      readonly create_digest: string;
       readonly proposal_id: string;
-      readonly operation_id: string;
       readonly creation: Promise<undefined>;
       readonly failure: ExternalAgentRequestFailure;
     };
 
-type ExternalAgentReadSnapshot = z.infer<typeof externalAgentReadSnapshotSchema>;
+type PreparedExternalContext = {
+  readonly request_id: string;
+  readonly instance_id: string;
+  readonly context_id: string;
+  readonly project_gid: string;
+  readonly proposal_context_id: string;
+  readonly source_text: string;
+  readonly evidence_locator_prefix: string;
+  readonly snapshot: AiWorkflowSnapshot;
+  readonly baseline_snapshot: BaselineSnapshot;
+  readonly baseline_external_data: AsanaProposalApplicationInput["baseline_external_data"];
+  readonly taskctl_snapshot: TaskctlSnapshot;
+  readonly turn_context: z.infer<typeof aiWorkflowTurnContextSchema>;
+};
+
+type PreparedRequestRecord =
+  | {
+      readonly kind: "pending";
+      readonly digest: string;
+      readonly creation: Promise<PreparedExternalContext | undefined>;
+    }
+  | {
+      readonly kind: "accepted";
+      readonly digest: string;
+      readonly creation: Promise<PreparedExternalContext>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly digest: string;
+      readonly creation: Promise<undefined>;
+      readonly failure: ExternalAgentRequestFailure;
+    };
+
+type ExternalAgentJournalStatus = Extract<
+  ExternalAgentProposalStatusResult,
+  { readonly kind: "journals" }
+>["results"][number];
 
 /** 外部連携の業務エラーを表します。 */
 export class ExternalAgentServiceError extends Error {
@@ -286,10 +347,11 @@ function createProposalResult(
 ): ExternalAgentProposal {
   return externalAgentProposalSchema.parse({
     proposal_id: record.proposal_id,
-    operation_id: record.operation_id,
     request_id: record.request_id,
     instance_id: record.instance_id,
     context_id: record.context_id,
+    proposal_context_id: record.proposal_context_id,
+    operation_ids: [...record.operation_ids],
     revision: record.revision,
     source: "external_tool",
     state: record.state,
@@ -297,83 +359,12 @@ function createProposalResult(
   });
 }
 
-function createOperationFields(
-  input: ExternalAgentCreateInput,
-  baselineSnapshotHash: string,
-  operationId: string,
-  temporaryRef: string,
-): ProposalOperation {
-  const after = {
-    title: input.title,
-    ...(input.notes == null ? {} : { notes: input.notes }),
-    status: input.status ?? "not_started",
-    importance: input.importance ?? 3,
-    area: input.area ?? "未分類",
-    ...(input.due == null ? {} : { due: input.due }),
-    ...(input.duration == null ? {} : { duration: input.duration }),
-  };
-  return proposalOperationSchema.parse({
-    operation: "create_task",
-    operation_id: operationId,
-    baseline_snapshot_hash: baselineSnapshotHash,
-    reason: input.reason,
-    basis: "inferred",
-    confidence: input.confidence,
-    evidence_refs: [{
-      kind: "external_tool",
-      locator: `external-tool:${input.request_id}`,
-    }],
-    temporary_ref: temporaryRef,
-    creation: { kind: "single_task" },
-    before: { kind: "absent" },
-    after,
-  });
-}
-
-type ExternalAgentCreateInput = ExternalAgentCreateProposalInput;
-
-function createProposal(
-  input: ExternalAgentCreateInput,
-  baselineSnapshotHash: string,
-  operationId: string,
-): { readonly proposal: Proposal; readonly operation_id: string } {
-  const temporaryRef = identifierSchema.parse(`external-${randomUUID()}`);
-  const operation = createOperationFields(
-    input,
-    baselineSnapshotHash,
-    operationId,
-    temporaryRef,
-  );
-  const proposal = proposalSchema.parse({
-    title: input.title,
-    groups: [{
-      group_id: identifierSchema.parse(randomUUID()),
-      atomic: true,
-      operations: [operation],
-    }],
-  });
-  return { proposal, operation_id: operationId };
-}
-
-function findCreateOperation(proposal: Proposal): Extract<
-  ProposalOperation,
-  { readonly operation: "create_task" }
-> {
-  const operations = proposal.groups.flatMap((group) => group.operations);
-  if (operations.length !== 1) {
-    throw new Error("外部提案は一つの操作だけを含まなければなりません。");
-  }
-  const operation = operations[0];
-  if (operation == null || operation.operation !== "create_task") {
-    throw new Error("外部提案の操作がcreate_taskではありません。");
-  }
-  return operation;
-}
-
 /** 外部Codex連携の提案受付とGUI操作を管理します。 */
 export class ExternalAgentService implements IpcExternalAgentPort {
   private readonly options: ExternalAgentServiceOptions;
   private readonly requests = new Map<string, RequestRecord>();
+  private readonly preparedRequests = new Map<string, PreparedRequestRecord>();
+  private readonly preparedContexts = new Map<string, PreparedExternalContext>();
   private readonly proposals = new Map<string, ExternalProposalRecord>();
   private readonly listeners = new Set<(state: ExternalAgentGuiState) => void>();
   private context: ExternalAgentContext | undefined;
@@ -394,6 +385,8 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     if (contextInput == null) {
       if (this.context != null) {
         this.context = undefined;
+        this.preparedContexts.clear();
+        this.preparedRequests.clear();
         this.expireProposals("context_changed");
       }
       return;
@@ -410,6 +403,8 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       project_gid: validatedProjectGid,
       source_key: contextInput.source_key,
     };
+    this.preparedContexts.clear();
+    this.preparedRequests.clear();
     this.expireProposals("context_changed");
   }
 
@@ -429,9 +424,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       if (parsedInput.operation === "agent-info") {
         return this.createInfoResponse();
       }
-      if (parsedInput.operation !== "proposals.create") {
-        this.assertEnabled();
-      }
+      this.assertEnabled();
       return await this.dispatchRequest(parsedInput);
     } catch (error: unknown) {
       if (error instanceof ExternalAgentServiceError) {
@@ -480,6 +473,32 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     return this.getState();
   }
 
+  /** GUIから外部提案の選択操作を更新します。 */
+  public select(
+    input: ExternalAgentGuiSelectInput,
+    signal: AbortSignal,
+  ): ExternalAgentGuiState {
+    validateAbortSignal(signal);
+    signal.throwIfAborted();
+    const request = externalAgentGuiSelectInputSchema.parse(input);
+    const record = this.requireProposal(request.proposal_id);
+    this.assertRevision(record, request.revision);
+    if (!isProposalStatusMutable(record.state)) {
+      throw new ExternalAgentServiceError("conflict", "この提案は選択を変更できません。");
+    }
+    const selectedOperationIds = this.resolveSelection(record, request.selection);
+    record.selected_operation_ids = [...selectedOperationIds];
+    record.view = this.createView(
+      record,
+      record.proposal,
+      this.validateProposal(record, record.proposal).basic,
+      record.graph_validation,
+    );
+    record.revision += 1;
+    this.emitChanged();
+    return this.getState();
+  }
+
   /** GUI編集を外部提案へ反映します。 */
   public edit(
     input: ExternalAgentGuiEditInput,
@@ -489,34 +508,27 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     signal.throwIfAborted();
     const request = externalAgentGuiEditInputSchema.parse(input);
     const record = this.requireProposal(request.proposal_id);
-    if (record.operation_id !== request.operation_id) {
+    if (!record.operation_ids.includes(request.operation_id)) {
       throw new ExternalAgentServiceError("conflict", "操作IDが提案と一致しません。");
     }
     this.assertRevision(record, request.revision);
     if (!isProposalStatusMutable(record.state)) {
       throw new ExternalAgentServiceError("conflict", "この提案は編集できません。");
     }
-    const operation = findCreateOperation(record.proposal);
-    const candidateAfter = {
-      title: request.title,
-      ...(request.notes == null ? {} : { notes: request.notes }),
-      status: request.status ?? "not_started",
-      importance: request.importance ?? 3,
-      area: request.area ?? "未分類",
-      ...(request.due == null ? {} : { due: request.due }),
-      ...(request.duration == null ? {} : { duration: request.duration }),
-    };
-    if (request.area != null && !record.snapshot.areas.includes(request.area)) {
-      throw new ExternalAgentServiceError("invalid_request", "指定した領域が現在の一覧にありません。");
+    const operation = record.proposal.groups
+      .flatMap((group) => group.operations)
+      .find((candidate) => candidate.operation_id === request.operation_id);
+    if (operation == null) {
+      throw new ExternalAgentServiceError("not_found", "指定した操作が提案にありません。");
     }
     const editedOperation = proposalOperationSchema.parse({
       ...operation,
-      after: candidateAfter,
+      after: request.after,
       basis: "explicit",
       confidence: 1,
       evidence_refs: [
         ...operation.evidence_refs,
-        { kind: "user_message", locator: `gui-edit:${randomUUID()}` },
+        { kind: "external_review", locator: request.evidence_locator },
       ],
     });
     const editedProposal = proposalSchema.parse({
@@ -530,7 +542,11 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     const validation = this.validateProposal(record, editedProposal);
     record.proposal = editedProposal;
     record.graph_validation = validation.graph;
-    record.selected_operation_ids = [record.operation_id];
+    record.selected_operation_ids = preserveSelection(
+      editedProposal,
+      validation.graph,
+      record.selected_operation_ids,
+    );
     record.view = this.createView(record, editedProposal, validation.basic, validation.graph);
     record.revision += 1;
     record.state = { kind: "pending_approval" };
@@ -555,6 +571,11 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     if (this.options.online_provider() !== true) {
       throw new ExternalAgentServiceError("offline", "オフライン中は提案を承認できません。");
     }
+    const selectedOperationIds = this.resolveSelection(record, request.selection);
+    const selectedEvidence = this.assertExternalEvidence(record, selectedOperationIds);
+    record.selected_operation_ids = [...selectedOperationIds];
+    const validation = this.validateProposal(record, record.proposal);
+    record.view = this.createView(record, record.proposal, validation.basic, record.graph_validation);
     record.revision += 1;
     record.state = { kind: "approving" };
     this.emitChanged();
@@ -575,9 +596,13 @@ export class ExternalAgentService implements IpcExternalAgentPort {
             proposal_id: record.proposal_id,
             proposal: record.proposal,
             baseline_snapshot: record.baseline_snapshot,
+            baseline_snapshot_hash: record.turn_context.baseline_snapshot_hash,
             baseline_external_data: record.baseline_external_data,
+            existing_areas: record.snapshot.areas,
             graph_validation_result: record.graph_validation,
-            selected_operation_ids: record.selected_operation_ids,
+            selected_operation_ids: [...selectedOperationIds],
+            explicit_split_request_references: selectedEvidence.split_references,
+            trusted_status_evidence: selectedEvidence.trusted_status_evidence,
             created_via: "external_tool",
           }, operationContext.signal);
           const validatedInput = asanaProposalApplicationInputSchema.parse(approvalInput);
@@ -653,6 +678,8 @@ export class ExternalAgentService implements IpcExternalAgentPort {
         ...this.context,
         context_id: identifierSchema.parse(randomUUID()),
       };
+      this.preparedContexts.clear();
+      this.preparedRequests.clear();
     }
   }
 
@@ -662,6 +689,8 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       return Promise.resolve();
     }
     this.stopped = true;
+    this.preparedContexts.clear();
+    this.preparedRequests.clear();
     this.expireProposals("instance_restarted");
     this.listeners.clear();
     return Promise.resolve();
@@ -672,13 +701,18 @@ export class ExternalAgentService implements IpcExternalAgentPort {
   ): Promise<ExternalAgentResponse | Record<string, unknown>> {
     switch (input.operation) {
       case "tasks.list":
-        return this.listTasks(input);
       case "tasks.get":
-        return this.getTask(input.task_gid);
+      case "tasks.rank":
+      case "tasks.graph":
+      case "tasks.areas":
+      case "tasks.search-local":
+        return this.executeTaskctlRequest(input);
+      case "proposals.prepare":
+        return this.prepareExternalProposal(input);
       case "proposals.create":
         return this.createExternalProposal(input);
       case "proposals.status":
-        return this.getProposalStatus(input.proposal_id, input.operation_id);
+        return this.getProposalStatus(input.proposal_id, input.operation_ids);
       case "review.open":
         return this.openReview(input.proposal_id);
     }
@@ -723,14 +757,21 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     }
     const capabilities: string[] = ["proposals.status"];
     if (context != null && runtime?.last_successful_sync_at != null) {
-      capabilities.push("tasks.list", "tasks.get");
+      capabilities.push(
+        "tasks.list",
+        "tasks.get",
+        "tasks.rank",
+        "tasks.graph",
+        "tasks.areas",
+        "tasks.search-local",
+      );
     }
     const runtimeCanAcceptCreate = runtime != null
       && (runtime.kind === "online" || runtime.kind === "syncing")
       && runtime.last_successful_sync_at != null
       && runtime.last_error_code == null;
     if (context != null && runtimeCanAcceptCreate && this.options.online_provider() === true) {
-      capabilities.push("proposals.create");
+      capabilities.push("proposals.prepare", "proposals.create");
     }
     if (this.proposals.size > 0) {
       capabilities.push("review.open");
@@ -803,135 +844,98 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     return context;
   }
 
-  private createReadSnapshot(
-    context: ExternalAgentContext,
-    overview: ViewModelOverview,
-  ): ExternalAgentReadSnapshot {
-    const runtime = this.options.get_runtime_state();
-    let syncStatus: "synced" | "syncing" | "offline" = "synced";
-    if (runtime?.kind === "syncing") {
-      syncStatus = "syncing";
-    } else if (
-      runtime?.kind === "offline"
-      || runtime?.kind === "authentication_required"
-      || runtime?.kind === "error"
-    ) {
-      syncStatus = "offline";
+  private executeTaskctlRequest(
+    input: ExternalAgentTaskListInput
+      | ExternalAgentTaskDetailInput
+      | ExternalAgentTaskRankInput
+      | ExternalAgentTaskGraphInput
+      | ExternalAgentTaskAreasInput
+      | ExternalAgentTaskSearchLocalInput,
+  ): ExternalAgentTaskQueryResponse {
+    const contextId = input.proposal_context_id;
+    let snapshot: TaskctlSnapshot;
+    if (contextId == null) {
+      this.assertReadReady();
+      snapshot = taskctlSnapshotSchema.parse(this.options.get_taskctl_snapshot());
+    } else {
+      snapshot = this.requirePreparedContext(contextId).taskctl_snapshot;
     }
-    return externalAgentReadSnapshotSchema.parse({
-      context_id: context.context_id,
-      project_gid: context.project_gid,
-      observed_at: nowIso(this.options.now_provider),
-      sync_status: syncStatus,
-      last_successful_sync_at: overview.last_successful_sync_at,
+    const query = this.toTaskctlQuery(input);
+    const result = executeTaskctlQuery(query, snapshot);
+    return externalAgentTaskQueryResponseSchema.parse({
+      operation: input.operation,
+      ...(contextId == null ? {} : { proposal_context_id: contextId }),
+      result,
     });
   }
 
-  private listTasks(
-    input: ExternalAgentTaskListInput,
-  ): ExternalAgentTaskListResponse {
-    const context = this.assertReadReady();
-    const overview = this.options.read_model.getOverview(context.project_gid);
-    const snapshot = this.createReadSnapshot(context, overview);
-    const filter = taskFilterSchema.parse(input.filter ?? { kind: "normal" });
-    const filtered = filterTaskRows(overview, filter, snapshot.observed_at);
-    const query = input.query?.trim().toLocaleLowerCase();
-    const matched = query == null
-      ? filtered
-      : filtered.filter((row) => this.rowMatches(row, query));
-    const limit = input.limit ?? 100;
-    return externalAgentTaskListResponseSchema.parse({
-      operation: "tasks.list",
-      snapshot,
-      ranking: overview.ranking,
-      rows: matched.slice(0, limit),
-    });
-  }
-
-  private rowMatches(row: ViewModelTaskRow, query: string): boolean {
-    return [row.gid, row.title, row.area, row.status].some((value) =>
-      value.toLocaleLowerCase().includes(query));
-  }
-
-  private getTask(taskGid: string): ExternalAgentTaskDetailResponse {
-    const context = this.assertReadReady();
-    const overview = this.options.read_model.getOverview(context.project_gid);
-    if (!overview.tasks.some((row) => row.gid === taskGid)) {
-      throw new ExternalAgentServiceError("not_found", "指定タスクが一覧キャッシュにありません。");
+  private toTaskctlQuery(
+    input: ExternalAgentTaskListInput
+      | ExternalAgentTaskDetailInput
+      | ExternalAgentTaskRankInput
+      | ExternalAgentTaskGraphInput
+      | ExternalAgentTaskAreasInput
+      | ExternalAgentTaskSearchLocalInput,
+  ): TaskctlQuery {
+    switch (input.operation) {
+      case "tasks.list":
+        return { command: "list" };
+      case "tasks.get":
+        return { command: "get", gid: input.gid };
+      case "tasks.rank":
+        return { command: "rank" };
+      case "tasks.graph":
+        return { command: "graph" };
+      case "tasks.areas":
+        return { command: "areas" };
+      case "tasks.search-local":
+        return { command: "search-local", query: input.query };
     }
-    const detail = this.options.read_model.getTaskDetail(context.project_gid, gidSchema.parse(taskGid));
-    return externalAgentTaskDetailResponseSchema.parse({
-      operation: "tasks.get",
-      snapshot: this.createReadSnapshot(context, overview),
-      detail,
-    });
   }
 
-  private async createExternalProposal(
-    input: ExternalAgentCreateInput,
-  ): Promise<ExternalAgentProposalCreateResponse> {
+  private async prepareExternalProposal(
+    input: ExternalAgentProposalPrepareInput,
+  ): Promise<ExternalAgentProposalPrepareResponse> {
     const digest = canonicalizeJson(input);
-    const existing = this.requests.get(input.request_id);
+    const existing = this.preparedRequests.get(input.request_id);
     if (existing != null) {
       if (existing.digest !== digest) {
         throw new ExternalAgentServiceError("request_id_reused", "同じrequest_idへ別の内容を指定できません。");
       }
-      const record = await existing.creation;
-      if (record == null) {
-        const current = this.requests.get(input.request_id);
-        if (current?.kind === "failed") {
-          if (current.failure.kind === "expected") {
-            throw current.failure.error;
-          }
-          throw new ExternalAgentServiceError("unknown_result", "受理済み提案の作成結果が不明です。");
+      const prepared = await existing.creation;
+      if (prepared == null) {
+        const current = this.preparedRequests.get(input.request_id);
+        if (current?.kind === "failed" && current.failure.kind === "expected") {
+          throw current.failure.error;
         }
-        throw new ExternalAgentServiceError("unknown_result", "受理済み提案の作成結果が不明です。");
+        throw new ExternalAgentServiceError("unknown_result", "提案基準の準備結果が不明です。");
       }
-      return externalAgentProposalCreateResponseSchema.parse({
-        operation: "proposals.create",
-        proposal: createProposalResult(record),
-      });
+      return this.createPrepareResponse(prepared);
     }
     if (this.stopped) {
       throw new ExternalAgentServiceError("unavailable", "外部連携サービスは停止済みです。");
     }
     const context = this.requireContext();
-    this.assertRequestContext(
-      input.instance_id,
-      input.context_id,
-      input.project_gid,
-      context,
-    );
-    this.assertEnabled();
+    this.assertRequestContext(input.instance_id, input.context_id, input.project_gid, context);
     this.options.assert_apply_ready();
     if (this.options.online_provider() !== true) {
-      throw new ExternalAgentServiceError("offline", "オフライン中は提案を受け付けられません。");
+      throw new ExternalAgentServiceError("offline", "オフライン中は提案基準を準備できません。");
     }
-    if (this.requests.size >= maximumRequests) {
+    if (this.preparedRequests.size >= maximumRequests) {
       throw new ExternalAgentServiceError("capacity_exceeded", "外部提案の受付上限に達しています。");
     }
-    const proposalId = identifierSchema.parse(randomUUID());
-    const operationId = identifierSchema.parse(randomUUID());
-    const creationPromise = Promise.resolve()
+    const creation = Promise.resolve()
       .then(() => this.options.create_baseline(this.options.lifecycle_signal))
-      .then((baseline) => this.createExternalProposalRecord(
-        input,
-        context,
-        proposalId,
-        operationId,
-        baseline,
-      ))
+      .then((baseline) => this.createPreparedContext(input, context, baseline))
       .then(
-        (record) => {
-          const accepted: RequestRecord = {
+        (prepared) => {
+          this.preparedContexts.set(prepared.proposal_context_id, prepared);
+          this.preparedRequests.set(input.request_id, {
             kind: "accepted",
             digest,
-            proposal_id: proposalId,
-            operation_id: operationId,
-            creation: Promise.resolve(record),
-          };
-          this.requests.set(input.request_id, accepted);
-          return record;
+            creation: Promise.resolve(prepared),
+          });
+          return prepared;
         },
         (error: unknown) => {
           let expectedError: ExternalAgentServiceError | undefined;
@@ -943,44 +947,192 @@ export class ExternalAgentService implements IpcExternalAgentPort {
           ) {
             expectedError = new ExternalAgentServiceError(
               "context_changed",
-              "提案作成中にAsana文脈が変更されました。",
+              "提案準備中にAsana文脈が変更されました。",
               error,
             );
           }
-          const failure: ExternalAgentRequestFailure = expectedError != null
-            ? { kind: "expected", error: expectedError }
-            : { kind: "unexpected" };
-          const failed: RequestRecord = {
+          let failure: ExternalAgentRequestFailure;
+          if (expectedError == null) {
+            failure = { kind: "unexpected" };
+          } else {
+            failure = { kind: "expected", error: expectedError };
+          }
+          this.preparedRequests.set(input.request_id, {
             kind: "failed",
             digest,
-            proposal_id: proposalId,
-            operation_id: operationId,
             creation: Promise.resolve(undefined),
             failure,
-          };
-          this.requests.set(input.request_id, failed);
+          });
           if (expectedError != null) {
             return undefined;
           }
           throw error;
         },
       );
-    const requestRecord: RequestRecord = {
-      digest,
-      proposal_id: proposalId,
-      operation_id: operationId,
-      creation: creationPromise,
-      kind: "pending",
+    this.preparedRequests.set(input.request_id, { kind: "pending", digest, creation });
+    const prepared = await creation;
+    if (prepared == null) {
+      const current = this.preparedRequests.get(input.request_id);
+      if (current?.kind === "failed" && current.failure.kind === "expected") {
+        throw current.failure.error;
+      }
+      throw new ExternalAgentServiceError("unknown_result", "提案基準の準備結果が不明です。");
+    }
+    return this.createPrepareResponse(prepared);
+  }
+
+  private createPreparedContext(
+    input: ExternalAgentProposalPrepareInput,
+    context: ExternalAgentContext,
+    baseline: ExternalAgentBaseline,
+  ): PreparedExternalContext {
+    if (this.stopped || this.context?.context_id !== context.context_id) {
+      throw new ExternalAgentServiceError("context_changed", "提案準備中にAsana文脈が変更されました。");
+    }
+    const validatedBaseline = baselineSnapshotSchema.parse(baseline.baseline_snapshot);
+    const validatedTaskctlSnapshot = taskctlSnapshotSchema.parse(baseline.taskctl_snapshot);
+    if (
+      baseline.snapshot.project_gid !== context.project_gid
+      || validatedBaseline.project_gid !== context.project_gid
+      || validatedTaskctlSnapshot.sync.kind !== "synced"
+      || validatedTaskctlSnapshot.sync.synced_at !== baseline.snapshot.synced_at
+      || canonicalizeJson(validatedTaskctlSnapshot.tasks) !== canonicalizeJson(baseline.snapshot.tasks)
+    ) {
+      throw new ExternalAgentServiceError("conflict", "提案基準とtaskctl基準が一致しません。");
+    }
+    const proposalContextId = identifierSchema.parse(randomUUID());
+    const baselineSnapshotHash = hashBaselineSnapshot(validatedBaseline);
+    const turnContext = aiWorkflowTurnContextSchema.parse({
+      baseline_snapshot_hash: baselineSnapshotHash,
+      app_version: baseline.snapshot.app_version,
+      project_gid: baseline.snapshot.project_gid,
+      synced_at: baseline.snapshot.synced_at,
+      as_of: baseline.snapshot.as_of,
+    });
+    return {
+      request_id: input.request_id,
+      instance_id: input.instance_id,
+      context_id: input.context_id,
+      project_gid: input.project_gid,
+      proposal_context_id: proposalContextId,
+      source_text: input.source_text,
+      evidence_locator_prefix: `external-review:${proposalContextId}`,
+      snapshot: baseline.snapshot,
+      baseline_snapshot: validatedBaseline,
+      baseline_external_data: baseline.baseline_external_data,
+      taskctl_snapshot: validatedTaskctlSnapshot,
+      turn_context: turnContext,
     };
-    this.requests.set(input.request_id, requestRecord);
-    const record = await creationPromise;
-    if (record == null) {
-      const current = this.requests.get(input.request_id);
-      if (current?.kind === "failed") {
-        if (current.failure.kind === "expected") {
+  }
+
+  private createPrepareResponse(
+    prepared: PreparedExternalContext,
+  ): ExternalAgentProposalPrepareResponse {
+    return externalAgentProposalPrepareResponseSchema.parse({
+      operation: "proposals.prepare",
+      request_id: prepared.request_id,
+      proposal_context_id: prepared.proposal_context_id,
+      turn_context: prepared.turn_context,
+      evidence_locator_prefix: prepared.evidence_locator_prefix,
+    });
+  }
+
+  private async createExternalProposal(
+    input: ExternalAgentCreateProposalInput,
+  ): Promise<ExternalAgentProposalCreateResponse> {
+    const digest = canonicalizeJson(input);
+    const existing = this.requests.get(input.request_id);
+    if (existing != null) {
+      if (existing.create_digest !== digest) {
+        throw new ExternalAgentServiceError("request_id_reused", "同じrequest_idへ別の内容を指定できません。");
+      }
+      const record = await existing.creation;
+      if (record == null) {
+        const current = this.requests.get(input.request_id);
+        if (current?.kind === "failed" && current.failure.kind === "expected") {
           throw current.failure.error;
         }
         throw new ExternalAgentServiceError("unknown_result", "受理済み提案の作成結果が不明です。");
+      }
+      return externalAgentProposalCreateResponseSchema.parse({
+        operation: "proposals.create",
+        proposal: createProposalResult(record),
+      });
+    }
+    const preparedRecord = this.preparedRequests.get(input.request_id);
+    if (preparedRecord == null) {
+      throw new ExternalAgentServiceError("invalid_request", "先にproposals.prepareを実行してください。");
+    }
+    const context = this.requireContext();
+    this.assertRequestContext(input.instance_id, input.context_id, input.project_gid, context);
+    this.options.assert_apply_ready();
+    if (this.options.online_provider() !== true) {
+      throw new ExternalAgentServiceError("offline", "オフライン中は提案を作成できません。");
+    }
+    if (this.requests.size >= maximumRequests) {
+      throw new ExternalAgentServiceError("capacity_exceeded", "外部提案の受付上限に達しています。");
+    }
+    const proposalId = identifierSchema.parse(randomUUID());
+    const creation = preparedRecord.creation.then((prepared) => {
+      if (prepared == null) {
+        if (preparedRecord.kind === "failed" && preparedRecord.failure.kind === "expected") {
+          throw preparedRecord.failure.error;
+        }
+        throw new ExternalAgentServiceError("unknown_result", "提案基準の準備結果が不明です。");
+      }
+      this.options.assert_apply_ready();
+      if (this.options.online_provider() !== true) {
+        throw new ExternalAgentServiceError("offline", "オフライン中は提案を作成できません。");
+      }
+      if (prepared.proposal_context_id !== input.proposal_context_id) {
+        throw new ExternalAgentServiceError("context_changed", "指定した提案基準が失効しています。");
+      }
+      if (this.context?.context_id !== prepared.context_id) {
+        throw new ExternalAgentServiceError("context_changed", "Asana文脈が変更されたため提案基準が失効しています。");
+      }
+      return this.createExternalProposalRecord(input, prepared, proposalId);
+    }).then(
+      (record) => {
+        this.requests.set(input.request_id, {
+          kind: "accepted",
+          prepare_digest: preparedRecord.digest,
+          create_digest: digest,
+          proposal_id: proposalId,
+          creation: Promise.resolve(record),
+        });
+        return record;
+      },
+      (error: unknown) => {
+        const expectedError = error instanceof ExternalAgentServiceError ? error : undefined;
+        const failure: ExternalAgentRequestFailure = expectedError == null
+          ? { kind: "unexpected" }
+          : { kind: "expected", error: expectedError };
+        this.requests.set(input.request_id, {
+          kind: "failed",
+          prepare_digest: preparedRecord.digest,
+          create_digest: digest,
+          proposal_id: proposalId,
+          creation: Promise.resolve(undefined),
+          failure,
+        });
+        if (expectedError != null) {
+          return undefined;
+        }
+        throw error;
+      },
+    );
+    this.requests.set(input.request_id, {
+      kind: "pending",
+      prepare_digest: preparedRecord.digest,
+      create_digest: digest,
+      proposal_id: proposalId,
+      creation,
+    });
+    const record = await creation;
+    if (record == null) {
+      const current = this.requests.get(input.request_id);
+      if (current?.kind === "failed" && current.failure.kind === "expected") {
+        throw current.failure.error;
       }
       throw new ExternalAgentServiceError("unknown_result", "受理済み提案の作成結果が不明です。");
     }
@@ -991,63 +1143,59 @@ export class ExternalAgentService implements IpcExternalAgentPort {
   }
 
   private createExternalProposalRecord(
-    input: ExternalAgentCreateInput,
-    context: ExternalAgentContext,
+    input: ExternalAgentCreateProposalInput,
+    prepared: PreparedExternalContext,
     proposalId: string,
-    operationId: string,
-    baseline: ExternalAgentBaseline,
   ): ExternalProposalRecord {
-    if (this.stopped) {
-      throw new ExternalAgentServiceError("unavailable", "外部連携サービスは停止済みです。");
+    if (this.stopped || this.context?.context_id !== prepared.context_id) {
+      throw new ExternalAgentServiceError("context_changed", "Asana文脈が変更されたため提案基準が失効しています。");
     }
-    const validatedSnapshot = baselineSnapshotSchema.parse(baseline.baseline_snapshot);
-    this.assertBaselineContext(input, context, baseline);
-    const baselineSnapshotHash = hashBaselineSnapshot(validatedSnapshot);
-    const created = createProposal(
-      input,
-      baselineSnapshotHash,
-      operationId,
-    );
+    const proposal = proposalSchema.parse(input.proposal);
+    const operationIds = proposal.groups.flatMap((group) =>
+      group.operations.map((operation) => operation.operation_id));
+    const evidence = this.collectExternalEvidence(prepared, proposal);
     const basic = validateProposal({
-      proposal: created.proposal,
-      baseline_snapshot_hash: baselineSnapshotHash,
-      managed_tasks: baseline.snapshot.tasks,
-      existing_areas: baseline.snapshot.areas,
-      explicit_split_request_references: [],
-      trusted_status_evidence: [],
+      proposal,
+      baseline_snapshot_hash: prepared.turn_context.baseline_snapshot_hash,
+      managed_tasks: prepared.snapshot.tasks,
+      existing_areas: prepared.snapshot.areas,
+      explicit_split_request_references: [...evidence.split_references],
+      trusted_status_evidence: [...evidence.trusted_status_evidence],
     });
     const graph = validateProposalGraph({
-      proposal: created.proposal,
-      managed_tasks: baseline.snapshot.tasks,
+      proposal,
+      managed_tasks: prepared.snapshot.tasks,
       basic_validation_result: basic,
     });
-    const operationValidation = graph.operations.find((candidate) =>
-      candidate.operation_id === operationId);
-    if (operationValidation?.kind !== "valid") {
-      throw new ExternalAgentServiceError("invalid_request", "外部提案の検証に失敗しました。");
-    }
-    const view = createWorkflowProposalView({
-      proposal_id: proposalId,
-      proposal: created.proposal,
-      snapshot: baseline.snapshot,
-      baseline_snapshot_hash: baselineSnapshotHash,
-      basic_validation: basic,
-      graph_validation: graph,
-      selected_operation_ids: [operationId],
-    });
+    const selectedOperationIds = eligibleOperationIds(proposal, graph);
     const record: ExternalProposalRecord = {
       proposal_id: proposalId,
-      operation_id: operationId,
       request_id: input.request_id,
       instance_id: input.instance_id,
       context_id: input.context_id,
-      snapshot: baseline.snapshot,
-      baseline_snapshot: validatedSnapshot,
-      baseline_external_data: baseline.baseline_external_data,
-      proposal: created.proposal,
+      proposal_context_id: prepared.proposal_context_id,
+      operation_ids: operationIds,
+      source_text: prepared.source_text,
+      evidence_locator_prefix: prepared.evidence_locator_prefix,
+      snapshot: prepared.snapshot,
+      baseline_snapshot: prepared.baseline_snapshot,
+      baseline_external_data: prepared.baseline_external_data,
+      taskctl_snapshot: prepared.taskctl_snapshot,
+      turn_context: prepared.turn_context,
+      proposal,
+      explicit_split_request_references: [...evidence.split_references],
+      trusted_status_evidence: [...evidence.trusted_status_evidence],
       graph_validation: graph,
-      selected_operation_ids: [operationId],
-      view,
+      selected_operation_ids: [...selectedOperationIds],
+      view: createWorkflowProposalView({
+        proposal_id: proposalId,
+        proposal,
+        snapshot: prepared.snapshot,
+        baseline_snapshot_hash: prepared.turn_context.baseline_snapshot_hash,
+        basic_validation: basic,
+        graph_validation: graph,
+        selected_operation_ids: selectedOperationIds,
+      }),
       revision: 1,
       state: { kind: "pending_approval" },
     };
@@ -1056,77 +1204,128 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     return record;
   }
 
-  private assertBaselineContext(
-    input: ExternalAgentCreateInput,
-    context: ExternalAgentContext,
-    baseline: ExternalAgentBaseline,
-  ): void {
-    if (
-      baseline.snapshot.project_gid !== context.project_gid
-      || baseline.baseline_snapshot.project_gid !== context.project_gid
-      || this.context?.context_id !== context.context_id
-    ) {
-      throw new ExternalAgentServiceError("context_changed", "提案作成中にAsana文脈が変更されました。");
+  private collectExternalEvidence(
+    prepared: PreparedExternalContext,
+    proposal: Proposal,
+  ): {
+    readonly split_references: readonly ExplicitSplitRequestReference[];
+    readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
+  } {
+    const splitReferences: ExplicitSplitRequestReference[] = [];
+    const trustedStatusEvidence: TrustedStatusEvidenceReference[] = [];
+    for (const operation of proposal.groups.flatMap((group) => group.operations)) {
+      const locator = createExternalReviewEvidenceLocator(
+        prepared.proposal_context_id,
+        operation.operation_id,
+      );
+      const reference = operation.evidence_refs.find((candidate) =>
+        candidate.kind === "external_review"
+        && candidate.locator === locator
+        && candidate.excerpt != null
+        && candidate.excerpt.trim().length > 0
+        && prepared.source_text.includes(candidate.excerpt));
+      if (reference == null || reference.excerpt == null) {
+        throw new ExternalAgentServiceError("invalid_request", "各操作へ提案原文の根拠を指定してください。");
+      }
+      if (operation.operation === "complete" || operation.operation === "withdraw") {
+        if (
+          operation.target.kind !== "existing"
+          || operation.status_evidence.kind !== "external_review_explicit"
+          || operation.status_evidence.reference.kind !== "external_review"
+          || operation.status_evidence.reference.locator !== locator
+          || operation.status_evidence.reference.excerpt !== reference.excerpt
+        ) {
+          throw new ExternalAgentServiceError("invalid_request", "完了・取り下げ操作の外部根拠が一致しません。");
+        }
+        trustedStatusEvidence.push({
+          kind: "external_review",
+          locator,
+          target_task_gid: operation.target.gid,
+          allowed_operation: operation.operation,
+          excerpt: reference.excerpt,
+        });
+      }
+      if (operation.operation === "create_task" && operation.creation.kind === "split_child") {
+        if (
+          operation.creation.instruction_reference.kind !== "external_review"
+          || operation.creation.instruction_reference.locator !== locator
+          || operation.creation.instruction_reference.excerpt !== reference.excerpt
+        ) {
+          throw new ExternalAgentServiceError("invalid_request", "分割操作の外部根拠が一致しません。");
+        }
+        splitReferences.push({
+          parent: operation.creation.parent,
+          locator,
+          excerpt: reference.excerpt,
+        });
+      }
     }
-    if (input.area != null && !baseline.snapshot.areas.includes(input.area)) {
-      throw new ExternalAgentServiceError("invalid_request", "指定した領域が現在の一覧にありません。");
-    }
+    return {
+      split_references: splitReferences,
+      trusted_status_evidence: trustedStatusEvidence,
+    };
   }
 
   private getProposalStatus(
     proposalId: string,
-    operationId: string,
+    operationIds: readonly string[],
   ): ExternalAgentProposalStatusResponse {
     const parsedProposalId = identifierSchema.parse(proposalId);
-    const parsedOperationId = identifierSchema.parse(operationId);
+    const parsedOperationIds = operationIds.map((operationId) => identifierSchema.parse(operationId));
     const current = this.proposals.get(parsedProposalId);
     if (current != null) {
-      if (current.operation_id !== parsedOperationId) {
-        throw new ExternalAgentServiceError("conflict", "操作IDが提案と一致しません。");
+      if (
+        current.operation_ids.length !== parsedOperationIds.length
+        || current.operation_ids.some((operationId, index) => operationId !== parsedOperationIds[index])
+      ) {
+        throw new ExternalAgentServiceError("conflict", "操作ID集合が提案と一致しません。");
       }
       return externalAgentProposalStatusResponseSchema.parse({
         operation: "proposals.status",
         proposal_id: parsedProposalId,
-        operation_id: parsedOperationId,
+        operation_ids: parsedOperationIds,
         result: externalAgentProposalStatusResultSchema.parse({
           kind: "current",
           proposal: createProposalResult(current),
         }),
       });
     }
-    const request = [...this.requests.values()].find((candidate) =>
-      candidate.proposal_id === parsedProposalId
-      && candidate.operation_id === parsedOperationId);
-    if (request?.kind === "failed") {
-      return externalAgentProposalStatusResponseSchema.parse({
-        operation: "proposals.status",
-        proposal_id: parsedProposalId,
-        operation_id: parsedOperationId,
+    const request = [...this.requests.values()].find((candidate) => candidate.proposal_id === parsedProposalId);
+    const results: ExternalAgentJournalStatus[] = parsedOperationIds.map((operationId) => {
+      if (request?.kind === "failed") {
+        const result: ExternalAgentJournalStatus = {
+          operation_id: operationId,
+          result: {
+            kind: "unknown",
+            reason_code: "journal_result_unknown",
+            message: "提案は受理されましたが、提案本体を作成できませんでした。",
+          },
+        };
+        return result;
+      }
+      const journal = this.options.get_journal(parsedProposalId, operationId);
+      if (journal != null) {
+        const result: ExternalAgentJournalStatus = {
+          operation_id: operationId,
+          result: { kind: "journal", journal },
+        };
+        return result;
+      }
+      const result: ExternalAgentJournalStatus = {
+        operation_id: operationId,
         result: {
           kind: "unknown",
-          reason_code: "journal_result_unknown",
-          message: "提案は受理されましたが、提案本体を作成できませんでした。",
+          reason_code: "journal_not_found",
+          message: "指定操作の適用ジャーナルを確認できません。",
         },
-      });
-    }
-    const journal = this.options.get_journal(parsedProposalId, parsedOperationId);
-    if (journal != null) {
-      return externalAgentProposalStatusResponseSchema.parse({
-        operation: "proposals.status",
-        proposal_id: parsedProposalId,
-        operation_id: parsedOperationId,
-        result: { kind: "journal", journal },
-      });
-    }
+      };
+      return result;
+    });
     return externalAgentProposalStatusResponseSchema.parse({
       operation: "proposals.status",
       proposal_id: parsedProposalId,
-      operation_id: parsedOperationId,
-      result: {
-        kind: "unknown",
-        reason_code: "journal_not_found",
-        message: "提案のメモリ状態と適用ジャーナルを確認できません。",
-      },
+      operation_ids: parsedOperationIds,
+      result: { kind: "journals", results },
     });
   }
 
@@ -1175,6 +1374,81 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     return record;
   }
 
+  private requirePreparedContext(proposalContextId: string): PreparedExternalContext {
+    const parsedContextId = identifierSchema.parse(proposalContextId);
+    const prepared = this.preparedContexts.get(parsedContextId);
+    if (prepared == null) {
+      throw new ExternalAgentServiceError("context_changed", "指定した提案基準が失効しています。");
+    }
+    if (this.context?.context_id !== prepared.context_id) {
+      throw new ExternalAgentServiceError("context_changed", "Asana文脈が変更されたため提案基準が失効しています。");
+    }
+    return prepared;
+  }
+
+  private resolveSelection(
+    record: ExternalProposalRecord,
+    selection: AiWorkflowSelection,
+  ): readonly string[] {
+    try {
+      const selected = resolveSelectedOperationIds(record, aiWorkflowSelectionSchema.parse(selection));
+      assertSelectedProposalGraphIsSafe(record, selected);
+      return selected;
+    } catch (error: unknown) {
+      if (error instanceof AiWorkflowSelectionError) {
+        throw new ExternalAgentServiceError("invalid_request", error.message, error);
+      }
+      throw error;
+    }
+  }
+
+  private assertExternalEvidence(
+    record: ExternalProposalRecord,
+    operationIds: readonly string[],
+  ): {
+    readonly split_references: readonly ExplicitSplitRequestReference[];
+    readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
+  } {
+    const prepared: PreparedExternalContext = {
+      request_id: record.request_id,
+      instance_id: record.instance_id,
+      context_id: record.context_id,
+      project_gid: record.snapshot.project_gid,
+      proposal_context_id: record.proposal_context_id,
+      source_text: record.source_text,
+      evidence_locator_prefix: record.evidence_locator_prefix,
+      snapshot: record.snapshot,
+      baseline_snapshot: record.baseline_snapshot,
+      baseline_external_data: record.baseline_external_data,
+      taskctl_snapshot: record.taskctl_snapshot,
+      turn_context: record.turn_context,
+    };
+    const selected = new Set(operationIds);
+    const selectedProposal: Proposal = {
+      ...record.proposal,
+      groups: record.proposal.groups.map((group) => ({
+        ...group,
+        operations: group.operations.filter((operation) => selected.has(operation.operation_id)),
+      })).filter((group) => group.operations.length > 0),
+    };
+    const validatedProposal = proposalSchema.parse(selectedProposal);
+    const evidence = this.collectExternalEvidence(prepared, validatedProposal);
+    const validation = validateProposal({
+      proposal: validatedProposal,
+      baseline_snapshot_hash: record.turn_context.baseline_snapshot_hash,
+      managed_tasks: record.snapshot.tasks,
+      existing_areas: record.snapshot.areas,
+      explicit_split_request_references: [...evidence.split_references],
+      trusted_status_evidence: [...evidence.trusted_status_evidence],
+    });
+    for (const operation of validation.operations) {
+      if (operation.kind === "invalid") {
+        throw new ExternalAgentServiceError("invalid_request", "承認対象の外部根拠を検証できません。");
+      }
+    }
+    return evidence;
+  }
+
   private assertRevision(record: ExternalProposalRecord, revision: number): void {
     if (record.revision !== revision) {
       throw new ExternalAgentServiceError("stale_revision", "提案の表示版が更新されています。");
@@ -1187,11 +1461,11 @@ export class ExternalAgentService implements IpcExternalAgentPort {
   ): { readonly basic: ProposalValidationResult; readonly graph: GraphValidationResult } {
     const basic = validateProposal({
       proposal,
-      baseline_snapshot_hash: record.view.baseline_snapshot_hash,
+      baseline_snapshot_hash: record.turn_context.baseline_snapshot_hash,
       managed_tasks: record.snapshot.tasks,
       existing_areas: record.snapshot.areas,
-      explicit_split_request_references: [],
-      trusted_status_evidence: [],
+      explicit_split_request_references: [...record.explicit_split_request_references],
+      trusted_status_evidence: [...record.trusted_status_evidence],
     });
     const graph = validateProposalGraph({
       proposal,
@@ -1211,10 +1485,10 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       proposal_id: record.proposal_id,
       proposal,
       snapshot: record.snapshot,
-      baseline_snapshot_hash: record.view.baseline_snapshot_hash,
+      baseline_snapshot_hash: record.turn_context.baseline_snapshot_hash,
       basic_validation: basic,
       graph_validation: graph,
-      selected_operation_ids: [record.operation_id],
+      selected_operation_ids: [...record.selected_operation_ids],
     });
   }
 

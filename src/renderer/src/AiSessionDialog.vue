@@ -12,6 +12,7 @@ import type {
   ExternalAgentGuiApproveInput,
   ExternalAgentGuiEditInput,
   ExternalAgentGuiRejectInput,
+  ExternalAgentGuiSelectInput,
 } from "../../shared/external-agent";
 import type {
   AiSessionFeedback,
@@ -59,6 +60,8 @@ const emit = defineEmits<{
   (event: "external-edit", input: ExternalAgentGuiEditInput): void;
   (event: "external-approve", input: ExternalAgentGuiApproveInput): void;
   (event: "external-reject", input: ExternalAgentGuiRejectInput): void;
+  (event: "external-select", input: ExternalAgentGuiSelectInput): void;
+  (event: "external-select-task", taskGid: string): void;
 }>();
 
 const dialogElement = ref<HTMLElement | null>(null);
@@ -535,10 +538,13 @@ watch(() => props.selectedSessionId, (sessionId) => {
           <ExternalProposalPanel
             :state="props.externalAgentState.value"
             :busy="props.externalAgentBusy"
+            :tasks="props.tasks"
             :edit-result="props.externalAgentEditResult"
             @edit="(input) => emit('external-edit', input)"
             @approve="(input) => emit('external-approve', input)"
             @reject="(input) => emit('external-reject', input)"
+            @select="(input) => emit('external-select', input)"
+            @select-task="(taskGid) => emit('external-select-task', taskGid)"
           />
         </template>
         <p

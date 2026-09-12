@@ -57,11 +57,13 @@ import {
   externalAgentGuiApproveInputSchema,
   externalAgentGuiEditInputSchema,
   externalAgentGuiRejectInputSchema,
+  externalAgentGuiSelectInputSchema,
   externalAgentGuiSetEnabledInputSchema,
   externalAgentGuiStateSchema,
   type ExternalAgentGuiApproveInput,
   type ExternalAgentGuiEditInput,
   type ExternalAgentGuiRejectInput,
+  type ExternalAgentGuiSelectInput,
   type ExternalAgentGuiState,
 } from "../../shared/external-agent";
 import {
@@ -794,6 +796,27 @@ async function editExternalAgentProposal(input: ExternalAgentGuiEditInput): Prom
       revision: input.revision,
     };
     setAiDialogFeedback("failure", "外部提案を更新できませんでした。入力内容を確認して再試行してください。");
+  } finally {
+    externalAgentBusy.value = false;
+  }
+}
+
+async function selectExternalAgentProposal(input: ExternalAgentGuiSelectInput): Promise<void> {
+  if (externalAgentBusy.value) {
+    return;
+  }
+  externalAgentBusy.value = true;
+  setAiDialogFeedback("progress", "外部提案の選択範囲を更新しています。");
+  try {
+    const result = await taskHub.externalAgent.select(externalAgentGuiSelectInputSchema.parse(input));
+    if (isFailure(result)) {
+      setAiDialogFeedback("failure", displayFailure(result).message);
+      return;
+    }
+    applyExternalAgentState(result.value);
+    clearAiDialogFeedback();
+  } catch {
+    showExternalAgentUnexpectedFailure();
   } finally {
     externalAgentBusy.value = false;
   }
@@ -3307,6 +3330,12 @@ function selectAiSessionTask(sessionId: string, taskGid: string): void {
   void selectTask(validTaskGid);
 }
 
+function selectExternalAgentTask(taskGid: string): void {
+  const validTaskGid = gidSchema.parse(taskGid);
+  closeAiAssistant();
+  void selectTask(validTaskGid);
+}
+
 async function loadInitialSyncState(): Promise<void> {
   try {
     const result = await taskHub.sync.getState();
@@ -3535,8 +3564,10 @@ onUnmounted(() => {
       @cancel="cancelAiSession"
       @select-task="selectAiSessionTask"
       @external-edit="editExternalAgentProposal"
+      @external-select="selectExternalAgentProposal"
       @external-approve="approveExternalAgentProposal"
       @external-reject="rejectExternalAgentProposal"
+      @external-select-task="selectExternalAgentTask"
     />
     <main class="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5 lg:flex-1 lg:min-h-0 lg:px-6">
       <p

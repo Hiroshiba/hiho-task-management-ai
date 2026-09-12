@@ -164,7 +164,7 @@ const editableCreateFieldsSchema = z
   })
   .strict();
 
-const editableAfterSchema = z.union([
+export const aiWorkflowOperationAfterSchema = z.union([
   createUtf8ByteLimitedStringSchema(maximumWorkflowNoteBytes),
   importanceSchema,
   targetSchema,
@@ -181,7 +181,7 @@ export const aiWorkflowOperationEditSchema = z
   .object({
     proposal_id: identifierSchema,
     operation_id: identifierSchema,
-    after: editableAfterSchema,
+    after: aiWorkflowOperationAfterSchema,
     evidence_locator: nonBlankLocatorSchema,
   })
   .strict();
