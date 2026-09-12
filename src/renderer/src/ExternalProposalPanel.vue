@@ -4,42 +4,44 @@ import {
   externalAgentGuiApproveInputSchema,
   externalAgentGuiEditInputSchema,
   externalAgentGuiRejectInputSchema,
+  externalAgentGuiSelectInputSchema,
   type ExternalAgentGuiApproveInput,
   type ExternalAgentGuiEditInput,
   type ExternalAgentGuiRejectInput,
+  type ExternalAgentGuiSelectInput,
   type ExternalAgentGuiState,
   type ExternalAgentProposal,
   type ExternalAgentProposalStatus,
 } from "../../shared/external-agent";
-import type { ProposalOperation } from "../../shared/ai";
-import type { AiWorkflowProposalView } from "../../shared/ai-workflow";
+import {
+  type AiWorkflowApprovalRequest,
+  type AiWorkflowOperationEdit,
+  type AiWorkflowSelectionRequest,
+} from "../../shared/ai-workflow";
 import type { RendererExternalAgentEditResult } from "./state";
-import { durationLabel } from "./duration";
-import ProposalOperationEditor from "./ProposalOperationEditor.vue";
+import ProposalReviewPanel from "./ProposalReviewPanel.vue";
 
-type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
-type Validation = AiWorkflowProposalView["basic_validation"]["operations"][number];
-type ExternalProposalEdit = {
-  readonly proposal_id: string;
-  readonly operation: CreateTaskOperation;
-  readonly revision: number;
+type TaskTitleReference = {
+  readonly gid: string;
+  readonly title: string;
 };
 
 const props = defineProps<{
   state: ExternalAgentGuiState;
   busy: boolean;
+  tasks: readonly TaskTitleReference[];
   editResult?: RendererExternalAgentEditResult | undefined;
 }>();
 
 const emit = defineEmits<{
+  (event: "select", input: ExternalAgentGuiSelectInput): void;
   (event: "edit", input: ExternalAgentGuiEditInput): void;
   (event: "approve", input: ExternalAgentGuiApproveInput): void;
   (event: "reject", input: ExternalAgentGuiRejectInput): void;
+  (event: "select-task", taskGid: string): void;
 }>();
 
 const selectedProposalId = ref<string | undefined>();
-const editingProposal = ref<ExternalProposalEdit | undefined>();
-const editingProposalId = computed(() => editingProposal.value?.proposal_id);
 
 const selectedProposal = computed(() => {
   const selectedId = selectedProposalId.value;
@@ -52,23 +54,9 @@ const selectedProposal = computed(() => {
   return props.state.proposals[0];
 });
 
-const createOperation = computed<CreateTaskOperation | undefined>(() => {
-  const proposal = selectedProposal.value;
-  if (proposal == null) {
-    return undefined;
-  }
-  return proposal.view.proposal.groups
-    .flatMap((group) => group.operations)
-    .find((operation): operation is CreateTaskOperation => operation.operation === "create_task");
-});
-
 watch(
   () => props.state.proposals.map((proposal) => proposal.proposal_id),
   (proposalIds) => {
-    const editing = editingProposal.value;
-    if (editing != null && !proposalIds.includes(editing.proposal_id)) {
-      editingProposal.value = undefined;
-    }
     const currentId = selectedProposalId.value;
     if (currentId != null && proposalIds.includes(currentId)) {
       return;
@@ -89,43 +77,12 @@ watch(
       throw new Error("外部提案の確認対象がありません。");
     }
     selectedProposalId.value = target.proposal_id;
-    editingProposal.value = undefined;
   },
   { immediate: true },
 );
 
-watch(
-  () => props.editResult,
-  (result) => {
-    if (result == null || result.kind !== "saved") {
-      return;
-    }
-    const editing = editingProposal.value;
-    if (editing == null
-      || editing.proposal_id !== result.proposal_id
-      || editing.revision !== result.revision) {
-      return;
-    }
-    editingProposal.value = undefined;
-  },
-);
-
-function createOperationFor(proposal: ExternalAgentProposal): CreateTaskOperation | undefined {
-  return proposal.view.proposal.groups
-    .flatMap((group) => group.operations)
-    .find((operation): operation is CreateTaskOperation => operation.operation === "create_task");
-}
-
-function requireCreateOperationFor(proposal: ExternalAgentProposal): CreateTaskOperation {
-  const operation = createOperationFor(proposal);
-  if (operation == null) {
-    throw new Error("外部提案にタスク作成操作がありません。");
-  }
-  return operation;
-}
-
 function proposalTitle(proposal: ExternalAgentProposal): string {
-  return requireCreateOperationFor(proposal).after.title;
+  return proposal.view.proposal.title;
 }
 
 function proposalStatusLabel(status: ExternalAgentProposalStatus): string {
@@ -180,15 +137,15 @@ function applicationOutcomeLabel(
 ): string {
   switch (outcome) {
     case "applied":
-      return "登録済み";
+      return "反映済み";
     case "already_applied":
-      return "既に登録済み";
+      return "既に反映済み";
     case "not_applied":
-      return "未登録";
+      return "未反映";
     case "partially_applied":
-      return "一部登録";
+      return "一部反映";
     case "unknown":
-      return "登録結果不明";
+      return "反映結果不明";
   }
 }
 
@@ -215,55 +172,60 @@ function requireSelectedProposal(): ExternalAgentProposal {
   return proposal;
 }
 
-function requireEditingProposal(): ExternalProposalEdit {
-  const editing = editingProposal.value;
-  if (editing == null) {
-    throw new Error("編集中の外部提案がありません。");
+function requirePendingProposal(): ExternalAgentProposal {
+  const proposal = requireSelectedProposal();
+  if (proposal.state.kind !== "pending_approval") {
+    throw new Error("承認待ちではない外部提案を操作できません。");
   }
-  return editing;
+  return proposal;
 }
 
-function requireCreateOperation(): CreateTaskOperation {
-  return requireCreateOperationFor(requireSelectedProposal());
+function selectListedProposal(proposalId: string): void {
+  selectedProposalId.value = proposalId;
 }
 
-function validationFor(
-  proposal: ExternalAgentProposal,
-  kind: "basic" | "graph",
-): Validation {
-  const validation = kind === "basic"
-    ? proposal.view.basic_validation
-    : proposal.view.graph_validation;
-  const operation = validation.operations.find((candidate) =>
-    candidate.operation_id === proposal.operation_id);
-  if (operation == null) {
-    throw new Error(`${kind}検証に外部提案の操作結果がありません。`);
-  }
-  return operation;
+function selectTask(taskGid: string): void {
+  emit("select-task", taskGid);
 }
 
-function validationLabel(validation: Validation): string {
-  return validation.kind === "valid" ? "有効" : "要確認";
+function select(input: AiWorkflowSelectionRequest): void {
+  const proposal = requirePendingProposal();
+  const parsedInput = externalAgentGuiSelectInputSchema.parse({
+    proposal_id: input.proposal_id,
+    revision: proposal.revision,
+    selection: input.selection,
+  });
+  emit("select", parsedInput);
 }
 
-function validationDetail(validation: Validation): string {
-  if (validation.kind === "valid") {
-    return "検証済み";
-  }
-  return validation.errors.map((error) => error.message).join("、");
+function edit(input: AiWorkflowOperationEdit): void {
+  const proposal = requirePendingProposal();
+  const parsedInput = externalAgentGuiEditInputSchema.parse({
+    proposal_id: input.proposal_id,
+    operation_id: input.operation_id,
+    revision: proposal.revision,
+    after: input.after,
+    evidence_locator: input.evidence_locator,
+  });
+  emit("edit", parsedInput);
 }
 
-function statusLabel(status: "not_started" | "in_progress"): string {
-  return status === "not_started" ? "未着手" : "進行中";
+function approve(input: AiWorkflowApprovalRequest): void {
+  const proposal = requirePendingProposal();
+  const parsedInput = externalAgentGuiApproveInputSchema.parse({
+    proposal_id: input.proposal_id,
+    revision: proposal.revision,
+    selection: input.selection,
+  });
+  emit("approve", parsedInput);
 }
 
-function operationStatusLabel(operation: CreateTaskOperation): string {
-  return operation.after.status == null ? "指定なし" : statusLabel(operation.after.status);
-}
-
-function notesLabel(operation: CreateTaskOperation): string {
-  const notes = operation.after.notes;
-  return notes == null || notes.length === 0 ? "なし" : notes;
+function reject(): void {
+  const proposal = requirePendingProposal();
+  emit("reject", externalAgentGuiRejectInputSchema.parse({
+    proposal_id: proposal.proposal_id,
+    revision: proposal.revision,
+  }));
 }
 
 function finishedOutcomeLabel(proposal: ExternalAgentProposal): string {
@@ -278,64 +240,6 @@ function finishedOutcomeClass(proposal: ExternalAgentProposal): string {
     throw new Error("完了していない外部提案の結果を表示できません。");
   }
   return applicationOutcomeClass(proposal.state.result.application.outcome);
-}
-
-function dueLabel(due: CreateTaskOperation["after"]["due"]): string {
-  if (due == null) {
-    return "指定なし";
-  }
-  return due.kind === "due_on" ? due.due_on : `${due.due_at} UTC`;
-}
-
-function durationLabelFor(operation: CreateTaskOperation): string {
-  const duration = operation.after.duration;
-  if (duration == null) {
-    throw new Error("所要時間がありません。");
-  }
-  return durationLabel(duration);
-}
-
-function selectProposal(proposalId: string): void {
-  selectedProposalId.value = proposalId;
-  editingProposal.value = undefined;
-}
-
-function startEditing(): void {
-  const proposal = requireSelectedProposal();
-  const operation = createOperation.value;
-  if (proposal.state.kind !== "pending_approval" || operation == null) {
-    return;
-  }
-  editingProposal.value = {
-    proposal_id: proposal.proposal_id,
-    operation,
-    revision: proposal.revision,
-  };
-}
-
-function cancelEditing(): void {
-  editingProposal.value = undefined;
-}
-
-function edit(input: ExternalAgentGuiEditInput): void {
-  const parsedInput = externalAgentGuiEditInputSchema.parse(input);
-  emit("edit", parsedInput);
-}
-
-function approve(): void {
-  const proposal = requireSelectedProposal();
-  emit("approve", externalAgentGuiApproveInputSchema.parse({
-    proposal_id: proposal.proposal_id,
-    revision: proposal.revision,
-  }));
-}
-
-function reject(): void {
-  const proposal = requireSelectedProposal();
-  emit("reject", externalAgentGuiRejectInputSchema.parse({
-    proposal_id: proposal.proposal_id,
-    revision: proposal.revision,
-  }));
 }
 </script>
 
@@ -369,7 +273,7 @@ function reject(): void {
               :class="proposal.proposal_id === selectedProposal?.proposal_id
                 ? 'border-sky-500 bg-sky-50 dark:border-sky-400 dark:bg-sky-950'
                 : 'border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800'"
-              @click="selectProposal(proposal.proposal_id)"
+              @click="selectListedProposal(proposal.proposal_id)"
             >
               <span class="block truncate text-sm font-medium text-slate-900 dark:text-slate-100">
                 {{ proposalTitle(proposal) }}
@@ -410,103 +314,20 @@ function reject(): void {
             </span>
           </div>
 
-          <div
-            v-if="createOperation == null"
-            class="mt-4 rounded-md bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-100"
-            role="alert"
-          >
-            新規タスク作成の提案を表示できません。
-          </div>
-          <template v-else>
-            <dl class="mt-4 grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-4">
-              <dt class="text-slate-600 dark:text-slate-400">
-                作成内容
-              </dt>
-              <dd class="min-w-0 break-words text-slate-800 dark:text-slate-100">
-                <ul class="space-y-1">
-                  <li>タイトル: {{ requireCreateOperation().after.title }}</li>
-                  <li v-if="requireCreateOperation().after.notes != null">
-                    説明: {{ notesLabel(requireCreateOperation()) }}
-                  </li>
-                  <li>状態: {{ operationStatusLabel(requireCreateOperation()) }}</li>
-                  <li v-if="requireCreateOperation().after.importance != null">
-                    重要度: {{ requireCreateOperation().after.importance }}
-                  </li>
-                  <li v-if="requireCreateOperation().after.area != null">
-                    領域: {{ requireCreateOperation().after.area }}
-                  </li>
-                  <li v-if="requireCreateOperation().after.due != null">
-                    期限: {{ dueLabel(requireCreateOperation().after.due) }}
-                  </li>
-                  <li v-if="requireCreateOperation().after.duration != null">
-                    所要時間: {{ durationLabelFor(requireCreateOperation()) }}
-                  </li>
-                </ul>
-              </dd>
-              <dt class="text-slate-600 dark:text-slate-400">
-                理由
-              </dt>
-              <dd class="min-w-0 break-words text-slate-800 dark:text-slate-100">
-                {{ requireCreateOperation().reason }}
-              </dd>
-              <dt class="text-slate-600 dark:text-slate-400">
-                確信度
-              </dt>
-              <dd class="text-slate-800 dark:text-slate-100">
-                {{ Math.round(requireCreateOperation().confidence * 100) }}%
-              </dd>
-              <dt class="text-slate-600 dark:text-slate-400">
-                検証結果
-              </dt>
-              <dd class="min-w-0 break-words text-slate-800 dark:text-slate-100">
-                基本: {{ validationLabel(validationFor(requireSelectedProposal(), 'basic')) }}・グラフ: {{ validationLabel(validationFor(requireSelectedProposal(), 'graph')) }}
-                <span class="mt-1 block text-xs text-slate-600 dark:text-slate-400">基本: {{ validationDetail(validationFor(requireSelectedProposal(), 'basic')) }} / グラフ: {{ validationDetail(validationFor(requireSelectedProposal(), 'graph')) }}</span>
-              </dd>
-            </dl>
-
-            <ProposalOperationEditor
-              v-if="editingProposalId === requireSelectedProposal().proposal_id"
-              class="mt-4 border-t border-slate-200 pt-4 dark:border-slate-700"
-              :operation="requireEditingProposal().operation"
-              :proposal-id="requireEditingProposal().proposal_id"
-              :tasks="[]"
-              :creations="[]"
-              :disabled="props.busy"
-              :mode="{ kind: 'external-create', revision: requireEditingProposal().revision }"
-              @external-save="edit"
-              @cancel="cancelEditing"
-            />
-
-            <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
-              <button
-                v-if="requireSelectedProposal().state.kind === 'pending_approval' && editingProposalId !== requireSelectedProposal().proposal_id"
-                type="button"
-                class="secondary-button"
-                :disabled="props.busy"
-                @click="startEditing"
-              >
-                作成内容を編集
-              </button>
-              <button
-                v-if="requireSelectedProposal().state.kind === 'pending_approval'"
-                type="button"
-                class="primary-button"
-                :disabled="props.busy || editingProposalId === requireSelectedProposal().proposal_id"
-                @click="approve"
-              >
-                {{ props.busy ? '処理中' : '承認して登録' }}
-              </button>
-              <button
-                v-if="requireSelectedProposal().state.kind === 'pending_approval'"
-                type="button"
-                class="secondary-button"
-                :disabled="props.busy || editingProposalId === requireSelectedProposal().proposal_id"
-                @click="reject"
-              >
-                却下
-              </button>
-            </div>
-          </template>
+          <ProposalReviewPanel
+            class="mt-4"
+            :proposal="requireSelectedProposal().view"
+            :tasks="props.tasks"
+            :can-write="requireSelectedProposal().state.kind === 'pending_approval' && !props.busy"
+            :review-mode="requireSelectedProposal().state.kind === 'pending_approval' ? 'interactive' : 'read-only'"
+            :defer-edit-close="true"
+            :edit-result="props.editResult"
+            @select="select"
+            @edit="edit"
+            @approve="approve"
+            @reject="reject"
+            @select-task="selectTask"
+          />
 
           <div
             v-if="requireSelectedProposal().state.kind === 'finished'"
@@ -514,7 +335,7 @@ function reject(): void {
             :class="finishedOutcomeClass(requireSelectedProposal())"
             role="status"
           >
-            登録結果: {{ finishedOutcomeLabel(requireSelectedProposal()) }}
+            反映結果: {{ finishedOutcomeLabel(requireSelectedProposal()) }}
           </div>
           <div
             v-else-if="requireSelectedProposal().state.kind === 'expired' || requireSelectedProposal().state.kind === 'failed' || requireSelectedProposal().state.kind === 'unknown'"
