@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   areaSchema,
+  createUtf8ByteLimitedStringSchema,
   gidSchema,
   identifierSchema,
   snapshotHashSchema,
@@ -26,11 +27,18 @@ const nonBlankLocatorSchema = z.string().refine((value) => value.trim().length >
 
 const maximumManagedTasks = 10000;
 const maximumExistingAreas = 256;
-const maximumSplitRequestLocators = 256;
+const maximumSplitRequestReferences = 256;
 const maximumTrustedStatusEvidenceReferences = 110_257;
+const maximumEvidenceBytes = 4 * 1024;
+const evidenceExcerptSchema = createUtf8ByteLimitedStringSchema(maximumEvidenceBytes).optional();
+const explicitSplitRequestExcerptSchema = createUtf8ByteLimitedStringSchema(
+  maximumEvidenceBytes,
+).refine((value) => value.trim().length > 0, {
+  message: "分割依頼の根拠抜粋を空にできません。",
+});
 
 /** タスク根拠の正規locatorを作成します。 */
-export function createTaskEvidenceLocator(taskGid: string): string {
+function createTaskEvidenceLocator(taskGid: string): string {
   return `task:${gidSchema.parse(taskGid)}`;
 }
 
@@ -47,6 +55,7 @@ export const trustedStatusEvidenceReferenceSchema = z.discriminatedUnion("kind",
       locator: nonBlankLocatorSchema,
       target_task_gid: gidSchema,
       allowed_operation: z.enum(["complete", "withdraw"]),
+      excerpt: evidenceExcerptSchema,
     })
     .strict(),
   z
@@ -59,6 +68,7 @@ export const trustedStatusEvidenceReferenceSchema = z.discriminatedUnion("kind",
         "explicit_text",
         "children_only_all_completed",
       ]),
+      excerpt: evidenceExcerptSchema,
     })
     .strict()
     .superRefine((reference, context) => {
@@ -139,21 +149,48 @@ const existingAreasSchema = z
     });
   });
 
-const explicitSplitRequestLocatorsSchema = z
-  .array(nonBlankLocatorSchema)
-  .max(maximumSplitRequestLocators)
-  .superRefine((locators, context) => {
+const explicitSplitRequestParentSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("existing"),
+      gid: gidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("temporary"),
+      ref: identifierSchema,
+    })
+    .strict(),
+]);
+
+const explicitSplitRequestReferenceSchema = z
+  .object({
+    parent: explicitSplitRequestParentSchema,
+    locator: nonBlankLocatorSchema,
+    excerpt: explicitSplitRequestExcerptSchema,
+  })
+  .strict();
+
+const explicitSplitRequestReferencesSchema = z
+  .array(explicitSplitRequestReferenceSchema)
+  .max(maximumSplitRequestReferences)
+  .superRefine((references, context) => {
     const seen = new Set<string>();
-    locators.forEach((locator, index) => {
-      if (seen.has(locator)) {
+    references.forEach((reference, index) => {
+      const parent = reference.parent.kind === "existing"
+        ? `existing:${reference.parent.gid}`
+        : `temporary:${reference.parent.ref}`;
+      const key = `${parent}\u0000${reference.locator}\u0000${reference.excerpt}`;
+      if (seen.has(key)) {
         context.addIssue({
           code: "custom",
           path: [index],
-          message: `分割依頼locator ${locator} が重複しています。`,
+          message: `分割依頼根拠 ${reference.locator} が重複しています。`,
         });
         return;
       }
-      seen.add(locator);
+      seen.add(key);
     });
   });
 
@@ -164,7 +201,7 @@ export const proposalValidationInputSchema = z
     baseline_snapshot_hash: snapshotHashSchema,
     managed_tasks: managedTasksSchema,
     existing_areas: existingAreasSchema,
-    explicit_split_request_locators: explicitSplitRequestLocatorsSchema,
+    explicit_split_request_references: explicitSplitRequestReferencesSchema,
     trusted_status_evidence: trustedStatusEvidenceReferencesSchema,
   })
   .strict();
@@ -354,6 +391,9 @@ export type ProposalValidationResult = z.infer<
 >;
 export type TrustedStatusEvidenceReference = z.infer<
   typeof trustedStatusEvidenceReferenceSchema
+>;
+export type ExplicitSplitRequestReference = z.infer<
+  typeof explicitSplitRequestReferenceSchema
 >;
 
 type ProposalTarget = Extract<
@@ -788,12 +828,15 @@ function validateStatusEvidence(
       || trustedReference?.kind !== "user_message"
       || trustedReference.target_task_gid !== operation.target.gid
       || trustedReference.allowed_operation !== operation.operation
+      || trustedReference.excerpt == null
+      || evidence.reference.excerpt == null
+      || trustedReference.excerpt !== evidence.reference.excerpt
     ) {
       addError(
         errorsByOperation,
         operation.operation_id,
         "status_evidence_invalid",
-        "利用者の明示根拠は対象タスクと操作種別が固定検証済みの当該ターン記録に一致しません。",
+        "利用者の発言と、完了・取り下げの対象・操作の対応を確認できません。",
       );
     }
     return;
@@ -814,12 +857,15 @@ function validateStatusEvidence(
       || trustedReference.validation_kind !== "explicit_text"
       || trustedReference.target_task_gid !== operation.target.gid
       || trustedReference.allowed_operation !== operation.operation
+      || trustedReference.excerpt == null
+      || evidence.reference.excerpt == null
+      || trustedReference.excerpt !== evidence.reference.excerpt
     ) {
       addError(
         errorsByOperation,
         operation.operation_id,
         "status_evidence_invalid",
-        "タスク本文の明示根拠は対象タスクと操作種別が固定検証済みの当該ターン記録に一致しません。Obsidian本文はこの検証境界では根拠にできません。",
+        "対象タスクのnotesと、完了・取り下げの対象・操作の対応を確認できません。Obsidian本文は完了・取り下げの根拠に使用できません。",
       );
     }
     return;
@@ -1112,7 +1158,10 @@ function validateOperation(
   baselineSnapshotHash: string,
   managedTasks: ReadonlyMap<string, Task>,
   existingAreas: ReadonlySet<string>,
-  explicitSplitRequestLocators: ReadonlySet<string>,
+  explicitSplitRequestReferences: ReadonlyMap<
+    string,
+    readonly ExplicitSplitRequestReference[]
+  >,
   trustedStatusEvidence: ReadonlyMap<string, TrustedStatusEvidenceReference>,
   createdTemporaryRefs: ReadonlySet<string>,
   temporaryTaskStates: ReadonlyMap<string, TaskState>,
@@ -1140,15 +1189,30 @@ function validateOperation(
       operation.operation_id,
       errorsByOperation,
     );
-    if (
-      operation.creation.kind === "split_child"
-      && !explicitSplitRequestLocators.has(operation.creation.instruction_reference.locator)
-    ) {
+    if (operation.creation.kind === "split_child") {
+      const references = explicitSplitRequestReferences.get(
+        operation.creation.instruction_reference.locator,
+      ) ?? [];
+      const excerpt = operation.creation.instruction_reference.excerpt;
+      const parent = operation.creation.parent;
+      const matched = excerpt != null && references.some((reference) => {
+        if (parent.kind === "existing") {
+          return reference.parent.kind === "existing"
+            && reference.parent.gid === parent.gid
+            && reference.excerpt === excerpt;
+        }
+        return reference.parent.kind === "temporary"
+          && reference.parent.ref === parent.ref
+          && reference.excerpt === excerpt;
+      });
+      if (matched) {
+        return;
+      }
       addError(
         errorsByOperation,
         operation.operation_id,
         "split_request_not_explicit",
-        "分割作成の根拠locatorが利用者の明示的な分割依頼に含まれていません。",
+        "分割の指示と、作成する子タスクの親との対応を確認できません。",
       );
     }
     return;
@@ -1240,9 +1304,18 @@ export function validateProposal(
     managedTasks.set(task.gid, task);
   }
   const existingAreas = new Set(parsedInput.existing_areas);
-  const explicitSplitRequestLocators = new Set(
-    parsedInput.explicit_split_request_locators,
-  );
+  const explicitSplitRequestReferences = new Map<
+    string,
+    ExplicitSplitRequestReference[]
+  >();
+  for (const reference of parsedInput.explicit_split_request_references) {
+    const references = explicitSplitRequestReferences.get(reference.locator);
+    if (references == null) {
+      explicitSplitRequestReferences.set(reference.locator, [reference]);
+      continue;
+    }
+    references.push(reference);
+  }
   const trustedStatusEvidence = new Map<string, TrustedStatusEvidenceReference>();
   for (const reference of parsedInput.trusted_status_evidence) {
     trustedStatusEvidence.set(`${reference.kind}\u0000${reference.locator}`, reference);
@@ -1260,7 +1333,7 @@ export function validateProposal(
       parsedInput.baseline_snapshot_hash,
       managedTasks,
       existingAreas,
-      explicitSplitRequestLocators,
+      explicitSplitRequestReferences,
       trustedStatusEvidence,
       createdTemporaryRefs,
       temporaryTaskStates,

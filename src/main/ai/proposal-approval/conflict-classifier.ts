@@ -1267,6 +1267,7 @@ function classifyCreateTask(
 
 function classifyNonCreateOperation(
   operation: NonCreateOperation,
+  baselineTasks: ReadonlyMap<string, Task>,
   currentTasks: ReadonlyMap<string, Task>,
   writableExternalDataTaskGids: ReadonlySet<string>,
   resolutions: ReadonlyMap<string, TemporaryResolution>,
@@ -1320,6 +1321,9 @@ function classifyNonCreateOperation(
     return conflictClassification(affected, ["field_changed"]);
   }
   if (operationBeforeMatches(operation, task, resolutions)) {
+    if (!taskNotesEvidenceMatchesBaseline(operation, baselineTasks, task)) {
+      return conflictClassification(affected, ["field_changed"]);
+    }
     return { kind: "applicable", affected_task_gids: affected };
   }
   if (operationAfterMatches(operation, task, resolutions)) {
@@ -1328,8 +1332,26 @@ function classifyNonCreateOperation(
   return conflictClassification(affected, ["field_changed"]);
 }
 
+function taskNotesEvidenceMatchesBaseline(
+  operation: NonCreateOperation,
+  baselineTasks: ReadonlyMap<string, Task>,
+  currentTask: ComparableTask,
+): boolean {
+  if (
+    (operation.operation !== "complete" && operation.operation !== "withdraw")
+    || operation.status_evidence.kind !== "task_or_note_explicit"
+    || operation.status_evidence.reference.kind !== "task"
+    || operation.target.kind !== "existing"
+  ) {
+    return true;
+  }
+  const baselineTask = baselineTasks.get(operation.target.gid);
+  return baselineTask != null && baselineTask.notes === currentTask.notes;
+}
+
 function classifyOperation(
   operation: ProposalOperation,
+  baselineTasks: ReadonlyMap<string, Task>,
   currentTasks: ReadonlyMap<string, Task>,
   writableExternalDataTaskGids: ReadonlySet<string>,
   journalMappings: ReadonlyMap<string, JournalTaskMapping>,
@@ -1347,6 +1369,7 @@ function classifyOperation(
   }
   return classifyNonCreateOperation(
     operation,
+    baselineTasks,
     currentTasks,
     writableExternalDataTaskGids,
     resolutions,
@@ -1501,6 +1524,7 @@ export function classifyProposalConflicts(
       context.operation.operation_id,
       classifyOperation(
         context.operation,
+        baselineTasks,
         currentTasks,
         writableExternalDataTaskGids,
         journalMappings,

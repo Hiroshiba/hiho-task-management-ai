@@ -1013,7 +1013,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       baseline_snapshot_hash: baselineSnapshotHash,
       managed_tasks: baseline.snapshot.tasks,
       existing_areas: baseline.snapshot.areas,
-      explicit_split_request_locators: [],
+      explicit_split_request_references: [],
       trusted_status_evidence: [],
     });
     const graph = validateProposalGraph({
@@ -1190,7 +1190,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       baseline_snapshot_hash: record.view.baseline_snapshot_hash,
       managed_tasks: record.snapshot.tasks,
       existing_areas: record.snapshot.areas,
-      explicit_split_request_locators: [],
+      explicit_split_request_references: [],
       trusted_status_evidence: [],
     });
     const graph = validateProposalGraph({

@@ -164,6 +164,10 @@ const AUTHORIZATION_EXPIRES_AT = "2026-12-31T23:59:59.000Z";
 const SNAPSHOT_HASH = "0".repeat(64);
 const GROUP_ID = "mock-group";
 const OPERATION_ID = "mock-operation";
+const COMPLETE_GROUP_ID = "mock-complete-group";
+const COMPLETE_OPERATION_ID = "mock-complete-operation";
+const SPLIT_GROUP_ID = "mock-split-group";
+const SPLIT_OPERATION_ID = "mock-split-operation";
 const DURATION_OPERATION_ID = "mock-duration-operation";
 const PROPOSAL_ID = "mock-proposal";
 const EXTERNAL_GROUP_ID = "mock-external-group";
@@ -176,6 +180,12 @@ const TASK_GIDS = [
   "mock-task-3",
   "mock-task-4",
   "mock-task-5",
+];
+const AI_OPERATION_IDS = [
+  OPERATION_ID,
+  DURATION_OPERATION_ID,
+  COMPLETE_OPERATION_ID,
+  SPLIT_OPERATION_ID,
 ];
 
 function ok<T>(value: T): MockResult<T> {
@@ -663,7 +673,11 @@ function createProposalView(detail: ViewModelTaskDetail): IpcAiProposalView {
           reason: "画面確認用の固定提案です。",
           basis: "explicit",
           confidence: 1,
-          evidence_refs: [{ kind: "user_message", locator: "mock" }],
+          evidence_refs: [{
+            kind: "user_message",
+            locator: "mock-title-request",
+            excerpt: "今日の集中タスクのタイトルを整理してください。",
+          }],
           target: { kind: "existing", gid: PRIMARY_TASK_GID },
           before: detail.title,
           after: "画面確認用に整理しました",
@@ -679,42 +693,142 @@ function createProposalView(detail: ViewModelTaskDetail): IpcAiProposalView {
           before: detail.duration ?? { kind: "absent" },
           after: { value: 1, unit: "week" },
         }],
+      }, {
+        group_id: COMPLETE_GROUP_ID,
+        atomic: false,
+        operations: [{
+          operation: "complete",
+          operation_id: COMPLETE_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "週次レビューの完了を明示しています。",
+          basis: "explicit",
+          confidence: 1,
+          evidence_refs: [{
+            kind: "user_message",
+            locator: "mock-complete-request",
+            excerpt: "週次レビューが終わったので、完了にしてください。",
+          }],
+          target: { kind: "existing", gid: "mock-task-2" },
+          before: "not_started",
+          after: "completed",
+          status_evidence: {
+            kind: "user_explicit",
+            reference: {
+              kind: "user_message",
+              locator: "mock-complete-request",
+              excerpt: "週次レビューが終わったので、完了にしてください。",
+            },
+          },
+        }],
+      }, {
+        group_id: SPLIT_GROUP_ID,
+        atomic: false,
+        operations: [{
+          operation: "create_task",
+          operation_id: SPLIT_OPERATION_ID,
+          baseline_snapshot_hash: SNAPSHOT_HASH,
+          reason: "集中タスクを調査用の子タスクへ分ける明示依頼です。",
+          basis: "explicit",
+          confidence: 1,
+          evidence_refs: [{
+            kind: "user_message",
+            locator: "mock-split-request",
+            excerpt: "今日の集中タスクを調査用の子タスクに分けてください。",
+          }],
+          temporary_ref: "mock-split-child",
+          creation: {
+            kind: "split_child",
+            parent: { kind: "existing", gid: PRIMARY_TASK_GID },
+            instruction_reference: {
+              kind: "user_message",
+              locator: "mock-split-request",
+              excerpt: "今日の集中タスクを調査用の子タスクに分けてください。",
+            },
+          },
+          before: { kind: "absent" },
+          after: {
+            title: "集中タスクの調査",
+            notes: "集中タスクを進めるための調査です。",
+            status: "not_started",
+            importance: 5,
+            area: "開発",
+            duration: { value: 1, unit: "hour" },
+            parent: { kind: "existing", gid: PRIMARY_TASK_GID },
+          },
+        }],
       }],
     },
     basic_validation: {
       operations: [
         { kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID },
         { kind: "valid", group_id: GROUP_ID, operation_id: DURATION_OPERATION_ID },
+        { kind: "valid", group_id: COMPLETE_GROUP_ID, operation_id: COMPLETE_OPERATION_ID },
+        { kind: "valid", group_id: SPLIT_GROUP_ID, operation_id: SPLIT_OPERATION_ID },
       ],
-      groups: [{
-        group_id: GROUP_ID,
-        atomic: false,
-        applicable: true,
-        operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
-      }],
+      groups: [
+        {
+          group_id: GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
+        },
+        {
+          group_id: COMPLETE_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [COMPLETE_OPERATION_ID],
+        },
+        {
+          group_id: SPLIT_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [SPLIT_OPERATION_ID],
+        },
+      ],
     },
     graph_validation: {
       operations: [
         { kind: "valid", group_id: GROUP_ID, operation_id: OPERATION_ID },
         { kind: "valid", group_id: GROUP_ID, operation_id: DURATION_OPERATION_ID },
+        { kind: "valid", group_id: COMPLETE_GROUP_ID, operation_id: COMPLETE_OPERATION_ID },
+        { kind: "valid", group_id: SPLIT_GROUP_ID, operation_id: SPLIT_OPERATION_ID },
       ],
-      groups: [{
-        group_id: GROUP_ID,
-        atomic: false,
-        applicable: true,
-        operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
-      }],
+      groups: [
+        {
+          group_id: GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
+        },
+        {
+          group_id: COMPLETE_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [COMPLETE_OPERATION_ID],
+        },
+        {
+          group_id: SPLIT_GROUP_ID,
+          atomic: false,
+          applicable: true,
+          operation_ids: [SPLIT_OPERATION_ID],
+        },
+      ],
     },
     selected_operation_ids: [OPERATION_ID, DURATION_OPERATION_ID],
     impact: {
-      impacted_task_count: 1,
-      impacted_task_gids: [PRIMARY_TASK_GID],
+      impacted_task_count: 2,
+      impacted_task_gids: [PRIMARY_TASK_GID, "mock-task-2"],
       rank_changes: [{
         task_gid: PRIMARY_TASK_GID,
         before_state: "ranked",
         before_rank: 1,
         after_state: "ranked",
         after_rank: 1,
+      }, {
+        task_gid: "mock-task-2",
+        before_state: "ranked",
+        before_rank: 2,
+        after_state: "excluded",
       }],
     },
   });
@@ -797,14 +911,22 @@ function createExternalProposal(): IpcExternalAgentGuiState["proposals"][number]
 function selectedOperationIds(selection: IpcAiSelectionInput["selection"]): string[] {
   switch (selection.kind) {
     case "all":
-      return [OPERATION_ID, DURATION_OPERATION_ID];
+      return [...AI_OPERATION_IDS];
     case "groups":
-      return selection.group_ids.includes(GROUP_ID)
-        ? [OPERATION_ID, DURATION_OPERATION_ID]
-        : [];
+      return selection.group_ids.flatMap((groupId) => {
+        switch (groupId) {
+          case GROUP_ID:
+            return [OPERATION_ID, DURATION_OPERATION_ID];
+          case COMPLETE_GROUP_ID:
+            return [COMPLETE_OPERATION_ID];
+          case SPLIT_GROUP_ID:
+            return [SPLIT_OPERATION_ID];
+          default:
+            return [];
+        }
+      });
     case "operations":
-      return [OPERATION_ID, DURATION_OPERATION_ID]
-        .filter((operationId) => selection.operation_ids.includes(operationId));
+      return selection.operation_ids.filter((operationId) => AI_OPERATION_IDS.includes(operationId));
   }
 }
 
@@ -1410,50 +1532,151 @@ export function createMockTaskHubApi(): TaskHubApi {
         if (selectedIds.length === 0) {
           return failure("invalid_request", "適用するAI操作を1件以上選択してください。");
         }
-        const operationEntries = session.proposal.proposal.groups.flatMap((group) =>
-          group.operations
-            .filter((operation) => selectedIds.includes(operation.operation_id))
-            .map((operation) => ({ group, operation })));
-        if (operationEntries.length !== selectedIds.length) {
-          throw new Error("mockの承認対象操作が見つかりません。");
-        }
-        const firstEntry = operationEntries[0];
-        if (firstEntry == null
-          || (firstEntry.operation.operation !== "update_title"
-            && firstEntry.operation.operation !== "set_duration")
-          || firstEntry.operation.target.kind !== "existing") {
-          throw new Error("mockの承認対象操作が不正です。");
-        }
-        const targetGid = firstEntry.operation.target.gid;
-        const detail = details.get(targetGid);
-        if (detail == null) {
-          return failure("not_found", "承認対象タスクがmockにありません。");
-        }
-        let nextDetail = detail;
-        for (const entry of operationEntries) {
-          const operation = entry.operation;
-          if (operation.operation !== "update_title" && operation.operation !== "set_duration") {
-            throw new Error("mockの承認対象操作が不正です。");
+        const proposalGroups = session.proposal.proposal.groups;
+        const selectedOperations = selectedIds.map((operationId) => {
+          const group = proposalGroups.find((candidate) =>
+            candidate.operations.some((operation) => operation.operation_id === operationId));
+          if (group == null) {
+            throw new Error("mockの承認対象操作グループが見つかりません。");
           }
-          if (operation.target.kind !== "existing" || operation.target.gid !== targetGid) {
-            throw new Error("mockの承認対象操作が不正です。");
+          const operation = group.operations.find((candidate) => candidate.operation_id === operationId);
+          if (operation == null) {
+            throw new Error("mockの承認対象操作が見つかりません。");
           }
+          return { group, operation };
+        });
+        const applicationOperations: Array<{
+          readonly group_id: string;
+          readonly operation_id: string;
+          readonly task_gid: string;
+          readonly outcome: "applied";
+          readonly reason_code: "applied";
+        }> = [];
+        const applicationGroups: Array<{
+          readonly group_id: string;
+          readonly atomic: boolean;
+          readonly outcome: "applied";
+          readonly operation_ids: string[];
+        }> = [];
+        for (const selectedOperation of selectedOperations) {
+          const { group, operation } = selectedOperation;
+          let taskGid: string;
           switch (operation.operation) {
-            case "update_title":
-              nextDetail = parseDetail({ ...nextDetail, title: operation.after });
+            case "update_title": {
+              if (operation.target.kind !== "existing") {
+                throw new Error("mockのタイトル変更対象が不正です。");
+              }
+              const detail = details.get(operation.target.gid);
+              if (detail == null) {
+                return failure("not_found", "承認対象タスクがmockにありません。");
+              }
+              const nextDetail = parseDetail({
+                ...detail,
+                title: operation.after,
+                edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
+              });
+              details.set(nextDetail.gid, nextDetail);
+              taskGid = nextDetail.gid;
               break;
-            case "set_duration":
-              nextDetail = parseDetail({ ...nextDetail, duration: operation.after });
+            }
+            case "set_duration": {
+              if (operation.target.kind !== "existing") {
+                throw new Error("mockの所要時間変更対象が不正です。");
+              }
+              const detail = details.get(operation.target.gid);
+              if (detail == null) {
+                return failure("not_found", "承認対象タスクがmockにありません。");
+              }
+              const nextDetail = parseDetail({
+                ...detail,
+                duration: operation.after,
+                edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
+              });
+              details.set(nextDetail.gid, nextDetail);
+              taskGid = nextDetail.gid;
               break;
+            }
+            case "complete": {
+              if (operation.target.kind !== "existing") {
+                throw new Error("mockの完了対象が不正です。");
+              }
+              const detail = details.get(operation.target.gid);
+              if (detail == null) {
+                return failure("not_found", "承認対象タスクがmockにありません。");
+              }
+              const nextDetail = parseDetail({
+                ...detail,
+                status: "completed",
+                section_gid: sectionForStatus("completed"),
+                edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
+              });
+              details.set(nextDetail.gid, nextDetail);
+              taskGid = nextDetail.gid;
+              break;
+            }
+            case "create_task": {
+              if (
+                operation.creation.kind !== "split_child"
+                || operation.creation.parent.kind !== "existing"
+              ) {
+                throw new Error("mockの作成操作が不正です。");
+              }
+              const parent = details.get(operation.creation.parent.gid);
+              if (parent == null) {
+                return failure("not_found", "分割元タスクがmockにありません。");
+              }
+              const createdGid = `mock-created-${operation.temporary_ref}`;
+              if (details.has(createdGid)) {
+                throw new Error("mockの分割先タスクが既に存在します。");
+              }
+              const duration = operation.after.duration;
+              if (duration == null) {
+                throw new Error("mockの分割子に所要時間がありません。");
+              }
+              const child = createSampleDetail(
+                createdGid,
+                operation.after.title,
+                operation.after.notes ?? "",
+                operation.after.status ?? "not_started",
+                operation.after.importance ?? 3,
+                { kind: "none" },
+                duration,
+                operation.after.area ?? parent.area,
+                sectionForStatus(operation.after.status ?? "not_started"),
+                details.size + 1,
+                [],
+              );
+              details.set(child.gid, parseDetail({
+                ...child,
+                parent: parentReference(parent.gid, details),
+              }));
+              taskGid = child.gid;
+              break;
+            }
             default:
               throw new Error("mockの承認対象操作が不正です。");
           }
+          applicationOperations.push({
+            group_id: group.group_id,
+            operation_id: operation.operation_id,
+            task_gid: taskGid,
+            outcome: "applied",
+            reason_code: "applied",
+          });
+          const applicationGroup = applicationGroups.find(
+            (candidate) => candidate.group_id === group.group_id,
+          );
+          if (applicationGroup == null) {
+            applicationGroups.push({
+              group_id: group.group_id,
+              atomic: group.atomic,
+              outcome: "applied",
+              operation_ids: [operation.operation_id],
+            });
+          } else {
+            applicationGroup.operation_ids.push(operation.operation_id);
+          }
         }
-        nextDetail = parseDetail({
-          ...nextDetail,
-          edit_baseline_hash: advanceEditBaselineHash(detail.edit_baseline_hash),
-        });
-        details.set(nextDetail.gid, nextDetail);
         const currentFullSyncAt = overview.last_full_sync_at;
         if (currentFullSyncAt == null) {
           throw new Error("mockの完全同期日時がありません。");
@@ -1468,24 +1691,8 @@ export function createMockTaskHubApi(): TaskHubApi {
           proposal_id: parsedInput.proposal_id,
           application: {
             outcome: "applied",
-            operations: operationEntries.map((entry) => ({
-              group_id: entry.group.group_id,
-              operation_id: entry.operation.operation_id,
-              task_gid: targetGid,
-              outcome: "applied",
-              reason_code: "applied",
-            })),
-            groups: operationEntries
-              .filter((entry, index, entries) => entries.findIndex((candidate) =>
-                candidate.group.group_id === entry.group.group_id) === index)
-              .map((entry) => ({
-                group_id: entry.group.group_id,
-                atomic: entry.group.atomic,
-                outcome: "applied",
-                operation_ids: operationEntries
-                  .filter((candidate) => candidate.group.group_id === entry.group.group_id)
-                  .map((candidate) => candidate.operation.operation_id),
-              })),
+            operations: applicationOperations,
+            groups: applicationGroups,
           },
         });
         return ipcAiApprovalResponseSchema.parse(ok(result));
