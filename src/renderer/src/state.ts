@@ -33,6 +33,7 @@ import type {
   ViewModelOverview,
   ViewModelDue,
   ViewModelTaskDetail,
+  ViewModelTaskRow,
 } from "../../shared/view-model";
 import type { ExternalAgentGuiState } from "../../shared/external-agent";
 import {
@@ -41,6 +42,13 @@ import {
   taskFilterSchema,
   type TaskFilter,
 } from "../../shared/view-model";
+
+class UnreachableError extends Error {
+  public constructor() {
+    super("到達不能コードに到達しました。");
+    this.name = "UnreachableError";
+  }
+}
 
 const rendererFailureCodeSchema = z.enum([
   "invalid_request",
@@ -157,6 +165,19 @@ export const rendererFilterSchema = taskFilterSchema;
 
 /** Rendererの一覧フィルターを表す型です。 */
 export type RendererFilter = TaskFilter;
+
+export const rendererTaskSortSchema = z.enum([
+  "execution_order",
+  "due_ascending",
+  "due_descending",
+  "importance_descending",
+  "importance_ascending",
+  "duration_ascending",
+  "duration_descending",
+]);
+
+/** Rendererのタスク一覧の並び順を表す型です。 */
+export type RendererTaskSort = z.infer<typeof rendererTaskSortSchema>;
 
 export type RendererExternalAgentState =
   | { readonly kind: "loading" }
@@ -583,6 +604,126 @@ export function filterTaskRows(
   asOf: string,
 ): readonly ViewModelOverview["tasks"][number][] {
   return sharedFilterTaskRows(overview, filter, asOf);
+}
+
+function effectiveDueEpoch(due: ViewModelDue): number | undefined {
+  switch (due.kind) {
+    case "none":
+      return undefined;
+    case "on": {
+      const value = dateSchema.parse(due.value);
+      const timestamp = Date.parse(`${value}T23:59:59+09:00`);
+      if (!Number.isFinite(timestamp)) {
+        throw new Error("期限日を実効期限へ変換できません。");
+      }
+      return timestamp;
+    }
+    case "at": {
+      const value = isoDateTimeSchema.parse(due.value);
+      const timestamp = Date.parse(value);
+      if (!Number.isFinite(timestamp)) {
+        throw new Error("期限日時を実効期限へ変換できません。");
+      }
+      return timestamp;
+    }
+  }
+}
+
+function compareOptionalNumbers(
+  left: number | undefined,
+  right: number | undefined,
+  direction: "ascending" | "descending",
+): number {
+  if (left == null) {
+    if (right == null) {
+      return 0;
+    }
+    return 1;
+  }
+  if (right == null) {
+    return -1;
+  }
+  return direction === "ascending" ? left - right : right - left;
+}
+
+function durationUnitOrder(unit: NonNullable<ViewModelTaskRow["duration"]>["unit"]): number {
+  switch (unit) {
+    case "minute":
+      return 0;
+    case "hour":
+      return 1;
+    case "day":
+      return 2;
+    case "week":
+      return 3;
+    case "month":
+      return 4;
+  }
+  throw new UnreachableError();
+}
+
+function compareTaskRows(
+  left: ViewModelTaskRow,
+  right: ViewModelTaskRow,
+  sort: Exclude<RendererTaskSort, "execution_order">,
+): number {
+  switch (sort) {
+    case "due_ascending":
+      return compareOptionalNumbers(
+        effectiveDueEpoch(left.due),
+        effectiveDueEpoch(right.due),
+        "ascending",
+      );
+    case "due_descending":
+      return compareOptionalNumbers(
+        effectiveDueEpoch(left.due),
+        effectiveDueEpoch(right.due),
+        "descending",
+      );
+    case "importance_descending":
+      return right.importance - left.importance;
+    case "importance_ascending":
+      return left.importance - right.importance;
+    case "duration_ascending":
+    case "duration_descending": {
+      const direction = sort === "duration_ascending" ? "ascending" : "descending";
+      const leftDuration = left.duration;
+      const rightDuration = right.duration;
+      if (leftDuration == null) {
+        return rightDuration == null ? 0 : 1;
+      }
+      if (rightDuration == null) {
+        return -1;
+      }
+      const unitComparison = compareOptionalNumbers(
+        durationUnitOrder(leftDuration.unit),
+        durationUnitOrder(rightDuration.unit),
+        direction,
+      );
+      if (unitComparison !== 0) {
+        return unitComparison;
+      }
+      return compareOptionalNumbers(leftDuration.value, rightDuration.value, direction);
+    }
+  }
+  throw new UnreachableError();
+}
+
+/** タスク行を指定された表示順で複製して返します。 */
+export function sortTaskRows(
+  rows: readonly ViewModelTaskRow[],
+  sort: RendererTaskSort,
+): readonly ViewModelTaskRow[] {
+  const validatedSort = rendererTaskSortSchema.parse(sort);
+  const indexedRows = rows.map((row, index) => ({ row, index }));
+  if (validatedSort === "execution_order") {
+    return indexedRows.map((entry) => entry.row);
+  }
+  indexedRows.sort((left, right) => {
+    const comparison = compareTaskRows(left.row, right.row, validatedSort);
+    return comparison === 0 ? left.index - right.index : comparison;
+  });
+  return indexedRows.map((entry) => entry.row);
 }
 
 /** 画面状態を初期設定画面へ遷移させます。 */
