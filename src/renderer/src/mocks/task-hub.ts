@@ -157,6 +157,10 @@ type RankingTieBreak = RankedTaskRanking["tie_break"];
 
 const PROJECT_GID = "mock-project";
 const PRIMARY_TASK_GID = "mock-task-1";
+const EXCLUDED_TASK_GID = "mock-task-6";
+const UNAVAILABLE_TASK_GID = "mock-task-7";
+const UNSET_DURATION_TASK_GID = "mock-task-8";
+const WEEK_DURATION_TASK_GID = "mock-task-9";
 const SYNC_AT = "2026-09-05T00:00:00.000Z";
 const ACTIVITY_ANCHOR_ON = "2026-09-01";
 const MOCK_VAULT_ID = "mock-vault";
@@ -237,7 +241,7 @@ function createSampleDetail(
   status: ViewModelTaskDetail["status"],
   importance: ViewModelTaskDetail["importance"],
   due: ViewModelDue,
-  duration: NonNullable<ViewModelTaskDetail["duration"]>,
+  duration: NonNullable<ViewModelTaskDetail["duration"]> | undefined,
   area: string,
   sectionGid: string,
   rank: number,
@@ -261,7 +265,7 @@ function createSampleDetail(
     status,
     importance,
     due,
-    duration,
+    ...(duration == null ? {} : { duration }),
     area,
     block_state: "none",
     section_gid: sectionGid,
@@ -369,12 +373,68 @@ function createInitialDetails(): Map<string, ViewModelTaskDetail> {
     5,
     [],
   );
+  const sixth = createSampleDetail(
+    EXCLUDED_TASK_GID,
+    "同値の順位除外サンプル",
+    "実行順位以外の並び順で同値を確認するサンプルです。",
+    "in_progress",
+    5,
+    { kind: "on", value: "2026-09-10" },
+    { value: 15, unit: "minute" },
+    "開発",
+    "mock-section-in-progress",
+    6,
+    [],
+  );
+  const seventh = createSampleDetail(
+    UNAVAILABLE_TASK_GID,
+    "月単位の利用不能サンプル",
+    "月単位の所要時間と利用不能行を確認するサンプルです。",
+    "in_progress",
+    3,
+    { kind: "at", value: "2026-09-12T15:00:00.000Z" },
+    { value: 1, unit: "month" },
+    "運用",
+    "mock-section-in-progress",
+    7,
+    [],
+  );
+  const eighth = createSampleDetail(
+    UNSET_DURATION_TASK_GID,
+    "所要時間未設定サンプル",
+    "所要時間が未設定のサンプルタスクです。",
+    "not_started",
+    2,
+    { kind: "none" },
+    undefined,
+    "運用",
+    "mock-section-not-started",
+    8,
+    [],
+  );
+  const ninth = createSampleDetail(
+    WEEK_DURATION_TASK_GID,
+    "週単位の所要時間サンプル",
+    "週単位の所要時間を確認するサンプルタスクです。",
+    "not_started",
+    4,
+    { kind: "none" },
+    { value: 1, unit: "week" },
+    "運用",
+    "mock-section-not-started",
+    9,
+    [],
+  );
   return new Map([
     [first.gid, first],
     [second.gid, second],
     [third.gid, third],
     [fourth.gid, fourth],
     [fifth.gid, fifth],
+    [sixth.gid, sixth],
+    [seventh.gid, seventh],
+    [eighth.gid, eighth],
+    [ninth.gid, ninth],
   ]);
 }
 
@@ -388,7 +448,7 @@ function createRow(detail: ViewModelTaskDetail, rank: number): ViewModelTaskRow 
     status: detail.status,
     importance: detail.importance,
     due: detail.due,
-    duration: detail.duration,
+    ...(detail.duration == null ? {} : { duration: detail.duration }),
     block_state: detail.block_state,
     ...(detail.block_reason == null ? {} : { block_reason: detail.block_reason }),
     area: detail.area,
@@ -402,12 +462,55 @@ function createRow(detail: ViewModelTaskDetail, rank: number): ViewModelTaskRow 
   });
 }
 
+function createExcludedRow(row: ViewModelTaskRow): ViewModelTaskRow {
+  if (row.kind !== "ranked") {
+    throw new Error("mockの順位除外対象が不正です。");
+  }
+  const { rank, ...withoutRank } = row;
+  void rank;
+  return viewModelTaskRowSchema.parse({
+    ...withoutRank,
+    kind: "excluded",
+    block_state: "full",
+    exclusion_reasons: [{
+      code: "dependency_cycle",
+      message: "依存関係が循環しています。",
+    }],
+  });
+}
+
+function createUnavailableRow(row: ViewModelTaskRow): ViewModelTaskRow {
+  if (row.kind !== "ranked") {
+    throw new Error("mockの利用不能対象が不正です。");
+  }
+  const { rank, ...withoutRank } = row;
+  void rank;
+  return viewModelTaskRowSchema.parse({
+    ...withoutRank,
+    kind: "unavailable",
+    block_state: "full",
+    unavailable_reasons: ["ranking_unavailable"],
+  });
+}
+
 function createOverview(
   details: ReadonlyMap<string, ViewModelTaskDetail>,
   lastSuccessfulSyncAt: string,
   lastFullSyncAt: string,
 ): ViewModelOverview {
-  const tasks = Array.from(details.values(), (detail, index) => createRow(detail, index + 1));
+  let rankedCount = 0;
+  const tasks = Array.from(details.values(), (detail) => {
+    const row = createRow(detail, rankedCount + 1);
+    switch (row.gid) {
+      case EXCLUDED_TASK_GID:
+        return createExcludedRow(row);
+      case UNAVAILABLE_TASK_GID:
+        return createUnavailableRow(row);
+      default:
+        rankedCount += 1;
+        return row;
+    }
+  });
   const areas = Array.from(new Set(Array.from(details.values(), (detail) => detail.area)));
   return viewModelOverviewSchema.parse({
     project_gid: PROJECT_GID,
