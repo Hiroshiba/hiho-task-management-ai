@@ -49,7 +49,7 @@ import {
 } from "../../shared/domain";
 import type { SqliteDatabase } from "./types";
 
-export const storageSchemaVersion = 3;
+export const storageSchemaVersion = 4;
 export const storageBusyTimeoutMilliseconds = 5_000;
 
 const databaseFileLabel = "SQLiteデータベース";
@@ -80,6 +80,176 @@ const localAsynchronousCleanupItemKinds: readonly CleanupItemKind[] = [
 const localAsynchronousCleanupItemKindSet = new Set(
   localAsynchronousCleanupItemKinds,
 );
+
+const applicationJournalTableSql = `
+CREATE TABLE application_journal (
+  proposal_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  new_task_uuid TEXT,
+  target_gid TEXT,
+  target_temporary_ref TEXT,
+  started_at TEXT NOT NULL,
+  stage TEXT NOT NULL CHECK (
+    stage IN (
+      'prepared',
+      'started',
+      'write_started',
+      'task_created',
+      'attributes_applied',
+      'relations_applied',
+      'read_back',
+      'metadata_verified',
+      'ranking_recalculated',
+      'legacy_unresolved'
+    )
+  ),
+  final_result TEXT CHECK (
+    final_result IS NULL
+    OR final_result IN ('applied', 'not_applied', 'unknown', 'failed')
+  ),
+  group_id TEXT,
+  group_order INTEGER CHECK (group_order IS NULL OR group_order >= 0),
+  operation_order INTEGER CHECK (operation_order IS NULL OR operation_order >= 0),
+  atomic INTEGER CHECK (atomic IS NULL OR atomic IN (0, 1)),
+  project_gid TEXT,
+  workspace_gid TEXT,
+  section_gids_json TEXT,
+  device_id TEXT,
+  created_via TEXT,
+  activity_date TEXT,
+  temporary_ref_to_gid_json TEXT,
+  operation_kind TEXT CHECK (
+    operation_kind IS NULL
+    OR operation_kind IN (
+      'create_task',
+      'update_title',
+      'update_notes',
+      'set_status',
+      'set_importance',
+      'set_due',
+      'clear_due',
+      'set_duration',
+      'clear_duration',
+      'set_area',
+      'set_dependencies',
+      'set_parent',
+      'set_parent_work_mode',
+      'link_obsidian',
+      'unlink_obsidian',
+      'complete',
+      'withdraw'
+    )
+  ),
+  operation_json TEXT,
+  expected_before_json TEXT,
+  expected_after_json TEXT,
+  create_uuid TEXT,
+  temporary_ref TEXT,
+  PRIMARY KEY (proposal_id, operation_id),
+  CHECK (
+    (
+      new_task_uuid IS NOT NULL
+      AND target_gid IS NULL
+      AND target_temporary_ref IS NULL
+    )
+    OR (
+      new_task_uuid IS NULL
+      AND target_gid IS NOT NULL
+      AND target_temporary_ref IS NULL
+    )
+    OR (
+      new_task_uuid IS NULL
+      AND target_gid IS NULL
+      AND target_temporary_ref IS NOT NULL
+    )
+  ),
+  CHECK (
+    (
+      operation_kind IS NULL
+      AND group_id IS NULL
+      AND group_order IS NULL
+      AND operation_order IS NULL
+      AND atomic IS NULL
+      AND project_gid IS NULL
+      AND workspace_gid IS NULL
+      AND section_gids_json IS NULL
+      AND device_id IS NULL
+      AND created_via IS NULL
+      AND activity_date IS NULL
+      AND temporary_ref_to_gid_json IS NULL
+      AND operation_json IS NULL
+      AND expected_before_json IS NULL
+      AND expected_after_json IS NULL
+      AND create_uuid IS NULL
+      AND temporary_ref IS NULL
+      AND (
+        (
+          stage = 'legacy_unresolved'
+          AND (final_result IS NULL OR final_result = 'unknown')
+        )
+        OR (
+          final_result IS NOT NULL
+          AND stage IN (
+            'started',
+            'task_created',
+            'attributes_applied',
+            'relations_applied',
+            'read_back',
+            'metadata_verified',
+            'ranking_recalculated'
+          )
+        )
+      )
+    )
+    OR (
+      operation_kind IS NOT NULL
+      AND group_id IS NOT NULL
+      AND group_order IS NOT NULL
+      AND operation_order IS NOT NULL
+      AND atomic IS NOT NULL
+      AND project_gid IS NOT NULL
+      AND workspace_gid IS NOT NULL
+      AND section_gids_json IS NOT NULL
+      AND device_id IS NOT NULL
+      AND created_via IS NOT NULL
+      AND activity_date IS NOT NULL
+      AND temporary_ref_to_gid_json IS NOT NULL
+      AND operation_json IS NOT NULL
+      AND expected_before_json IS NOT NULL
+      AND expected_after_json IS NOT NULL
+      AND stage IN (
+        'prepared',
+        'write_started',
+        'task_created',
+        'attributes_applied',
+        'relations_applied',
+        'read_back',
+        'metadata_verified',
+        'ranking_recalculated'
+      )
+      AND (
+        (
+          operation_kind = 'create_task'
+          AND new_task_uuid IS NOT NULL
+          AND target_gid IS NULL
+          AND target_temporary_ref IS NULL
+          AND create_uuid IS NOT NULL
+          AND temporary_ref IS NOT NULL
+          AND create_uuid = new_task_uuid
+        )
+        OR (
+          operation_kind <> 'create_task'
+          AND new_task_uuid IS NULL
+          AND (target_gid IS NOT NULL OR target_temporary_ref IS NOT NULL)
+          AND NOT (target_gid IS NOT NULL AND target_temporary_ref IS NOT NULL)
+          AND create_uuid IS NULL
+          AND temporary_ref IS NULL
+        )
+      )
+    )
+  )
+);
+`;
 
 const storageSchemaSql = `
 CREATE TABLE task_cache (
@@ -128,20 +298,7 @@ CREATE TABLE vault_mappings (
   vault_id TEXT PRIMARY KEY NOT NULL,
   absolute_path TEXT NOT NULL
 );
-CREATE TABLE application_journal (
-  proposal_id TEXT NOT NULL,
-  operation_id TEXT NOT NULL,
-  new_task_uuid TEXT,
-  target_gid TEXT,
-  started_at TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  final_result TEXT,
-  PRIMARY KEY (proposal_id, operation_id),
-  CHECK (
-    (new_task_uuid IS NOT NULL AND target_gid IS NULL)
-    OR (new_task_uuid IS NULL AND target_gid IS NOT NULL)
-  )
-);
+${applicationJournalTableSql}
 CREATE TABLE diagnostic_log (
   id INTEGER PRIMARY KEY NOT NULL,
   occurred_at TEXT NOT NULL,
@@ -216,6 +373,44 @@ function assertPragmas(database: SqliteDatabase): void {
   if (busyTimeout !== storageBusyTimeoutMilliseconds) {
     throw new Error("SQLiteのbusy_timeoutを設定できませんでした。");
   }
+
+  database.pragma("synchronous = FULL");
+  const synchronous = database.pragma("synchronous", { simple: true });
+  if (synchronous !== 2) {
+    throw new Error("SQLiteのsynchronousをFULLに設定できませんでした。");
+  }
+}
+
+function migrateSchemaFromV3(database: SqliteDatabase): void {
+  const migrate = database.transaction(() => {
+    database.exec(`
+      ALTER TABLE application_journal RENAME TO application_journal_v3;
+      ${applicationJournalTableSql}
+      INSERT INTO application_journal (
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result
+      )
+      SELECT
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        NULL,
+        started_at,
+        CASE WHEN final_result IS NULL THEN 'legacy_unresolved' ELSE stage END,
+        final_result
+      FROM application_journal_v3;
+      DROP TABLE application_journal_v3;
+    `);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
 }
 
 function initializeSchema(database: SqliteDatabase): void {
@@ -235,6 +430,18 @@ function initializeSchema(database: SqliteDatabase): void {
       database.pragma(`user_version = ${storageSchemaVersion}`);
     });
     createSchema();
+    return;
+  }
+
+  if (userVersion === 3) {
+    if (tableNames.length !== storageTableNames.length) {
+      throw new Error("SQLiteに未対応の追加テーブルが存在します。");
+    }
+    const expectedTableNameSet = new Set<string>(storageTableNames);
+    if (tableNames.some((tableName) => !expectedTableNameSet.has(tableName))) {
+      throw new Error("SQLiteに未対応の追加テーブルが存在します。");
+    }
+    migrateSchemaFromV3(database);
     return;
   }
 
@@ -505,9 +712,9 @@ export class StorageDatabase {
     return this.vaultMappingStore.getAll();
   }
 
-  /** 適用ジャーナルを新規作成します。 */
-  public createApplicationJournal(entry: ApplicationJournal): void {
-    this.applicationJournalStore.create(entry);
+  /** 選択済み操作の復旧計画を一つのトランザクションで保存します。 */
+  public prepareApplicationJournals(entries: readonly ApplicationJournal[]): void {
+    this.applicationJournalStore.prepare(entries);
   }
 
   /** 適用ジャーナルの適用段階を更新します。 */

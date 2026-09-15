@@ -1,13 +1,19 @@
+import { z } from "zod";
 import { identifierSchema } from "../../shared/domain";
 import {
+  applicationJournalOperationSchema,
+  applicationJournalPlanSchema,
   applicationJournalResultSchema,
+  applicationJournalLegacyCompletedSchema,
   applicationJournalSchema,
   applicationJournalStageSchema,
+  applicationJournalWithPlanSchema,
   type ApplicationJournal,
+  type ApplicationJournalPlan,
   type ApplicationJournalResult,
   type ApplicationJournalStage,
 } from "../../shared/storage";
-import { assertChanged } from "./json";
+import { assertChanged, parseStorageJson, serializeStorageJson } from "./json";
 import type { SqliteDatabase } from "./types";
 
 interface ApplicationJournalRow {
@@ -15,37 +21,170 @@ interface ApplicationJournalRow {
   readonly operation_id: string;
   readonly new_task_uuid: string | null;
   readonly target_gid: string | null;
+  readonly target_temporary_ref: string | null;
   readonly started_at: string;
   readonly stage: string;
   readonly final_result: string | null;
+  readonly group_id: string | null;
+  readonly group_order: number | null;
+  readonly operation_order: number | null;
+  readonly atomic: number | null;
+  readonly project_gid: string | null;
+  readonly workspace_gid: string | null;
+  readonly section_gids_json: string | null;
+  readonly device_id: string | null;
+  readonly created_via: string | null;
+  readonly activity_date: string | null;
+  readonly temporary_ref_to_gid_json: string | null;
+  readonly operation_kind: string | null;
+  readonly operation_json: string | null;
+  readonly expected_before_json: string | null;
+  readonly expected_after_json: string | null;
+  readonly create_uuid: string | null;
+  readonly temporary_ref: string | null;
 }
 
 const applicationJournalStageOrder: Record<ApplicationJournalStage, number> = {
-  started: 0,
-  task_created: 1,
-  attributes_applied: 2,
-  relations_applied: 3,
-  read_back: 4,
-  metadata_verified: 5,
-  ranking_recalculated: 6,
+  prepared: 0,
+  started: 1,
+  write_started: 2,
+  task_created: 3,
+  attributes_applied: 4,
+  relations_applied: 5,
+  read_back: 6,
+  metadata_verified: 7,
+  ranking_recalculated: 8,
+  legacy_unresolved: -1,
 };
+type ApplicationJournalWithPlan = z.infer<typeof applicationJournalWithPlanSchema>;
+
+function rowToApplicationJournalPlan(row: ApplicationJournalRow): ApplicationJournalPlan {
+  if (
+    row.group_id == null
+    || row.group_order == null
+    || row.operation_order == null
+    || row.atomic == null
+    || row.project_gid == null
+    || row.workspace_gid == null
+    || row.section_gids_json == null
+    || row.device_id == null
+    || row.created_via == null
+    || row.activity_date == null
+    || row.temporary_ref_to_gid_json == null
+    || row.operation_kind == null
+    || row.operation_json == null
+    || row.expected_before_json == null
+    || row.expected_after_json == null
+  ) {
+    throw new Error("適用ジャーナルの復旧計画が不足しています。");
+  }
+
+  const operation = parseStorageJson(
+    row.operation_json,
+    applicationJournalOperationSchema,
+  );
+  if (operation.operation !== row.operation_kind) {
+    throw new Error("適用ジャーナルの操作種別が一致しません。");
+  }
+  if (operation.operation_id !== row.operation_id) {
+    throw new Error("適用ジャーナルの操作IDが一致しません。");
+  }
+  if (row.atomic !== 0 && row.atomic !== 1) {
+    throw new Error("適用ジャーナルのatomic属性が不正です。");
+  }
+  if (operation.operation === "create_task") {
+    if (
+      row.create_uuid == null
+      || row.temporary_ref == null
+      || row.new_task_uuid !== row.create_uuid
+      || operation.target.kind !== "new_task"
+      || operation.target.uuid !== row.create_uuid
+      || operation.temporary_ref !== row.temporary_ref
+    ) {
+      throw new Error("create_taskの復旧計画と保存対象が一致しません。");
+    }
+  } else if (row.create_uuid != null || row.temporary_ref != null) {
+    throw new Error("既存タスク操作へ作成情報を保存できません。");
+  }
+  const expectedBefore = parseStorageJson(row.expected_before_json, z.unknown());
+  const expectedAfter = parseStorageJson(row.expected_after_json, z.unknown());
+  if (
+    serializeStorageJson(operation.expected_before) !== serializeStorageJson(expectedBefore)
+    || serializeStorageJson(operation.expected_after) !== serializeStorageJson(expectedAfter)
+  ) {
+    throw new Error("適用ジャーナルの期待値が一致しません。");
+  }
+  const plan = {
+    group_id: row.group_id,
+    group_order: row.group_order,
+    operation_order: row.operation_order,
+    atomic: row.atomic === 1,
+    project_gid: row.project_gid,
+    workspace_gid: row.workspace_gid,
+    section_gids: parseStorageJson(row.section_gids_json, z.object({
+      not_started: z.string(),
+      in_progress: z.string(),
+      completed: z.string(),
+      withdrawn: z.string(),
+    }).strict()),
+    device_id: row.device_id,
+    created_via: row.created_via,
+    activity_date: row.activity_date,
+    temporary_ref_to_gid: parseStorageJson(
+      row.temporary_ref_to_gid_json,
+      z.array(z.object({ temporary_ref: z.string(), task_gid: z.string() }).strict()),
+    ),
+    operation,
+    ...(row.create_uuid == null ? {} : { create_uuid: row.create_uuid }),
+  };
+  return applicationJournalPlanSchema.parse(plan);
+}
 
 function rowToApplicationJournal(row: ApplicationJournalRow): ApplicationJournal {
-  if (row.new_task_uuid == null && row.target_gid == null) {
+  if (
+    row.new_task_uuid == null
+    && row.target_gid == null
+    && row.target_temporary_ref == null
+  ) {
     throw new Error("適用ジャーナルの対象がありません。");
   }
-  if (row.new_task_uuid != null && row.target_gid != null) {
+  if (
+    Number(row.new_task_uuid != null)
+    + Number(row.target_gid != null)
+    + Number(row.target_temporary_ref != null)
+    !== 1
+  ) {
     throw new Error("適用ジャーナルの対象が複数あります。");
   }
 
   let target: ApplicationJournal["target"];
   if (row.new_task_uuid == null) {
-    if (row.target_gid == null) {
+    if (row.target_gid != null) {
+      target = { kind: "task", gid: row.target_gid };
+    } else if (row.target_temporary_ref != null) {
+      target = { kind: "temporary", ref: row.target_temporary_ref };
+    } else {
       throw new Error("適用ジャーナルの対象GIDがありません。");
     }
-    target = { kind: "task", gid: row.target_gid };
   } else {
     target = { kind: "new_task", uuid: row.new_task_uuid };
+  }
+  const plan = row.operation_kind == null
+    ? undefined
+    : rowToApplicationJournalPlan(row);
+  if (plan != null) {
+    const planTarget = plan.operation.target;
+    let targetsMatch = false;
+    if (planTarget.kind === "new_task") {
+      targetsMatch = target.kind === "new_task" && planTarget.uuid === target.uuid;
+    } else if (planTarget.kind === "existing") {
+      targetsMatch = target.kind === "task" && planTarget.gid === target.gid;
+    } else {
+      targetsMatch = target.kind === "temporary" && planTarget.ref === target.ref;
+    }
+    if (!targetsMatch) {
+      throw new Error("適用ジャーナルと復旧計画の対象が一致しません。");
+    }
   }
   const entry = {
     proposal_id: row.proposal_id,
@@ -53,66 +192,257 @@ function rowToApplicationJournal(row: ApplicationJournalRow): ApplicationJournal
     target,
     started_at: row.started_at,
     stage: row.stage,
+    ...(row.final_result == null ? {} : { final_result: row.final_result }),
+    ...(plan == null ? {} : { plan }),
   };
-  if (row.final_result == null) {
-    return applicationJournalSchema.parse(entry);
+  if (
+    row.operation_kind == null
+    && row.final_result != null
+    && row.stage !== "legacy_unresolved"
+  ) {
+    return applicationJournalLegacyCompletedSchema.parse(entry);
   }
-  return applicationJournalSchema.parse({
-    ...entry,
-    final_result: row.final_result,
-  });
+  return applicationJournalSchema.parse(entry);
+}
+
+function validatePlanEntry(entry: ApplicationJournal): ApplicationJournalWithPlan {
+  const validatedEntry = applicationJournalWithPlanSchema.parse(entry);
+  if (validatedEntry.stage !== "prepared") {
+    throw new Error("復旧計画の新規保存段階はpreparedでなければなりません。");
+  }
+  if (validatedEntry.final_result != null) {
+    throw new Error("preparedの適用ジャーナルに最終結果を指定できません。");
+  }
+  if (validatedEntry.operation_id !== validatedEntry.plan.operation.operation_id) {
+    throw new Error("適用ジャーナルと復旧計画の操作IDが一致しません。");
+  }
+  const planTarget = validatedEntry.plan.operation.target;
+  let targetsMatch = false;
+  if (planTarget.kind === "new_task") {
+    targetsMatch = validatedEntry.target.kind === "new_task"
+      && planTarget.uuid === validatedEntry.target.uuid;
+  } else if (planTarget.kind === "existing") {
+    targetsMatch = validatedEntry.target.kind === "task"
+      && planTarget.gid === validatedEntry.target.gid;
+  } else {
+    targetsMatch = validatedEntry.target.kind === "temporary"
+      && planTarget.ref === validatedEntry.target.ref;
+  }
+  if (!targetsMatch) {
+    throw new Error("適用ジャーナルと復旧計画の対象が一致しません。");
+  }
+  return validatedEntry;
 }
 
 /** 適用ジャーナルのSQLite操作を提供します。 */
 export class ApplicationJournalStore {
   private readonly completeStatement;
-  private readonly createStatement;
+  private readonly insertPreparedStatement;
   private readonly selectIncompleteStatement;
   private readonly selectOneStatement;
   private readonly updateStageStatement;
 
   public constructor(private readonly database: SqliteDatabase) {
-    this.createStatement = database.prepare<
-      [string, string, string | null, string | null, string, string, string | null],
+    this.insertPreparedStatement = database.prepare<
+      [
+        string,
+        string,
+        string | null,
+        string | null,
+        string | null,
+        string,
+        string,
+        string | null,
+        string | null,
+        number | null,
+        number | null,
+        number | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+      ],
       unknown
     >(
-      "INSERT INTO application_journal (proposal_id, operation_id, new_task_uuid, target_gid, started_at, stage, final_result) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO application_journal (
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.updateStageStatement = database.prepare<[string, string, string], unknown>(
-      "UPDATE application_journal SET stage = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL",
+      "UPDATE application_journal SET stage = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL AND stage <> 'legacy_unresolved'",
     );
     this.completeStatement = database.prepare<[string, string, string], unknown>(
       "UPDATE application_journal SET final_result = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL",
     );
     this.selectOneStatement = database.prepare<[string, string], ApplicationJournalRow>(
-      "SELECT proposal_id, operation_id, new_task_uuid, target_gid, started_at, stage, final_result FROM application_journal WHERE proposal_id = ? AND operation_id = ?",
+      `SELECT
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      FROM application_journal
+      WHERE proposal_id = ? AND operation_id = ?`,
     );
     this.selectIncompleteStatement = database.prepare<[], ApplicationJournalRow>(
-      "SELECT proposal_id, operation_id, new_task_uuid, target_gid, started_at, stage, final_result FROM application_journal WHERE final_result IS NULL ORDER BY started_at, proposal_id, operation_id",
+      `SELECT
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      FROM application_journal
+      WHERE final_result IS NULL
+      ORDER BY proposal_id, operation_order IS NULL, operation_order, started_at, operation_id`,
     );
   }
 
-  /** 適用ジャーナルを新規作成します。 */
-  public create(entry: ApplicationJournal): void {
-    const validatedEntry = applicationJournalSchema.parse(entry);
-    if (validatedEntry.stage !== "started") {
-      throw new Error("新規適用ジャーナルの段階はstartedでなければなりません。");
+  /** 選択済み操作の復旧計画を一つのトランザクションで保存します。 */
+  public prepare(entries: readonly ApplicationJournal[]): void {
+    if (entries.length === 0) {
+      throw new Error("復旧計画の操作がありません。");
     }
-    if (validatedEntry.final_result != null) {
-      throw new Error("新規適用ジャーナルに最終結果を指定できません。");
-    }
-    const targetValues = validatedEntry.target.kind === "new_task"
-      ? { newTaskUuid: validatedEntry.target.uuid, targetGid: null }
-      : { newTaskUuid: null, targetGid: validatedEntry.target.gid };
-    this.createStatement.run(
-      validatedEntry.proposal_id,
-      validatedEntry.operation_id,
-      targetValues.newTaskUuid,
-      targetValues.targetGid,
-      validatedEntry.started_at,
-      validatedEntry.stage,
-      validatedEntry.final_result == null ? null : validatedEntry.final_result,
-    );
+    const validatedEntries = entries.map(validatePlanEntry);
+    const proposalIds = new Set<string>();
+    const operationIds = new Set<string>();
+    const prepare = this.database.transaction(() => {
+      for (const entry of validatedEntries) {
+        if (proposalIds.size > 0 && !proposalIds.has(entry.proposal_id)) {
+          throw new Error("一つの復旧計画へ複数のproposal_idを指定できません。");
+        }
+        if (operationIds.has(entry.operation_id)) {
+          throw new Error("復旧計画の操作IDが重複しています。");
+        }
+        proposalIds.add(entry.proposal_id);
+        operationIds.add(entry.operation_id);
+        const plan = entry.plan;
+        let targetValues: {
+          readonly newTaskUuid: string | null;
+          readonly targetGid: string | null;
+          readonly targetTemporaryRef: string | null;
+        };
+        if (entry.target.kind === "new_task") {
+          targetValues = {
+            newTaskUuid: entry.target.uuid,
+            targetGid: null,
+            targetTemporaryRef: null,
+          };
+        } else if (entry.target.kind === "task") {
+          targetValues = {
+            newTaskUuid: null,
+            targetGid: entry.target.gid,
+            targetTemporaryRef: null,
+          };
+        } else {
+          targetValues = {
+            newTaskUuid: null,
+            targetGid: null,
+            targetTemporaryRef: entry.target.ref,
+          };
+        }
+        this.insertPreparedStatement.run(
+          entry.proposal_id,
+          entry.operation_id,
+          targetValues.newTaskUuid,
+          targetValues.targetGid,
+          targetValues.targetTemporaryRef,
+          entry.started_at,
+          entry.stage,
+          null,
+          plan.group_id,
+          plan.group_order,
+          plan.operation_order,
+          plan.atomic ? 1 : 0,
+          plan.project_gid,
+          plan.workspace_gid,
+          serializeStorageJson(plan.section_gids),
+          plan.device_id,
+          plan.created_via,
+          plan.activity_date,
+          serializeStorageJson(plan.temporary_ref_to_gid),
+          plan.operation.operation,
+          serializeStorageJson(plan.operation),
+          serializeStorageJson(plan.operation.expected_before),
+          serializeStorageJson(plan.operation.expected_after),
+          plan.create_uuid ?? null,
+          plan.operation.operation === "create_task" ? plan.operation.temporary_ref : null,
+        );
+      }
+    });
+    prepare();
   }
 
   /** 適用ジャーナルの段階をトランザクションで更新します。 */
@@ -124,6 +454,9 @@ export class ApplicationJournalStore {
     const validatedProposalId = identifierSchema.parse(proposalId);
     const validatedOperationId = identifierSchema.parse(operationId);
     const validatedStage = applicationJournalStageSchema.parse(stage);
+    if (validatedStage === "legacy_unresolved" || validatedStage === "started") {
+      throw new Error("適用ジャーナルを旧段階へ更新できません。");
+    }
     const update = this.database.transaction(() => {
       const currentRow = this.selectOneStatement.get(
         validatedProposalId,
@@ -136,6 +469,9 @@ export class ApplicationJournalStore {
         throw new Error("完了済みの適用ジャーナルは更新できません。");
       }
       const currentStage = applicationJournalStageSchema.parse(currentRow.stage);
+      if (currentStage === "legacy_unresolved") {
+        throw new Error("legacy未確定の適用ジャーナルは更新できません。");
+      }
       if (applicationJournalStageOrder[validatedStage] < applicationJournalStageOrder[currentStage]) {
         throw new Error("適用ジャーナルの段階を後退させることはできません。");
       }

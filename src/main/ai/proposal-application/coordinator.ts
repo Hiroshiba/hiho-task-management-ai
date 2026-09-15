@@ -19,9 +19,12 @@ import {
   type ProposalOperation,
 } from "../../../shared/ai";
 import {
+  applicationJournalOperationSchema,
   applicationJournalResultSchema,
-  applicationJournalSchema,
+  applicationJournalPlanSchema,
+  applicationJournalWithPlanSchema,
   type ApplicationJournal,
+  type ApplicationJournalPlan,
   type ApplicationJournalResult,
   type ApplicationJournalStage,
 } from "../../../shared/storage";
@@ -71,7 +74,7 @@ type OperationContext = {
   readonly operation: ProposalOperation;
 };
 type ApplicationJournalStorePort = {
-  readonly create: (entry: ApplicationJournal) => void;
+  readonly prepare: (entries: readonly ApplicationJournal[]) => void;
   readonly updateStage: (
     proposalId: string,
     operationId: string,
@@ -89,7 +92,7 @@ type ApplicationJournalStorePort = {
   readonly getIncomplete: () => readonly ApplicationJournal[];
 };
 type StorageDatabaseJournalPort = {
-  readonly createApplicationJournal: (entry: ApplicationJournal) => void;
+  readonly prepareApplicationJournals: (entries: readonly ApplicationJournal[]) => void;
   readonly updateApplicationJournalStage: (
     proposalId: string,
     operationId: string,
@@ -107,11 +110,13 @@ type StorageDatabaseJournalPort = {
   readonly getIncompleteApplicationJournals: () => readonly ApplicationJournal[];
 };
 type JournalPort = ApplicationJournalStorePort | StorageDatabaseJournalPort;
+type JournalOperation = ApplicationJournalPlan["operation"];
+type PlannedApplicationJournal = Extract<ApplicationJournal, { plan: ApplicationJournalPlan }>;
 type RecoveryTargetValidation =
   | { readonly kind: "valid"; readonly task_gid?: string }
   | { readonly kind: "invalid" };
 type PendingJournal = {
-  readonly entry: ApplicationJournal;
+  readonly entry: PlannedApplicationJournal;
   readonly context: OperationContext;
   readonly task_gid: string;
   readonly operationResults: Map<string, ApplicationOperationResult>;
@@ -122,8 +127,15 @@ type RecoveryApplicationState = {
   readonly operationResults: Map<string, ApplicationOperationResult>;
 };
 
+function hasApplicationJournalPlan(
+  journal: ApplicationJournal,
+): journal is PlannedApplicationJournal {
+  return journal.plan != null;
+}
+
 const journalStages: readonly ApplicationJournalStage[] = [
-  "started",
+  "prepared",
+  "write_started",
   "task_created",
   "attributes_applied",
   "relations_applied",
@@ -162,11 +174,11 @@ function isKnownAsanaOperationalError(error: unknown): boolean {
 }
 
 function normalizeJournalPort(journal: JournalPort): ApplicationJournalStorePort {
-  if ("create" in journal) {
+  if ("prepare" in journal) {
     return journal;
   }
   return {
-    create: (entry) => journal.createApplicationJournal(entry),
+    prepare: (entries) => journal.prepareApplicationJournals(entries),
     updateStage: (proposalId, operationId, stage) =>
       journal.updateApplicationJournalStage(proposalId, operationId, stage),
     complete: (proposalId, operationId, finalResult) =>
@@ -317,7 +329,6 @@ function temporaryTargetRef(operation: ProposalOperation): string | undefined {
 
 function operationTargetForJournal(
   operation: ProposalOperation,
-  mappings: ReadonlyMap<string, string>,
   uuids: ReadonlyMap<string, string>,
 ): ApplicationJournal["target"] {
   if (operation.operation === "create_task") {
@@ -327,11 +338,10 @@ function operationTargetForJournal(
     }
     return { kind: "new_task", uuid };
   }
-  const gid = targetGid(operation, mappings);
-  if (gid == null) {
-    throw new Error("適用対象のtemporary_refを解決できません。");
+  if (operation.target.kind === "existing") {
+    return { kind: "task", gid: operation.target.gid };
   }
-  return { kind: "task", gid };
+  return { kind: "temporary", ref: operation.target.ref };
 }
 
 function issueCreateUuids(
@@ -525,9 +535,9 @@ function writerResultToApplicationResult(
 
 function recordJournalResultBeforeRanking(
   journal: ApplicationJournalStorePort,
-  entry: ApplicationJournal,
+  entry: PlannedApplicationJournal,
   result: WriterResult,
-): ApplicationJournal | undefined {
+): PlannedApplicationJournal | undefined {
   if (result.outcome === "conflict") {
     if (result.side_effect === "possible") {
       return undefined;
@@ -906,16 +916,66 @@ function markAtomicGroupBlocked(
 
 function journalEntry(
   proposalId: string,
-  operationId: string,
+  context: OperationContext,
   target: ApplicationJournal["target"],
+  groupOrder: number,
+  operationOrder: number,
+  settings: AsanaProposalApplicationInput,
+  mappings: ReadonlyMap<string, string>,
+  uuids: ReadonlyMap<string, string>,
   startedAt: string,
-): ApplicationJournal {
-  return applicationJournalSchema.parse({
+): PlannedApplicationJournal {
+  const operation = context.operation;
+  let journalOperation: JournalOperation;
+  if (operation.operation === "create_task") {
+    const uuid = uuids.get(operation.operation_id);
+    if (uuid == null) {
+      throw new Error("create_taskの事前発行UUIDがありません。");
+    }
+    journalOperation = applicationJournalOperationSchema.parse({
+      operation: "create_task",
+      operation_id: operation.operation_id,
+      target: { kind: "new_task", uuid },
+      temporary_ref: operation.temporary_ref,
+      expected_before: operation.before,
+      expected_after: operation.after,
+    });
+  } else {
+    const operationTarget = operation.target.kind === "existing"
+      ? { kind: "existing", gid: operation.target.gid }
+      : { kind: "temporary", ref: operation.target.ref };
+    journalOperation = applicationJournalOperationSchema.parse({
+      operation: operation.operation,
+      operation_id: operation.operation_id,
+      target: operationTarget,
+      expected_before: operation.before,
+      expected_after: operation.after,
+    });
+  }
+  const plan = applicationJournalPlanSchema.parse({
+    group_id: context.group.group_id,
+    group_order: groupOrder,
+    operation_order: operationOrder,
+    atomic: context.group.atomic,
+    project_gid: settings.project_gid,
+    workspace_gid: settings.workspace_gid,
+    section_gids: settings.section_gids,
+    device_id: settings.device_id,
+    created_via: settings.created_via,
+    activity_date: settings.activity_date,
+    temporary_ref_to_gid: mappingArray(mappings),
+    operation: journalOperation,
+    ...(operation.operation === "create_task"
+      ? { create_uuid: uuids.get(operation.operation_id) }
+      : {}),
+  });
+  return applicationJournalWithPlanSchema.parse({
     proposal_id: proposalId,
-    operation_id: operationId,
+    operation_id: operation.operation_id,
     target,
     started_at: isoDateTimeSchema.parse(startedAt),
-    stage: "started",
+    stage: "prepared",
+    plan,
   });
 }
 
@@ -930,20 +990,32 @@ function expectedExternalGid(uuid: string): string {
 function resultForExistingJournal(
   context: OperationContext,
   journal: ApplicationJournal,
+  mappings: ReadonlyMap<string, string>,
 ): ApplicationOperationResult {
-  if (journal.final_result === "applied" && journal.target.kind === "task") {
+  let taskGid: string | undefined;
+  if (journal.target.kind === "task") {
+    taskGid = journal.target.gid;
+  } else if (
+    journal.target.kind === "temporary"
+    && context.operation.operation !== "create_task"
+    && context.operation.target.kind === "temporary"
+    && context.operation.target.ref === journal.target.ref
+  ) {
+    taskGid = mappings.get(journal.target.ref);
+  }
+  if (journal.final_result === "applied" && taskGid != null) {
     return createOperationResult(
       context.group.group_id,
       context.operation.operation_id,
       "already_applied",
       "already_applied",
-      journal.target.gid,
+      taskGid,
     );
   }
   return unknownOperationResult(
     context,
     "recovery_required",
-    journal.target.kind === "task" ? journal.target.gid : undefined,
+    taskGid,
   );
 }
 
@@ -1166,6 +1238,43 @@ export class AsanaProposalApplicationCoordinator {
         applicable.has(context.operation.operation_id)),
       mappings,
     );
+    const groupOrders = new Map<string, number>();
+    validatedInput.approval_input.proposal.groups.forEach((group, index) => {
+      groupOrders.set(group.group_id, index);
+    });
+    const existingJournals = new Map<string, ApplicationJournal>();
+    const preparedEntries = new Map<string, PlannedApplicationJournal>();
+    const entriesToPrepare: ApplicationJournal[] = [];
+    applicableContexts.forEach((context, operationOrder) => {
+      const existingJournal = this.journal.get(
+        validatedInput.proposal_id,
+        context.operation.operation_id,
+      );
+      if (existingJournal != null) {
+        existingJournals.set(context.operation.operation_id, existingJournal);
+        return;
+      }
+      const groupOrder = groupOrders.get(context.group.group_id);
+      if (groupOrder == null) {
+        throw new Error("復旧計画のグループ順が見つかりません。");
+      }
+      const entry = journalEntry(
+        validatedInput.proposal_id,
+        context,
+        operationTargetForJournal(context.operation, uuids),
+        groupOrder,
+        operationOrder,
+        validatedInput,
+        mappings,
+        uuids,
+        this.timestampProvider(),
+      );
+      preparedEntries.set(context.operation.operation_id, entry);
+      entriesToPrepare.push(entry);
+    });
+    if (entriesToPrepare.length > 0) {
+      this.journal.prepare(entriesToPrepare);
+    }
 
     for (const context of applicableContexts) {
       throwIfAborted(signal);
@@ -1194,14 +1303,11 @@ export class AsanaProposalApplicationCoordinator {
         }
         continue;
       }
-      const existingJournal = this.journal.get(
-        validatedInput.proposal_id,
-        context.operation.operation_id,
-      );
+      const existingJournal = existingJournals.get(context.operation.operation_id);
       if (existingJournal != null) {
         operationResults.set(
           context.operation.operation_id,
-          resultForExistingJournal(context, existingJournal),
+          resultForExistingJournal(context, existingJournal, mappings),
         );
         if (context.group.atomic) {
           operationGroupsBlocked.add(context.group.group_id);
@@ -1216,6 +1322,15 @@ export class AsanaProposalApplicationCoordinator {
         continue;
       }
 
+      const entry = preparedEntries.get(context.operation.operation_id);
+      if (entry == null) {
+        throw new Error("prepared済み適用ジャーナルが見つかりません。");
+      }
+      this.journal.updateStage(
+        entry.proposal_id,
+        entry.operation_id,
+        "write_started",
+      );
       const taskGid = targetGid(context.operation, mappings);
       let baseline = taskGid == null ? undefined : baselines.get(taskGid);
       if (context.operation.operation !== "create_task" && taskGid != null && baseline == null) {
@@ -1236,15 +1351,6 @@ export class AsanaProposalApplicationCoordinator {
         createUuid,
         undefined,
       );
-      const target = operationTargetForJournal(context.operation, mappings, uuids);
-      const entry = journalEntry(
-        validatedInput.proposal_id,
-        context.operation.operation_id,
-        target,
-        this.timestampProvider(),
-      );
-      this.journal.create(entry);
-
       let rawWriterResult: WriterResult;
       try {
         rawWriterResult = await this.writer.apply(writerInput, signal);
@@ -1449,6 +1555,17 @@ export class AsanaProposalApplicationCoordinator {
     const sortedConfiguredProjectGids = [...configuredProjectGids].sort();
     for (const journal of contextlessJournals) {
       throwIfAborted(signal);
+      if (journal.plan == null) {
+        this.journal.complete(
+          journal.proposal_id,
+          journal.operation_id,
+          finalJournalResult("unknown"),
+        );
+        unresolved.push(
+          incompleteJournalResult(journal, "recovery_context_missing", undefined),
+        );
+        continue;
+      }
       if (journal.target.kind === "new_task") {
         const matchesByGid = new Map<string, AsanaTaskResponse>();
         for (const projectGid of sortedConfiguredProjectGids) {
@@ -1468,6 +1585,17 @@ export class AsanaProposalApplicationCoordinator {
           finalJournalResult("unknown"),
         );
         unresolved.push(incompleteJournalResult(journal, reasonCode, taskGid));
+        continue;
+      }
+      if (journal.target.kind === "temporary") {
+        this.journal.complete(
+          journal.proposal_id,
+          journal.operation_id,
+          finalJournalResult("unknown"),
+        );
+        unresolved.push(
+          incompleteJournalResult(journal, "recovery_context_missing", undefined),
+        );
         continue;
       }
       let task: AsanaTaskResponse | undefined;
@@ -1517,14 +1645,13 @@ export class AsanaProposalApplicationCoordinator {
       const mappings = new Map<string, string>();
       const foundCreateTasks = new Map<string, AsanaTaskResponse>();
       const operationResults = new Map<string, ApplicationOperationResult>();
-      const journalByOperation = new Map<string, ApplicationJournal>();
+      const journalByOperation = new Map<string, PlannedApplicationJournal>();
       const baselines = baselineExternalMap(application.baseline_external_data);
       const failedTemporaryRefs = new Set<string>();
       for (const journal of journals) {
         if (journalByOperation.has(journal.operation_id)) {
           throw new Error("同じ適用ジャーナルを重複して復旧できません。");
         }
-        journalByOperation.set(journal.operation_id, journal);
         const context = findOperationContext(contextMap, journal.operation_id);
         if (context == null) {
           this.journal.complete(
@@ -1537,6 +1664,18 @@ export class AsanaProposalApplicationCoordinator {
           );
           continue;
         }
+        if (!hasApplicationJournalPlan(journal)) {
+          this.journal.complete(
+            journal.proposal_id,
+            journal.operation_id,
+            finalJournalResult("unknown"),
+          );
+          unresolved.push(
+            incompleteJournalResult(journal, "recovery_context_missing", undefined),
+          );
+          continue;
+        }
+        journalByOperation.set(journal.operation_id, journal);
         if (context.operation.operation !== "create_task") {
           continue;
         }

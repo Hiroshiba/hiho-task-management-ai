@@ -13,7 +13,7 @@ import {
   aiWorkflowTurnContextSchema,
 } from "../ai-workflow";
 import { proposalSchema } from "../ai";
-import { applicationJournalSchema } from "../storage";
+import { applicationJournalReadableSchema } from "../storage";
 import {
   taskctlResponseSchema,
   taskctlSearchQuerySchema,
@@ -351,7 +351,7 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
       results: z.array(z.object({
         operation_id: identifierSchema,
         result: z.discriminatedUnion("kind", [
-          z.object({ kind: z.literal("journal"), journal: applicationJournalSchema }).strict(),
+          z.object({ kind: z.literal("journal"), journal: applicationJournalReadableSchema }).strict(),
           z.object({
             kind: z.literal("unknown"),
             reason_code: z.enum([
