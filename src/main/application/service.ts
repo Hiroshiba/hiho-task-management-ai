@@ -95,6 +95,7 @@ import {
   type DiagnosticRecord,
 } from "./diagnostics";
 import {
+  AiWorkflowProposalFileStore,
   AiWorkflowService,
   createBaselineSnapshot,
   type ApprovalPreparationInput,
@@ -4560,10 +4561,16 @@ export class TaskHubApplication {
     session: CodexSessionService,
     externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector,
     baselineStore: AiSessionBaselineStore,
+    sessionId: string,
+    tmpDirectoryPath: string,
   ): AiWorkflowService {
     const applicationCoordinator = this.requireApplicationCoordinator();
     return new AiWorkflowService({
       session,
+      proposalFileStore: new AiWorkflowProposalFileStore({
+        sessionId,
+        tmpDirectoryPath,
+      }),
       snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
       taskctlSnapshotProvider: (signal) =>
         this.requireAiTaskctlSnapshot(signal, baselineStore),
@@ -4842,6 +4849,8 @@ export class TaskHubApplication {
         start.session,
         externalToolResources.collector,
         baselineStore,
+        start.sessionId,
+        start.workspace.tmpDirectoryPath,
       );
       const removeDeltaListener = workflow.onDelta((delta) => {
         this.publishAiDelta(ipcAiDeltaEventSchema.parse({

@@ -775,6 +775,9 @@ const generatedProposalSchema = proposalSchema.safeExtend({
   groups: z.array(generatedProposalGroupSchema).min(1).max(maximumProposalGroups),
 });
 
+/** AIが提案ファイルへ書き込む変更案を検証するスキーマです。 */
+export const codexGeneratedProposalSchema = generatedProposalSchema;
+
 const withdrawConfirmationSchema = z
   .object({
     target_task_gid: gidSchema,
@@ -828,9 +831,19 @@ const proposalResponseSchema = z
   })
   .strict();
 
-const generatedProposalResponseSchema = proposalResponseSchema.extend({
-  proposal: generatedProposalSchema,
-});
+const generatedProposalResponseSchema = proposalResponseSchema
+  .omit({ proposal: true })
+  .extend({
+    proposal_file_id: identifierSchema,
+  });
+
+const proposalFileErrorResponseSchema = z
+  .object({
+    kind: z.literal("proposal_file_error"),
+    error_code: z.literal("write_failed"),
+    message: messageSchema,
+  })
+  .strict();
 
 const noProposalResponseSchema = z
   .object({
@@ -850,6 +863,7 @@ export const codexResponseSchema = z.discriminatedUnion("kind", [
 /** AIが新規生成する構造化出力を検証するスキーマです。 */
 export const codexGeneratedResponseSchema = z.discriminatedUnion("kind", [
   generatedProposalResponseSchema,
+  proposalFileErrorResponseSchema,
   noProposalResponseSchema,
 ]);
 

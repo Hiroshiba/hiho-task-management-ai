@@ -16,6 +16,7 @@ import {
   type TaskSnapshot,
 } from "../../../shared/domain";
 import {
+  codexGeneratedProposalSchema,
   codexResponseSchema,
   proposalOperationSchema,
   proposalSchema,
@@ -85,11 +86,16 @@ import {
   AiWorkflowEditError,
   AiWorkflowError,
   AiWorkflowOfflineError,
+  AiWorkflowProposalFileError,
   AiWorkflowProposalNotFoundError,
   AiWorkflowSelectionError,
   AiWorkflowStateError,
   AiWorkflowSyncError,
 } from "./errors";
+import {
+  aiWorkflowProposalFileLeaseSchema,
+  type AiWorkflowProposalFileLease,
+} from "./proposal-file";
 import {
   assertSelectedProposalGraphIsSafe,
   eligibleOperationIds,
@@ -185,6 +191,54 @@ type PreparedTurn = {
   readonly inherited_split_instruction_aliases: readonly InheritedSplitInstructionAlias[];
 };
 
+type TurnExecutionInput = {
+  readonly request: AiWorkflowTurnRequest;
+  readonly signal: AbortSignal;
+  readonly baseProposal: StoredProposal | undefined;
+  readonly turnGeneration: number;
+  readonly pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined;
+  readonly logicalTurnId: string;
+  readonly proposalFile: AiWorkflowProposalFileLease;
+};
+
+type TurnExecutionResult =
+  | {
+      readonly kind: "succeeded";
+      readonly commit: TurnCommit;
+    }
+  | {
+      readonly kind: "failed";
+      readonly error: unknown;
+    };
+
+type PendingWithdrawConfirmationCommit =
+  | { readonly kind: "clear" }
+  | { readonly kind: "set"; readonly value: PendingWithdrawConfirmation };
+
+type TurnCommit =
+  | {
+      readonly kind: "no_proposal";
+      readonly result: AiWorkflowTurnResult;
+      readonly pendingWithdrawConfirmation: PendingWithdrawConfirmationCommit;
+      readonly prepared: PreparedTurn;
+    }
+  | {
+      readonly kind: "proposal";
+      readonly result: AiWorkflowTurnResult;
+      readonly pendingWithdrawConfirmation: PendingWithdrawConfirmationCommit;
+      readonly storedProposal: StoredProposal;
+      readonly replacingProposalId: string | undefined;
+      readonly prepared: PreparedTurn;
+    };
+
+type ProposalFileDisposalResult =
+  | { readonly kind: "succeeded" }
+  | { readonly kind: "failed"; readonly error: unknown };
+
+type AiWorkflowLifecycle =
+  | { readonly kind: "active" }
+  | { readonly kind: "disposed" };
+
 type StoredProposal = {
   readonly proposal_id: string;
   readonly proposal: Proposal;
@@ -259,6 +313,14 @@ export interface AiWorkflowSessionPort {
   onDelta(listener: CodexSessionDeltaListener): () => void;
 }
 
+/** AIターン用提案ファイルの発行と読み書きを提供する境界です。 */
+export interface AiWorkflowProposalFilePort {
+  createDraft(baseProposal: Proposal | undefined): AiWorkflowProposalFileLease;
+  readProposal(proposalFileId: string): Proposal;
+  dispose(proposalFileId: string): void;
+  disposeAll(): void;
+}
+
 /** 最新状態を再取得してAsana適用入力を作る関数の型です。 */
 export type AiWorkflowApprovalInputProvider = (
   input: ApprovalPreparationInput,
@@ -271,6 +333,7 @@ export type AiWorkflowOnlineStateProvider = () => boolean;
 /** AIワークフローの依存境界を検証する入力型です。 */
 export interface AiWorkflowOptions {
   readonly session: AiWorkflowSessionPort;
+  readonly proposalFileStore: AiWorkflowProposalFilePort;
   readonly snapshotProvider: AiWorkflowSnapshotProvider;
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
   readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
@@ -293,6 +356,15 @@ const sessionPortSchema = z.custom<AiWorkflowSessionPort>(
     ].every((name) => typeof Reflect.get(value, name) === "function");
   },
   "AIセッション境界が不正です。",
+);
+
+const proposalFilePortSchema = z.custom<AiWorkflowProposalFilePort>(
+  (value) => typeof value === "object"
+    && value != null
+    && ["createDraft", "readProposal", "dispose", "disposeAll"].every(
+      (name) => typeof Reflect.get(value, name) === "function",
+    ),
+  "AI変更案ファイル境界が不正です。",
 );
 
 const snapshotProviderSchema = z.custom<AiWorkflowSnapshotProvider>(
@@ -372,6 +444,7 @@ const onlineStateProviderSchema = z.custom<AiWorkflowOnlineStateProvider>(
 const aiWorkflowOptionsSchema = z
   .object({
     session: sessionPortSchema,
+    proposalFileStore: proposalFilePortSchema,
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
@@ -1381,7 +1454,7 @@ function createInheritedEvidenceAliases(
 function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
-  baseProposal: StoredProposal | undefined,
+  proposalFile: AiWorkflowProposalFileLease,
 ): string {
   const context = aiWorkflowTurnContextSchema.parse({
     baseline_snapshot_hash: prepared.baseline_snapshot_hash,
@@ -1399,25 +1472,32 @@ function createTurnPrompt(
   const targetTaskContext = targetTask == null
     ? null
     : { gid: targetTask.gid, title: targetTask.title };
-  const pendingProposalContext = baseProposal == null
-    ? null
-    : {
-        proposal_id: baseProposal.proposal_id,
-        proposal: baseProposal.proposal,
-      };
   const withdrawConfirmationSources = prepared.user_message_sources.filter(
     (source) => source.kind === "withdraw_confirmation",
   );
   const taskNotesSourceIdPattern =
     `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
+  const proposalFileSchema = z.toJSONSchema(codexGeneratedProposalSchema, {
+    target: "draft-07",
+  });
   return [
     "TaskHubの構造化変更案だけを検討してください。",
+    "変更案を返す場合は、指定された提案ファイルを完全な変更案JSONへ更新し、最終応答には発行済みproposal_file_idだけを指定してください。",
+    "提案ファイルの内容が変更案の正本であり、最終応答へ変更案JSONを埋め込まないでください。",
+    "提案ファイルを削除、移動、置換しないでください。アプリが事前に作成した指定パスの同じファイルへ完全なUTF-8 JSONを書き込み、書き込みを完了してファイルを閉じてから最終応答を返してください。バックグラウンドwriterや完了前の非同期書き込みを残さないでください。",
+    "提案ファイルのUTF-8バイト数は256KiB以下にしてください。書き込みに失敗した場合はproposal_file_idを返さず、最終応答へkind: proposal_file_error、error_code: write_failed、messageを指定してください。",
     "<baseline_context>",
     canonicalizeJson(context),
     "</baseline_context>",
-    "<pending_proposal>",
-    canonicalizeJson(pendingProposalContext),
-    "</pending_proposal>",
+    "<proposal_file>",
+    canonicalizeJson({
+      proposal_file_id: proposalFile.proposal_file_id,
+      proposal_file_path: proposalFile.proposal_file_path,
+    }),
+    "</proposal_file>",
+    "<proposal_file_schema>",
+    canonicalizeJson(proposalFileSchema),
+    "</proposal_file_schema>",
     "<target_task_context>",
     canonicalizeJson(targetTaskContext),
     "</target_task_context>",
@@ -1489,6 +1569,15 @@ function createPendingWithdrawConfirmation(
     baseline_status: baselineTask.status,
     baseline_completed: baselineTask.completed,
   };
+}
+
+function createPendingWithdrawConfirmationCommit(
+  pending: PendingWithdrawConfirmation | undefined,
+): PendingWithdrawConfirmationCommit {
+  if (pending == null) {
+    return { kind: "clear" };
+  }
+  return { kind: "set", value: pending };
 }
 
 function createRendererQuestions(
@@ -2303,7 +2392,7 @@ export class AiWorkflowService {
   private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
   private readonly removeSessionDelta: () => void;
   private listenerErrorCount = 0;
-  private disposed = false;
+  private lifecycle: AiWorkflowLifecycle = { kind: "active" };
   private pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined;
   private sessionGeneration = 0;
 
@@ -2319,7 +2408,7 @@ export class AiWorkflowService {
     if (typeof listener !== "function") {
       throw new TypeError("差分購読関数が必要です。");
     }
-    if (this.disposed) {
+    if (this.lifecycle.kind === "disposed") {
       throw new AiWorkflowStateError("AIワークフローは終了しています。");
     }
     this.deltaListeners.add(listener);
@@ -2339,7 +2428,7 @@ export class AiWorkflowService {
     input: AiWorkflowTurnRequest,
     signal: AbortSignal,
   ): Promise<AiWorkflowTurnResult> {
-    if (this.disposed) {
+    if (this.lifecycle.kind === "disposed") {
       throw new AiWorkflowStateError("AIワークフローは終了しています。");
     }
     const request = aiWorkflowTurnRequestSchema.parse(input);
@@ -2350,8 +2439,48 @@ export class AiWorkflowService {
     this.assertProposalCapacity(request.base_proposal_id);
     const turnGeneration = this.sessionGeneration;
     const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
-    this.pendingWithdrawConfirmation = undefined;
     const logicalTurnId = identifierSchema.parse(randomUUID());
+    const proposalFile = aiWorkflowProposalFileLeaseSchema.parse(
+      this.options.proposalFileStore.createDraft(baseProposal?.proposal),
+    );
+    const execution = await this.executeTurnSafely({
+      request,
+      signal,
+      baseProposal,
+      turnGeneration,
+      pendingWithdrawConfirmation,
+      logicalTurnId,
+      proposalFile,
+    });
+    const disposal = this.disposeProposalFileSafely(proposalFile.proposal_file_id);
+    if (execution.kind === "failed") {
+      if (disposal.kind === "failed") {
+        throw new AggregateError(
+          [execution.error, disposal.error],
+          "AIターンと変更案ファイルの破棄に失敗しました。",
+          { cause: execution.error },
+        );
+      }
+      throw execution.error;
+    }
+    if (disposal.kind === "failed") {
+      throw disposal.error;
+    }
+    return this.commitTurn(execution.commit);
+  }
+
+  private async executeTurn(
+    input: TurnExecutionInput,
+  ): Promise<TurnCommit> {
+    const {
+      request,
+      signal,
+      baseProposal,
+      turnGeneration,
+      pendingWithdrawConfirmation,
+      logicalTurnId,
+      proposalFile,
+    } = input;
     let retryCount = 0;
     while (retryCount <= 1) {
       let prepared: PreparedTurn | undefined;
@@ -2362,7 +2491,7 @@ export class AiWorkflowService {
       try {
         await this.options.externalStatusEvidenceCollector.beginTurn(attemptId, signal);
         evidenceCollectionActive = true;
-        const turnResult = await this.options.session.startTurnWithPreparation(
+        const sessionTurnResult = await this.options.session.startTurnWithPreparation(
           async (turnSignal): Promise<CodexSessionTurnInput> => {
             try {
               const rawSnapshot = await this.options.snapshotProvider(turnSignal);
@@ -2419,7 +2548,7 @@ export class AiWorkflowService {
               snapshotFrozen = true;
               return [{
                 type: "text",
-                text: createTurnPrompt(request, prepared, baseProposal),
+                text: createTurnPrompt(request, prepared, proposalFile),
               }];
             } catch (error: unknown) {
               if (error instanceof AiWorkflowSyncError) {
@@ -2444,7 +2573,24 @@ export class AiWorkflowService {
           ...prepared,
           trusted_status_evidence: createTrustedStatusEvidence(prepared.snapshot, externalEvidence),
         };
-        const response = codexResponseSchema.parse(turnResult.response);
+        const generatedResponse = sessionTurnResult.response;
+        if (generatedResponse.kind === "proposal_file_error") {
+          throw new AiWorkflowProposalFileError(
+            "AI変更案ファイルへの書き込みに失敗しました。",
+            generatedResponse.message,
+          );
+        }
+        const response = generatedResponse.kind === "proposal"
+          ? codexResponseSchema.parse({
+              kind: generatedResponse.kind,
+              message: generatedResponse.message,
+              questions: generatedResponse.questions,
+              proposal: this.readProposalFile(
+                generatedResponse.proposal_file_id,
+                proposalFile,
+              ),
+            })
+          : codexResponseSchema.parse(generatedResponse);
         if (turnGeneration !== this.sessionGeneration) {
           throw new AiWorkflowStateError("AIセッションが切り替わったため、AIターンを破棄しました。");
         }
@@ -2464,12 +2610,13 @@ export class AiWorkflowService {
             pending_proposal_action: response.pending_proposal_action,
             retry_count: retryCount,
           });
-          this.pendingWithdrawConfirmation = pending;
-          rememberSuccessfulTurnEvidence(
-            this.completedEvidenceSources,
+          return {
+            kind: "no_proposal",
+            result,
+            pendingWithdrawConfirmation:
+              createPendingWithdrawConfirmationCommit(pending),
             prepared,
-          );
-          return result;
+          };
         }
         const proposalId = identifierSchema.parse(randomUUID());
         const bound = bindProposalEvidence(
@@ -2489,12 +2636,14 @@ export class AiWorkflowService {
           proposal: view,
           retry_count: retryCount,
         });
-        this.storeProposal(stored, request.base_proposal_id);
-        rememberSuccessfulTurnEvidence(
-          this.completedEvidenceSources,
+        return {
+          kind: "proposal",
+          result,
+          pendingWithdrawConfirmation: { kind: "clear" },
+          storedProposal: stored,
+          replacingProposalId: request.base_proposal_id,
           prepared,
-        );
-        return result;
+        };
       } catch (error: unknown) {
         turnError = error;
         if (error instanceof CodexSessionOutputValidationError && retryCount === 0) {
@@ -2519,6 +2668,71 @@ export class AiWorkflowService {
       }
     }
     throw new AiWorkflowError("構造化出力の再試行に失敗しました。");
+  }
+
+  private async executeTurnSafely(
+    input: TurnExecutionInput,
+  ): Promise<TurnExecutionResult> {
+    try {
+      return {
+        kind: "succeeded",
+        commit: await this.executeTurn(input),
+      };
+    } catch (error: unknown) {
+      return { kind: "failed", error };
+    }
+  }
+
+  private disposeProposalFileSafely(
+    proposalFileId: string,
+  ): ProposalFileDisposalResult {
+    try {
+      this.options.proposalFileStore.dispose(proposalFileId);
+      return { kind: "succeeded" };
+    } catch (error: unknown) {
+      return { kind: "failed", error };
+    }
+  }
+
+  private commitTurn(commit: TurnCommit): AiWorkflowTurnResult {
+    switch (commit.kind) {
+      case "no_proposal":
+        rememberSuccessfulTurnEvidence(
+          this.completedEvidenceSources,
+          commit.prepared,
+        );
+        break;
+      case "proposal":
+        this.storeProposal(commit.storedProposal, commit.replacingProposalId);
+        rememberSuccessfulTurnEvidence(
+          this.completedEvidenceSources,
+          commit.prepared,
+        );
+        break;
+    }
+    switch (commit.pendingWithdrawConfirmation.kind) {
+      case "clear":
+        this.pendingWithdrawConfirmation = undefined;
+        break;
+      case "set":
+        this.pendingWithdrawConfirmation = commit.pendingWithdrawConfirmation.value;
+        break;
+    }
+    return commit.result;
+  }
+
+  private readProposalFile(
+    proposalFileId: string,
+    expectedProposalFile: AiWorkflowProposalFileLease,
+  ): Proposal {
+    if (proposalFileId !== expectedProposalFile.proposal_file_id) {
+      throw new AiWorkflowProposalFileError(
+        "AI応答の変更案ファイルIDが今回のAIターンへ発行したIDと一致しません。",
+      );
+    }
+    return proposalSchema.parse(
+      this.options.proposalFileStore.readProposal(proposalFileId),
+    );
   }
 
   /** 保持中の変更案を取得してRenderer向けDTOへ変換します。 */
@@ -2679,17 +2893,18 @@ export class AiWorkflowService {
 
   /** AIワークフローの購読と保持中変更案を終了時に破棄します。 */
   public dispose(): void {
-    if (this.disposed) {
+    if (this.lifecycle.kind === "disposed") {
       return;
     }
-    this.disposed = true;
+    this.options.proposalFileStore.disposeAll();
     this.removeSessionDelta();
+    this.options.session.releaseTaskctlSnapshot();
     this.deltaListeners.clear();
     this.proposals.clear();
     this.completedEvidenceSources.clear();
-    this.sessionGeneration += 1;
     this.pendingWithdrawConfirmation = undefined;
-    this.options.session.releaseTaskctlSnapshot();
+    this.sessionGeneration += 1;
+    this.lifecycle = { kind: "disposed" };
   }
 
   private getStoredProposal(proposalId: string): StoredProposal {

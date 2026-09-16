@@ -53,3 +53,11 @@ export class AiWorkflowStateError extends AiWorkflowError {
     this.name = "AiWorkflowStateError";
   }
 }
+
+/** AI変更案ファイルを安全に読み込めないことを表すエラーです。 */
+export class AiWorkflowProposalFileError extends AiWorkflowError {
+  public constructor(message: string, cause?: unknown) {
+    super(message, cause);
+    this.name = "AiWorkflowProposalFileError";
+  }
+}

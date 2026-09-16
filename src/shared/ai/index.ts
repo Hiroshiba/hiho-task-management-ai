@@ -1,5 +1,6 @@
 export {
   codexGeneratedResponseSchema,
+  codexGeneratedProposalSchema,
   codexResponseSchema,
   createExternalReviewEvidenceLocator,
   proposalOperationSchema,
