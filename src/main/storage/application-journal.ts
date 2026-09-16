@@ -3,6 +3,7 @@ import { gidSchema, identifierSchema } from "../../shared/domain";
 import {
   applicationJournalOperationSchema,
   applicationJournalPlanSchema,
+  applicationJournalRecoveryReasonSchema,
   applicationJournalResultSchema,
   applicationJournalLegacyCompletedSchema,
   applicationJournalBaselineSourceSchema,
@@ -26,6 +27,7 @@ interface ApplicationJournalRow {
   readonly started_at: string;
   readonly stage: string;
   readonly final_result: string | null;
+  readonly recovery_reason: string | null;
   readonly group_id: string | null;
   readonly group_order: number | null;
   readonly operation_order: number | null;
@@ -59,6 +61,42 @@ const applicationJournalStageOrder: Record<ApplicationJournalStage, number> = {
   legacy_unresolved: -1,
 };
 type ApplicationJournalWithPlan = z.infer<typeof applicationJournalWithPlanSchema>;
+type ApplicationJournalRecoveryReason = z.infer<
+  typeof applicationJournalRecoveryReasonSchema
+>;
+
+class CorruptApplicationJournalPlanError extends Error {
+  public constructor(cause: unknown) {
+    super("適用ジャーナルの復旧計画が破損しています。", { cause });
+    this.name = "CorruptApplicationJournalPlanError";
+  }
+}
+
+class MissingApplicationJournalPlanError extends Error {
+  public constructor() {
+    super("適用ジャーナルの復旧計画がありません。");
+    this.name = "MissingApplicationJournalPlanError";
+  }
+}
+
+class ApplicationJournalTargetMismatchError extends Error {
+  public constructor() {
+    super("適用ジャーナルと復旧計画の対象が一致しません。");
+    this.name = "ApplicationJournalTargetMismatchError";
+  }
+}
+
+function isUnresolvedCandidate(row: ApplicationJournalRow): boolean {
+  return row.final_result == null
+    || (
+      row.final_result === "unknown"
+      && (
+        row.stage === "prepared"
+        || row.stage === "write_started"
+        || row.stage === "legacy_unresolved"
+      )
+    );
+}
 
 function rowToApplicationJournalPlan(row: ApplicationJournalRow): ApplicationJournalPlan {
   if (
@@ -176,21 +214,79 @@ function rowToApplicationJournal(row: ApplicationJournalRow): ApplicationJournal
   } else {
     target = { kind: "new_task", uuid: row.new_task_uuid };
   }
-  const plan = row.operation_kind == null
-    ? undefined
-    : rowToApplicationJournalPlan(row);
-  if (plan != null) {
-    const planTarget = plan.operation.target;
-    let targetsMatch = false;
-    if (planTarget.kind === "new_task") {
-      targetsMatch = target.kind === "new_task" && planTarget.uuid === target.uuid;
-    } else if (planTarget.kind === "existing") {
-      targetsMatch = target.kind === "task" && planTarget.gid === target.gid;
-    } else {
-      targetsMatch = target.kind === "temporary" && planTarget.ref === target.ref;
-    }
-    if (!targetsMatch) {
-      throw new Error("適用ジャーナルと復旧計画の対象が一致しません。");
+  if (
+    row.operation_kind == null
+    && row.final_result != null
+    && row.stage !== "legacy_unresolved"
+  ) {
+    return applicationJournalLegacyCompletedSchema.parse({
+      proposal_id: row.proposal_id,
+      operation_id: row.operation_id,
+      target,
+      started_at: row.started_at,
+      stage: row.stage,
+      final_result: row.final_result,
+    });
+  }
+
+  let plan: ApplicationJournalPlan | undefined;
+  if (
+    row.operation_kind == null
+    && isUnresolvedCandidate(row)
+    && row.stage !== "legacy_unresolved"
+  ) {
+    const planError = new MissingApplicationJournalPlanError();
+    return applicationJournalSchema.parse({
+      proposal_id: row.proposal_id,
+      operation_id: row.operation_id,
+      target,
+      started_at: row.started_at,
+      stage: "legacy_unresolved",
+      recovery_reason: "recovery_context_missing",
+      recovery_cause: planError,
+    });
+  }
+  if (row.operation_kind != null) {
+    try {
+      plan = rowToApplicationJournalPlan(row);
+      const planTarget = plan.operation.target;
+      let targetsMatch = false;
+      if (planTarget.kind === "new_task") {
+        targetsMatch = target.kind === "new_task" && planTarget.uuid === target.uuid;
+      } else if (planTarget.kind === "existing") {
+        targetsMatch = target.kind === "task" && planTarget.gid === target.gid;
+      } else {
+        targetsMatch = target.kind === "temporary" && planTarget.ref === target.ref;
+      }
+      if (!targetsMatch) {
+        throw new ApplicationJournalTargetMismatchError();
+      }
+    } catch (error: unknown) {
+      const planError = new CorruptApplicationJournalPlanError(error);
+      if (row.final_result == null) {
+        const recoveryReason = error instanceof ApplicationJournalTargetMismatchError
+          ? "journal_target_mismatch"
+          : "recovery_context_missing";
+        const unresolvedEntry = {
+          proposal_id: row.proposal_id,
+          operation_id: row.operation_id,
+          target,
+          started_at: row.started_at,
+          stage: "legacy_unresolved",
+          recovery_reason: recoveryReason,
+          recovery_cause: planError,
+        };
+        const validatedUnresolved = applicationJournalSchema.safeParse(unresolvedEntry);
+        if (!validatedUnresolved.success) {
+          throw new AggregateError(
+            [planError, validatedUnresolved.error],
+            "破損した適用ジャーナルを安全な未確定状態に変換できませんでした。",
+            { cause: planError },
+          );
+        }
+        return validatedUnresolved.data;
+      }
+      throw planError;
     }
   }
   const entry = {
@@ -200,15 +296,9 @@ function rowToApplicationJournal(row: ApplicationJournalRow): ApplicationJournal
     started_at: row.started_at,
     stage: row.stage,
     ...(row.final_result == null ? {} : { final_result: row.final_result }),
+    ...(row.recovery_reason == null ? {} : { recovery_reason: row.recovery_reason }),
     ...(plan == null ? {} : { plan }),
   };
-  if (
-    row.operation_kind == null
-    && row.final_result != null
-    && row.stage !== "legacy_unresolved"
-  ) {
-    return applicationJournalLegacyCompletedSchema.parse(entry);
-  }
   return applicationJournalSchema.parse(entry);
 }
 
@@ -243,8 +333,13 @@ function validatePlanEntry(entry: ApplicationJournal): ApplicationJournalWithPla
 
 /** 適用ジャーナルのSQLite操作を提供します。 */
 export class ApplicationJournalStore {
+  private readonly corruptPlanRecoveryCauses = new Map<
+    string,
+    Map<string, CorruptApplicationJournalPlanError>
+  >();
   private readonly completeStatement;
   private readonly insertPreparedStatement;
+  private readonly markProposalUnresolvedStatement;
   private readonly recordCreatedTaskStatement;
   private readonly selectByProposalStatement;
   private readonly selectIncompleteStatement;
@@ -312,6 +407,35 @@ export class ApplicationJournalStore {
         temporary_ref
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    this.markProposalUnresolvedStatement = database.prepare<
+      [string, string, string],
+      unknown
+    >(
+      `UPDATE application_journal SET
+        stage = 'legacy_unresolved',
+        recovery_reason = ?,
+        group_id = NULL,
+        group_order = NULL,
+        operation_order = NULL,
+        atomic = NULL,
+        project_gid = NULL,
+        workspace_gid = NULL,
+        section_gids_json = NULL,
+        device_id = NULL,
+        created_via = NULL,
+        activity_date = NULL,
+        temporary_ref_to_gid_json = NULL,
+        baseline_source_json = NULL,
+        operation_kind = NULL,
+        operation_json = NULL,
+        expected_before_json = NULL,
+        expected_after_json = NULL,
+        create_uuid = NULL,
+        temporary_ref = NULL
+        WHERE proposal_id = ? AND operation_id = ?
+          AND final_result IS NULL
+          AND stage <> 'legacy_unresolved'`,
+    );
     this.updateStageStatement = database.prepare<[string, string, string], unknown>(
       "UPDATE application_journal SET stage = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL AND stage <> 'legacy_unresolved'",
     );
@@ -334,6 +458,7 @@ export class ApplicationJournalStore {
         started_at,
         stage,
         final_result,
+        recovery_reason,
         group_id,
         group_order,
         operation_order,
@@ -365,6 +490,7 @@ export class ApplicationJournalStore {
         started_at,
         stage,
         final_result,
+        recovery_reason,
         group_id,
         group_order,
         operation_order,
@@ -397,6 +523,7 @@ export class ApplicationJournalStore {
         started_at,
         stage,
         final_result,
+        recovery_reason,
         group_id,
         group_order,
         operation_order,
@@ -417,8 +544,100 @@ export class ApplicationJournalStore {
         temporary_ref
       FROM application_journal
       WHERE final_result IS NULL
+        OR final_result = 'unknown'
       ORDER BY proposal_id, operation_order IS NULL, operation_order, started_at, operation_id`,
     );
+  }
+
+  private persistUnresolvedProposal(
+    proposalId: string,
+    reasons: ReadonlyMap<string, ApplicationJournalRecoveryReason>,
+  ): void {
+    const persist = this.database.transaction(() => {
+      const incompleteRows = this.selectByProposalStatement
+        .all(proposalId)
+        .filter((row) => row.final_result == null && row.stage !== "legacy_unresolved");
+      for (const row of incompleteRows) {
+        const reason = reasons.get(row.operation_id) ?? "recovery_context_missing";
+        const result = this.markProposalUnresolvedStatement.run(
+          reason,
+          proposalId,
+          row.operation_id,
+        );
+        assertChanged(result.changes, "適用ジャーナルの安全な未確定化");
+      }
+    });
+    persist();
+  }
+
+  private readRows(rows: readonly ApplicationJournalRow[]): readonly ApplicationJournal[] {
+    const rowsByProposal = new Map<string, ApplicationJournalRow[]>();
+    for (const row of rows) {
+      const proposalRows = rowsByProposal.get(row.proposal_id) ?? [];
+      proposalRows.push(row);
+      rowsByProposal.set(row.proposal_id, proposalRows);
+    }
+
+    const journals: ApplicationJournal[] = [];
+    for (const [proposalId, proposalRows] of rowsByProposal) {
+      const incompleteRows = proposalRows.filter(isUnresolvedCandidate);
+      const parsedIncomplete = incompleteRows.map(rowToApplicationJournal);
+      const unresolvedReasons = new Map<string, ApplicationJournalRecoveryReason>();
+      for (const journal of parsedIncomplete) {
+        if (journal.stage !== "legacy_unresolved") {
+          continue;
+        }
+        unresolvedReasons.set(
+          journal.operation_id,
+          journal.recovery_reason === "journal_target_mismatch"
+            ? journal.recovery_reason
+            : "recovery_context_missing",
+        );
+        if (journal.recovery_cause instanceof CorruptApplicationJournalPlanError) {
+          const causes = this.corruptPlanRecoveryCauses.get(journal.proposal_id)
+            ?? new Map<string, CorruptApplicationJournalPlanError>();
+          causes.set(journal.operation_id, journal.recovery_cause);
+          this.corruptPlanRecoveryCauses.set(journal.proposal_id, causes);
+        }
+      }
+      if (unresolvedReasons.size > 0) {
+        for (const journal of parsedIncomplete) {
+          if (
+            journal.final_result == null
+            && !unresolvedReasons.has(journal.operation_id)
+          ) {
+            unresolvedReasons.set(journal.operation_id, "recovery_context_missing");
+          }
+        }
+        this.persistUnresolvedProposal(proposalId, unresolvedReasons);
+      }
+
+      const refreshedRows = unresolvedReasons.size === 0
+        ? new Map<string, ApplicationJournalRow>()
+        : new Map(
+            this.selectByProposalStatement
+              .all(proposalId)
+              .map((row) => [row.operation_id, row]),
+          );
+      for (const row of proposalRows) {
+        const readableRow = unresolvedReasons.has(row.operation_id)
+          ? refreshedRows.get(row.operation_id) ?? row
+          : row;
+        const journal = rowToApplicationJournal(readableRow);
+        const recoveryCause = this.corruptPlanRecoveryCauses
+          .get(row.proposal_id)
+          ?.get(row.operation_id);
+        if (journal.stage === "legacy_unresolved" && recoveryCause != null) {
+          journals.push(applicationJournalSchema.parse({
+            ...journal,
+            recovery_cause: recoveryCause,
+          }));
+        } else {
+          journals.push(journal);
+        }
+      }
+    }
+    return journals;
   }
 
   /** 選択済み操作の復旧計画を一つのトランザクションで保存します。 */
@@ -633,23 +852,33 @@ export class ApplicationJournalStore {
   public get(proposalId: string, operationId: string): ApplicationJournal | undefined {
     const validatedProposalId = identifierSchema.parse(proposalId);
     const validatedOperationId = identifierSchema.parse(operationId);
-    const row = this.selectOneStatement.get(validatedProposalId, validatedOperationId);
-    if (row == null) {
-      return undefined;
-    }
-    return rowToApplicationJournal(row);
+    return this.getByProposal(validatedProposalId).find(
+      (journal) => journal.operation_id === validatedOperationId,
+    );
   }
 
   /** 指定されたproposalの適用ジャーナルを全件読み出します。 */
   public getByProposal(proposalId: string): readonly ApplicationJournal[] {
     const validatedProposalId = identifierSchema.parse(proposalId);
-    return this.selectByProposalStatement
-      .all(validatedProposalId)
-      .map(rowToApplicationJournal);
+    return this.readRows(this.selectByProposalStatement.all(validatedProposalId));
   }
 
   /** 未完了の適用ジャーナルを全件読み出します。 */
   public getIncomplete(): readonly ApplicationJournal[] {
-    return this.selectIncompleteStatement.all().map(rowToApplicationJournal);
+    return this.readRows(this.selectIncompleteStatement.all());
+  }
+
+  /** 処理済みジャーナルの破損causeをメモリ上から削除します。 */
+  public clearRecoveryCause(proposalId: string, operationId: string): void {
+    const validatedProposalId = identifierSchema.parse(proposalId);
+    const validatedOperationId = identifierSchema.parse(operationId);
+    const causes = this.corruptPlanRecoveryCauses.get(validatedProposalId);
+    if (causes == null) {
+      return;
+    }
+    causes.delete(validatedOperationId);
+    if (causes.size === 0) {
+      this.corruptPlanRecoveryCauses.delete(validatedProposalId);
+    }
   }
 }

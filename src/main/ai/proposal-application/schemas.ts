@@ -13,7 +13,9 @@ import {
 import {
   proposalOperationSchema,
   proposalSchema,
+  type ProposalOperation,
 } from "../../../shared/ai";
+import { applicationJournalStageSchema } from "../../../shared/storage";
 import {
   proposalApprovalInputSchema,
 } from "../proposal-approval";
@@ -387,6 +389,77 @@ const postWriteSynchronizationResultSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const proposalOperationKindSchema = z.custom<ProposalOperation["operation"]>(
+  (value) => typeof value === "string"
+    && proposalOperationSchema.options.some(
+      (operation) => operation.shape.operation.value === value,
+    ),
+  "AI変更操作の種別が不正です。",
+);
+
+export const applicationJournalDiagnosticSchema = z
+  .object({
+    kind: z.literal("application_journal"),
+    severity: z.enum(["warning", "error"]),
+    proposal_id: identifierSchema.optional(),
+    operation_id: identifierSchema.optional(),
+    operation_kind: proposalOperationKindSchema.optional(),
+    api_action: z.enum([
+      "read_project_tasks",
+      "read_task",
+      "fetch_workspace_tags",
+      "create_task",
+      "update_task",
+      "add_task_to_project",
+      "add_task_to_section",
+      "add_task_tag",
+      "remove_task_tag",
+      "set_task_parent",
+      "clear_task_parent",
+      "operation_writer",
+      "post_apply",
+      "journal_plan",
+    ]),
+    journal_stage: applicationJournalStageSchema.optional(),
+    effect_certainty: z.enum(["none", "possible", "confirmed"]),
+    task_gid: gidSchema.optional(),
+    reason_code: identifierSchema,
+    recovery_decision: z.enum([
+      "inspect",
+      "resume",
+      "already_applied",
+      "not_applied",
+      "external_id_collision",
+      "unresolved",
+      "local_sync_pending",
+      "failed",
+    ]),
+    attempt: z.number().int().min(1).max(10_000),
+    phase: z.enum([
+      "validation",
+      "preflight",
+      "external_write",
+      "read_back",
+      "recovery",
+      "post_apply",
+      "application",
+      "journal",
+    ]),
+  })
+  .strict();
+
+const serviceDiagnosticSchema = z
+  .object({
+    kind: z.literal("service"),
+    severity: z.enum(["warning", "error"]),
+  })
+  .strict();
+
+export const applicationDiagnosticSchema = z.discriminatedUnion("kind", [
+  applicationJournalDiagnosticSchema,
+  serviceDiagnosticSchema,
+]);
+
 const applicationReasonCodeSchema = z.enum([
   "applied",
   "already_applied",
@@ -399,6 +472,8 @@ const applicationReasonCodeSchema = z.enum([
   "task_not_found",
   "duplicate_external_id",
   "journal_target_mismatch",
+  "external_api_failed",
+  "local_resync_required",
 ]);
 
 const applicationOutcomeSchema = z.enum([
@@ -457,6 +532,8 @@ const applicationOperationResultSchema = z
         "atomic_group_blocked",
         "writer_conflict",
         "external_id_collision",
+        "external_api_failed",
+        "task_not_found",
       ].includes(result.reason_code)
     ) {
       context.addIssue({
@@ -473,6 +550,7 @@ const applicationOperationResultSchema = z
         "task_not_found",
         "duplicate_external_id",
         "journal_target_mismatch",
+        "local_resync_required",
       ].includes(result.reason_code)
     ) {
       context.addIssue({
@@ -713,6 +791,10 @@ export type AsanaProposalApplicationInput = z.infer<typeof applicationInputSchem
 export type AsanaProposalApplicationResult = z.infer<typeof applicationResultSchema>;
 export type AsanaProposalRecoveryInput = z.infer<typeof recoveryInputSchema>;
 export type AsanaProposalRecoveryResult = z.infer<typeof recoveryResultSchema>;
+export type ApplicationDiagnostic = z.infer<typeof applicationDiagnosticSchema>;
+export type ApplicationJournalDiagnostic = z.infer<
+  typeof applicationJournalDiagnosticSchema
+>;
 export type PostWriteSynchronizationFailureCode = z.infer<
   typeof postWriteSynchronizationFailureCodeSchema
 >;

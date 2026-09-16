@@ -44,12 +44,14 @@ import {
   taskCacheEntriesSchema,
 } from "../../shared/storage";
 import {
+  cleanupItemSchema,
   cleanupItemsSchema,
   type CleanupItemKind,
 } from "../../shared/domain";
 import type { SqliteDatabase } from "./types";
+import { parseStorageJson, serializeStorageJson } from "./json";
 
-export const storageSchemaVersion = 4;
+export const storageSchemaVersion = 5;
 export const storageBusyTimeoutMilliseconds = 5_000;
 
 const databaseFileLabel = "SQLiteデータベース";
@@ -107,6 +109,10 @@ CREATE TABLE application_journal (
     final_result IS NULL
     OR final_result IN ('applied', 'not_applied', 'unknown', 'failed')
   ),
+  recovery_reason TEXT CHECK (
+    recovery_reason IS NULL
+    OR recovery_reason IN ('recovery_context_missing', 'journal_target_mismatch')
+  ),
   group_id TEXT,
   group_order INTEGER CHECK (group_order IS NULL OR group_order >= 0),
   operation_order INTEGER CHECK (operation_order IS NULL OR operation_order >= 0),
@@ -147,6 +153,16 @@ CREATE TABLE application_journal (
   create_uuid TEXT,
   temporary_ref TEXT,
   PRIMARY KEY (proposal_id, operation_id),
+  CHECK (
+    (
+      stage = 'legacy_unresolved'
+      AND recovery_reason IS NOT NULL
+    )
+    OR (
+      stage <> 'legacy_unresolved'
+      AND recovery_reason IS NULL
+    )
+  ),
   CHECK (
     (
       new_task_uuid IS NOT NULL
@@ -325,6 +341,77 @@ interface TableNameRow {
   readonly name: string;
 }
 
+interface TableInfoRow {
+  readonly cid: number;
+  readonly name: string;
+  readonly type: string;
+  readonly notnull: number;
+  readonly dflt_value: string | null;
+  readonly pk: number;
+}
+
+interface TableRowCount {
+  readonly row_count: number;
+}
+
+interface ExpectedTableColumn {
+  readonly name: string;
+  readonly type: string;
+  readonly notnull: number;
+  readonly pk: number;
+}
+
+interface CleanupItemsCacheRow {
+  readonly cache_key: number;
+  readonly cleanup_items_json: string;
+}
+
+const applicationJournalV3Columns: readonly ExpectedTableColumn[] = [
+  { name: "proposal_id", type: "TEXT", notnull: 1, pk: 1 },
+  { name: "operation_id", type: "TEXT", notnull: 1, pk: 2 },
+  { name: "new_task_uuid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "target_gid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "started_at", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "stage", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "final_result", type: "TEXT", notnull: 0, pk: 0 },
+];
+
+const applicationJournalV5Columns: readonly ExpectedTableColumn[] = [
+  { name: "proposal_id", type: "TEXT", notnull: 1, pk: 1 },
+  { name: "operation_id", type: "TEXT", notnull: 1, pk: 2 },
+  { name: "new_task_uuid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "target_gid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "target_temporary_ref", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "started_at", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "stage", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "final_result", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "recovery_reason", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "group_id", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "group_order", type: "INTEGER", notnull: 0, pk: 0 },
+  { name: "operation_order", type: "INTEGER", notnull: 0, pk: 0 },
+  { name: "atomic", type: "INTEGER", notnull: 0, pk: 0 },
+  { name: "project_gid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "workspace_gid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "section_gids_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "device_id", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "created_via", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "activity_date", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "temporary_ref_to_gid_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "baseline_source_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "operation_kind", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "operation_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "expected_before_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "expected_after_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "create_uuid", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "temporary_ref", type: "TEXT", notnull: 0, pk: 0 },
+];
+
+const applicationJournalV4ColumnsWithoutRecoveryReason =
+  applicationJournalV5Columns.filter((column) => column.name !== "recovery_reason");
+
+const legacyProposalConflictMessagePattern =
+  /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
+
 function validateSqliteAuxiliaryFiles(dbPath: string): void {
   sqliteAuxiliaryFileSuffixes.forEach((suffix) => {
     captureSecurePersistentFile(
@@ -359,6 +446,150 @@ function readTableNames(database: SqliteDatabase): readonly string[] {
   return rows.map((row) => row.name);
 }
 
+function assertStorageTableNames(tableNames: readonly string[]): void {
+  const tableNameSet = new Set(tableNames);
+  const expectedTableNameSet = new Set<string>(storageTableNames);
+  if (
+    tableNames.length !== storageTableNames.length
+    || tableNames.some((tableName) => !expectedTableNameSet.has(tableName))
+  ) {
+    throw new Error("SQLiteに未対応の追加テーブルが存在します。");
+  }
+  storageTableNames.forEach((tableName) => {
+    if (!tableNameSet.has(tableName)) {
+      throw new Error(`SQLiteのテーブルが不足しています: ${tableName}`);
+    }
+  });
+}
+
+function readTableColumns(
+  database: SqliteDatabase,
+  tableName: string,
+): readonly TableInfoRow[] {
+  return database
+    .prepare<[], TableInfoRow>(`PRAGMA table_info(${tableName})`)
+    .all();
+}
+
+function hasExpectedTableColumns(
+  actualColumns: readonly TableInfoRow[],
+  expectedColumns: readonly ExpectedTableColumn[],
+): boolean {
+  return actualColumns.length === expectedColumns.length
+    && actualColumns.every((column, index) => {
+      const expectedColumn = expectedColumns[index];
+      if (expectedColumn == null) {
+        return false;
+      }
+      return column.cid === index
+        && column.name === expectedColumn.name
+        && column.type === expectedColumn.type
+        && column.notnull === expectedColumn.notnull
+        && column.dflt_value == null
+        && column.pk === expectedColumn.pk;
+    });
+}
+
+function assertTableColumns(
+  database: SqliteDatabase,
+  tableName: string,
+  expectedColumns: readonly ExpectedTableColumn[],
+): void {
+  const actualColumns = readTableColumns(database, tableName);
+  if (!hasExpectedTableColumns(actualColumns, expectedColumns)) {
+    throw new Error(`SQLiteの${tableName}テーブル列が未対応です。`);
+  }
+}
+
+function readTableRowCount(database: SqliteDatabase, tableName: string): number {
+  const row = database
+    .prepare<[], TableRowCount>(`SELECT COUNT(*) AS row_count FROM ${tableName}`)
+    .get();
+  if (
+    row == null
+    || !Number.isSafeInteger(row.row_count)
+    || row.row_count < 0
+  ) {
+    throw new Error(`SQLiteの${tableName}テーブル行数を読み取れませんでした。`);
+  }
+  return row.row_count;
+}
+
+function assertTableRowCount(
+  database: SqliteDatabase,
+  tableName: string,
+  expectedRowCount: number,
+): void {
+  if (readTableRowCount(database, tableName) !== expectedRowCount) {
+    throw new Error(`SQLiteの${tableName}テーブル行数が移行前後で一致しません。`);
+  }
+}
+
+function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
+  const sourceRowCount = readTableRowCount(database, "cleanup_items_cache");
+  const rows = database
+    .prepare<[], CleanupItemsCacheRow>(
+      "SELECT cache_key, cleanup_items_json FROM cleanup_items_cache ORDER BY cache_key",
+    )
+    .all();
+  if (rows.length !== sourceRowCount) {
+    throw new Error("要整理キャッシュの行数が移行前に一致しません。");
+  }
+
+  const updateStatement = database.prepare<[string, number]>(
+    "UPDATE cleanup_items_cache SET cleanup_items_json = ? WHERE cache_key = ?",
+  );
+  rows.forEach((row) => {
+    if (row.cache_key !== 1) {
+      throw new Error("要整理キャッシュのキーが不正です。");
+    }
+    const items = parseStorageJson(row.cleanup_items_json, cleanupItemsCacheSchema);
+    let hasMigratedItem = false;
+    const migratedItems = items.map((item) => {
+      if (
+        item.kind !== "proposal_conflict"
+        || item.proposal_id != null
+        || item.operation_id != null
+      ) {
+        return item;
+      }
+
+      const matchedMessage = legacyProposalConflictMessagePattern.exec(item.message);
+      if (matchedMessage == null || matchedMessage[0] !== item.message) {
+        return item;
+      }
+      const proposalId = matchedMessage[1];
+      const operationId = matchedMessage[2];
+      if (proposalId == null || operationId == null) {
+        throw new Error("旧形式の要整理項目から識別子を抽出できませんでした。");
+      }
+      const validatedItem = cleanupItemSchema.safeParse({
+        ...item,
+        proposal_id: proposalId,
+        operation_id: operationId,
+      });
+      if (!validatedItem.success) {
+        return item;
+      }
+      hasMigratedItem = true;
+      return validatedItem.data;
+    });
+    if (!hasMigratedItem) {
+      return;
+    }
+
+    const validatedItems = cleanupItemsCacheSchema.parse(migratedItems);
+    const updateResult = updateStatement.run(
+      serializeStorageJson(validatedItems),
+      row.cache_key,
+    );
+    if (updateResult.changes !== 1) {
+      throw new Error("要整理キャッシュの移行対象が見つかりません。");
+    }
+  });
+  assertTableRowCount(database, "cleanup_items_cache", sourceRowCount);
+}
+
 function assertPragmas(database: SqliteDatabase): void {
   database.pragma("foreign_keys = ON");
   const foreignKeys = database.pragma("foreign_keys", { simple: true });
@@ -386,9 +617,24 @@ function assertPragmas(database: SqliteDatabase): void {
 
 function migrateSchemaFromV3(database: SqliteDatabase): void {
   const migrate = database.transaction(() => {
+    assertStorageTableNames(readTableNames(database));
+    assertTableColumns(
+      database,
+      "application_journal",
+      applicationJournalV3Columns,
+    );
+    const sourceRowCount = readTableRowCount(database, "application_journal");
+    migrateLegacyProposalConflictIdentifiers(database);
+    database.exec(
+      "ALTER TABLE application_journal RENAME TO application_journal_v3",
+    );
+    database.exec(applicationJournalTableSql);
+    assertTableColumns(
+      database,
+      "application_journal",
+      applicationJournalV5Columns,
+    );
     database.exec(`
-      ALTER TABLE application_journal RENAME TO application_journal_v3;
-      ${applicationJournalTableSql}
       INSERT INTO application_journal (
         proposal_id,
         operation_id,
@@ -397,7 +643,26 @@ function migrateSchemaFromV3(database: SqliteDatabase): void {
         target_temporary_ref,
         started_at,
         stage,
-        final_result
+        final_result,
+        recovery_reason,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        baseline_source_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
       )
       SELECT
         proposal_id,
@@ -407,10 +672,143 @@ function migrateSchemaFromV3(database: SqliteDatabase): void {
         NULL,
         started_at,
         CASE WHEN final_result IS NULL THEN 'legacy_unresolved' ELSE stage END,
-        final_result
+        final_result,
+        CASE WHEN final_result IS NULL THEN 'recovery_context_missing' ELSE NULL END,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL
       FROM application_journal_v3;
-      DROP TABLE application_journal_v3;
     `);
+    assertTableRowCount(database, "application_journal_v3", sourceRowCount);
+    assertTableRowCount(database, "application_journal", sourceRowCount);
+    database.exec("DROP TABLE application_journal_v3");
+    assertStorageTableNames(readTableNames(database));
+    assertTableColumns(
+      database,
+      "application_journal",
+      applicationJournalV5Columns,
+    );
+    assertTableRowCount(database, "application_journal", sourceRowCount);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
+function migrateSchemaFromV4(database: SqliteDatabase): void {
+  const migrate = database.transaction(() => {
+    assertStorageTableNames(readTableNames(database));
+    const sourceColumns = readTableColumns(database, "application_journal");
+    const hasRecoveryReason = hasExpectedTableColumns(
+      sourceColumns,
+      applicationJournalV5Columns,
+    );
+    const hasNoRecoveryReason = hasExpectedTableColumns(
+      sourceColumns,
+      applicationJournalV4ColumnsWithoutRecoveryReason,
+    );
+    if (!hasRecoveryReason && !hasNoRecoveryReason) {
+      throw new Error("SQLiteのapplication_journalテーブル列が未対応です。");
+    }
+
+    const sourceRowCount = readTableRowCount(database, "application_journal");
+    migrateLegacyProposalConflictIdentifiers(database);
+    database.exec(
+      "ALTER TABLE application_journal RENAME TO application_journal_v4",
+    );
+    database.exec(applicationJournalTableSql);
+    assertTableColumns(
+      database,
+      "application_journal",
+      applicationJournalV5Columns,
+    );
+    const recoveryReasonProjection = hasRecoveryReason
+      ? "recovery_reason"
+      : "CASE WHEN stage = 'legacy_unresolved' THEN 'recovery_context_missing' ELSE NULL END";
+    database.exec(`
+      INSERT INTO application_journal (
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        recovery_reason,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        baseline_source_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      )
+      SELECT
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        ${recoveryReasonProjection},
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        baseline_source_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      FROM application_journal_v4;
+    `);
+    assertTableRowCount(database, "application_journal_v4", sourceRowCount);
+    assertTableRowCount(database, "application_journal", sourceRowCount);
+    database.exec("DROP TABLE application_journal_v4");
+    assertStorageTableNames(readTableNames(database));
+    assertTableColumns(
+      database,
+      "application_journal",
+      applicationJournalV5Columns,
+    );
+    assertTableRowCount(database, "application_journal", sourceRowCount);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
   migrate();
@@ -430,6 +828,12 @@ function initializeSchema(database: SqliteDatabase): void {
 
     const createSchema = database.transaction(() => {
       database.exec(storageSchemaSql);
+      assertStorageTableNames(readTableNames(database));
+      assertTableColumns(
+        database,
+        "application_journal",
+        applicationJournalV5Columns,
+      );
       database.pragma(`user_version = ${storageSchemaVersion}`);
     });
     createSchema();
@@ -437,14 +841,12 @@ function initializeSchema(database: SqliteDatabase): void {
   }
 
   if (userVersion === 3) {
-    if (tableNames.length !== storageTableNames.length) {
-      throw new Error("SQLiteに未対応の追加テーブルが存在します。");
-    }
-    const expectedTableNameSet = new Set<string>(storageTableNames);
-    if (tableNames.some((tableName) => !expectedTableNameSet.has(tableName))) {
-      throw new Error("SQLiteに未対応の追加テーブルが存在します。");
-    }
     migrateSchemaFromV3(database);
+    return;
+  }
+
+  if (userVersion === 4) {
+    migrateSchemaFromV4(database);
     return;
   }
 
@@ -452,19 +854,7 @@ function initializeSchema(database: SqliteDatabase): void {
     throw new Error(`未対応のSQLite schema versionです: ${userVersion}`);
   }
 
-  const tableNameSet = new Set(tableNames);
-  const expectedTableNameSet = new Set<string>(storageTableNames);
-  if (
-    tableNames.length !== storageTableNames.length ||
-    tableNames.some((tableName) => !expectedTableNameSet.has(tableName))
-  ) {
-    throw new Error("SQLiteに未対応の追加テーブルが存在します。");
-  }
-  storageTableNames.forEach((tableName) => {
-    if (!tableNameSet.has(tableName)) {
-      throw new Error(`SQLiteのテーブルが不足しています: ${tableName}`);
-    }
-  });
+  assertStorageTableNames(tableNames);
 }
 
 /** SQLite永続化層を開き、対象スキーマを初期化します。 */
@@ -751,6 +1141,14 @@ export class StorageDatabase {
     finalResult: ApplicationJournalResult,
   ): void {
     this.applicationJournalStore.complete(proposalId, operationId, finalResult);
+  }
+
+  /** 処理済みジャーナルの破損causeをメモリ上から削除します。 */
+  public clearApplicationJournalRecoveryCause(
+    proposalId: string,
+    operationId: string,
+  ): void {
+    this.applicationJournalStore.clearRecoveryCause(proposalId, operationId);
   }
 
   /** 指定された適用ジャーナルを読み出します。 */

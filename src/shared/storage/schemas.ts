@@ -513,6 +513,12 @@ export const applicationJournalResultSchema = z.enum([
   "failed",
 ]);
 
+/** 保存計画なしで未確定化した理由を検証するスキーマです。 */
+export const applicationJournalRecoveryReasonSchema = z.enum([
+  "recovery_context_missing",
+  "journal_target_mismatch",
+]);
+
 const applicationJournalExistingTargetReferenceSchema = z
   .object({
     kind: z.literal("existing"),
@@ -1066,6 +1072,8 @@ const applicationJournalLegacyUnresolvedSchema = z
     ...applicationJournalBaseShape,
     stage: z.literal("legacy_unresolved"),
     final_result: z.literal("unknown").optional(),
+    recovery_reason: applicationJournalRecoveryReasonSchema,
+    recovery_cause: z.custom<Error>((value) => value instanceof Error).optional(),
     plan: z.undefined().optional(),
   })
   .strict();
@@ -1228,6 +1236,9 @@ export type VaultMapping = z.infer<typeof vaultMappingSchema>;
 export type ApplicationJournalTarget = z.infer<typeof applicationJournalTargetSchema>;
 export type ApplicationJournalStage = z.infer<typeof applicationJournalStageSchema>;
 export type ApplicationJournalResult = z.infer<typeof applicationJournalResultSchema>;
+export type ApplicationJournalRecoveryReason = z.infer<
+  typeof applicationJournalRecoveryReasonSchema
+>;
 export type ApplicationJournal =
   z.infer<typeof applicationJournalReadableSchema>;
 export type ApplicationJournalOperation = z.infer<typeof applicationJournalOperationSchema>;

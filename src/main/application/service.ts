@@ -103,6 +103,7 @@ import {
   AsanaProposalApplicationCoordinator,
   AsanaProposalOperationWriter,
   asanaPostWriteSynchronizationResultSchema,
+  type ApplicationDiagnostic,
   type AsanaProposalApplicationInput,
   type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
@@ -407,28 +408,14 @@ type ExternalToolConfigurationStopReason = {
 
 const maximumApprovalTaskCount = 10_000;
 const diagnosticLogRetentionLimit = 1_000;
-
-function diagnosticCodeForChannel(
-  channel: string,
-): DiagnosticRecord["code"] {
-  switch (channel) {
-    case "sync":
-    case "display_order":
-      return "sync.failed";
-    case "codex":
-      return "codex.status";
-    case "external_tools":
-      return "external_tools.status";
-    case "application_journal":
-      return "proposal.application";
-    case "sync_state_listener":
-    case "ai_status_listener":
-    case "ipc":
-      return "ipc.error";
-    default:
-      return "app.error";
-  }
-}
+const serviceErrorDiagnostic = {
+  kind: "service",
+  severity: "error",
+} satisfies ApplicationDiagnostic;
+const serviceWarningDiagnostic = {
+  kind: "service",
+  severity: "warning",
+} satisfies ApplicationDiagnostic;
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -1081,6 +1068,7 @@ export class TaskHubApplication {
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
+  private syncFailureDiagnosticSuppressionCount = 0;
   private journalRecoveryPending: boolean;
   private journalRecoveryRunning = false;
   private journalRecoveryPromise: Promise<void> | undefined;
@@ -1158,7 +1146,7 @@ export class TaskHubApplication {
       process.execPath,
     );
     const onCodexError = (error: unknown): void => {
-      this.options.diagnostic(error, "codex");
+      this.options.diagnostic(error, "codex", serviceErrorDiagnostic);
     };
     const connectionFactory = createCodexAppServerConnectionFactory({
       executable: options.codex_executable,
@@ -1204,7 +1192,7 @@ export class TaskHubApplication {
         return externalAgent.handleRequest(input, signal);
       },
       onError: (error) => {
-        this.options.diagnostic(error, "external_agent");
+        this.options.diagnostic(error, "external_agent", serviceErrorDiagnostic);
       },
     });
     this.externalAgentBridge = externalAgentBridge;
@@ -1305,12 +1293,13 @@ export class TaskHubApplication {
     });
   }
 
-  /** 本文を受け取らず固定コードと重要度だけを診断ログへ記録します。 */
+  /** 本文を受け取らず固定コードと安全な識別子だけを診断ログへ記録します。 */
   public recordDiagnostic(
     code: DiagnosticRecord["code"],
     severity: DiagnosticRecord["severity"],
+    metadata?: Pick<DiagnosticRecord, "asana_gid" | "operation_id" | "proposal_id">,
   ): void {
-    this.diagnostics.record({ code, severity });
+    this.diagnostics.record({ code, severity, ...metadata });
   }
 
   /** 起動時の設定再開、復旧、同期を実行します。 */
@@ -1428,13 +1417,7 @@ export class TaskHubApplication {
     this.assertOperationalReady();
     this.assertAsanaReauthenticationIdle();
     const runtime = this.requireRuntime();
-    let result: AsanaSyncRuntimeInternalResult;
-    try {
-      result = await runtime.onOnline(this.options.lifecycle_signal);
-    } catch (error: unknown) {
-      this.recordDiagnostic("sync.failed", "error");
-      throw error;
-    }
+    const result = await runtime.onOnline(this.options.lifecycle_signal);
     if (result.kind === "synchronized") {
       await this.afterSynchronizedState(result, this.options.lifecycle_signal);
       return;
@@ -1741,7 +1724,7 @@ export class TaskHubApplication {
       },
       this.options.lifecycle_signal,
       (signal) => this.beforeAsanaSynchronization(signal),
-      (error) => this.notifyUnexpectedError(error, "sync"),
+      (error) => this.recordUnexpectedError(error, "sync"),
       () => createNowIso(this.options.now_provider),
       this.operationQueue,
     );
@@ -1750,7 +1733,7 @@ export class TaskHubApplication {
     });
     const displayOrder = createAsanaDisplayOrderService(
       this.transport,
-      (error) => this.notifyUnexpectedError(error, "display_order"),
+      (error) => this.recordUnexpectedError(error, "display_order"),
       this.options.lifecycle_signal,
       this.operationQueue,
     );
@@ -1765,6 +1748,7 @@ export class TaskHubApplication {
       randomUUID,
       () => createNowIso(this.options.now_provider),
       (requiredTaskGids, signal) => this.afterAiApply(requiredTaskGids, signal),
+      (error, event) => this.options.diagnostic(error, "application_journal", event),
     );
     const guiEdit = new AsanaGuiEditService(
       writer,
@@ -1820,28 +1804,22 @@ export class TaskHubApplication {
     channel: string,
     message: string,
   ): void {
-    this.recordDiagnostic(diagnosticCodeForChannel(channel), "warning");
-    this.options.diagnostic(new Error(message, { cause: error }), channel);
+    this.options.diagnostic(
+      new Error(message, { cause: error }),
+      channel,
+      serviceWarningDiagnostic,
+    );
   }
 
   private recordCodexKnownFailure(error: unknown, message: string): void {
     try {
       this.recordFeatureFailure(error, "codex", message);
     } catch (diagnosticError: unknown) {
-      const report = new AggregateError(
-        [diagnosticError],
+      throw new AggregateError(
+        [error, diagnosticError],
         "Codex既知エラーの診断記録に失敗しました。",
         { cause: error },
       );
-      try {
-        this.options.notify_unexpected_error(report);
-      } catch (notificationError: unknown) {
-        throw new AggregateError(
-          [report, notificationError],
-          "Codex既知エラーの診断通知にも失敗しました。",
-          { cause: report },
-        );
-      }
     }
   }
 
@@ -2064,18 +2042,14 @@ export class TaskHubApplication {
     return recheckedState;
   }
 
-  private notifyUnexpectedError(error: unknown, channel: string): void {
-    this.recordDiagnostic(diagnosticCodeForChannel(channel), "error");
+  private recordUnexpectedError(error: unknown, channel: string): void {
     try {
-      this.options.notify_unexpected_error(error);
-    } catch (notificationError: unknown) {
-      this.options.diagnostic(
-        new AggregateError(
-          [error, notificationError],
-          "予期しないエラーの通知にも失敗しました。",
-          { cause: error },
-        ),
-        channel,
+      this.options.diagnostic(error, channel, serviceErrorDiagnostic);
+    } catch (diagnosticError: unknown) {
+      throw new AggregateError(
+        [error, diagnosticError],
+        "予期しないエラーの診断記録に失敗しました。",
+        { cause: error },
       );
     }
   }
@@ -2187,14 +2161,10 @@ export class TaskHubApplication {
       errors,
     };
     try {
-      this.recordDiagnostic("external_tools.status", "error");
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    try {
       this.options.diagnostic(
         new AggregateError(sourceErrors, message, { cause: sourceErrors[0] }),
         "external_tools",
+        serviceErrorDiagnostic,
       );
     } catch (error: unknown) {
       errors.push(error);
@@ -2856,33 +2826,26 @@ export class TaskHubApplication {
     const validatedInput = setupFullSyncInputSchema.parse(input);
     this.configureContextFromState(this.setup.getState());
     this.recordDiagnostic("sync.started", "info");
-    try {
-      const result = await this.operationQueue.enqueue({
-        priority: "user",
-        kind: "synchronization",
-        signal,
-        run: (context) => this.syncCoordinator.coordinate(
-          {
-            mode: "full",
-            project_gid: validatedInput.project_gid,
-            section_gids: validatedInput.section_gids,
-            device_id: validatedInput.device_id,
-            app_version: this.options.app_version,
-            required_task_gids: [],
-          },
-          context.signal,
-        ),
-      });
-      if (result.performed_mode !== "full") {
-        throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
-      }
-      await this.afterLocalStateRefresh(signal);
-    } catch (error: unknown) {
-      if (!signal.aborted) {
-        this.recordDiagnostic("sync.failed", "error");
-      }
-      throw error;
+    const result = await this.operationQueue.enqueue({
+      priority: "user",
+      kind: "synchronization",
+      signal,
+      run: (context) => this.syncCoordinator.coordinate(
+        {
+          mode: "full",
+          project_gid: validatedInput.project_gid,
+          section_gids: validatedInput.section_gids,
+          device_id: validatedInput.device_id,
+          app_version: this.options.app_version,
+          required_task_gids: [],
+        },
+        context.signal,
+      ),
+    });
+    if (result.performed_mode !== "full") {
+      throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
     }
+    await this.afterLocalStateRefresh(signal);
     this.recordDiagnostic("sync.completed", "info");
   }
 
@@ -2979,7 +2942,9 @@ export class TaskHubApplication {
     throwIfAborted(signal);
     if (
       this.journalRecoveryPending
-      || this.database.getIncompleteApplicationJournals().length > 0
+      || this.database
+        .getIncompleteApplicationJournals()
+        .some((journal) => journal.final_result == null)
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで同期を開始できません。");
     }
@@ -3201,7 +3166,10 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<void> {
     const incomplete = this.database.getIncompleteApplicationJournals();
-    if (!this.journalRecoveryPending && incomplete.length === 0) {
+    if (
+      !this.journalRecoveryPending
+      && !incomplete.some((journal) => journal.final_result == null)
+    ) {
       return;
     }
     this.journalRecoveryPending = true;
@@ -3214,21 +3182,49 @@ export class TaskHubApplication {
         },
         signal,
       );
-      await this.afterJournalRecovery(result, signal);
       const remainingJournals = this.database.getIncompleteApplicationJournals();
-      if (remainingJournals.length > 0) {
+      const unresolvedResultKeys = new Map<string, Set<string>>();
+      const localSyncPendingKeys = new Map<string, Set<string>>();
+      const includeKey = (
+        keys: Map<string, Set<string>>,
+        proposalId: string,
+        operationId: string,
+      ): void => {
+        const operationIds = keys.get(proposalId) ?? new Set<string>();
+        operationIds.add(operationId);
+        keys.set(proposalId, operationIds);
+      };
+      for (const journal of result.unresolved_journals) {
+        includeKey(unresolvedResultKeys, journal.proposal_id, journal.operation_id);
+      }
+      for (const application of result.applications) {
+        for (const operation of application.operations) {
+          if (operation.reason_code === "local_resync_required") {
+            includeKey(localSyncPendingKeys, application.proposal_id, operation.operation_id);
+          }
+        }
+      }
+      const unexpectedRemainingJournals = remainingJournals.filter(
+        (journal) => {
+          const isReportedUnknown = journal.final_result === "unknown"
+            && unresolvedResultKeys
+              .get(journal.proposal_id)
+              ?.has(journal.operation_id) === true;
+          const isLocalSyncPending = localSyncPendingKeys
+            .get(journal.proposal_id)
+            ?.has(journal.operation_id) === true;
+          return !isReportedUnknown && !isLocalSyncPending;
+        },
+      );
+      if (unexpectedRemainingJournals.length > 0) {
         throw new Error(
           "復旧結果に含まれない未完了のAI適用ジャーナルが残っています。",
         );
       }
-      this.journalRecoveryPending = false;
-      if (result.unresolved_journals.length > 0) {
-        this.recordFeatureFailure(
-          result.unresolved_journals,
-          "application_journal",
-          "未完了のAI適用ジャーナルを自動復旧できませんでした。",
-        );
-      }
+      await this.afterJournalRecovery(result, signal);
+      this.journalRecoveryPending = remainingJournals.some(
+        (journal) => journal.final_result == null,
+      );
     } finally {
       this.journalRecoveryRunning = false;
     }
@@ -3247,18 +3243,11 @@ export class TaskHubApplication {
   private async requireSynchronizedResult(
     resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
   ): Promise<Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>> {
-    let result: AsanaSyncRuntimeInternalResult;
-    try {
-      result = await resultPromise;
-    } catch (error: unknown) {
-      this.recordDiagnostic("sync.failed", "error");
-      throw error;
-    }
+    const result = await this.awaitSyncResult(resultPromise);
     if (result.kind === "synchronized") {
       return result;
     }
     if (result.kind === "rejected") {
-      this.recordDiagnostic("sync.failed", "warning");
       throw new Error(
         result.reason === "offline"
           ? "オフライン中はAsana同期を実行できません。"
@@ -3271,6 +3260,17 @@ export class TaskHubApplication {
     throw new Error(`Asana同期に失敗しました。エラーコード: ${result.error_code}`, {
       cause: result.cause,
     });
+  }
+
+  private async awaitSyncResult(
+    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
+  ): Promise<AsanaSyncRuntimeInternalResult> {
+    this.syncFailureDiagnosticSuppressionCount += 1;
+    try {
+      return await resultPromise;
+    } finally {
+      this.syncFailureDiagnosticSuppressionCount -= 1;
+    }
   }
 
   private async afterSynchronizedState(
@@ -3427,7 +3427,13 @@ export class TaskHubApplication {
       state.kind === "authentication_required"
       || (state.kind === "error" && state.error_code !== "unexpected_error")
     ) {
-      this.recordDiagnostic("sync.failed", "error");
+      if (this.syncFailureDiagnosticSuppressionCount === 0) {
+        this.options.diagnostic(
+          new Error("Asana同期で認証または既知のエラーが発生しました。"),
+          "sync",
+          serviceErrorDiagnostic,
+        );
+      }
     }
   }
 
@@ -3437,8 +3443,7 @@ export class TaskHubApplication {
       try {
         listener(ipcState);
       } catch (error: unknown) {
-        this.recordDiagnostic("ipc.error", "error");
-        this.options.diagnostic(error, "sync_state_listener");
+        this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic);
       }
     }
     this.recordSyncStateDiagnostic(state);
@@ -3451,11 +3456,11 @@ export class TaskHubApplication {
     }
     this.lastDisplaySyncAt = state.last_successful_sync_at;
     void this.afterLocalStateRefresh(this.options.lifecycle_signal).catch(
-      (error: unknown) => this.notifyUnexpectedError(error, "display_order"),
+      (error: unknown) => this.recordUnexpectedError(error, "display_order"),
     );
     if (this.readyActivated) {
       void this.synchronizeConfiguredCodexAfterAsana(this.options.lifecycle_signal).catch(
-        (error: unknown) => this.notifyUnexpectedError(error, "codex"),
+        (error: unknown) => this.recordUnexpectedError(error, "codex"),
       );
     }
   }
@@ -3487,7 +3492,7 @@ export class TaskHubApplication {
         !(error instanceof AsanaRequestAbortedError)
         && !(error instanceof AsanaOperationInvalidatedError)
       ) {
-        this.notifyUnexpectedError(error, "display_order");
+        this.recordUnexpectedError(error, "display_order");
       }
     });
   }
@@ -4422,8 +4427,7 @@ export class TaskHubApplication {
       try {
         listener(status);
       } catch (error: unknown) {
-        this.recordDiagnostic("ipc.error", "error");
-        this.options.diagnostic(error, "ai_status_listener");
+        this.options.diagnostic(error, "ai_status_listener", serviceErrorDiagnostic);
       }
     }
   }
@@ -4433,8 +4437,7 @@ export class TaskHubApplication {
       try {
         listener(event);
       } catch (error: unknown) {
-        this.recordDiagnostic("ipc.error", "error");
-        this.options.diagnostic(error, "ai_delta_listener");
+        this.options.diagnostic(error, "ai_delta_listener", serviceErrorDiagnostic);
       }
     }
   }
@@ -4549,7 +4552,7 @@ export class TaskHubApplication {
         : [externalToolEndpoint],
       connectionFactory: this.codexConnectionFactory,
       onError: (error: unknown): void => {
-        this.options.diagnostic(error, "codex");
+        this.options.diagnostic(error, "codex", serviceErrorDiagnostic);
       },
       snapshotProvider: () => this.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
@@ -4603,11 +4606,6 @@ export class TaskHubApplication {
     try {
       const result = await applicationCoordinator.apply(input, signal);
       this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
-      this.diagnostics.record({
-        code: "proposal.application",
-        severity: "info",
-        proposal_id: result.proposal_id,
-      });
       return result;
     } finally {
       this.aiApplicationState = "idle";

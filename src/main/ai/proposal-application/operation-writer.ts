@@ -412,6 +412,18 @@ export type ProposalOperationCreatedTaskCallback = (
   operationId: string,
   taskGid: string,
 ) => void;
+export type ProposalOperationWriteAttemptCallback = (
+  action: ProposalOperationWriteAction,
+) => void;
+export type ProposalOperationWriteAction =
+  | "create_task"
+  | "update_task"
+  | "add_task_to_project"
+  | "add_task_to_section"
+  | "add_task_tag"
+  | "remove_task_tag"
+  | "set_task_parent"
+  | "clear_task_parent";
 export type ProposalOperationRecoveryState = FieldClassification;
 export type ProposalOperationRecoveryInspection = {
   readonly core_state: ProposalOperationRecoveryState;
@@ -1231,6 +1243,7 @@ async function applyCategoryTag(
   readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
   beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
 ): Promise<CoreWriteResult> {
   const desired = resolveWorkspaceTag(transition.after_name, tags);
@@ -1253,6 +1266,7 @@ async function applyCategoryTag(
         reason_code: guardReason,
       };
     }
+    onWriteAttempt("add_task_tag");
     await writeClient.addTaskTag(taskGid, desired.gid, signal);
     changed = true;
     current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
@@ -1298,6 +1312,7 @@ async function applyCategoryTag(
         reason_code: guardReason,
       };
     }
+    onWriteAttempt("remove_task_tag");
     await writeClient.removeTaskTag(taskGid, currentObsolete.gid, signal);
     changed = true;
     current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
@@ -1358,6 +1373,7 @@ async function applyStatus(
   readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
   beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
 ): Promise<CoreWriteResult> {
   let changed = false;
@@ -1386,6 +1402,7 @@ async function applyStatus(
       };
     }
     if (membership == null) {
+      onWriteAttempt("add_task_to_project");
       await writeClient.addTaskToProject(
         taskGid,
         projectGid,
@@ -1394,6 +1411,7 @@ async function applyStatus(
         signal,
       );
     } else {
+      onWriteAttempt("add_task_to_section");
       await writeClient.addTaskToSection(
         taskGid,
         after.section_gid,
@@ -1437,6 +1455,7 @@ async function applyStatus(
         reason_code: guardReason,
       };
     }
+    onWriteAttempt("update_task");
     await writeClient.updateTask(
       taskGid,
       { kind: "completed", value: after.completed },
@@ -1467,6 +1486,7 @@ async function applyNonCreateAsanaOperation(
   readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
   beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
 ): Promise<CoreWriteResult> {
   switch (operation.operation) {
@@ -1480,6 +1500,7 @@ async function applyNonCreateAsanaOperation(
           return { kind: "conflict", side_effect: "none", reason_code: guardReason };
         }
       }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "title", value: operation.after }, signal);
       return { kind: "completed", changed: true };
     case "update_notes":
@@ -1492,6 +1513,7 @@ async function applyNonCreateAsanaOperation(
           return { kind: "conflict", side_effect: "none", reason_code: guardReason };
         }
       }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "notes", value: operation.after }, signal);
       return { kind: "completed", changed: true };
     case "set_status":
@@ -1511,6 +1533,7 @@ async function applyNonCreateAsanaOperation(
         readClient,
         writeClient,
         beforeWrite,
+        onWriteAttempt,
         signal,
       );
     }
@@ -1531,6 +1554,7 @@ async function applyNonCreateAsanaOperation(
         readClient,
         writeClient,
         beforeWrite,
+        onWriteAttempt,
         signal,
       );
     }
@@ -1545,6 +1569,7 @@ async function applyNonCreateAsanaOperation(
           return { kind: "conflict", side_effect: "none", reason_code: guardReason };
         }
       }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, createDueUpdate(operation.after), signal);
       return { kind: "completed", changed: true };
     }
@@ -1558,6 +1583,7 @@ async function applyNonCreateAsanaOperation(
           return { kind: "conflict", side_effect: "none", reason_code: guardReason };
         }
       }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "clear_due" }, signal);
       return { kind: "completed", changed: true };
     case "set_area": {
@@ -1577,6 +1603,7 @@ async function applyNonCreateAsanaOperation(
         readClient,
         writeClient,
         beforeWrite,
+        onWriteAttempt,
         signal,
       );
     }
@@ -1600,8 +1627,10 @@ async function applyNonCreateAsanaOperation(
         }
       }
       if (desired == null) {
+        onWriteAttempt("clear_task_parent");
         await writeClient.clearTaskParent(task.gid, signal);
       } else {
+        onWriteAttempt("set_task_parent");
         await writeClient.setTaskParent(task.gid, desired, signal);
       }
       return { kind: "completed", changed: true };
@@ -1637,7 +1666,16 @@ export class AsanaProposalOperationWriter {
     input: WriterInput,
     signal: AbortSignal,
   ): Promise<WriterResult> {
-    return this.applyInternal(input, signal, () => {});
+    return this.applyInternal(input, signal, () => {}, () => {});
+  }
+
+  /** 外部書込開始通知を指定して承認済みAI変更操作を適用します。 */
+  public async applyWithWriteAttemptCallback(
+    input: WriterInput,
+    signal: AbortSignal,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
+  ): Promise<WriterResult> {
+    return this.applyInternal(input, signal, () => {}, onWriteAttempt);
   }
 
   /** 作成タスクのGIDを外部属性更新前に通知して操作を適用します。 */
@@ -1645,11 +1683,12 @@ export class AsanaProposalOperationWriter {
     input: WriterInput,
     signal: AbortSignal,
     onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     if (typeof onCreateTaskCreated !== "function") {
       throw new TypeError("作成タスクGID通知コールバックが必要です。");
     }
-    return this.applyInternal(input, signal, onCreateTaskCreated);
+    return this.applyInternal(input, signal, onCreateTaskCreated, onWriteAttempt);
   }
 
   /** 作成操作から承認済みの初期Custom external dataを再構成します。 */
@@ -1770,14 +1809,21 @@ export class AsanaProposalOperationWriter {
     input: WriterInput,
     signal: AbortSignal,
     onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     validateAbortSignal(signal);
     const validatedInput = asanaProposalOperationWriterInputSchema.parse(input);
     const mappings = createMappingMap(validatedInput.temporary_ref_to_gid);
     if (validatedInput.operation.operation === "create_task") {
-      return this.applyCreate(validatedInput, mappings, signal, onCreateTaskCreated);
+      return this.applyCreate(
+        validatedInput,
+        mappings,
+        signal,
+        onCreateTaskCreated,
+        onWriteAttempt,
+      );
     }
-    return this.applyNonCreate(validatedInput, mappings, signal);
+    return this.applyNonCreate(validatedInput, mappings, signal, onWriteAttempt);
   }
 
   private async applyCreate(
@@ -1785,6 +1831,7 @@ export class AsanaProposalOperationWriter {
     mappings: ReadonlyMap<string, string>,
     signal: AbortSignal,
     onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     if (input.operation.operation !== "create_task") {
       throw new Error("create_task以外の操作を作成処理へ渡せません。");
@@ -1838,6 +1885,7 @@ export class AsanaProposalOperationWriter {
         mappings,
         tags,
         expectedExternalWriteGuard(expectedExternal),
+        onWriteAttempt,
         signal,
       );
       if (attributes.kind === "conflict") {
@@ -1882,6 +1930,7 @@ export class AsanaProposalOperationWriter {
         ? { due_at: operation.after.due.due_at }
         : {}),
     };
+    onWriteAttempt("create_task");
     const createdTaskReference = await this.writeClient.createTask(
       creationInput,
       signal,
@@ -1915,6 +1964,7 @@ export class AsanaProposalOperationWriter {
       mappings,
       tags,
       expectedExternalWriteGuard(expectedExternal),
+      onWriteAttempt,
       signal,
     );
     if (attributes.kind === "conflict") {
@@ -1955,6 +2005,7 @@ export class AsanaProposalOperationWriter {
     mappings: ReadonlyMap<string, string>,
     tags: readonly AsanaTag[],
     beforeWrite: OperationWriteGuard,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
     signal: AbortSignal,
   ): Promise<CoreWriteResult> {
     let task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
@@ -1973,6 +2024,7 @@ export class AsanaProposalOperationWriter {
       this.readClient,
       this.writeClient,
       beforeWrite,
+      onWriteAttempt,
       signal,
     );
     if (importanceResult.kind === "conflict") {
@@ -1995,6 +2047,7 @@ export class AsanaProposalOperationWriter {
       this.readClient,
       this.writeClient,
       beforeWrite,
+      onWriteAttempt,
       signal,
     );
     if (areaResult.kind === "conflict") {
@@ -2015,6 +2068,7 @@ export class AsanaProposalOperationWriter {
       this.readClient,
       this.writeClient,
       beforeWrite,
+      onWriteAttempt,
       signal,
     );
     if (statusResult.kind === "conflict") {
@@ -2046,6 +2100,7 @@ export class AsanaProposalOperationWriter {
           reason_code: guardReason,
         };
       }
+      onWriteAttempt("set_task_parent");
       await this.writeClient.setTaskParent(taskGid, desiredParent, signal);
       changed = true;
       task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
@@ -2060,6 +2115,7 @@ export class AsanaProposalOperationWriter {
     input: WriterInput,
     mappings: ReadonlyMap<string, string>,
     signal: AbortSignal,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     if (input.operation.operation === "create_task") {
       throw new Error("create_taskを非作成処理へ渡せません。");
@@ -2231,6 +2287,7 @@ export class AsanaProposalOperationWriter {
           this.readClient,
           this.writeClient,
           beforeCoreWrite,
+          onWriteAttempt,
           signal,
         );
         if (coreResult.kind === "conflict") {
@@ -2370,6 +2427,7 @@ export class AsanaProposalOperationWriter {
             throw new Error("Custom external dataのマージ結果がありません。");
           }
           if (externalPlan.write) {
+            onWriteAttempt("update_task");
             await this.writeClient.updateTask(
               taskGid,
               {
