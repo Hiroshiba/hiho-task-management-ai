@@ -129,6 +129,7 @@ import {
   DiagnosticFailureDispositionError,
   combineDiagnosticFailures,
 } from "../../diagnostic-failure";
+import { redactSensitiveText } from "../../redact-sensitive-text";
 
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
@@ -2707,7 +2708,8 @@ function safeStackFrames(error: Error): string[] {
   }
   return error.stack
     .split(/\r?\n/u)
-    .filter((frame) => /^\s+at\s/u.test(frame));
+    .filter((frame) => /^\s+at\s/u.test(frame))
+    .map((frame) => redactSensitiveText(frame));
 }
 
 function createSafeErrorProjection(error: unknown): AiWorkflowSafeErrorProjection {

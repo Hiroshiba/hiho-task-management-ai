@@ -75,7 +75,7 @@ type ExternalReadResult =
       readonly kind: "conflict";
       readonly reason_code: "external_unreadable" | "external_identity_mismatch";
     };
-type FieldClassification = "before" | "after" | "conflict";
+type FieldClassification = "before" | "partial" | "after" | "conflict";
 type ExternalMergePlan =
   | {
       readonly kind: "none";
@@ -270,36 +270,6 @@ function expectedStatus(
   }
 }
 
-function statusDefinitionForTask(
-  task: AsanaTaskResponse,
-  projectGid: string,
-  sectionGids: SectionGids,
-): StatusDefinition {
-  const memberships = task.memberships.filter(
-    (membership) => membership.project.gid === projectGid,
-  );
-  if (memberships.length !== 1) {
-    throw new Error("対象タスクの専用プロジェクト所属を一意に確認できません。");
-  }
-  const membership = memberships[0];
-  if (membership == null || membership.section == null) {
-    throw new Error("対象タスクの状態セクションを確認できません。");
-  }
-  const status = [
-    expectedStatus("not_started", sectionGids),
-    expectedStatus("in_progress", sectionGids),
-    expectedStatus("completed", sectionGids),
-    expectedStatus("withdrawn", sectionGids),
-  ].find((definition) => definition.section_gid === membership.section?.gid);
-  if (status == null) {
-    throw new Error("対象タスクの状態セクションが不正です。");
-  }
-  if (status.completed !== task.completed) {
-    throw new Error("対象タスクの状態セクションと完了フラグが一致しません。");
-  }
-  return status;
-}
-
 function taskProjectMembership(
   task: AsanaTaskResponse,
   projectGid: string,
@@ -335,47 +305,6 @@ function validateTaskTags(task: AsanaTaskResponse): void {
 function categoryTags(task: AsanaTaskResponse, prefix: string): readonly AsanaTag[] {
   validateTaskTags(task);
   return task.tags.filter((tag) => tag.name.startsWith(prefix));
-}
-
-function importanceValueFromTag(tag: AsanaTag): number {
-  switch (tag.name) {
-    case "TaskHub/重要度/1":
-      return 1;
-    case "TaskHub/重要度/2":
-      return 2;
-    case "TaskHub/重要度/3":
-      return 3;
-    case "TaskHub/重要度/4":
-      return 4;
-    case "TaskHub/重要度/5":
-      return 5;
-    default:
-      throw new Error("重要度タグ名が不正です。");
-  }
-}
-
-function taskImportance(task: AsanaTaskResponse): number {
-  const tags = categoryTags(task, importanceTagPrefix);
-  if (tags.length === 0) {
-    return 3;
-  }
-  return Math.max(...tags.map(importanceValueFromTag));
-}
-
-function taskArea(task: AsanaTaskResponse): string {
-  const tags = categoryTags(task, areaTagPrefix);
-  if (tags.length !== 1) {
-    return unclassifiedArea;
-  }
-  const tag = tags[0];
-  if (tag == null) {
-    return unclassifiedArea;
-  }
-  const area = tag.name.slice(areaTagPrefix.length);
-  if (area.trim().length === 0) {
-    throw new Error("領域タグ名が不正です。");
-  }
-  return area;
 }
 
 function workspaceTagsFromResponse(
@@ -463,11 +392,54 @@ type ExpectedExternal = {
   readonly data: CustomExternalData;
 };
 
-type CategoryTagPlan = {
-  readonly tag: AsanaTag;
-  readonly remove: readonly AsanaTag[];
-  readonly add: boolean;
+type CategoryTagTransition =
+  | {
+      readonly kind: "operation";
+      readonly prefix: string;
+      readonly before_name: string;
+      readonly after_name: string;
+      readonly default_before: string | number;
+      readonly before_value: string | number;
+      readonly after_value: string | number;
+    }
+  | {
+      readonly kind: "created_task";
+      readonly prefix: string;
+      readonly after_name: string;
+    };
+
+export type ProposalOperationCreatedTaskCallback = (
+  operationId: string,
+  taskGid: string,
+) => void;
+export type ProposalOperationWriteAttemptCallback = (
+  action: ProposalOperationWriteAction,
+) => void;
+export type ProposalOperationWriteAction =
+  | "create_task"
+  | "update_task"
+  | "add_task_to_project"
+  | "add_task_to_section"
+  | "add_task_tag"
+  | "remove_task_tag"
+  | "set_task_parent"
+  | "clear_task_parent";
+export type ProposalOperationRecoveryState = FieldClassification;
+export type ProposalOperationRecoveryInspection = {
+  readonly core_state: ProposalOperationRecoveryState;
+  readonly metadata_state: ProposalOperationRecoveryState;
+  readonly task: AsanaTaskResponse;
 };
+type CoreWriteResult =
+  | { readonly kind: "completed"; readonly changed: boolean }
+  | {
+      readonly kind: "conflict";
+      readonly side_effect: "none" | "possible";
+      readonly reason_code?: WriterConflictReasonCode;
+    };
+type OperationWriteGuard = (
+  task: AsanaTaskResponse,
+) => WriterConflictReasonCode | undefined;
 
 function classifyValue<T>(
   current: T,
@@ -706,13 +678,227 @@ function externalOperationsForOperation(
   return operations;
 }
 
+function classifyCollectionOperation<T>(
+  current: readonly T[],
+  before: readonly T[],
+  after: readonly T[],
+  keyOf: (value: T) => string,
+): FieldClassification {
+  const beforeMap = new Map(before.map((value) => [keyOf(value), value]));
+  const afterMap = new Map(after.map((value) => [keyOf(value), value]));
+  const currentMap = new Map(current.map((value) => [keyOf(value), value]));
+  const changedKeys = new Set([...beforeMap.keys(), ...afterMap.keys()]);
+  const states: FieldClassification[] = [];
+  for (const key of changedKeys) {
+    const beforeValue = beforeMap.get(key);
+    const afterValue = afterMap.get(key);
+    if (
+      beforeValue != null
+      && afterValue != null
+      && canonicalizeJson(beforeValue) === canonicalizeJson(afterValue)
+    ) {
+      continue;
+    }
+    const currentValue = currentMap.get(key);
+    if (
+      currentValue == null
+      ? beforeValue == null
+      : beforeValue != null
+        && canonicalizeJson(currentValue) === canonicalizeJson(beforeValue)
+    ) {
+      states.push("before");
+    } else if (
+      currentValue == null
+        ? afterValue == null
+        : afterValue != null
+          && canonicalizeJson(currentValue) === canonicalizeJson(afterValue)
+    ) {
+      states.push("after");
+    } else {
+      return "conflict";
+    }
+  }
+  if (states.length === 0 || states.every((state) => state === "after")) {
+    return "after";
+  }
+  if (states.every((state) => state === "before")) {
+    return "before";
+  }
+  return "partial";
+}
+
+function classifyExternalMetadata(
+  operation: NonCreateOperation,
+  baseline: CustomExternalData,
+  current: CustomExternalData,
+  mappings: ReadonlyMap<string, string>,
+  activityDate: string,
+): FieldClassification {
+  const operations = externalOperationsForOperation(
+    operation,
+    baseline,
+    mappings,
+    activityDate,
+  );
+  const states = operations.map((externalOperation): FieldClassification => {
+    switch (externalOperation.operation) {
+      case "set_dependencies":
+        return classifyCollectionOperation(
+          current.dependencies,
+          externalOperation.before,
+          externalOperation.after,
+          (value) => value.task_gid,
+        );
+      case "set_obsidian_links":
+        return classifyCollectionOperation(
+          current.obsidian_links,
+          externalOperation.before,
+          externalOperation.after,
+          obsidianKey,
+        );
+      case "set_last_active_status":
+        return classifyValue(
+          current.last_active_status,
+          externalOperation.before,
+          externalOperation.after,
+          (left, right) => left === right,
+        );
+      case "set_parent_work_mode":
+        return classifyValue(
+          current.parent_work_mode,
+          externalOperation.before,
+          externalOperation.after,
+          (left, right) => left === right,
+        );
+      case "set_activity_anchor_on":
+        {
+          const expectedAfter = externalOperation.before < externalOperation.after
+            ? externalOperation.after
+            : externalOperation.before;
+          if (current.activity_anchor_on >= expectedAfter) {
+            return "after";
+          }
+          return current.activity_anchor_on === externalOperation.before
+            ? "before"
+            : "conflict";
+        }
+      case "set_duration":
+        return classifyValue(
+          current.duration,
+          externalOperation.before,
+          externalOperation.after,
+          sameDurationValue,
+        );
+    }
+    throw new Error("未対応のCustom external data操作です。");
+  });
+  if (states.some((state) => state === "conflict")) {
+    return "conflict";
+  }
+  if (states.length === 0 || states.every((state) => state === "after")) {
+    return "after";
+  }
+  if (states.every((state) => state === "before")) {
+    return "before";
+  }
+  return "partial";
+}
+
+function optionalWorkspaceTag(
+  name: string,
+  tags: readonly AsanaTag[],
+): AsanaTag | undefined {
+  const matches = tags.filter((tag) => tag.name === name);
+  if (matches.length > 1) {
+    throw new Error("対象タグ名をワークスペースタグへ一意に解決できません。");
+  }
+  return matches[0];
+}
+
+function classifyCategoryTags(
+  task: AsanaTaskResponse,
+  prefix: string,
+  beforeName: string,
+  afterName: string,
+  defaultBefore: string | number,
+  beforeValue: string | number,
+  afterValue: string | number,
+  tags: readonly AsanaTag[],
+): FieldClassification {
+  const current = categoryTags(task, prefix);
+  const beforeTag = optionalWorkspaceTag(beforeName, tags);
+  const afterTag = resolveWorkspaceTag(afterName, tags);
+  const beforeIsDefault = beforeValue === defaultBefore && current.length === 0;
+  const beforeTagIsExact = beforeTag != null
+    && current.length === 1
+    && current[0]?.gid === beforeTag.gid
+    && current[0]?.name === beforeTag.name;
+  const beforeExact = beforeIsDefault || beforeTagIsExact;
+  const afterExact = current.length === 1
+    && current[0]?.gid === afterTag.gid
+    && current[0]?.name === afterTag.name;
+  if (beforeValue === afterValue && beforeExact) {
+    return "after";
+  }
+  if (afterExact) {
+    return "after";
+  }
+  if (beforeExact) {
+    return "before";
+  }
+  if (
+    beforeTag != null
+    && current.length === 2
+    && current.some((tag) => tag.gid === beforeTag.gid && tag.name === beforeTag.name)
+    && current.some((tag) => tag.gid === afterTag.gid && tag.name === afterTag.name)
+  ) {
+    return "partial";
+  }
+  return "conflict";
+}
+
+function classifyStatusOperation(
+  operation: NonCreateOperation,
+  task: AsanaTaskResponse,
+  projectGid: string,
+  sectionGids: SectionGids,
+): FieldClassification {
+  const memberships = task.memberships.filter(
+    (membership) => membership.project.gid === projectGid,
+  );
+  if (memberships.length !== 1) {
+    return "conflict";
+  }
+  const membership = memberships[0];
+  if (membership == null || membership.section == null) {
+    return "conflict";
+  }
+  const before = expectedStatus(statusBeforeForOperation(operation), sectionGids);
+  const after = expectedStatus(statusForOperation(operation), sectionGids);
+  const sectionGid = membership.section.gid;
+  if (sectionGid === after.section_gid && task.completed === after.completed) {
+    return "after";
+  }
+  if (sectionGid === before.section_gid && task.completed === before.completed) {
+    return "before";
+  }
+  if (
+    sectionGid === after.section_gid
+    && task.completed === before.completed
+    && before.completed !== after.completed
+  ) {
+    return "partial";
+  }
+  return "conflict";
+}
+
 function classifyOperation(
   operation: NonCreateOperation,
   task: AsanaTaskResponse,
-  external: CustomExternalData | undefined,
   projectGid: string,
   sectionGids: SectionGids,
   mappings: ReadonlyMap<string, string>,
+  tags: readonly AsanaTag[] | undefined,
 ): FieldClassification {
   switch (operation.operation) {
     case "update_title":
@@ -722,16 +908,21 @@ function classifyOperation(
     case "set_status":
     case "complete":
     case "withdraw": {
-      const current = statusDefinitionForTask(task, projectGid, sectionGids).status;
-      return classifyValue(
-        current,
-        statusBeforeForOperation(operation),
-        statusForOperation(operation),
-        (left, right) => left === right,
+      return classifyStatusOperation(operation, task, projectGid, sectionGids);
+    }
+    case "set_importance": {
+      const workspaceTags = requireWorkspaceTags(tags);
+      return classifyCategoryTags(
+        task,
+        importanceTagPrefix,
+        importanceTagName(operation.before),
+        importanceTagName(operation.after),
+        3,
+        operation.before,
+        operation.after,
+        workspaceTags,
       );
     }
-    case "set_importance":
-      return classifyValue(taskImportance(task), operation.before, operation.after, (left, right) => left === right);
     case "set_due": {
       const current = taskDueValue(task);
       return classifyValue(current, operation.before, operation.after, sameDueProposalValue);
@@ -745,27 +936,18 @@ function classifyOperation(
         sameDueProposalValue,
       );
     }
-    case "set_duration":
-    case "clear_duration": {
-      if (external == null) {
-        throw new Error("所要時間操作にはCustom external dataが必要です。");
-      }
-      return classifyValue(
-        external.duration,
-        optionalDuration(operation.before),
-        optionalDuration(operation.after),
-        sameDurationValue,
+    case "set_area": {
+      const workspaceTags = requireWorkspaceTags(tags);
+      return classifyCategoryTags(
+        task,
+        areaTagPrefix,
+        areaTagName(operation.before),
+        areaTagName(operation.after),
+        unclassifiedArea,
+        operation.before,
+        operation.after,
+        workspaceTags,
       );
-    }
-    case "set_area":
-      return classifyValue(taskArea(task), operation.before, operation.after, (left, right) => left === right);
-    case "set_dependencies": {
-      if (external == null) {
-        throw new Error("依存関係操作にはCustom external dataが必要です。");
-      }
-      const before = resolveDependencies(operation.before, mappings);
-      const after = resolveDependencies(operation.after, mappings);
-      return classifyValue(external.dependencies, before, after, sameDependencies);
     }
     case "set_parent": {
       const current = taskParentGid(task);
@@ -773,37 +955,13 @@ function classifyOperation(
       const after = resolveParentGid(operation.after, mappings);
       return classifyValue(current, before, after, sameParentValue);
     }
-    case "set_parent_work_mode": {
-      if (external == null) {
-        throw new Error("親作業モード操作にはCustom external dataが必要です。");
-      }
-      return classifyValue(
-        external.parent_work_mode,
-        operation.before,
-        operation.after,
-        (left, right) => left === right,
-      );
-    }
-    case "link_obsidian": {
-      if (external == null) {
-        throw new Error("Obsidianリンク操作にはCustom external dataが必要です。");
-      }
-      const current = findObsidianLink(external.obsidian_links, operation.after);
-      if (current == null) {
-        return "before";
-      }
-      return sameObsidianLink(current, operation.after) ? "after" : "conflict";
-    }
-    case "unlink_obsidian": {
-      if (external == null) {
-        throw new Error("Obsidianリンク操作にはCustom external dataが必要です。");
-      }
-      const current = findObsidianLink(external.obsidian_links, operation.before);
-      if (current == null) {
-        return "after";
-      }
-      return sameObsidianLink(current, operation.before) ? "before" : "conflict";
-    }
+    case "set_duration":
+    case "clear_duration":
+    case "set_dependencies":
+    case "set_parent_work_mode":
+    case "link_obsidian":
+    case "unlink_obsidian":
+      return "after";
   }
   throw new Error("未対応のAsana操作です。");
 }
@@ -862,23 +1020,6 @@ function mergeExternalPlan(
   }
 }
 
-function categoryTagPlan(
-  task: AsanaTaskResponse,
-  prefix: string,
-  desired: AsanaTag,
-): CategoryTagPlan {
-  const current = categoryTags(task, prefix);
-  const existing = current.find((tag) => tag.gid === desired.gid && tag.name === desired.name);
-  if (existing == null) {
-    return { tag: desired, remove: current, add: true };
-  }
-  return {
-    tag: desired,
-    remove: current.filter((tag) => tag.gid !== desired.gid),
-    add: false,
-  };
-}
-
 function requireWorkspaceTags(tags: readonly AsanaTag[] | undefined): readonly AsanaTag[] {
   if (tags == null) {
     throw new Error("ワークスペースタグが必要です。");
@@ -933,19 +1074,6 @@ function createExternalState(
   };
 }
 
-function taskCategoryMatches(
-  task: AsanaTaskResponse,
-  prefix: string,
-  desired: AsanaTag,
-): boolean {
-  const current = categoryTags(task, prefix);
-  if (current.length !== 1) {
-    return false;
-  }
-  const tag = current[0];
-  return tag != null && tag.gid === desired.gid && tag.name === desired.name;
-}
-
 function taskExternalMatches(
   task: AsanaTaskResponse,
   expected: ExpectedExternal,
@@ -956,182 +1084,118 @@ function taskExternalMatches(
     && sameExternalData(current.value.data, expected.data);
 }
 
-function taskMatchesCreate(
+function expectedExternalWriteGuard(expected: ExpectedExternal): OperationWriteGuard {
+  return (task) => {
+    const current = readCurrentExternal(task);
+    if (current.kind === "conflict") {
+      return current.reason_code;
+    }
+    if (current.value.response.gid !== expected.gid) {
+      return "external_identity_mismatch";
+    }
+    return sameExternalData(current.value.data, expected.data)
+      ? undefined
+      : "merge_conflict";
+  };
+}
+
+function classifyCreateCore(
   task: AsanaTaskResponse,
   input: WriterInput,
   operation: CreateOperation,
-  expectedExternal: ExpectedExternal,
+  mappings: ReadonlyMap<string, string>,
   tags: readonly AsanaTag[],
-): boolean {
-  if (!taskHasProject(task, input.project_gid)) {
-    return false;
-  }
-  if (task.name !== operation.after.title) {
-    return false;
-  }
-  if (task.notes !== (operation.after.notes ?? "")) {
-    return false;
-  }
-  const expectedDue = operation.after.due ?? { kind: "absent" };
-  if (!sameDueValue(taskDueValue(task), expectedDue)) {
-    return false;
-  }
-  const expectedStatusDefinition = expectedStatus(
-    operation.after.status ?? "not_started",
-    input.section_gids,
-  );
-  const currentStatus = statusDefinitionForTask(task, input.project_gid, input.section_gids);
+): FieldClassification {
   if (
-    currentStatus.status !== expectedStatusDefinition.status
-    || currentStatus.section_gid !== expectedStatusDefinition.section_gid
-    || currentStatus.completed !== expectedStatusDefinition.completed
+    !taskHasProject(task, input.project_gid)
+    || task.name !== operation.after.title
+    || task.notes !== (operation.after.notes ?? "")
+    || !sameDueValue(
+      taskDueValue(task),
+      operation.after.due ?? { kind: "absent" },
+    )
   ) {
-    return false;
+    return "conflict";
   }
-  const workspaceTag = resolveWorkspaceTag(
+  const importTag = resolveWorkspaceTag(
     importanceTagName(operation.after.importance ?? 3),
     tags,
   );
-  if (!taskCategoryMatches(task, importanceTagPrefix, workspaceTag)) {
-    return false;
-  }
   const areaTag = resolveWorkspaceTag(
     areaTagName(operation.after.area ?? unclassifiedArea),
     tags,
   );
-  if (!taskCategoryMatches(task, areaTagPrefix, areaTag)) {
-    return false;
+  const importTags = categoryTags(task, importanceTagPrefix);
+  const areaTags = categoryTags(task, areaTagPrefix);
+  const importState: FieldClassification = importTags.length === 0
+    ? "before"
+    : importTags.length === 1
+        && importTags[0]?.gid === importTag.gid
+        && importTags[0]?.name === importTag.name
+      ? "after"
+      : "conflict";
+  const areaState: FieldClassification = areaTags.length === 0
+    ? "before"
+    : areaTags.length === 1
+        && areaTags[0]?.gid === areaTag.gid
+        && areaTags[0]?.name === areaTag.name
+      ? "after"
+      : "conflict";
+  const status = expectedStatus(
+    operation.after.status ?? "not_started",
+    input.section_gids,
+  );
+  const memberships = task.memberships.filter(
+    (membership) => membership.project.gid === input.project_gid,
+  );
+  if (memberships.length > 1) {
+    return "conflict";
+  }
+  const membership = memberships[0];
+  let statusState: FieldClassification;
+  if (membership == null) {
+    statusState = task.completed ? "conflict" : "before";
+  } else if (membership.section == null) {
+    statusState = "conflict";
+  } else if (
+    membership.section.gid === status.section_gid
+    && task.completed === status.completed
+  ) {
+    statusState = "after";
+  } else if (
+    membership.section.gid === status.section_gid
+    && !task.completed
+    && status.completed
+  ) {
+    statusState = "partial";
+  } else if (
+    membership.section.gid === input.section_gids.not_started
+    && !task.completed
+  ) {
+    statusState = "before";
+  } else {
+    statusState = "conflict";
   }
   const expectedParent = operation.after.parent == null
     ? null
-    : resolveTargetGid(operation.after.parent, createMappingMap(input.temporary_ref_to_gid));
-  if (taskParentGid(task) !== expectedParent) {
-    return false;
+    : resolveTargetGid(operation.after.parent, mappings);
+  const currentParent = taskParentGid(task);
+  const parentState: FieldClassification = currentParent === expectedParent
+    ? "after"
+    : currentParent == null && expectedParent != null
+      ? "before"
+      : "conflict";
+  const states = [importState, areaState, statusState, parentState];
+  if (states.some((state) => state === "conflict")) {
+    return "conflict";
   }
-  return taskExternalMatches(task, expectedExternal);
-}
-
-function verifyExternal(
-  task: AsanaTaskResponse,
-  expected: ExpectedExternal | undefined,
-): boolean {
-  if (expected == null) {
-    return true;
+  if (states.every((state) => state === "after")) {
+    return "after";
   }
-  return taskExternalMatches(task, expected);
-}
-
-function verifyOperationAfter(
-  task: AsanaTaskResponse,
-  operation: NonCreateOperation,
-  input: WriterInput,
-  mappings: ReadonlyMap<string, string>,
-  expectedExternal: ExpectedExternal | undefined,
-  tags: readonly AsanaTag[] | undefined,
-): boolean {
-  if (!taskHasProject(task, input.project_gid)) {
-    return false;
+  if (states.every((state) => state === "before")) {
+    return "before";
   }
-  switch (operation.operation) {
-    case "update_title":
-      if (task.name !== operation.after) {
-        return false;
-      }
-      break;
-    case "update_notes":
-      if (task.notes !== operation.after) {
-        return false;
-      }
-      break;
-    case "set_status":
-    case "complete":
-    case "withdraw": {
-      const current = statusDefinitionForTask(task, input.project_gid, input.section_gids);
-      if (current.status !== statusForOperation(operation)) {
-        return false;
-      }
-      break;
-    }
-    case "set_importance": {
-      const workspaceTags = requireWorkspaceTags(tags);
-      const desired = resolveWorkspaceTag(importanceTagName(operation.after), workspaceTags);
-      if (!taskCategoryMatches(task, importanceTagPrefix, desired)) {
-        return false;
-      }
-      break;
-    }
-    case "set_due":
-      if (!sameDueValue(taskDueValue(task), operation.after)) {
-        return false;
-      }
-      break;
-    case "clear_due":
-      if (taskDueValue(task).kind !== "absent") {
-        return false;
-      }
-      break;
-    case "set_duration":
-    case "clear_duration":
-      if (
-        expectedExternal == null
-        || !sameDurationValue(
-          expectedExternal.data.duration,
-          optionalDuration(operation.after),
-        )
-      ) {
-        return false;
-      }
-      break;
-    case "set_area": {
-      const workspaceTags = requireWorkspaceTags(tags);
-      const desired = resolveWorkspaceTag(areaTagName(operation.after), workspaceTags);
-      if (!taskCategoryMatches(task, areaTagPrefix, desired)) {
-        return false;
-      }
-      break;
-    }
-    case "set_dependencies":
-      if (expectedExternal == null) {
-        return false;
-      }
-      if (!sameDependencies(
-        expectedExternal.data.dependencies,
-        resolveDependencies(operation.after, mappings),
-      )) {
-        return false;
-      }
-      break;
-    case "set_parent":
-      if (
-        taskParentGid(task)
-        !== resolveParentGid(operation.after, mappings)
-      ) {
-        return false;
-      }
-      break;
-    case "set_parent_work_mode":
-      if (expectedExternal == null || expectedExternal.data.parent_work_mode !== operation.after) {
-        return false;
-      }
-      break;
-    case "link_obsidian":
-      if (
-        expectedExternal == null
-        || findObsidianLink(expectedExternal.data.obsidian_links, operation.after) == null
-      ) {
-        return false;
-      }
-      break;
-    case "unlink_obsidian":
-      if (
-        expectedExternal == null
-        || findObsidianLink(expectedExternal.data.obsidian_links, operation.before) != null
-      ) {
-        return false;
-      }
-      break;
-  }
-  return verifyExternal(task, expectedExternal);
+  return "partial";
 }
 
 async function fetchWorkspaceTags(
@@ -1143,76 +1207,274 @@ async function fetchWorkspaceTags(
   return workspaceTagsFromResponse(tags);
 }
 
-async function applyCategoryTagPlan(
-  taskGid: string,
-  plan: CategoryTagPlan,
-  writeClient: AsanaTaskWriteClient,
-  signal: AbortSignal,
-): Promise<boolean> {
-  let changed = false;
-  if (plan.add) {
-    await writeClient.addTaskTag(taskGid, plan.tag.gid, signal);
-    changed = true;
+function classifyCategoryTransition(
+  task: AsanaTaskResponse,
+  transition: CategoryTagTransition,
+  tags: readonly AsanaTag[],
+): FieldClassification {
+  if (transition.kind === "operation") {
+    return classifyCategoryTags(
+      task,
+      transition.prefix,
+      transition.before_name,
+      transition.after_name,
+      transition.default_before,
+      transition.before_value,
+      transition.after_value,
+      tags,
+    );
   }
-  for (const tag of plan.remove) {
-    await writeClient.removeTaskTag(taskGid, tag.gid, signal);
-    changed = true;
+  const current = categoryTags(task, transition.prefix);
+  const desired = resolveWorkspaceTag(transition.after_name, tags);
+  if (
+    current.length === 1
+    && current[0]?.gid === desired.gid
+    && current[0]?.name === desired.name
+  ) {
+    return "after";
   }
-  return changed;
+  return current.length === 0 ? "before" : "conflict";
 }
 
 async function applyCategoryTag(
-  task: AsanaTaskResponse,
-  prefix: string,
-  desired: AsanaTag,
+  taskGid: string,
+  transition: CategoryTagTransition,
+  tags: readonly AsanaTag[],
+  readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
+  beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
-): Promise<boolean> {
-  return applyCategoryTagPlan(
-    task.gid,
-    categoryTagPlan(task, prefix, desired),
-    writeClient,
-    signal,
+): Promise<CoreWriteResult> {
+  const desired = resolveWorkspaceTag(transition.after_name, tags);
+  let changed = false;
+  let current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+  let state = classifyCategoryTransition(current, transition, tags);
+  if (state === "conflict") {
+    return { kind: "conflict", side_effect: "none" };
+  }
+  if (state === "after") {
+    return { kind: "completed", changed };
+  }
+  const currentTags = categoryTags(current, transition.prefix);
+  if (!currentTags.some((tag) => tag.gid === desired.gid && tag.name === desired.name)) {
+    const guardReason = beforeWrite(current);
+    if (guardReason != null) {
+      return {
+        kind: "conflict",
+        side_effect: changed ? "possible" : "none",
+        reason_code: guardReason,
+      };
+    }
+    onWriteAttempt("add_task_tag");
+    await writeClient.addTaskTag(taskGid, desired.gid, signal);
+    changed = true;
+    current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+    state = classifyCategoryTransition(current, transition, tags);
+    if (state === "conflict" || state === "before") {
+      return { kind: "conflict", side_effect: "possible" };
+    }
+    if (state === "after") {
+      return { kind: "completed", changed };
+    }
+  }
+  current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+  state = classifyCategoryTransition(current, transition, tags);
+  if (state === "after") {
+    return { kind: "completed", changed };
+  }
+  if (state !== "partial") {
+    return { kind: "conflict", side_effect: changed ? "possible" : "none" };
+  }
+  const obsolete = categoryTags(current, transition.prefix).filter(
+    (tag) => tag.gid !== desired.gid,
   );
+  for (const tag of obsolete) {
+    current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+    state = classifyCategoryTransition(current, transition, tags);
+    if (state === "after") {
+      return { kind: "completed", changed };
+    }
+    if (state !== "partial") {
+      return { kind: "conflict", side_effect: changed ? "possible" : "none" };
+    }
+    const currentObsolete = categoryTags(current, transition.prefix).find(
+      (candidate) => candidate.gid === tag.gid,
+    );
+    if (currentObsolete == null) {
+      return { kind: "conflict", side_effect: changed ? "possible" : "none" };
+    }
+    const guardReason = beforeWrite(current);
+    if (guardReason != null) {
+      return {
+        kind: "conflict",
+        side_effect: changed ? "possible" : "none",
+        reason_code: guardReason,
+      };
+    }
+    onWriteAttempt("remove_task_tag");
+    await writeClient.removeTaskTag(taskGid, currentObsolete.gid, signal);
+    changed = true;
+    current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+    state = classifyCategoryTransition(current, transition, tags);
+    if (state !== "after" && state !== "partial") {
+      return { kind: "conflict", side_effect: "possible" };
+    }
+  }
+  current = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+  return classifyCategoryTransition(current, transition, tags) === "after"
+    ? { kind: "completed", changed }
+    : { kind: "conflict", side_effect: changed ? "possible" : "none" };
+}
+
+function classifyStatusTransition(
+  task: AsanaTaskResponse,
+  projectGid: string,
+  before: StatusDefinition,
+  after: StatusDefinition,
+  allowMissingMembership: boolean,
+): FieldClassification {
+  const memberships = task.memberships.filter(
+    (membership) => membership.project.gid === projectGid,
+  );
+  if (memberships.length === 0 && allowMissingMembership && !task.completed) {
+    return "before";
+  }
+  if (memberships.length !== 1) {
+    return "conflict";
+  }
+  const membership = memberships[0];
+  if (membership == null || membership.section == null) {
+    return "conflict";
+  }
+  const sectionGid = membership.section.gid;
+  if (sectionGid === after.section_gid && task.completed === after.completed) {
+    return "after";
+  }
+  if (sectionGid === before.section_gid && task.completed === before.completed) {
+    return "before";
+  }
+  if (
+    sectionGid === after.section_gid
+    && task.completed === before.completed
+    && before.completed !== after.completed
+  ) {
+    return "partial";
+  }
+  return "conflict";
 }
 
 async function applyStatus(
-  task: AsanaTaskResponse,
+  taskGid: string,
   projectGid: string,
-  sectionGid: string,
-  completed: boolean,
+  before: StatusDefinition,
+  after: StatusDefinition,
+  allowMissingMembership: boolean,
+  readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
+  beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<CoreWriteResult> {
   let changed = false;
+  let task = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+  let state = classifyStatusTransition(
+    task,
+    projectGid,
+    before,
+    after,
+    allowMissingMembership,
+  );
+  if (state === "conflict") {
+    return { kind: "conflict", side_effect: "none" };
+  }
+  if (state === "after") {
+    return { kind: "completed", changed };
+  }
   const membership = taskProjectMembership(task, projectGid);
-  if (membership == null) {
-    await writeClient.addTaskToProject(
-      task.gid,
+  if (membership == null || membership.section == null || membership.section.gid !== after.section_gid) {
+    const guardReason = beforeWrite(task);
+    if (guardReason != null) {
+      return {
+        kind: "conflict",
+        side_effect: changed ? "possible" : "none",
+        reason_code: guardReason,
+      };
+    }
+    if (membership == null) {
+      onWriteAttempt("add_task_to_project");
+      await writeClient.addTaskToProject(
+        taskGid,
+        projectGid,
+        after.section_gid,
+        { kind: "none" },
+        signal,
+      );
+    } else {
+      onWriteAttempt("add_task_to_section");
+      await writeClient.addTaskToSection(
+        taskGid,
+        after.section_gid,
+        { kind: "none" },
+        signal,
+      );
+    }
+    changed = true;
+    task = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+    state = classifyStatusTransition(
+      task,
       projectGid,
-      sectionGid,
-      { kind: "none" },
-      signal,
+      before,
+      after,
+      allowMissingMembership,
     );
-    changed = true;
-  } else if (membership.section == null || membership.section.gid !== sectionGid) {
-    await writeClient.addTaskToSection(
-      task.gid,
-      sectionGid,
-      { kind: "none" },
-      signal,
-    );
-    changed = true;
+    if (state !== "partial" && state !== "after") {
+      return { kind: "conflict", side_effect: "possible" };
+    }
   }
-  if (task.completed !== completed) {
+  task = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+  state = classifyStatusTransition(
+    task,
+    projectGid,
+    before,
+    after,
+    allowMissingMembership,
+  );
+  if (state === "after") {
+    return { kind: "completed", changed };
+  }
+  if (state === "conflict" || (state === "before" && before.section_gid !== after.section_gid)) {
+    return { kind: "conflict", side_effect: changed ? "possible" : "none" };
+  }
+  if (task.completed !== after.completed) {
+    const guardReason = beforeWrite(task);
+    if (guardReason != null) {
+      return {
+        kind: "conflict",
+        side_effect: changed ? "possible" : "none",
+        reason_code: guardReason,
+      };
+    }
+    onWriteAttempt("update_task");
     await writeClient.updateTask(
-      task.gid,
-      { kind: "completed", value: completed },
+      taskGid,
+      { kind: "completed", value: after.completed },
       signal,
     );
     changed = true;
+    task = parseTask(await readClient.getTask(taskGid, signal), taskGid);
+    state = classifyStatusTransition(
+      task,
+      projectGid,
+      before,
+      after,
+      allowMissingMembership,
+    );
+    if (state !== "after") {
+      return { kind: "conflict", side_effect: "possible" };
+    }
   }
-  return changed;
+  return { kind: "completed", changed };
 }
 
 async function applyNonCreateAsanaOperation(
@@ -1221,58 +1483,129 @@ async function applyNonCreateAsanaOperation(
   input: WriterInput,
   mappings: ReadonlyMap<string, string>,
   tags: readonly AsanaTag[] | undefined,
+  readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
+  beforeWrite: OperationWriteGuard,
+  onWriteAttempt: ProposalOperationWriteAttemptCallback,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<CoreWriteResult> {
   switch (operation.operation) {
     case "update_title":
       if (task.name === operation.after) {
-        return false;
+        return { kind: "completed", changed: false };
       }
+      {
+        const guardReason = beforeWrite(task);
+        if (guardReason != null) {
+          return { kind: "conflict", side_effect: "none", reason_code: guardReason };
+        }
+      }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "title", value: operation.after }, signal);
-      return true;
+      return { kind: "completed", changed: true };
     case "update_notes":
       if (task.notes === operation.after) {
-        return false;
+        return { kind: "completed", changed: false };
       }
+      {
+        const guardReason = beforeWrite(task);
+        if (guardReason != null) {
+          return { kind: "conflict", side_effect: "none", reason_code: guardReason };
+        }
+      }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "notes", value: operation.after }, signal);
-      return true;
+      return { kind: "completed", changed: true };
     case "set_status":
     case "complete":
     case "withdraw": {
-      const status = expectedStatus(statusForOperation(operation), input.section_gids);
+      const before = expectedStatus(
+        statusBeforeForOperation(operation),
+        input.section_gids,
+      );
+      const after = expectedStatus(statusForOperation(operation), input.section_gids);
       return applyStatus(
-        task,
+        task.gid,
         input.project_gid,
-        status.section_gid,
-        status.completed,
+        before,
+        after,
+        false,
+        readClient,
         writeClient,
+        beforeWrite,
+        onWriteAttempt,
         signal,
       );
     }
     case "set_importance": {
       const workspaceTags = requireWorkspaceTags(tags);
-      const desired = resolveWorkspaceTag(importanceTagName(operation.after), workspaceTags);
-      return applyCategoryTag(task, importanceTagPrefix, desired, writeClient, signal);
+      return applyCategoryTag(
+        task.gid,
+        {
+          kind: "operation",
+          prefix: importanceTagPrefix,
+          before_name: importanceTagName(operation.before),
+          after_name: importanceTagName(operation.after),
+          default_before: 3,
+          before_value: operation.before,
+          after_value: operation.after,
+        },
+        workspaceTags,
+        readClient,
+        writeClient,
+        beforeWrite,
+        onWriteAttempt,
+        signal,
+      );
     }
     case "set_due": {
       const current = taskDueValue(task);
       if (sameDueValue(current, operation.after)) {
-        return false;
+        return { kind: "completed", changed: false };
       }
+      {
+        const guardReason = beforeWrite(task);
+        if (guardReason != null) {
+          return { kind: "conflict", side_effect: "none", reason_code: guardReason };
+        }
+      }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, createDueUpdate(operation.after), signal);
-      return true;
+      return { kind: "completed", changed: true };
     }
     case "clear_due":
       if (taskDueValue(task).kind === "absent") {
-        return false;
+        return { kind: "completed", changed: false };
       }
+      {
+        const guardReason = beforeWrite(task);
+        if (guardReason != null) {
+          return { kind: "conflict", side_effect: "none", reason_code: guardReason };
+        }
+      }
+      onWriteAttempt("update_task");
       await writeClient.updateTask(task.gid, { kind: "clear_due" }, signal);
-      return true;
+      return { kind: "completed", changed: true };
     case "set_area": {
       const workspaceTags = requireWorkspaceTags(tags);
-      const desired = resolveWorkspaceTag(areaTagName(operation.after), workspaceTags);
-      return applyCategoryTag(task, areaTagPrefix, desired, writeClient, signal);
+      return applyCategoryTag(
+        task.gid,
+        {
+          kind: "operation",
+          prefix: areaTagPrefix,
+          before_name: areaTagName(operation.before),
+          after_name: areaTagName(operation.after),
+          default_before: unclassifiedArea,
+          before_value: operation.before,
+          after_value: operation.after,
+        },
+        workspaceTags,
+        readClient,
+        writeClient,
+        beforeWrite,
+        onWriteAttempt,
+        signal,
+      );
     }
     case "set_dependencies":
     case "set_parent_work_mode":
@@ -1280,19 +1613,27 @@ async function applyNonCreateAsanaOperation(
     case "unlink_obsidian":
     case "set_duration":
     case "clear_duration":
-      return false;
+      return { kind: "completed", changed: false };
     case "set_parent": {
       const current = taskParentGid(task);
       const desired = resolveParentGid(operation.after, mappings);
       if (current === desired) {
-        return false;
+        return { kind: "completed", changed: false };
+      }
+      {
+        const guardReason = beforeWrite(task);
+        if (guardReason != null) {
+          return { kind: "conflict", side_effect: "none", reason_code: guardReason };
+        }
       }
       if (desired == null) {
+        onWriteAttempt("clear_task_parent");
         await writeClient.clearTaskParent(task.gid, signal);
       } else {
+        onWriteAttempt("set_task_parent");
         await writeClient.setTaskParent(task.gid, desired, signal);
       }
-      return true;
+      return { kind: "completed", changed: true };
     }
   }
   throw new Error("未対応のAsana操作です。");
@@ -1325,19 +1666,172 @@ export class AsanaProposalOperationWriter {
     input: WriterInput,
     signal: AbortSignal,
   ): Promise<WriterResult> {
+    return this.applyInternal(input, signal, () => {}, () => {});
+  }
+
+  /** 外部書込開始通知を指定して承認済みAI変更操作を適用します。 */
+  public async applyWithWriteAttemptCallback(
+    input: WriterInput,
+    signal: AbortSignal,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
+  ): Promise<WriterResult> {
+    return this.applyInternal(input, signal, () => {}, onWriteAttempt);
+  }
+
+  /** 作成タスクのGIDを外部属性更新前に通知して操作を適用します。 */
+  public async applyWithCreateTaskCallback(
+    input: WriterInput,
+    signal: AbortSignal,
+    onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
+  ): Promise<WriterResult> {
+    if (typeof onCreateTaskCreated !== "function") {
+      throw new TypeError("作成タスクGID通知コールバックが必要です。");
+    }
+    return this.applyInternal(input, signal, onCreateTaskCreated, onWriteAttempt);
+  }
+
+  /** 作成操作から承認済みの初期Custom external dataを再構成します。 */
+  public createInitialExternalBaseline(input: WriterInput): BaselineExternalInput {
+    const validatedInput = asanaProposalOperationWriterInputSchema.parse(input);
+    if (validatedInput.operation.operation !== "create_task") {
+      throw new Error("create_task以外から初期Custom external dataを再構成できません。");
+    }
+    const expected = createExternalState(
+      validatedInput,
+      validatedInput.operation,
+      createMappingMap(validatedInput.temporary_ref_to_gid),
+    );
+    return {
+      gid: expected.gid,
+      data: serializeCustomExternalData(expected.data),
+    };
+  }
+
+  /** 保存済み復旧計画の外部状態を読み取り、操作前後を判定します。 */
+  public async inspectRecovery(
+    input: WriterInput,
+    signal: AbortSignal,
+  ): Promise<ProposalOperationRecoveryInspection> {
     validateAbortSignal(signal);
     const validatedInput = asanaProposalOperationWriterInputSchema.parse(input);
     const mappings = createMappingMap(validatedInput.temporary_ref_to_gid);
     if (validatedInput.operation.operation === "create_task") {
-      return this.applyCreate(validatedInput, mappings, signal);
+      if (validatedInput.existing_task == null) {
+        throw new Error("create_taskの復旧対象タスクがありません。");
+      }
+      const task = parseTask(validatedInput.existing_task, undefined);
+      const expectedExternal = createExternalState(
+        validatedInput,
+        validatedInput.operation,
+        mappings,
+      );
+      const tags = await fetchWorkspaceTags(
+        this.readClient,
+        validatedInput.workspace_gid,
+        signal,
+      );
+      return {
+        core_state: classifyCreateCore(
+          task,
+          validatedInput,
+          validatedInput.operation,
+          mappings,
+          tags,
+        ),
+        metadata_state: taskExternalMatches(task, expectedExternal)
+          ? "after"
+          : "conflict",
+        task,
+      };
     }
-    return this.applyNonCreate(validatedInput, mappings, signal);
+    const taskGid = resolveTargetGid(
+      operationTarget(validatedInput.operation),
+      mappings,
+    );
+    const task = parseTask(
+      await this.readClient.getTask(taskGid, signal),
+      taskGid,
+    );
+    if (!taskHasProject(task, validatedInput.project_gid)) {
+      return { core_state: "conflict", metadata_state: "conflict", task };
+    }
+    const baselineExternal = validatedInput.baseline_external_data == null
+      ? undefined
+      : parseBaselineExternal(validatedInput.baseline_external_data);
+    if (operationUsesExternalData(validatedInput.operation) && baselineExternal == null) {
+      throw new Error("この操作にはbaseline外部データが必要です。");
+    }
+    let currentExternal: CurrentExternal | undefined;
+    let metadataState: FieldClassification = "after";
+    if (operationUsesExternalData(validatedInput.operation)) {
+      if (baselineExternal == null) {
+        throw new Error("この操作にはbaseline外部データが必要です。");
+      }
+      const currentExternalResult = validateCurrentExternal(
+        readCurrentExternal(task),
+        baselineExternal,
+      );
+      if (currentExternalResult.kind === "conflict") {
+        metadataState = "conflict";
+      } else {
+        currentExternal = currentExternalResult.value;
+        metadataState = classifyExternalMetadata(
+          validatedInput.operation,
+          baselineExternal.data,
+          currentExternal.data,
+          mappings,
+          validatedInput.activity_date,
+        );
+      }
+    }
+    const requiresTags = validatedInput.operation.operation === "set_importance"
+      || validatedInput.operation.operation === "set_area";
+    const tags = requiresTags
+      ? await fetchWorkspaceTags(this.readClient, validatedInput.workspace_gid, signal)
+      : undefined;
+    const classification = classifyOperation(
+      validatedInput.operation,
+      task,
+      validatedInput.project_gid,
+      validatedInput.section_gids,
+      mappings,
+      tags,
+    );
+    return {
+      core_state: classification,
+      metadata_state: metadataState,
+      task,
+    };
+  }
+
+  private async applyInternal(
+    input: WriterInput,
+    signal: AbortSignal,
+    onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
+  ): Promise<WriterResult> {
+    validateAbortSignal(signal);
+    const validatedInput = asanaProposalOperationWriterInputSchema.parse(input);
+    const mappings = createMappingMap(validatedInput.temporary_ref_to_gid);
+    if (validatedInput.operation.operation === "create_task") {
+      return this.applyCreate(
+        validatedInput,
+        mappings,
+        signal,
+        onCreateTaskCreated,
+        onWriteAttempt,
+      );
+    }
+    return this.applyNonCreate(validatedInput, mappings, signal, onWriteAttempt);
   }
 
   private async applyCreate(
     input: WriterInput,
     mappings: ReadonlyMap<string, string>,
     signal: AbortSignal,
+    onCreateTaskCreated: ProposalOperationCreatedTaskCallback,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     if (input.operation.operation !== "create_task") {
       throw new Error("create_task以外の操作を作成処理へ渡せません。");
@@ -1353,7 +1847,7 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           existing.gid,
           currentExternal.reason_code,
-          "none",
+          "possible",
         );
       }
       if (currentExternal.value.response.gid !== expectedExternal.gid) {
@@ -1361,18 +1855,63 @@ export class AsanaProposalOperationWriter {
           operation.operation_id,
           existing.gid,
           "external_identity_mismatch",
-          "none",
+          "possible",
         );
       }
-      if (taskMatchesCreate(existing, input, operation, expectedExternal, tags)) {
+      if (!taskExternalMatches(existing, expectedExternal)) {
+        return createConflictResult(
+          operation.operation_id,
+          existing.gid,
+          "read_back_mismatch",
+          "possible",
+        );
+      }
+      const coreState = classifyCreateCore(existing, input, operation, mappings, tags);
+      if (coreState === "conflict") {
+        return createConflictResult(
+          operation.operation_id,
+          existing.gid,
+          "read_back_mismatch",
+          "possible",
+        );
+      }
+      if (coreState === "after") {
         return createResult(operation.operation_id, existing.gid, "already_applied", "already_applied");
       }
-      return createConflictResult(
-        operation.operation_id,
+      const attributes = await this.applyCreateAttributes(
         existing.gid,
-        "read_back_mismatch",
-        "none",
+        input,
+        operation,
+        mappings,
+        tags,
+        expectedExternalWriteGuard(expectedExternal),
+        onWriteAttempt,
+        signal,
       );
+      if (attributes.kind === "conflict") {
+        return createConflictResult(
+          operation.operation_id,
+          existing.gid,
+          "read_back_mismatch",
+          "possible",
+        );
+      }
+      const readBack = parseTask(
+        await this.readClient.getTask(existing.gid, signal),
+        existing.gid,
+      );
+      if (
+        classifyCreateCore(readBack, input, operation, mappings, tags) !== "after"
+        || !taskExternalMatches(readBack, expectedExternal)
+      ) {
+        return createConflictResult(
+          operation.operation_id,
+          existing.gid,
+          "read_back_mismatch",
+          "possible",
+        );
+      }
+      return createResult(operation.operation_id, existing.gid, "applied", "applied");
     }
 
     const creationInput: AsanaTaskCreationInput = {
@@ -1391,10 +1930,12 @@ export class AsanaProposalOperationWriter {
         ? { due_at: operation.after.due.due_at }
         : {}),
     };
+    onWriteAttempt("create_task");
     const createdTaskReference = await this.writeClient.createTask(
       creationInput,
       signal,
     );
+    onCreateTaskCreated(operation.operation_id, createdTaskReference.gid);
     const created = parseTask(
       await this.readClient.getTask(createdTaskReference.gid, signal),
       createdTaskReference.gid,
@@ -1416,53 +1957,32 @@ export class AsanaProposalOperationWriter {
         "possible",
       );
     }
-
-    const importanceTag = resolveWorkspaceTag(
-      importanceTagName(operation.after.importance ?? 3),
+    const attributes = await this.applyCreateAttributes(
+      created.gid,
+      input,
+      operation,
+      mappings,
       tags,
-    );
-    await applyCategoryTag(
-      created,
-      importanceTagPrefix,
-      importanceTag,
-      this.writeClient,
+      expectedExternalWriteGuard(expectedExternal),
+      onWriteAttempt,
       signal,
     );
-    const areaTag = resolveWorkspaceTag(
-      areaTagName(operation.after.area ?? unclassifiedArea),
-      tags,
-    );
-    await applyCategoryTag(
-      created,
-      areaTagPrefix,
-      areaTag,
-      this.writeClient,
-      signal,
-    );
-    const status = expectedStatus(operation.after.status ?? "not_started", input.section_gids);
-    await applyStatus(
-      created,
-      input.project_gid,
-      status.section_gid,
-      status.completed,
-      this.writeClient,
-      signal,
-    );
-    const desiredParent = operation.after.parent == null
-      ? null
-      : resolveTargetGid(operation.after.parent, mappings);
-    if (taskParentGid(created) !== desiredParent) {
-      if (desiredParent == null) {
-        await this.writeClient.clearTaskParent(created.gid, signal);
-      } else {
-        await this.writeClient.setTaskParent(created.gid, desiredParent, signal);
-      }
+    if (attributes.kind === "conflict") {
+      return createConflictResult(
+        operation.operation_id,
+        created.gid,
+        "read_back_mismatch",
+        "possible",
+      );
     }
     const readBack = parseTask(
       await this.readClient.getTask(created.gid, signal),
       created.gid,
     );
-    if (!taskMatchesCreate(readBack, input, operation, expectedExternal, tags)) {
+    if (
+      classifyCreateCore(readBack, input, operation, mappings, tags) !== "after"
+      || !taskExternalMatches(readBack, expectedExternal)
+    ) {
       return createConflictResult(
         operation.operation_id,
         created.gid,
@@ -1478,17 +1998,131 @@ export class AsanaProposalOperationWriter {
     );
   }
 
+  private async applyCreateAttributes(
+    taskGid: string,
+    input: WriterInput,
+    operation: CreateOperation,
+    mappings: ReadonlyMap<string, string>,
+    tags: readonly AsanaTag[],
+    beforeWrite: OperationWriteGuard,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
+    signal: AbortSignal,
+  ): Promise<CoreWriteResult> {
+    let task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+    if (classifyCreateCore(task, input, operation, mappings, tags) === "conflict") {
+      return { kind: "conflict", side_effect: "none" };
+    }
+    let changed = false;
+    const importanceResult = await applyCategoryTag(
+      taskGid,
+      {
+        kind: "created_task",
+        prefix: importanceTagPrefix,
+        after_name: importanceTagName(operation.after.importance ?? 3),
+      },
+      tags,
+      this.readClient,
+      this.writeClient,
+      beforeWrite,
+      onWriteAttempt,
+      signal,
+    );
+    if (importanceResult.kind === "conflict") {
+      return {
+        kind: "conflict",
+        side_effect: importanceResult.side_effect === "possible" || changed
+          ? "possible"
+          : "none",
+      };
+    }
+    changed = changed || importanceResult.changed;
+    const areaResult = await applyCategoryTag(
+      taskGid,
+      {
+        kind: "created_task",
+        prefix: areaTagPrefix,
+        after_name: areaTagName(operation.after.area ?? unclassifiedArea),
+      },
+      tags,
+      this.readClient,
+      this.writeClient,
+      beforeWrite,
+      onWriteAttempt,
+      signal,
+    );
+    if (areaResult.kind === "conflict") {
+      return {
+        kind: "conflict",
+        side_effect: areaResult.side_effect === "possible" || changed
+          ? "possible"
+          : "none",
+      };
+    }
+    changed = changed || areaResult.changed;
+    const statusResult = await applyStatus(
+      taskGid,
+      input.project_gid,
+      expectedStatus("not_started", input.section_gids),
+      expectedStatus(operation.after.status ?? "not_started", input.section_gids),
+      true,
+      this.readClient,
+      this.writeClient,
+      beforeWrite,
+      onWriteAttempt,
+      signal,
+    );
+    if (statusResult.kind === "conflict") {
+      return {
+        kind: "conflict",
+        side_effect: statusResult.side_effect === "possible" || changed
+          ? "possible"
+          : "none",
+      };
+    }
+    changed = changed || statusResult.changed;
+    const desiredParent = operation.after.parent == null
+      ? null
+      : resolveTargetGid(operation.after.parent, mappings);
+    task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+    const currentParent = taskParentGid(task);
+    if (currentParent !== desiredParent) {
+      if (currentParent != null || desiredParent == null) {
+        return {
+          kind: "conflict",
+          side_effect: changed ? "possible" : "none",
+        };
+      }
+      const guardReason = beforeWrite(task);
+      if (guardReason != null) {
+        return {
+          kind: "conflict",
+          side_effect: changed ? "possible" : "none",
+          reason_code: guardReason,
+        };
+      }
+      onWriteAttempt("set_task_parent");
+      await this.writeClient.setTaskParent(taskGid, desiredParent, signal);
+      changed = true;
+      task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+      if (taskParentGid(task) !== desiredParent) {
+        return { kind: "conflict", side_effect: "possible" };
+      }
+    }
+    return { kind: "completed", changed };
+  }
+
   private async applyNonCreate(
     input: WriterInput,
     mappings: ReadonlyMap<string, string>,
     signal: AbortSignal,
+    onWriteAttempt: ProposalOperationWriteAttemptCallback,
   ): Promise<WriterResult> {
     if (input.operation.operation === "create_task") {
       throw new Error("create_taskを非作成処理へ渡せません。");
     }
     const operation = input.operation;
     const taskGid = resolveTargetGid(operationTarget(operation), mappings);
-    const task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+    let task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
     if (!taskHasProject(task, input.project_gid)) {
       return createConflictResult(
         operation.operation_id,
@@ -1504,34 +2138,18 @@ export class AsanaProposalOperationWriter {
     if (operationUsesExternalData(operation) && baselineExternal == null) {
       throw new Error("この操作にはbaseline外部データが必要です。");
     }
-    let currentExternal: CurrentExternal | undefined;
-    if (operationUsesExternalData(operation)) {
-      if (baselineExternal == null) {
-        throw new Error("この操作にはbaseline外部データが必要です。");
-      }
-      const currentExternalResult = validateCurrentExternal(
-        readCurrentExternal(task),
-        baselineExternal,
-      );
-      if (currentExternalResult.kind === "conflict") {
-        return externalConflictResult(
-          operation.operation_id,
-          taskGid,
-          currentExternalResult.reason_code,
-          "none",
-        );
-      }
-      currentExternal = currentExternalResult.value;
-    }
-    const classification = classifyOperation(
+    const tags = operation.operation === "set_importance" || operation.operation === "set_area"
+      ? await fetchWorkspaceTags(this.readClient, input.workspace_gid, signal)
+      : undefined;
+    let coreState = classifyOperation(
       operation,
       task,
-      currentExternal?.data,
       input.project_gid,
       input.section_gids,
       mappings,
+      tags,
     );
-    if (classification === "conflict") {
+    if (coreState === "conflict") {
       return createConflictResult(
         operation.operation_id,
         taskGid,
@@ -1539,10 +2157,6 @@ export class AsanaProposalOperationWriter {
         "none",
       );
     }
-    if (classification === "after" && !operationUsesExternalData(operation)) {
-      return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
-    }
-
     const externalOperations = baselineExternal == null
       ? []
       : externalOperationsForOperation(
@@ -1551,126 +2165,340 @@ export class AsanaProposalOperationWriter {
           mappings,
           input.activity_date,
         );
-    let mergeCurrent = currentExternal;
-    let externalPlan: ExternalMergePlan = {
-      kind: "none",
-      expected: undefined,
-      write: false,
-    };
-    if (externalOperations.length > 0) {
-      if (mergeCurrent == null) {
-        throw new Error("Custom external dataのcurrentがありません。");
-      }
+    let initialMetadataState: FieldClassification = "after";
+    if (operationUsesExternalData(operation)) {
       if (baselineExternal == null) {
-        throw new Error("Custom external dataのbaselineがありません。");
+        throw new Error("この操作にはbaseline外部データが必要です。");
       }
-      externalPlan = mergeExternalPlan(
+      const initialExternalResult = validateCurrentExternal(
+        readCurrentExternal(task),
         baselineExternal,
-        mergeCurrent,
-        externalOperations,
-        input.device_id,
       );
-      if (externalPlan.kind === "conflict") {
+      if (initialExternalResult.kind === "conflict") {
         return externalConflictResult(
           operation.operation_id,
           taskGid,
-          externalPlan.reason_code,
+          initialExternalResult.reason_code,
           "none",
         );
       }
-      if (externalPlan.kind === "none") {
-        throw new Error("Custom external dataのマージ計画がありません。");
-      }
-    }
-    const initialExternalPlanWrite = externalPlan.kind === "ready" && externalPlan.write;
-    const tags = operation.operation === "set_importance" || operation.operation === "set_area"
-      ? await fetchWorkspaceTags(this.readClient, input.workspace_gid, signal)
-      : undefined;
-    const asanaChanged = await applyNonCreateAsanaOperation(
-      operation,
-      task,
-      input,
-      mappings,
-      tags,
-      this.writeClient,
-      signal,
-    );
-    let expectedExternal: ExpectedExternal | undefined;
-    if (externalOperations.length > 0) {
-      if (asanaChanged || initialExternalPlanWrite) {
-        const latestTask = parseTask(
-          await this.readClient.getTask(taskGid, signal),
+      initialMetadataState = classifyExternalMetadata(
+        operation,
+        baselineExternal.data,
+        initialExternalResult.value.data,
+        mappings,
+        input.activity_date,
+      );
+      if (initialMetadataState === "conflict") {
+        return externalConflictResult(
+          operation.operation_id,
           taskGid,
-        );
-        if (baselineExternal == null) {
-          throw new Error("Custom external dataのbaselineがありません。");
-        }
-        const latestExternalResult = validateCurrentExternal(
-          readCurrentExternal(latestTask),
-          baselineExternal,
-        );
-        if (latestExternalResult.kind === "conflict") {
-          return externalConflictResult(
-            operation.operation_id,
-            taskGid,
-            latestExternalResult.reason_code,
-            asanaChanged ? "possible" : "none",
-          );
-        }
-        mergeCurrent = latestExternalResult.value;
-        externalPlan = mergeExternalPlan(
-          baselineExternal,
-          mergeCurrent,
-          externalOperations,
-          input.device_id,
-        );
-        if (externalPlan.kind === "conflict") {
-          return externalConflictResult(
-            operation.operation_id,
-            taskGid,
-            externalPlan.reason_code,
-            asanaChanged ? "possible" : "none",
-          );
-        }
-        if (externalPlan.kind === "none") {
-          throw new Error("Custom external dataのマージ計画がありません。");
-        }
-      }
-      if (mergeCurrent == null || externalPlan.kind !== "ready") {
-        throw new Error("Custom external dataのマージ結果がありません。");
-      }
-      expectedExternal = {
-        gid: mergeCurrent.response.gid,
-        data: externalPlan.expected,
-      };
-      if (externalPlan.write) {
-        await this.writeClient.updateTask(
-          taskGid,
-          {
-            kind: "external",
-            value: {
-              gid: expectedExternal.gid,
-              data: externalPlan.serialized,
-            },
-          },
-          signal,
+          "merge_conflict",
+          "none",
         );
       }
     }
-    if (!asanaChanged && !externalPlan.write) {
+    if (coreState === "after" && initialMetadataState === "after") {
       return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
     }
-    const readBack = parseTask(
-      await this.readClient.getTask(taskGid, signal),
-      taskGid,
+    const beforeCoreWrite: OperationWriteGuard = (currentTask) => {
+      if (!taskHasProject(currentTask, input.project_gid)) {
+        return "baseline_changed";
+      }
+      if (!operationUsesExternalData(operation)) {
+        return undefined;
+      }
+      if (baselineExternal == null) {
+        throw new Error("この操作にはbaseline外部データが必要です。");
+      }
+      const currentExternalResult = validateCurrentExternal(
+        readCurrentExternal(currentTask),
+        baselineExternal,
+      );
+      if (currentExternalResult.kind === "conflict") {
+        return currentExternalResult.reason_code;
+      }
+      return classifyExternalMetadata(
+        operation,
+        baselineExternal.data,
+        currentExternalResult.value.data,
+        mappings,
+        input.activity_date,
+      ) === "conflict"
+        ? "merge_conflict"
+        : undefined;
+    };
+    let asanaChanged = false;
+    let externalChanged = false;
+    if (coreState !== "after") {
+      task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+      if (!taskHasProject(task, input.project_gid)) {
+        return createConflictResult(
+          operation.operation_id,
+          taskGid,
+          "baseline_changed",
+          "none",
+        );
+      }
+      coreState = classifyOperation(
+        operation,
+        task,
+        input.project_gid,
+        input.section_gids,
+        mappings,
+        tags,
+      );
+      if (coreState === "conflict") {
+        return createConflictResult(
+          operation.operation_id,
+          taskGid,
+          "baseline_changed",
+          "none",
+        );
+      }
+      if (coreState !== "after") {
+        const guardReason = beforeCoreWrite(task);
+        if (guardReason != null) {
+          if (
+            guardReason === "external_unreadable"
+            || guardReason === "external_identity_mismatch"
+            || guardReason === "merge_conflict"
+          ) {
+            return externalConflictResult(
+              operation.operation_id,
+              taskGid,
+              guardReason,
+              "none",
+            );
+          }
+          return createConflictResult(
+            operation.operation_id,
+            taskGid,
+            guardReason,
+            "none",
+          );
+        }
+        const coreResult = await applyNonCreateAsanaOperation(
+          operation,
+          task,
+          input,
+          mappings,
+          tags,
+          this.readClient,
+          this.writeClient,
+          beforeCoreWrite,
+          onWriteAttempt,
+          signal,
+        );
+        if (coreResult.kind === "conflict") {
+          if (
+            coreResult.reason_code === "external_unreadable"
+            || coreResult.reason_code === "external_identity_mismatch"
+            || coreResult.reason_code === "merge_conflict"
+          ) {
+            return externalConflictResult(
+              operation.operation_id,
+              taskGid,
+              coreResult.reason_code,
+              coreResult.side_effect,
+            );
+          }
+          return createConflictResult(
+            operation.operation_id,
+            taskGid,
+            coreResult.reason_code ?? "baseline_changed",
+            coreResult.side_effect,
+          );
+        }
+        asanaChanged = coreResult.changed;
+        coreState = "after";
+      }
+    }
+
+    if (externalOperations.length > 0) {
+      if (baselineExternal == null) {
+        throw new Error("Custom external dataのbaselineがありません。");
+      }
+      task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+      const latestExternalResult = validateCurrentExternal(
+        readCurrentExternal(task),
+        baselineExternal,
+      );
+      if (latestExternalResult.kind === "conflict") {
+        return externalConflictResult(
+          operation.operation_id,
+          taskGid,
+          latestExternalResult.reason_code,
+          asanaChanged ? "possible" : "none",
+        );
+      }
+      let metadataState = classifyExternalMetadata(
+        operation,
+        baselineExternal.data,
+        latestExternalResult.value.data,
+        mappings,
+        input.activity_date,
+      );
+      if (metadataState === "conflict") {
+        return externalConflictResult(
+          operation.operation_id,
+          taskGid,
+          "merge_conflict",
+          asanaChanged ? "possible" : "none",
+        );
+      }
+      if (metadataState === "after" && coreState === "after" && !asanaChanged) {
+        return createResult(
+          operation.operation_id,
+          taskGid,
+          "already_applied",
+          "already_applied",
+        );
+      }
+      if (metadataState !== "after") {
+        task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+        const beforeWriteExternalResult = validateCurrentExternal(
+          readCurrentExternal(task),
+          baselineExternal,
+        );
+        if (beforeWriteExternalResult.kind === "conflict") {
+          return externalConflictResult(
+            operation.operation_id,
+            taskGid,
+            beforeWriteExternalResult.reason_code,
+            asanaChanged ? "possible" : "none",
+          );
+        }
+        metadataState = classifyExternalMetadata(
+          operation,
+          baselineExternal.data,
+          beforeWriteExternalResult.value.data,
+          mappings,
+          input.activity_date,
+        );
+        if (metadataState === "conflict") {
+          return externalConflictResult(
+            operation.operation_id,
+            taskGid,
+            "merge_conflict",
+            asanaChanged ? "possible" : "none",
+          );
+        }
+        if (metadataState !== "after") {
+          if (!taskHasProject(task, input.project_gid)) {
+            return createConflictResult(
+              operation.operation_id,
+              taskGid,
+              "baseline_changed",
+              asanaChanged ? "possible" : "none",
+            );
+          }
+          const coreStateBeforeExternal = classifyOperation(
+            operation,
+            task,
+            input.project_gid,
+            input.section_gids,
+            mappings,
+            tags,
+          );
+          if (coreStateBeforeExternal !== "after") {
+            return createConflictResult(
+              operation.operation_id,
+              taskGid,
+              "read_back_mismatch",
+              asanaChanged ? "possible" : "none",
+            );
+          }
+          const externalPlan = mergeExternalPlan(
+            baselineExternal,
+            beforeWriteExternalResult.value,
+            externalOperations,
+            input.device_id,
+          );
+          if (externalPlan.kind === "conflict") {
+            return externalConflictResult(
+              operation.operation_id,
+              taskGid,
+              externalPlan.reason_code,
+              asanaChanged ? "possible" : "none",
+            );
+          }
+          if (externalPlan.kind !== "ready") {
+            throw new Error("Custom external dataのマージ結果がありません。");
+          }
+          if (externalPlan.write) {
+            onWriteAttempt("update_task");
+            await this.writeClient.updateTask(
+              taskGid,
+              {
+                kind: "external",
+                value: {
+                  gid: beforeWriteExternalResult.value.response.gid,
+                  data: externalPlan.serialized,
+                },
+              },
+              signal,
+            );
+            externalChanged = true;
+          }
+        }
+      }
+    }
+    if (!asanaChanged && !externalChanged && coreState === "after") {
+      return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
+    }
+
+    task = parseTask(await this.readClient.getTask(taskGid, signal), taskGid);
+    const readBackCoreState = classifyOperation(
+      operation,
+      task,
+      input.project_gid,
+      input.section_gids,
+      mappings,
+      tags,
     );
-    if (!verifyOperationAfter(readBack, operation, input, mappings, expectedExternal, tags)) {
+    if (readBackCoreState !== "after") {
       return createConflictResult(
         operation.operation_id,
         taskGid,
         "read_back_mismatch",
         "possible",
       );
+    }
+    if (operationUsesExternalData(operation)) {
+      if (baselineExternal == null) {
+        throw new Error("この操作にはbaseline外部データが必要です。");
+      }
+      const readBackExternal = validateCurrentExternal(
+        readCurrentExternal(task),
+        baselineExternal,
+      );
+      if (readBackExternal.kind === "conflict") {
+        return externalConflictResult(
+          operation.operation_id,
+          taskGid,
+          readBackExternal.reason_code,
+          "possible",
+        );
+      }
+      const readBackMetadataState = classifyExternalMetadata(
+        operation,
+        baselineExternal.data,
+        readBackExternal.value.data,
+        mappings,
+        input.activity_date,
+      );
+      if (readBackMetadataState !== "after") {
+        return createConflictResult(
+          operation.operation_id,
+          taskGid,
+          "read_back_mismatch",
+          "possible",
+        );
+      }
+    }
+    if (!asanaChanged && !externalChanged && coreState === "after") {
+      return createResult(operation.operation_id, taskGid, "already_applied", "already_applied");
     }
     return createResult(operation.operation_id, taskGid, "applied", "applied");
   }

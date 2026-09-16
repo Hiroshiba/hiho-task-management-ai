@@ -14,7 +14,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
-import { diagnosticFailureDispositionFromError } from "./diagnostic-failure";
+import {
+  diagnosticFailureDispositionFromError,
+  type DiagnosticFailureDisposition,
+} from "./diagnostic-failure";
+import {
+  applicationDiagnosticSchema,
+  type ApplicationDiagnostic,
+} from "./ai/proposal-application";
+import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
 import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
@@ -110,6 +118,7 @@ function recordPersistentError(
 ): void {
   const logger = getPersistentErrorLog();
   if (logger == null) {
+    writePersistentErrorLogFailure(error);
     return;
   }
   logger.record(source, diagnosticCode, context, severity, error);
@@ -134,6 +143,7 @@ function registerUncaughtExceptionMonitor(): void {
 function recordDiagnostic(
   code: DiagnosticRecord["code"],
   severity: DiagnosticRecord["severity"],
+  metadata?: Pick<DiagnosticRecord, "asana_gid" | "operation_id" | "proposal_id">,
 ): void {
   const application = taskHubApplication;
   if (application == null) {
@@ -141,7 +151,7 @@ function recordDiagnostic(
     return;
   }
   try {
-    application.recordDiagnostic(code, severity);
+    application.recordDiagnostic(code, severity, metadata);
   } catch (error) {
     recordPersistentError("main", "storage.error", "diagnostic_storage", "error", error);
     console.error("診断情報を記録できませんでした。");
@@ -151,8 +161,9 @@ function recordDiagnostic(
 function recordServiceDiagnostic(
   error: unknown,
   channel: string,
-  severity: DiagnosticRecord["severity"],
+  rawDiagnostic: ApplicationDiagnostic,
 ): void {
+  const diagnostic = applicationDiagnosticSchema.parse(rawDiagnostic);
   let diagnosticCode: DiagnosticRecord["code"];
   switch (channel) {
     case "sync":
@@ -171,13 +182,40 @@ function recordServiceDiagnostic(
     case "ipc":
     case "sync_state_listener":
     case "ai_status_listener":
+    case "ai_delta_listener":
       diagnosticCode = "ipc.error";
       break;
     default:
       diagnosticCode = "app.error";
   }
-  recordPersistentError("service", diagnosticCode, "service_diagnostic", severity, error);
-  recordDiagnostic(diagnosticCode, severity);
+  recordPersistentError(
+    "service",
+    diagnosticCode,
+    "service_diagnostic",
+    diagnostic.severity,
+    new Error(JSON.stringify(diagnostic), { cause: error }),
+  );
+  const metadata = diagnostic.kind === "application_journal"
+    ? {
+        ...(diagnostic.proposal_id == null ? {} : { proposal_id: diagnostic.proposal_id }),
+        ...(diagnostic.operation_id == null ? {} : { operation_id: diagnostic.operation_id }),
+        ...(diagnostic.task_gid == null ? {} : { asana_gid: diagnostic.task_gid }),
+      }
+    : undefined;
+  recordDiagnostic(diagnosticCode, diagnostic.severity, metadata);
+}
+
+function mainDiagnosticFailureDisposition(
+  error: unknown,
+): DiagnosticFailureDisposition {
+  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+    return {
+      kind: "recorded_only",
+      recorded_error: error,
+      response_error: error.cause,
+    };
+  }
+  return diagnosticFailureDispositionFromError(error);
 }
 
 function getRendererUrl(): string {
@@ -350,6 +388,12 @@ async function openObsidianUrl(
   signal.throwIfAborted();
 }
 
+function forwardUnhandledError(error: unknown): void {
+  queueMicrotask(() => {
+    throw error;
+  });
+}
+
 function createTaskHubApplication(controller: AbortController): TaskHubApplication {
   const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
   return new TaskHubApplication({
@@ -379,6 +423,7 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
       openObsidianUrl(obsidianUrl, signal),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
     diagnostic: recordServiceDiagnostic,
+    unhandled_error_forwarder: forwardUnhandledError,
     open_external_agent_review: async () => {
       const application = taskHubApplication;
       if (application == null) {
@@ -476,9 +521,26 @@ function enqueueBackgroundOperation(
     try {
       await operation();
     } catch (error) {
-      recordPersistentError("main", failureCode, "background_operation", "error", error);
-      if (!controller.signal.aborted) {
-        recordDiagnostic(failureCode, "error");
+      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+        return;
+      }
+      const disposition = diagnosticFailureDispositionFromError(error);
+      switch (disposition.kind) {
+        case "recorded_only":
+          return;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          recordPersistentError(
+            "main",
+            failureCode,
+            "background_operation",
+            "error",
+            disposition.unrecorded_error,
+          );
+          if (!controller.signal.aborted) {
+            recordDiagnostic(failureCode, "error");
+          }
+          return;
       }
     }
   });
@@ -861,10 +923,24 @@ async function startApplication(
       startupGate.markStopped();
       return;
     }
-    recordPersistentError("main", "app.error", "bootstrap", "error", error);
-    recordDiagnostic("app.error", "error");
+    const disposition = mainDiagnosticFailureDisposition(error);
+    switch (disposition.kind) {
+      case "recorded_only":
+        break;
+      case "unrecorded_only":
+      case "recorded_and_unrecorded":
+        recordPersistentError(
+          "main",
+          "app.error",
+          "bootstrap",
+          "error",
+          disposition.unrecorded_error,
+        );
+        recordDiagnostic("app.error", "error");
+        break;
+    }
     console.error("アプリケーションの起動に失敗しました。");
-    startupGate.markFailed(error);
+    startupGate.markFailed(disposition.response_error);
   }
 }
 
@@ -895,6 +971,10 @@ async function stopApplication(): Promise<void> {
     try {
       await application.stop();
     } catch (error) {
+      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+        console.error("アプリケーションの停止に失敗しました。");
+        return;
+      }
       const disposition = diagnosticFailureDispositionFromError(error);
       switch (disposition.kind) {
         case "recorded_only":

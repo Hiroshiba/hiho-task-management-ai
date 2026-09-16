@@ -34,6 +34,7 @@ import {
 import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage";
 import { ExternalAgentServiceError } from "../external-agent";
 import { ObsidianVaultMappingConflictError } from "../obsidian";
+import { AsanaSyncRuntimeAlreadyReportedError } from "../asana/runtime";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -336,6 +337,29 @@ const failureMessages: Record<IpcFailure["code"], string> = {
   unavailable: "この機能は現在利用できません。",
 };
 
+type IpcOperationFailure =
+  | {
+      readonly kind: "already_reported";
+    }
+  | {
+      readonly kind: "unreported";
+      readonly error: unknown;
+    };
+
+function classifyIpcOperationFailure(error: unknown): IpcOperationFailure {
+  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+    return { kind: "already_reported" };
+  }
+  return { kind: "unreported", error };
+}
+
+function ipcResponseError(error: unknown): unknown {
+  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+    return error.cause;
+  }
+  return error;
+}
+
 function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
   if (error instanceof StartupGateNotReadyError) {
     return "unavailable";
@@ -415,6 +439,9 @@ function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
     || error instanceof AsanaOAuthOutOfBandAuthorizationIdMismatchError
   ) {
     return "oauth_session_error";
+  }
+  if (error instanceof AggregateError) {
+    return "operation_failed";
   }
   if (error instanceof z.ZodError) {
     return "invalid_response";
@@ -1243,7 +1270,9 @@ export class IpcHandlerRegistry {
             case "recorded_only":
               return responseSchema.parse(
                 this.createFailure(
-                  ipcFailureCodeForError(error.disposition.response_error),
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
                 ),
               );
             case "unrecorded_only":
@@ -1253,7 +1282,9 @@ export class IpcHandlerRegistry {
               );
               return responseSchema.parse(
                 this.createFailure(
-                  ipcFailureCodeForError(error.disposition.response_error),
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
                 ),
               );
             case "recorded_and_unrecorded":
@@ -1263,7 +1294,9 @@ export class IpcHandlerRegistry {
               );
               return responseSchema.parse(
                 this.createFailure(
-                  ipcFailureCodeForError(error.disposition.response_error),
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
                 ),
               );
           }
@@ -1278,8 +1311,11 @@ export class IpcHandlerRegistry {
             this.createFailure(ipcFailureCodeForError(error)),
           );
         }
-        this.options.diagnostic.record(error, channel);
-        const code = ipcFailureCodeForError(error);
+        const operationFailure = classifyIpcOperationFailure(error);
+        if (operationFailure.kind === "unreported") {
+          this.options.diagnostic.record(operationFailure.error, channel);
+        }
+        const code = ipcFailureCodeForError(ipcResponseError(error));
         return responseSchema.parse(this.createFailure(code));
       }
     } finally {

@@ -9,7 +9,7 @@ import {
   type SetupState,
 } from "../../shared/setup";
 import { identifierSchema } from "../../shared/domain";
-import type { DiagnosticRecord } from "./diagnostics";
+import type { ApplicationDiagnostic } from "../ai/proposal-application/schemas";
 
 const applicationPathSchema = z
   .string()
@@ -87,6 +87,7 @@ const applicationOptionsSchema = z
     open_obsidian_url: functionSchema,
     open_path: functionSchema,
     diagnostic: functionSchema,
+    unhandled_error_forwarder: functionSchema,
     open_external_agent_review: functionSchema,
   })
   .strict();
@@ -114,8 +115,9 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
   readonly diagnostic: (
     error: unknown,
     channel: string,
-    severity: DiagnosticRecord["severity"],
+    diagnostic: ApplicationDiagnostic,
   ) => void;
+  readonly unhandled_error_forwarder: (error: unknown) => void;
   readonly open_external_agent_review: () => Promise<void> | void;
 };
 

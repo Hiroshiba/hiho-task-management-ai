@@ -219,6 +219,8 @@ export const cleanupItemSchema = z
       message: "要整理項目の説明を空にできません。",
     }),
     task_gid: gidSchema.optional(),
+    proposal_id: identifierSchema.optional(),
+    operation_id: identifierSchema.optional(),
     related_task_gids: uniqueGidArraySchema.optional(),
   })
   .strict();

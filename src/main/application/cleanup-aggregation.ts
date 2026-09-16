@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   cleanupItemSchema,
+  identifierSchema,
   taskSchema,
   type Task,
 } from "../../shared/domain";
@@ -44,7 +45,15 @@ const brokenVaultLinkErrorCodeSchema = z.enum([
 ]);
 const proposalConflictCleanupItemSchema = cleanupItemSchema.extend({
   kind: z.literal("proposal_conflict"),
+  proposal_id: identifierSchema,
+  operation_id: identifierSchema,
 });
+const proposalOperationKeySchema = z
+  .object({
+    proposal_id: identifierSchema,
+    operation_id: identifierSchema,
+  })
+  .strict();
 const brokenVaultLinkCleanupItemSchema = cleanupItemSchema.extend({
   kind: z.literal("broken_vault_link"),
 });
@@ -82,6 +91,8 @@ function createProposalConflictItem(
   const item = {
     kind: "proposal_conflict",
     message: `AI変更案 ${proposalId} の操作 ${operationId} は${outcomeMessage}。理由コードは ${reasonCode} です。`,
+    proposal_id: proposalId,
+    operation_id: operationId,
   };
   if (taskGid == null) {
     return proposalConflictCleanupItemSchema.parse(item);
@@ -97,7 +108,16 @@ function createProposalConflictItems(
 ): ProposalConflictCleanupItem[] {
   const items: ProposalConflictCleanupItem[] = [];
   for (const operation of result.operations) {
-    if (operation.outcome !== "not_applied" && operation.outcome !== "unknown") {
+    if (
+      operation.outcome !== "unknown"
+      || ![
+        "recovery_required",
+        "recovery_context_missing",
+        "task_not_found",
+        "duplicate_external_id",
+        "journal_target_mismatch",
+      ].includes(operation.reason_code)
+    ) {
       continue;
     }
     items.push(
@@ -168,14 +188,36 @@ export class CleanupAggregationService {
     this.noteExistsPort = cleanupNoteExistsPortSchema.parse(noteExistsPort);
   }
 
-  /** AI変更案の競合項目だけを置き換えます。 */
-  public replaceProposalConflicts(
+  private replaceProposalConflictsForOperations(
+    operationKeys: readonly z.infer<typeof proposalOperationKeySchema>[],
     items: readonly ProposalConflictCleanupItem[],
   ): CleanupItemsCache {
+    const processedOperationIdsByProposal = new Map<string, Set<string>>();
+    for (const operationKey of operationKeys) {
+      const validatedKey = proposalOperationKeySchema.parse(operationKey);
+      const operationIds = processedOperationIdsByProposal.get(validatedKey.proposal_id)
+        ?? new Set<string>();
+      operationIds.add(validatedKey.operation_id);
+      processedOperationIdsByProposal.set(validatedKey.proposal_id, operationIds);
+    }
     const validatedItems = proposalConflictCleanupItemsSchema.parse(items);
+    const existingItems = this.database.getCleanupItems() ?? [];
+    const unrelatedItems = existingItems.filter((item) => {
+      if (item.kind !== "proposal_conflict") {
+        return false;
+      }
+      if (item.proposal_id == null || item.operation_id == null) {
+        return true;
+      }
+      const processedOperationIds = processedOperationIdsByProposal.get(
+        item.proposal_id,
+      );
+      return processedOperationIds == null
+        || !processedOperationIds.has(item.operation_id);
+    });
     return this.database.replaceCleanupItemsByKinds(
       ["proposal_conflict"],
-      validatedItems,
+      [...unrelatedItems, ...validatedItems],
     );
   }
 
@@ -184,7 +226,11 @@ export class CleanupAggregationService {
     result: AsanaProposalApplicationResult,
   ): CleanupItemsCache {
     const validatedResult = asanaProposalApplicationResultSchema.parse(result);
-    return this.replaceProposalConflicts(
+    return this.replaceProposalConflictsForOperations(
+      validatedResult.operations.map((operation) => ({
+        proposal_id: validatedResult.proposal_id,
+        operation_id: operation.operation_id,
+      })),
       createProposalConflictItems(validatedResult),
     );
   }
@@ -208,7 +254,22 @@ export class CleanupAggregationService {
         ),
       ),
     );
-    return this.replaceProposalConflicts(items);
+    const processedOperationKeys = [
+      ...validatedResult.applications.flatMap((application) =>
+        application.operations.map((operation) => ({
+          proposal_id: application.proposal_id,
+          operation_id: operation.operation_id,
+        })),
+      ),
+      ...validatedResult.unresolved_journals.map((journal) => ({
+        proposal_id: journal.proposal_id,
+        operation_id: journal.operation_id,
+      })),
+    ];
+    return this.replaceProposalConflictsForOperations(
+      processedOperationKeys,
+      items,
+    );
   }
 
   /** Vaultリンク切れ項目だけを置き換えます。 */
