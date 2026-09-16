@@ -119,7 +119,7 @@ function rowDeadlineTone(row: ViewModelTaskRow): ReturnType<typeof deadlineTone>
         </div>
       </div>
       <div class="mt-4 min-w-0">
-        <slot name="filters" />
+        <slot name="controls" />
       </div>
     </div>
 
@@ -146,7 +146,7 @@ function rowDeadlineTone(row: ViewModelTaskRow): ReturnType<typeof deadlineTone>
         <div class="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-1">
           <div
             class="text-center text-lg font-semibold text-sky-800 dark:text-sky-400"
-            aria-label="順位"
+            aria-label="実行順位"
           >
             {{ rankLabel(row) }}
           </div>

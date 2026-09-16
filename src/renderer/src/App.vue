@@ -79,6 +79,7 @@ import SettingsDialog from "./SettingsDialog.vue";
 import TaskDetail from "./TaskDetail.vue";
 import TaskFilters from "./TaskFilters.vue";
 import TaskList from "./TaskList.vue";
+import TaskSort from "./TaskSort.vue";
 import ToastHost from "./ToastHost.vue";
 import {
   createErrorScreenState,
@@ -90,6 +91,8 @@ import {
   rendererFailureSchema,
   rendererScreenStateSchema,
   rendererSyncStateSchema,
+  rendererTaskSortSchema,
+  sortTaskRows,
   type RendererAiState,
   type RendererAiConversationEntry,
   type RendererCodexState,
@@ -101,6 +104,7 @@ import {
   type RendererGuiEdit,
   type RendererTaskEditMarker,
   type RendererTaskEditMarkerUpdate,
+  type RendererTaskSort,
   type RendererScreenState,
   type RendererSyncState,
   type AiSessionOperation,
@@ -260,6 +264,7 @@ const overview = ref<ViewModelOverview | undefined>();
 const selectedTask = ref<ViewModelTaskDetail | undefined>();
 const selectedTaskGid = ref<string | undefined>();
 const filter = ref<RendererFilter>({ kind: "normal" });
+const taskSort = ref<RendererTaskSort>(rendererTaskSortSchema.parse("execution_order"));
 const connectionState = ref<RendererConnectionState>(rendererConnectionStateSchema.parse({
   kind: "checking",
   sync: { kind: "waiting" },
@@ -471,7 +476,8 @@ const visibleRows = computed(() => {
   if (currentOverview == null) {
     return [];
   }
-  return filterTaskRows(currentOverview, filter.value, currentAsOf.value);
+  const filteredRows = filterTaskRows(currentOverview, filter.value, currentAsOf.value);
+  return sortTaskRows(filteredRows, taskSort.value);
 });
 
 function aiSessionStatus(
@@ -3712,12 +3718,18 @@ onUnmounted(() => {
               @select="selectTask"
               @clear-selection="deselectTask"
             >
-              <template #filters>
-                <TaskFilters
-                  v-model="filter"
-                  :areas="overview.areas"
-                  :disabled="false"
-                />
+              <template #controls>
+                <div class="grid min-w-0 gap-3 sm:grid-cols-2">
+                  <TaskFilters
+                    v-model="filter"
+                    :areas="overview.areas"
+                    :disabled="false"
+                  />
+                  <TaskSort
+                    v-model="taskSort"
+                    :disabled="false"
+                  />
+                </div>
               </template>
             </TaskList>
             <div class="min-w-0 space-y-3 lg:min-h-0 lg:overflow-y-auto">
