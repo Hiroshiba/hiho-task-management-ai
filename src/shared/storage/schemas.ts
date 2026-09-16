@@ -3,9 +3,11 @@ import {
   asanaTaskResponseSchema,
   areaSchema,
   cleanupItemsSchema,
+  customExternalDataSchema,
   dateSchema,
   dependencyScopeSchema,
   durationSchema,
+  externalTaskGidSchema,
   gidSchema,
   getUtf8ByteLength,
   identifierSchema,
@@ -839,6 +841,33 @@ const applicationJournalTemporaryRefMappingSchema = z
   })
   .strict();
 
+export const applicationJournalBaselineSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("not_used") }).strict(),
+  z
+    .object({
+      kind: z.literal("stored"),
+      external_gid: externalTaskGidSchema,
+      data: customExternalDataSchema,
+    })
+    .strict()
+    .superRefine((source, context) => {
+      if (source.external_gid !== `TaskHub:v1:task:${source.data.id}`) {
+        context.addIssue({
+          code: "custom",
+          path: ["external_gid"],
+          message: "適用基準のCustom external data識別子が一致しません。",
+        });
+      }
+    }),
+  z
+    .object({
+      kind: z.literal("created_task"),
+      create_operation_id: identifierSchema,
+      temporary_ref: identifierSchema,
+    })
+    .strict(),
+]);
+
 /** 外部API呼び出し前に保存する適用操作の復旧計画を検証するスキーマです。 */
 export const applicationJournalPlanSchema = z
   .object({
@@ -877,12 +906,37 @@ export const applicationJournalPlanSchema = z
           taskGids.add(mapping.task_gid);
         });
       }),
+    baseline_source: applicationJournalBaselineSourceSchema,
     operation: applicationJournalOperationSchema,
     create_uuid: z.uuid().optional(),
   })
   .strict()
   .superRefine((plan, context) => {
     const create = plan.operation.operation === "create_task";
+    const usesExternalData = !create
+      && plan.operation.operation !== "complete"
+      && plan.operation.operation !== "withdraw";
+    if (usesExternalData === (plan.baseline_source.kind === "not_used")) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseline_source"],
+        message: "操作で必要な適用基準sourceが指定されていません。",
+      });
+    }
+    if (
+      plan.baseline_source.kind === "created_task"
+      && (
+        plan.operation.operation === "create_task"
+        || plan.operation.target.kind !== "temporary"
+        || plan.operation.target.ref !== plan.baseline_source.temporary_ref
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseline_source"],
+        message: "作成タスクsourceは対象temporary_refと一致しなければなりません。",
+      });
+    }
     if (create !== (plan.create_uuid != null)) {
       context.addIssue({
         code: "custom",
@@ -1178,4 +1232,7 @@ export type ApplicationJournal =
   z.infer<typeof applicationJournalReadableSchema>;
 export type ApplicationJournalOperation = z.infer<typeof applicationJournalOperationSchema>;
 export type ApplicationJournalPlan = z.infer<typeof applicationJournalPlanSchema>;
+export type ApplicationJournalBaselineSource = z.infer<
+  typeof applicationJournalBaselineSourceSchema
+>;
 export type DiagnosticLogEntry = z.infer<typeof diagnosticLogEntrySchema>;

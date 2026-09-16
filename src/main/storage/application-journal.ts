@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { identifierSchema } from "../../shared/domain";
+import { gidSchema, identifierSchema } from "../../shared/domain";
 import {
   applicationJournalOperationSchema,
   applicationJournalPlanSchema,
   applicationJournalResultSchema,
   applicationJournalLegacyCompletedSchema,
+  applicationJournalBaselineSourceSchema,
   applicationJournalSchema,
   applicationJournalStageSchema,
   applicationJournalWithPlanSchema,
@@ -36,6 +37,7 @@ interface ApplicationJournalRow {
   readonly created_via: string | null;
   readonly activity_date: string | null;
   readonly temporary_ref_to_gid_json: string | null;
+  readonly baseline_source_json: string | null;
   readonly operation_kind: string | null;
   readonly operation_json: string | null;
   readonly expected_before_json: string | null;
@@ -71,6 +73,7 @@ function rowToApplicationJournalPlan(row: ApplicationJournalRow): ApplicationJou
     || row.created_via == null
     || row.activity_date == null
     || row.temporary_ref_to_gid_json == null
+    || row.baseline_source_json == null
     || row.operation_kind == null
     || row.operation_json == null
     || row.expected_before_json == null
@@ -133,6 +136,10 @@ function rowToApplicationJournalPlan(row: ApplicationJournalRow): ApplicationJou
     temporary_ref_to_gid: parseStorageJson(
       row.temporary_ref_to_gid_json,
       z.array(z.object({ temporary_ref: z.string(), task_gid: z.string() }).strict()),
+    ),
+    baseline_source: parseStorageJson(
+      row.baseline_source_json,
+      applicationJournalBaselineSourceSchema,
     ),
     operation,
     ...(row.create_uuid == null ? {} : { create_uuid: row.create_uuid }),
@@ -238,6 +245,8 @@ function validatePlanEntry(entry: ApplicationJournal): ApplicationJournalWithPla
 export class ApplicationJournalStore {
   private readonly completeStatement;
   private readonly insertPreparedStatement;
+  private readonly recordCreatedTaskStatement;
+  private readonly selectByProposalStatement;
   private readonly selectIncompleteStatement;
   private readonly selectOneStatement;
   private readonly updateStageStatement;
@@ -260,6 +269,7 @@ export class ApplicationJournalStore {
         string | null,
         string | null,
         string | null,
+        string,
         string | null,
         string | null,
         string | null,
@@ -293,19 +303,26 @@ export class ApplicationJournalStore {
         created_via,
         activity_date,
         temporary_ref_to_gid_json,
+        baseline_source_json,
         operation_kind,
         operation_json,
         expected_before_json,
         expected_after_json,
         create_uuid,
         temporary_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.updateStageStatement = database.prepare<[string, string, string], unknown>(
       "UPDATE application_journal SET stage = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL AND stage <> 'legacy_unresolved'",
     );
     this.completeStatement = database.prepare<[string, string, string], unknown>(
       "UPDATE application_journal SET final_result = ? WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL",
+    );
+    this.recordCreatedTaskStatement = database.prepare<
+      [string, string, string],
+      unknown
+    >(
+      "UPDATE application_journal SET temporary_ref_to_gid_json = ?, stage = CASE WHEN stage = 'write_started' THEN 'task_created' ELSE stage END WHERE proposal_id = ? AND operation_id = ? AND final_result IS NULL",
     );
     this.selectOneStatement = database.prepare<[string, string], ApplicationJournalRow>(
       `SELECT
@@ -328,6 +345,7 @@ export class ApplicationJournalStore {
         created_via,
         activity_date,
         temporary_ref_to_gid_json,
+        baseline_source_json,
         operation_kind,
         operation_json,
         expected_before_json,
@@ -336,6 +354,38 @@ export class ApplicationJournalStore {
         temporary_ref
       FROM application_journal
       WHERE proposal_id = ? AND operation_id = ?`,
+    );
+    this.selectByProposalStatement = database.prepare<[string], ApplicationJournalRow>(
+      `SELECT
+        proposal_id,
+        operation_id,
+        new_task_uuid,
+        target_gid,
+        target_temporary_ref,
+        started_at,
+        stage,
+        final_result,
+        group_id,
+        group_order,
+        operation_order,
+        atomic,
+        project_gid,
+        workspace_gid,
+        section_gids_json,
+        device_id,
+        created_via,
+        activity_date,
+        temporary_ref_to_gid_json,
+        baseline_source_json,
+        operation_kind,
+        operation_json,
+        expected_before_json,
+        expected_after_json,
+        create_uuid,
+        temporary_ref
+      FROM application_journal
+      WHERE proposal_id = ?
+      ORDER BY operation_order IS NULL, operation_order, started_at, operation_id`,
     );
     this.selectIncompleteStatement = database.prepare<[], ApplicationJournalRow>(
       `SELECT
@@ -358,6 +408,7 @@ export class ApplicationJournalStore {
         created_via,
         activity_date,
         temporary_ref_to_gid_json,
+        baseline_source_json,
         operation_kind,
         operation_json,
         expected_before_json,
@@ -433,6 +484,7 @@ export class ApplicationJournalStore {
           plan.created_via,
           plan.activity_date,
           serializeStorageJson(plan.temporary_ref_to_gid),
+          serializeStorageJson(plan.baseline_source),
           plan.operation.operation,
           serializeStorageJson(plan.operation),
           serializeStorageJson(plan.operation.expected_before),
@@ -443,6 +495,78 @@ export class ApplicationJournalStore {
       }
     });
     prepare();
+  }
+
+  /** 作成済みタスクのGIDを復旧計画へ保存します。 */
+  public recordCreatedTask(
+    proposalId: string,
+    operationId: string,
+    temporaryRef: string,
+    taskGid: string,
+  ): void {
+    const validatedProposalId = identifierSchema.parse(proposalId);
+    const validatedOperationId = identifierSchema.parse(operationId);
+    const validatedTemporaryRef = identifierSchema.parse(temporaryRef);
+    const validatedTaskGid = gidSchema.parse(taskGid);
+    const record = this.database.transaction(() => {
+      const currentRow = this.selectOneStatement.get(
+        validatedProposalId,
+        validatedOperationId,
+      );
+      if (currentRow == null) {
+        throw new Error("作成済みタスクを記録する適用ジャーナルが見つかりません。");
+      }
+      if (currentRow.final_result != null) {
+        throw new Error("完了済みの適用ジャーナルへ作成済みタスクを記録できません。");
+      }
+      const currentStage = applicationJournalStageSchema.parse(currentRow.stage);
+      if (
+        currentStage !== "write_started"
+        && currentStage !== "task_created"
+        && currentStage !== "attributes_applied"
+        && currentStage !== "relations_applied"
+        && currentStage !== "read_back"
+        && currentStage !== "metadata_verified"
+        && currentStage !== "ranking_recalculated"
+      ) {
+        throw new Error("作成済みタスクを記録できる適用段階ではありません。");
+      }
+      if (currentRow.operation_kind !== "create_task") {
+        throw new Error("create_task以外へ作成済みタスクを記録できません。");
+      }
+      if (currentRow.temporary_ref !== validatedTemporaryRef) {
+        throw new Error("作成済みタスクのtemporary_refが一致しません。");
+      }
+      const plan = rowToApplicationJournalPlan(currentRow);
+      if (
+        plan.operation.operation !== "create_task"
+        || plan.operation.temporary_ref !== validatedTemporaryRef
+      ) {
+        throw new Error("create_taskの復旧計画が一致しません。");
+      }
+      const existingMapping = plan.temporary_ref_to_gid.find(
+        (mapping) => mapping.temporary_ref === validatedTemporaryRef,
+      );
+      if (existingMapping != null && existingMapping.task_gid !== validatedTaskGid) {
+        throw new Error("temporary_refの対応先GIDが変化しました。");
+      }
+      const mappings = existingMapping == null
+        ? [
+            ...plan.temporary_ref_to_gid,
+            { temporary_ref: validatedTemporaryRef, task_gid: validatedTaskGid },
+          ]
+        : plan.temporary_ref_to_gid;
+      const validatedMappings = applicationJournalPlanSchema.shape.temporary_ref_to_gid.parse(
+        mappings,
+      );
+      const result = this.recordCreatedTaskStatement.run(
+        serializeStorageJson(validatedMappings),
+        validatedProposalId,
+        validatedOperationId,
+      );
+      assertChanged(result.changes, "作成済みタスクのGID記録");
+    });
+    record();
   }
 
   /** 適用ジャーナルの段階をトランザクションで更新します。 */
@@ -514,6 +638,14 @@ export class ApplicationJournalStore {
       return undefined;
     }
     return rowToApplicationJournal(row);
+  }
+
+  /** 指定されたproposalの適用ジャーナルを全件読み出します。 */
+  public getByProposal(proposalId: string): readonly ApplicationJournal[] {
+    const validatedProposalId = identifierSchema.parse(proposalId);
+    return this.selectByProposalStatement
+      .all(validatedProposalId)
+      .map(rowToApplicationJournal);
   }
 
   /** 未完了の適用ジャーナルを全件読み出します。 */

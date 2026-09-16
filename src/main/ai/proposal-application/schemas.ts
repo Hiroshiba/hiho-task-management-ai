@@ -393,6 +393,7 @@ const applicationReasonCodeSchema = z.enum([
   "approval_conflict",
   "atomic_group_blocked",
   "writer_conflict",
+  "external_id_collision",
   "recovery_required",
   "recovery_context_missing",
   "task_not_found",
@@ -455,6 +456,7 @@ const applicationOperationResultSchema = z
         "approval_conflict",
         "atomic_group_blocked",
         "writer_conflict",
+        "external_id_collision",
       ].includes(result.reason_code)
     ) {
       context.addIssue({

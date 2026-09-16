@@ -118,6 +118,7 @@ CREATE TABLE application_journal (
   created_via TEXT,
   activity_date TEXT,
   temporary_ref_to_gid_json TEXT,
+  baseline_source_json TEXT,
   operation_kind TEXT CHECK (
     operation_kind IS NULL
     OR operation_kind IN (
@@ -177,6 +178,7 @@ CREATE TABLE application_journal (
       AND created_via IS NULL
       AND activity_date IS NULL
       AND temporary_ref_to_gid_json IS NULL
+      AND baseline_source_json IS NULL
       AND operation_json IS NULL
       AND expected_before_json IS NULL
       AND expected_after_json IS NULL
@@ -214,6 +216,7 @@ CREATE TABLE application_journal (
       AND created_via IS NOT NULL
       AND activity_date IS NOT NULL
       AND temporary_ref_to_gid_json IS NOT NULL
+      AND baseline_source_json IS NOT NULL
       AND operation_json IS NOT NULL
       AND expected_before_json IS NOT NULL
       AND expected_after_json IS NOT NULL
@@ -717,6 +720,21 @@ export class StorageDatabase {
     this.applicationJournalStore.prepare(entries);
   }
 
+  /** 作成済みタスクのGIDを適用ジャーナルへ保存します。 */
+  public recordApplicationJournalTaskCreated(
+    proposalId: string,
+    operationId: string,
+    temporaryRef: string,
+    taskGid: string,
+  ): void {
+    this.applicationJournalStore.recordCreatedTask(
+      proposalId,
+      operationId,
+      temporaryRef,
+      taskGid,
+    );
+  }
+
   /** 適用ジャーナルの適用段階を更新します。 */
   public updateApplicationJournalStage(
     proposalId: string,
@@ -741,6 +759,13 @@ export class StorageDatabase {
     operationId: string,
   ): ApplicationJournal | undefined {
     return this.applicationJournalStore.get(proposalId, operationId);
+  }
+
+  /** 指定されたproposalの適用ジャーナルを全件読み出します。 */
+  public getApplicationJournalsByProposal(
+    proposalId: string,
+  ): readonly ApplicationJournal[] {
+    return this.applicationJournalStore.getByProposal(proposalId);
   }
 
   /** 未完了の適用ジャーナルを全件読み出します。 */
