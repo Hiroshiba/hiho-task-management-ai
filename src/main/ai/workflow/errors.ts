@@ -1,3 +1,11 @@
+import { z } from "zod";
+import {
+  aiWorkflowCandidateDigestSchema,
+  aiWorkflowValidationIssueSchema,
+  type AiWorkflowCandidateDigest,
+  type AiWorkflowValidationIssue,
+} from "./retry";
+
 /** AIワークフローの処理失敗を表す基底エラーです。 */
 export class AiWorkflowError extends Error {
   public constructor(message: string, cause?: unknown) {
@@ -59,5 +67,25 @@ export class AiWorkflowProposalFileError extends AiWorkflowError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);
     this.name = "AiWorkflowProposalFileError";
+  }
+}
+
+/** AI変更案を修正可能な検証エラーとして分類します。 */
+export class AiWorkflowRetryableFailureError extends AiWorkflowError {
+  public readonly issues: readonly AiWorkflowValidationIssue[];
+  public readonly candidateDigest: AiWorkflowCandidateDigest;
+  public readonly recoveryAction: "reuse_lease" | "fresh_lease";
+
+  public constructor(
+    issues: readonly AiWorkflowValidationIssue[],
+    candidateDigest: AiWorkflowCandidateDigest,
+    recoveryAction: "reuse_lease" | "fresh_lease",
+    cause: unknown,
+  ) {
+    super("AI変更案に訂正可能な検証エラーがあります。", cause);
+    this.name = "AiWorkflowRetryableFailureError";
+    this.issues = z.array(aiWorkflowValidationIssueSchema).min(1).parse(issues);
+    this.candidateDigest = aiWorkflowCandidateDigestSchema.parse(candidateDigest);
+    this.recoveryAction = z.enum(["reuse_lease", "fresh_lease"]).parse(recoveryAction);
   }
 }

@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
+import { diagnosticFailureDispositionFromError } from "./diagnostic-failure";
 import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
@@ -104,13 +105,14 @@ function recordPersistentError(
   source: PersistentErrorLogSource,
   diagnosticCode: DiagnosticRecord["code"],
   context: PersistentErrorLogContext,
+  severity: DiagnosticRecord["severity"],
   error: unknown,
 ): void {
   const logger = getPersistentErrorLog();
   if (logger == null) {
     return;
   }
-  logger.record(source, diagnosticCode, context, error);
+  logger.record(source, diagnosticCode, context, severity, error);
 }
 
 function registerUncaughtExceptionMonitor(): void {
@@ -122,6 +124,7 @@ function registerUncaughtExceptionMonitor(): void {
       "uncaught_exception",
       "app.error",
       "uncaught_exception",
+      "error",
       error,
     );
   });
@@ -140,12 +143,16 @@ function recordDiagnostic(
   try {
     application.recordDiagnostic(code, severity);
   } catch (error) {
-    recordPersistentError("main", "storage.error", "diagnostic_storage", error);
+    recordPersistentError("main", "storage.error", "diagnostic_storage", "error", error);
     console.error("診断情報を記録できませんでした。");
   }
 }
 
-function recordServiceDiagnostic(error: unknown, channel: string): void {
+function recordServiceDiagnostic(
+  error: unknown,
+  channel: string,
+  severity: DiagnosticRecord["severity"],
+): void {
   let diagnosticCode: DiagnosticRecord["code"];
   switch (channel) {
     case "sync":
@@ -169,8 +176,8 @@ function recordServiceDiagnostic(error: unknown, channel: string): void {
     default:
       diagnosticCode = "app.error";
   }
-  recordPersistentError("service", diagnosticCode, "service_diagnostic", error);
-  recordDiagnostic(diagnosticCode, "error");
+  recordPersistentError("service", diagnosticCode, "service_diagnostic", severity, error);
+  recordDiagnostic(diagnosticCode, severity);
 }
 
 function getRendererUrl(): string {
@@ -371,10 +378,6 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
     open_obsidian_url: (obsidianUrl, signal) =>
       openObsidianUrl(obsidianUrl, signal),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
-    notify_unexpected_error: (error) => {
-      recordPersistentError("service", "app.error", "service_diagnostic", error);
-      recordDiagnostic("app.error", "error");
-    },
     diagnostic: recordServiceDiagnostic,
     open_external_agent_review: async () => {
       const application = taskHubApplication;
@@ -414,11 +417,11 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
     try {
       const externalUrl = assertAllowedExternalUrl(url);
       void shell.openExternal(externalUrl.href).catch((error) => {
-        recordPersistentError("main", "app.error", "external_url", error);
+        recordPersistentError("main", "app.error", "external_url", "error", error);
         recordDiagnostic("app.error", "error");
       });
     } catch (error) {
-      recordPersistentError("main", "app.error", "external_url", error);
+      recordPersistentError("main", "app.error", "external_url", "error", error);
       recordDiagnostic("app.error", "error");
     }
     return { action: "deny" };
@@ -438,7 +441,7 @@ function registerVersionIpcHandler(rendererUrl: string): void {
       assertTrustedIpcSender(event, window.webContents, rendererUrl);
       return app.getVersion();
     } catch (error) {
-      recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", error);
+      recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
       throw error;
     }
   });
@@ -449,7 +452,7 @@ function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
   try {
     registry.dispose();
   } catch (error) {
-    recordPersistentError("main", "ipc.error", "registry_dispose", error);
+    recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
     recordDiagnostic("ipc.error", "error");
   }
   if (mainWindowRegistry === registry) {
@@ -473,7 +476,7 @@ function enqueueBackgroundOperation(
     try {
       await operation();
     } catch (error) {
-      recordPersistentError("main", failureCode, "background_operation", error);
+      recordPersistentError("main", failureCode, "background_operation", "error", error);
       if (!controller.signal.aborted) {
         recordDiagnostic(failureCode, "error");
       }
@@ -750,7 +753,7 @@ async function createMainWindow(
     startupGate: gate,
     diagnostic: {
       record: (error) => {
-        recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", error);
+        recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
         recordDiagnostic("ipc.error", "error");
       },
     },
@@ -858,7 +861,7 @@ async function startApplication(
       startupGate.markStopped();
       return;
     }
-    recordPersistentError("main", "app.error", "bootstrap", error);
+    recordPersistentError("main", "app.error", "bootstrap", "error", error);
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの起動に失敗しました。");
     startupGate.markFailed(error);
@@ -877,7 +880,7 @@ async function stopApplication(): Promise<void> {
     try {
       ipcMain.removeHandler(appGetVersionChannel);
     } catch (error) {
-      recordPersistentError("main", "ipc.error", "application_stop", error);
+      recordPersistentError("main", "ipc.error", "application_stop", "error", error);
       recordDiagnostic("ipc.error", "error");
     }
     versionIpcRegistered = false;
@@ -892,8 +895,22 @@ async function stopApplication(): Promise<void> {
     try {
       await application.stop();
     } catch (error) {
-      recordPersistentError("main", "app.error", "application_stop", error);
-      recordDiagnostic("app.error", "error");
+      const disposition = diagnosticFailureDispositionFromError(error);
+      switch (disposition.kind) {
+        case "recorded_only":
+          break;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          recordPersistentError(
+            "main",
+            "app.error",
+            "application_stop",
+            "error",
+            disposition.unrecorded_error,
+          );
+          recordDiagnostic("app.error", "error");
+          break;
+      }
       console.error("アプリケーションの停止に失敗しました。");
     }
   }
@@ -921,7 +938,7 @@ async function bootstrap(): Promise<void> {
         if (controller.signal.aborted || shutdownState.kind !== "running") {
           return;
         }
-        recordPersistentError("main", "app.error", "main_window", error);
+        recordPersistentError("main", "app.error", "main_window", "error", error);
         recordDiagnostic("app.error", "error");
       });
     }
@@ -960,7 +977,7 @@ app.on("before-quit", (event) => {
     shutdownState = { kind: "stopped" };
     app.quit();
   }).catch((error) => {
-    recordPersistentError("main", "app.error", "application_quit", error);
+    recordPersistentError("main", "app.error", "application_quit", "error", error);
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの停止に失敗しました。");
     shutdownState = { kind: "stopped" };
@@ -974,7 +991,7 @@ if (!singleInstanceLockAcquired) {
 } else {
   app.on("second-instance", showAndFocusMainWindow);
   void bootstrap().catch((error) => {
-    recordPersistentError("main", "app.error", "bootstrap", error);
+    recordPersistentError("main", "app.error", "bootstrap", "error", error);
     recordDiagnostic("app.error", "error");
     console.error("アプリケーションの起動に失敗しました。");
     app.quit();

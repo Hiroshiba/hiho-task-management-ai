@@ -57,6 +57,12 @@ import {
 import { ObsidianReadError } from "../../obsidian";
 import { createUtf8ByteLimitedStringSchema } from "../../../shared/domain";
 import {
+  DiagnosticFailureDispositionError,
+  combineDiagnosticFailureDispositions,
+  diagnosticFailureDispositionFromError,
+  type DiagnosticFailureDisposition,
+} from "../../diagnostic-failure";
+import {
   codexGeneratedResponseSchema,
   type CodexGeneratedResponse,
 } from "../../../shared/ai";
@@ -250,6 +256,29 @@ type InternalDiagnostic = {
   readonly cause: unknown;
 };
 
+type AiDisableTurnFailure =
+  | { readonly kind: "disabled" }
+  | { readonly kind: "provided"; readonly error: unknown };
+
+type AiDisableDiagnosticDisposition =
+  | { readonly kind: "record" }
+  | { readonly kind: "already_recorded" }
+  | { readonly kind: "propagate_unrecorded" };
+
+type AiDisableRequest = {
+  readonly cause: unknown;
+  readonly turnFailure: AiDisableTurnFailure;
+  readonly diagnosticDisposition: AiDisableDiagnosticDisposition;
+};
+
+type AiDisableResult =
+  | { readonly kind: "completed" }
+  | { readonly kind: "cleanup_failed"; readonly errors: readonly unknown[] };
+
+type SessionStopDisposition =
+  | { readonly kind: "record" }
+  | { readonly kind: "propagate_unrecorded" };
+
 type TurnFinalItem = {
   readonly id: string;
   readonly text: string;
@@ -298,6 +327,41 @@ function validateAbortSignal(signal: AbortSignal): void {
   ) {
     throw new TypeError("AbortSignalが必要です。");
   }
+}
+
+function combineSessionFailure(
+  responseError: unknown,
+  additionalErrors: readonly unknown[],
+): DiagnosticFailureDispositionError {
+  const primaryDisposition = diagnosticFailureDispositionFromError(responseError);
+  const additionalDispositions = additionalErrors.map(
+    diagnosticFailureDispositionFromError,
+  );
+  return new DiagnosticFailureDispositionError(
+    combineDiagnosticFailureDispositions(
+      primaryDisposition,
+      additionalDispositions,
+    ),
+  );
+}
+
+function createRecordedSessionFailure(
+  recordedError: unknown,
+  responseError: unknown,
+): DiagnosticFailureDispositionError {
+  return new DiagnosticFailureDispositionError({
+    kind: "recorded_only",
+    recorded_error: recordedError,
+    response_error: responseError,
+  });
+}
+
+function createUnrecordedSessionFailure(error: unknown): DiagnosticFailureDispositionError {
+  return new DiagnosticFailureDispositionError({
+    kind: "unrecorded_only",
+    unrecorded_error: error,
+    response_error: error,
+  });
 }
 
 function createModelFormatInstruction(): string {
@@ -952,7 +1016,7 @@ export class CodexSessionService {
   private structuredOutputVerified = false;
   private safetyViolation = false;
   private stopPromise: Promise<void> | undefined;
-  private disablePromise: Promise<void> | undefined;
+  private disablePromise: Promise<AiDisableResult> | undefined;
 
   public constructor(options: CodexSessionOptions) {
     this.options = codexSessionOptionsSchema.parse(options);
@@ -1037,8 +1101,8 @@ export class CodexSessionService {
     this.state = "starting";
     this.lifecycleSignal = signal;
     this.lifecycleAbortListener = () => {
-      void this.stop().catch((error: unknown) => {
-        this.recordDiagnostic("connection_stop_error", error);
+      void this.stop({ kind: "record" }).catch((error: unknown) => {
+        this.recordDiagnosticLocally("connection_stop_error", error);
       });
     };
     signal.addEventListener("abort", this.lifecycleAbortListener, { once: true });
@@ -1065,19 +1129,28 @@ export class CodexSessionService {
       const cleanupErrors = await this.cleanupResources();
       if (cleanupErrors.length > 0) {
         for (const cleanupError of cleanupErrors) {
-          this.recordDiagnostic("connection_stop_error", cleanupError);
+          this.recordDiagnosticLocally("connection_stop_error", cleanupError);
         }
       }
       if (signal.aborted) {
         this.state = "stopped";
-      } else if (this.safetyViolation) {
-        this.state = "disabled";
-        throw createSafetyViolationError(error);
-      } else {
-        this.recordDiagnostic("startup_error", error);
-        this.state = "disabled";
+        if (cleanupErrors.length === 0) {
+          throw error;
+        }
+        throw combineSessionFailure(error, cleanupErrors);
       }
-      throw error;
+      if (this.safetyViolation) {
+        this.state = "disabled";
+        const safetyError = createSafetyViolationError(error);
+        this.recordDiagnosticLocally("startup_error", safetyError);
+        throw combineSessionFailure(
+          createRecordedSessionFailure(error, safetyError),
+          cleanupErrors,
+        );
+      }
+      this.recordDiagnosticLocally("startup_error", error);
+      this.state = "disabled";
+      throw combineSessionFailure(error, cleanupErrors);
     }
   }
 
@@ -1133,10 +1206,20 @@ export class CodexSessionService {
         throw error;
       }
       if (this.safetyViolation) {
-        throw createSafetyViolationError(error);
+        throw createRecordedSessionFailure(
+          error,
+          createSafetyViolationError(error),
+        );
       }
-      await this.disableAi(error);
-      throw error;
+      const disableResult = await this.disableAi({
+        cause: error,
+        turnFailure: { kind: "disabled" },
+        diagnosticDisposition: { kind: "propagate_unrecorded" },
+      });
+      throw combineSessionFailure(
+        error,
+        disableResult.kind === "cleanup_failed" ? disableResult.errors : [],
+      );
     }
   }
 
@@ -1182,8 +1265,15 @@ export class CodexSessionService {
         this.state = "authentication_required";
         return this.createAuthenticationRequiredResult();
       }
-      await this.disableAi(error);
-      throw error;
+      const disableResult = await this.disableAi({
+        cause: error,
+        turnFailure: { kind: "disabled" },
+        diagnosticDisposition: { kind: "propagate_unrecorded" },
+      });
+      throw combineSessionFailure(
+        error,
+        disableResult.kind === "cleanup_failed" ? disableResult.errors : [],
+      );
     }
   }
 
@@ -1284,8 +1374,12 @@ export class CodexSessionService {
       if (createdActiveTurn.abortRequested || signal.aborted) {
         this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
       } else {
-        this.recordDiagnostic("sync_error", error);
-        this.finishTurn(createdActiveTurn, new CodexSessionSyncError(error));
+        this.recordDiagnosticLocally("sync_error", error);
+        const syncError = new CodexSessionSyncError(error);
+        this.finishTurn(
+          createdActiveTurn,
+          createUnrecordedSessionFailure(syncError),
+        );
       }
       return turnPromise;
     }
@@ -1311,7 +1405,11 @@ export class CodexSessionService {
       if (createdActiveTurn.abortRequested || signal.aborted) {
         this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
       } else {
-        this.finishTurn(createdActiveTurn, error);
+        this.recordDiagnosticLocally("turn_error", error);
+        this.finishTurn(
+          createdActiveTurn,
+          createUnrecordedSessionFailure(error),
+        );
       }
       return turnPromise;
     }
@@ -1330,7 +1428,11 @@ export class CodexSessionService {
       if (createdActiveTurn.abortRequested || signal.aborted) {
         this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
       } else {
-        this.finishTurn(createdActiveTurn, error);
+        this.recordDiagnosticLocally("turn_error", error);
+        this.finishTurn(
+          createdActiveTurn,
+          createUnrecordedSessionFailure(error),
+        );
       }
       return turnPromise;
     }
@@ -1340,14 +1442,22 @@ export class CodexSessionService {
       started = await connection.startTurn(params, signal);
       started = turnStartResultSchema.parse(started);
     } catch (error: unknown) {
+      if (this.activeTurn !== createdActiveTurn) {
+        return turnPromise;
+      }
       if (createdActiveTurn.abortRequested || signal.aborted) {
         await this.recoverAfterStartingAbort(createdActiveTurn, error);
       } else if (!this.structuredOutputVerified) {
-        await this.disableAi(error);
+        await this.disableAi({
+          cause: error,
+          turnFailure: { kind: "provided", error },
+          diagnosticDisposition: { kind: "propagate_unrecorded" },
+        });
       } else {
+        this.recordDiagnosticLocally("turn_error", error);
         this.finishTurn(
           createdActiveTurn,
-          error,
+          createUnrecordedSessionFailure(error),
         );
       }
       return turnPromise;
@@ -1395,21 +1505,25 @@ export class CodexSessionService {
     const abortedError = new CodexSessionAbortedError();
     const lifecycleSignal = this.lifecycleSignal;
     if (lifecycleSignal == null || lifecycleSignal.aborted) {
-      await this.disableAi(cause, abortedError);
+      await this.disableAi({
+        cause,
+        turnFailure: { kind: "provided", error: abortedError },
+        diagnosticDisposition: { kind: "record" },
+      });
       return;
     }
     this.state = "restarting";
     const cleanupErrors = await this.cleanupConnection();
-    for (const cleanupError of cleanupErrors) {
-      this.recordDiagnostic("connection_stop_error", cleanupError);
-    }
     if (cleanupErrors.length > 0) {
       await this.disableAi(
-        new CodexSessionError(
-          "Codex接続を安全に停止できませんでした。",
-          new AggregateError(cleanupErrors),
-        ),
-        abortedError,
+        {
+          cause: new CodexSessionError(
+            "Codex接続を安全に停止できませんでした。",
+            new AggregateError(cleanupErrors),
+          ),
+          turnFailure: { kind: "provided", error: abortedError },
+          diagnosticDisposition: { kind: "record" },
+        },
       );
       return;
     }
@@ -1430,7 +1544,11 @@ export class CodexSessionService {
       this.state = "ready";
       this.finishTurn(active, abortedError);
     } catch (error: unknown) {
-      await this.disableAi(error, abortedError);
+      await this.disableAi({
+        cause: error,
+        turnFailure: { kind: "provided", error: abortedError },
+        diagnosticDisposition: { kind: "record" },
+      });
     } finally {
       if (this.recoveryAbortController === recoveryController) {
         this.recoveryAbortController = undefined;
@@ -1453,8 +1571,11 @@ export class CodexSessionService {
       const result = await active.connection.interruptTurn(params, controller.signal);
       turnInterruptResultSchema.parse(result);
     } catch (error: unknown) {
-      this.recordDiagnostic("turn_error", error);
-      await this.disableAi(error);
+      this.recordDiagnosticAndNotify("turn_error", error);
+      await this.disableAiAfterReportedTurnError(
+        error,
+        new CodexSessionAbortedError(),
+      );
     }
   }
 
@@ -1520,15 +1641,15 @@ export class CodexSessionService {
   }
 
   /** 接続、taskctl、保留ターンを停止します。 */
-  public stop(): Promise<void> {
+  public stop(disposition: SessionStopDisposition): Promise<void> {
     if (this.stopPromise != null) {
       return this.stopPromise;
     }
-    this.stopPromise = this.stopInternal();
+    this.stopPromise = this.stopInternal(disposition);
     return this.stopPromise;
   }
 
-  private async stopInternal(): Promise<void> {
+  private async stopInternal(disposition: SessionStopDisposition): Promise<void> {
     if (this.state === "stopped") {
       return;
     }
@@ -1542,18 +1663,25 @@ export class CodexSessionService {
     this.recoveryAbortController = undefined;
     const active = this.activeTurn;
     if (active != null) {
-      this.finishTurn(active, new CodexSessionError("Codexセッションを停止しました。"));
+      this.finishTurn(active, new CodexSessionAbortedError());
     }
     const errors = await this.cleanupResources();
     if (errors.length > 0) {
       for (const error of errors) {
-        this.recordDiagnostic("connection_stop_error", error);
+        this.recordDiagnosticLocally("connection_stop_error", error);
+        if (disposition.kind === "record") {
+          this.options.onError(error);
+        }
       }
       this.state = "failed";
-      throw new CodexSessionError(
+      const failure = new CodexSessionError(
         "Codexセッションの停止に失敗しました。",
         new AggregateError(errors),
       );
+      if (disposition.kind === "record") {
+        throw createRecordedSessionFailure(failure, failure);
+      }
+      throw createUnrecordedSessionFailure(failure);
     }
     this.state = "stopped";
   }
@@ -1571,18 +1699,24 @@ export class CodexSessionService {
         throw error;
       }
       this.restartCount += 1;
-      this.recordDiagnostic("restart_started", error);
+      this.recordDiagnosticLocally("restart_started", error);
       const cleanupErrors = await this.cleanupConnection();
-      for (const cleanupError of cleanupErrors) {
-        this.recordDiagnostic("connection_stop_error", cleanupError);
-      }
       try {
         await this.connectAndStartThread(signal);
         this.assertSafetyIntact();
-        this.recordDiagnostic("restart_completed", error);
+        for (const cleanupError of cleanupErrors) {
+          this.recordDiagnosticAndNotify("connection_stop_error", cleanupError);
+        }
+        this.recordDiagnosticLocally("restart_completed", error);
       } catch (retryError: unknown) {
-        await this.disableAi(retryError);
-        throw retryError;
+        if (cleanupErrors.length === 0) {
+          throw retryError;
+        }
+        throw new AggregateError(
+          [retryError, ...cleanupErrors],
+          "Codex接続の再起動と後処理に失敗しました。",
+          { cause: retryError },
+        );
       }
     }
   }
@@ -1653,11 +1787,19 @@ export class CodexSessionService {
         throw error;
       }
       const cleanupErrors = await this.cleanupConnection();
-      for (const cleanupError of cleanupErrors) {
-        this.recordDiagnostic("connection_stop_error", cleanupError);
-      }
       if (this.safetyViolation) {
-        throw createSafetyViolationError(error);
+        throw new AggregateError(
+          [createSafetyViolationError(error), ...cleanupErrors],
+          "Codex接続の安全性検証と後処理に失敗しました。",
+          { cause: error },
+        );
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          "Codex接続の開始と後処理に失敗しました。",
+          { cause: error },
+        );
       }
       throw error;
     }
@@ -1665,9 +1807,6 @@ export class CodexSessionService {
 
   private async restartConnectionForConfigurationChange(signal: AbortSignal): Promise<void> {
     const cleanupErrors = await this.cleanupConnection();
-    for (const cleanupError of cleanupErrors) {
-      this.recordDiagnostic("connection_stop_error", cleanupError);
-    }
     if (cleanupErrors.length > 0) {
       throw new CodexSessionError(
         "Codex接続を安全に停止できませんでした。",
@@ -2213,10 +2352,12 @@ export class CodexSessionService {
       if (notification.sandboxValidation.kind !== "valid") {
         this.markSafetyViolation(
           new CodexThreadStartCapabilityError(notification.sandboxValidation.failureCode),
+          { kind: "record" },
         );
       } else {
         this.markSafetyViolation(
           new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
+          { kind: "record" },
         );
       }
     }
@@ -2276,13 +2417,17 @@ export class CodexSessionService {
   private receiveNotification(notification: CodexNotification): void {
     const parsed = codexNotificationSchema.safeParse(notification);
     if (!parsed.success) {
-      this.recordDiagnostic("connection_protocol_error", parsed.error);
+      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
       if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(parsed.error);
+        this.markSafetyViolation(parsed.error, { kind: "already_recorded" });
       } else {
         const active = this.activeTurn;
         if (active != null) {
-          this.finishTurn(active, new CodexSessionTurnError(parsed.error));
+          const turnError = new CodexSessionTurnError(parsed.error);
+          this.finishTurn(
+            active,
+            createRecordedSessionFailure(parsed.error, turnError),
+          );
         }
       }
       return;
@@ -2290,13 +2435,14 @@ export class CodexSessionService {
     try {
       this.handleNotification(parsed.data);
     } catch (error: unknown) {
-      this.recordDiagnostic("connection_protocol_error", error);
+      this.recordDiagnosticAndNotify("connection_protocol_error", error);
       if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(error);
+        this.markSafetyViolation(error, { kind: "already_recorded" });
       } else {
         const active = this.activeTurn;
         if (active != null) {
-          this.finishTurn(active, new CodexSessionTurnError(error));
+          const turnError = new CodexSessionTurnError(error);
+          this.finishTurn(active, createRecordedSessionFailure(error, turnError));
         }
       }
     }
@@ -2305,9 +2451,9 @@ export class CodexSessionService {
   private receiveDiagnostic(diagnostic: CodexDiagnostic): void {
     const parsed = codexDiagnosticSchema.safeParse(diagnostic);
     if (!parsed.success) {
-      this.recordDiagnostic("connection_protocol_error", parsed.error);
+      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
       if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(parsed.error);
+        this.markSafetyViolation(parsed.error, { kind: "already_recorded" });
       }
       return;
     }
@@ -2317,25 +2463,25 @@ export class CodexSessionService {
   private handleConnectionDiagnostic(diagnostic: CodexDiagnostic): void {
     switch (diagnostic.kind) {
       case "unknown_notification":
-        this.recordDiagnostic("connection_unknown_notification", undefined);
+        this.recordDiagnosticLocally("connection_unknown_notification", undefined);
         break;
       case "server_request_rejected":
-        this.recordDiagnostic("connection_server_request_rejected", undefined);
+        this.recordDiagnosticLocally("connection_server_request_rejected", undefined);
         break;
       case "protocol_error":
-        this.recordDiagnostic("connection_protocol_error", diagnostic.error);
+        this.recordDiagnosticAndNotify("connection_protocol_error", diagnostic.error);
         if (isSafetyCriticalState(this.state)) {
-          this.markSafetyViolation(diagnostic.error);
+          this.markSafetyViolation(diagnostic.error, { kind: "already_recorded" });
         }
         break;
       case "stderr":
-        this.recordDiagnostic("connection_stderr", new Error(diagnostic.line));
+        this.recordDiagnosticAndNotify("connection_stderr", new Error(diagnostic.line));
         break;
       case "listener_error":
-        this.recordDiagnostic("connection_listener_error", diagnostic.error);
+        this.recordDiagnosticAndNotify("connection_listener_error", diagnostic.error);
         break;
       case "stop_error":
-        this.recordDiagnostic("connection_stop_error", diagnostic.error);
+        this.recordDiagnosticAndNotify("connection_stop_error", diagnostic.error);
         break;
       case "process_exit": {
         const processExitError = new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal);
@@ -2358,24 +2504,29 @@ export class CodexSessionService {
     ) {
       return;
     }
-    this.recordDiagnostic("connection_process_exit", processExitError);
+    this.recordDiagnosticAndNotify("connection_process_exit", processExitError);
     const active = this.activeTurn;
     if (active != null) {
-      this.finishTurn(
-        active,
-        processExitError,
-      );
+      this.finishTurn(active, createRecordedSessionFailure(processExitError, processExitError));
     }
     if (this.restartPromise != null) {
       return;
     }
     if (this.restartCount > 0) {
-      void this.disableAi(processExitError);
+      void this.disableAi({
+        cause: processExitError,
+        turnFailure: { kind: "disabled" },
+        diagnosticDisposition: { kind: "already_recorded" },
+      });
       return;
     }
     const signal = this.lifecycleSignal;
     if (signal == null || signal.aborted) {
-      void this.disableAi(processExitError);
+      void this.disableAi({
+        cause: processExitError,
+        turnFailure: { kind: "disabled" },
+        diagnosticDisposition: { kind: "already_recorded" },
+      });
       return;
     }
     this.restartCount += 1;
@@ -2387,16 +2538,16 @@ export class CodexSessionService {
   private async restartConnection(signal: AbortSignal): Promise<void> {
     this.assertSafetyIntact();
     this.state = "restarting";
-    this.recordDiagnostic("restart_started", undefined);
+    this.recordDiagnosticLocally("restart_started", undefined);
     const cleanupErrors = await this.cleanupConnection();
     for (const cleanupError of cleanupErrors) {
-      this.recordDiagnostic("connection_stop_error", cleanupError);
+      this.recordDiagnosticAndNotify("connection_stop_error", cleanupError);
     }
     try {
       await this.connectAndStartThread(signal);
       this.assertSafetyIntact();
       this.state = "ready";
-      this.recordDiagnostic("restart_completed", undefined);
+      this.recordDiagnosticLocally("restart_completed", undefined);
     } catch (error: unknown) {
       if (
         error instanceof CodexSessionAuthenticationError
@@ -2406,7 +2557,11 @@ export class CodexSessionService {
         this.state = "authentication_required";
         return;
       }
-      await this.disableAi(error);
+      await this.disableAi({
+        cause: error,
+        turnFailure: { kind: "disabled" },
+        diagnosticDisposition: { kind: "record" },
+      });
     }
   }
 
@@ -2416,36 +2571,106 @@ export class CodexSessionService {
     }
   }
 
-  private markSafetyViolation(cause: unknown): void {
+  private markSafetyViolation(
+    cause: unknown,
+    disposition: AiDisableDiagnosticDisposition,
+  ): void {
     this.safetyViolation = true;
-    void this.disableAi(createSafetyViolationError(cause));
+    void this.disableAi({
+      cause,
+      turnFailure: {
+        kind: "provided",
+        error: createSafetyViolationError(cause),
+      },
+      diagnosticDisposition: disposition,
+    });
   }
 
-  private disableAi(cause: unknown, activeTurnError?: unknown): Promise<void> {
+  private disableAi(request: AiDisableRequest): Promise<AiDisableResult> {
+    return this.beginAiDisable(request);
+  }
+
+  private disableAiAfterReportedTurnError(
+    cause: unknown,
+    turnError: unknown,
+  ): Promise<AiDisableResult> {
+    return this.beginAiDisable({
+      cause,
+      turnFailure: { kind: "provided", error: turnError },
+      diagnosticDisposition: { kind: "already_recorded" },
+    });
+  }
+
+  private beginAiDisable(request: AiDisableRequest): Promise<AiDisableResult> {
     if (this.disablePromise != null) {
       return this.disablePromise;
     }
     if (this.state === "stopping" || this.state === "stopped") {
-      return Promise.resolve();
+      return Promise.resolve({ kind: "completed" });
     }
     if (this.state === "disabled") {
-      return Promise.resolve();
+      return Promise.resolve({ kind: "completed" });
     }
-    this.disablePromise = this.disableAiInternal(cause, activeTurnError);
+    this.disablePromise = this.disableAiInternal(request);
     return this.disablePromise;
   }
 
-  private async disableAiInternal(cause: unknown, activeTurnError?: unknown): Promise<void> {
+  private async disableAiInternal(request: AiDisableRequest): Promise<AiDisableResult> {
     this.state = "disabled";
-    this.recordDiagnostic("ai_disabled", cause);
-    const active = this.activeTurn;
-    if (active != null) {
-      this.finishTurn(active, activeTurnError ?? new CodexSessionDisabledError(cause));
+    if (request.diagnosticDisposition.kind === "record") {
+      this.recordDiagnosticAndNotify("ai_disabled", request.cause);
+    } else {
+      this.recordDiagnosticLocally("ai_disabled", request.cause);
     }
     const cleanupErrors = await this.cleanupResources();
-    for (const cleanupError of cleanupErrors) {
-      this.recordDiagnostic("connection_stop_error", cleanupError);
+    const cleanupDispositions: DiagnosticFailureDisposition[] = cleanupErrors.map(
+      (error): DiagnosticFailureDisposition => {
+        if (request.diagnosticDisposition.kind !== "propagate_unrecorded") {
+          this.recordDiagnosticAndNotify("connection_stop_error", error);
+          return {
+            kind: "recorded_only",
+            recorded_error: error,
+            response_error: error,
+          };
+        }
+        this.recordDiagnosticLocally("connection_stop_error", error);
+        return {
+          kind: "unrecorded_only",
+          unrecorded_error: error,
+          response_error: error,
+        };
+      },
+    );
+    const turnError = request.turnFailure.kind === "provided"
+      ? request.turnFailure.error
+      : new CodexSessionDisabledError(request.cause);
+    const causeDisposition: DiagnosticFailureDisposition = request.diagnosticDisposition.kind === "propagate_unrecorded"
+      ? {
+          kind: "unrecorded_only",
+          unrecorded_error: request.cause,
+          response_error: turnError,
+        }
+      : {
+          kind: "recorded_only",
+          recorded_error: request.cause,
+          response_error: turnError,
+        };
+    const active = this.activeTurn;
+    if (active != null) {
+      this.finishTurn(
+        active,
+        new DiagnosticFailureDispositionError(
+          combineDiagnosticFailureDispositions(
+            causeDisposition,
+            cleanupDispositions,
+          ),
+        ),
+      );
     }
+    if (cleanupErrors.length > 0) {
+      return { kind: "cleanup_failed", errors: cleanupErrors };
+    }
+    return { kind: "completed" };
   }
 
   private handleNotification(notification: CodexNotification): void {
@@ -2473,10 +2698,12 @@ export class CodexSessionService {
         if (sandboxValidation.kind !== "valid") {
           this.markSafetyViolation(
             new CodexThreadStartCapabilityError(sandboxValidation.failureCode),
+            { kind: "record" },
           );
         } else {
           this.markSafetyViolation(
             new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
+            { kind: "record" },
           );
         }
       }
@@ -2576,8 +2803,8 @@ export class CodexSessionService {
     }
     if (active.completion.status !== "completed") {
       const error = new CodexSessionTurnError(active.completion.error);
-      this.recordDiagnostic("turn_error", error);
-      this.finishTurn(active, error);
+      this.recordDiagnosticLocally("turn_error", error);
+      this.finishTurn(active, createUnrecordedSessionFailure(error));
       return;
     }
     const finalItem = active.finalItem;
@@ -2585,7 +2812,7 @@ export class CodexSessionService {
       const error = new CodexSessionOutputValidationError(
         new Error("最終agentMessageがありません。"),
       );
-      this.recordDiagnostic("output_validation_error", error);
+      this.recordDiagnosticLocally("output_validation_error", error);
       this.finishTurn(active, error);
       return;
     }
@@ -2593,7 +2820,7 @@ export class CodexSessionService {
     try {
       response = parseStructuredOutput(finalItem.text);
     } catch (error: unknown) {
-      this.recordDiagnostic("output_validation_error", error);
+      this.recordDiagnosticLocally("output_validation_error", error);
       this.finishTurn(active, error);
       return;
     }
@@ -2609,7 +2836,7 @@ export class CodexSessionService {
   private emitDelta(delta: CodexSessionDelta): void {
     const parsed = codexSessionDeltaSchema.safeParse(delta);
     if (!parsed.success) {
-      this.recordDiagnostic("connection_protocol_error", parsed.error);
+      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
       return;
     }
     for (const listener of this.deltaListeners) {
@@ -2617,11 +2844,11 @@ export class CodexSessionService {
         const result = listener(parsed.data);
         if (result != null) {
           void Promise.resolve(result).catch((error: unknown) => {
-            this.recordDiagnostic("listener_error", error);
+            this.recordDiagnosticAndNotify("listener_error", error);
           });
         }
       } catch (error: unknown) {
-        this.recordDiagnostic("listener_error", error);
+        this.recordDiagnosticAndNotify("listener_error", error);
       }
     }
   }
@@ -2699,7 +2926,7 @@ export class CodexSessionService {
     return errors;
   }
 
-  private recordDiagnostic(
+  private recordDiagnosticLocally(
     code: CodexSessionDiagnostic["code"],
     cause: unknown,
   ): void {
@@ -2707,14 +2934,14 @@ export class CodexSessionService {
       this.diagnostics.shift();
     }
     this.diagnostics.push({ code, cause });
-    if (
-      code !== "connection_unknown_notification"
-      && code !== "connection_server_request_rejected"
-      && code !== "restart_started"
-      && code !== "restart_completed"
-    ) {
-      this.options.onError(cause);
-    }
+  }
+
+  private recordDiagnosticAndNotify(
+    code: CodexSessionDiagnostic["code"],
+    cause: unknown,
+  ): void {
+    this.recordDiagnosticLocally(code, cause);
+    this.options.onError(cause);
   }
 
 }

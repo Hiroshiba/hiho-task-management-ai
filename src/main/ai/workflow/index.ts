@@ -37,3 +37,8 @@ export {
   AiWorkflowStateError,
   AiWorkflowSyncError,
 } from "./errors";
+export {
+  AiWorkflowRetryLogEventError,
+  aiWorkflowRetryLogEventSchema,
+  type AiWorkflowRetryLogEvent,
+} from "./retry";

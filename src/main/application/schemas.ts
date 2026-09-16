@@ -9,6 +9,7 @@ import {
   type SetupState,
 } from "../../shared/setup";
 import { identifierSchema } from "../../shared/domain";
+import type { DiagnosticRecord } from "./diagnostics";
 
 const applicationPathSchema = z
   .string()
@@ -85,7 +86,6 @@ const applicationOptionsSchema = z
     open_codex_authorization_url: functionSchema,
     open_obsidian_url: functionSchema,
     open_path: functionSchema,
-    notify_unexpected_error: functionSchema,
     diagnostic: functionSchema,
     open_external_agent_review: functionSchema,
   })
@@ -111,8 +111,11 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
     absolutePath: string,
     signal: AbortSignal,
   ) => Promise<void> | void;
-  readonly notify_unexpected_error: (error: unknown) => void;
-  readonly diagnostic: (error: unknown, channel: string) => void;
+  readonly diagnostic: (
+    error: unknown,
+    channel: string,
+    severity: DiagnosticRecord["severity"],
+  ) => void;
   readonly open_external_agent_review: () => Promise<void> | void;
 };
 

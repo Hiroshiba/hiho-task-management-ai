@@ -17,7 +17,15 @@ import { isAbsolute, join, resolve } from "node:path";
 import { inspect } from "node:util";
 import { z } from "zod";
 import { isoDateTimeSchema } from "../shared/domain";
-import { diagnosticCodeSchema } from "../shared/storage";
+import {
+  diagnosticCodeSchema,
+  diagnosticLogEntrySchema,
+} from "../shared/storage";
+import {
+  AiWorkflowRetryLogEventError,
+  aiWorkflowRetryLogEventSchema,
+  type AiWorkflowRetryLogEvent,
+} from "./ai/workflow/retry";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import {
   CodexRpcError,
@@ -198,6 +206,7 @@ type ErrorDetail = {
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
   rpc_message?: string | undefined;
+  retry_event?: AiWorkflowRetryLogEvent | undefined;
 };
 
 const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
@@ -214,6 +223,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
       rpc_message: z.string().optional(),
+      retry_event: aiWorkflowRetryLogEventSchema.optional(),
     })
     .strict(),
 );
@@ -221,6 +231,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
 const persistentErrorLogRecordSchema = z
   .object({
     occurred_at: isoDateTimeSchema,
+    severity: diagnosticLogEntrySchema.shape.severity,
     source: persistentErrorLogSourceSchema,
     diagnostic_code: diagnosticCodeSchema,
     context: persistentErrorLogContextSchema,
@@ -343,6 +354,17 @@ function getCodexRpcDetail(value: unknown): CodexRpcDetail {
     rpc_operation: codexRpcOperationSchema.parse(value.operation),
     rpc_code: codexRpcCodeSchema.parse(value.rpcCode),
     rpc_message: redactSensitiveText(codexRpcMessageSchema.parse(value.rpcMessage)),
+  };
+}
+
+function getAiWorkflowRetryEventDetail(
+  value: unknown,
+): Pick<ErrorDetail, "retry_event"> {
+  if (!(value instanceof AiWorkflowRetryLogEventError)) {
+    return {};
+  }
+  return {
+    retry_event: aiWorkflowRetryLogEventSchema.parse(value.event),
   };
 }
 
@@ -474,6 +496,7 @@ function createErrorDetail(
       ...getSafeCodexTurnFailureDetail(value),
       ...getSafeCodexThreadStartCapabilityDetail(value),
       ...getCodexRpcDetail(value),
+      ...getAiWorkflowRetryEventDetail(value),
     };
 
     if (value instanceof Error && Object.prototype.hasOwnProperty.call(value, "cause")) {
@@ -573,7 +596,7 @@ function restoreAppendStart(
   throw normalizeThrownError(appendError, "永続エラーログの書き込みに失敗しました。");
 }
 
-/** 開発者向けのエラーを再起動後も確認できるJSONLログへ保存します。 */
+/** エラー詳細と安全な訂正再試行イベントをJSONLログへ保存します。 */
 export class PersistentErrorLog {
   private readonly logsPath: string;
   private readonly errorLogPath: string;
@@ -590,19 +613,21 @@ export class PersistentErrorLog {
     }
   }
 
-  /** 元エラーの本文とスタックトレースを記録します。 */
+  /** エラー詳細と安全な訂正再試行イベントを記録します。 */
   public record(
     source: PersistentErrorLogSource,
     diagnosticCode: DiagnosticRecord["code"],
     context: PersistentErrorLogContext,
+    severity: DiagnosticRecord["severity"],
     error: unknown,
   ): void {
     if (this.writing) {
       writePersistentErrorLogFailure(
-        {
-          "元エラー": error,
-          "書き込みエラー": new Error("永続エラーログの記録中に再入しました。"),
-        },
+        new AggregateError(
+          [error, new Error("永続エラーログの記録中に再入しました。")],
+          "永続エラーログの記録中に再入しました。",
+          { cause: error },
+        ),
       );
       return;
     }
@@ -610,6 +635,7 @@ export class PersistentErrorLog {
     try {
       const record = persistentErrorLogRecordSchema.parse({
         occurred_at: new Date().toISOString(),
+        severity,
         source,
         diagnostic_code: diagnosticCode,
         context,
@@ -617,10 +643,13 @@ export class PersistentErrorLog {
       });
       this.writeRecord(record);
     } catch (writeError) {
-      writePersistentErrorLogFailure({
-        "元エラー": error,
-        "書き込みエラー": writeError,
-      });
+      writePersistentErrorLogFailure(
+        new AggregateError(
+          [error, writeError],
+          "永続エラーログの保存に失敗しました。",
+          { cause: error },
+        ),
+      );
     } finally {
       this.writing = false;
     }

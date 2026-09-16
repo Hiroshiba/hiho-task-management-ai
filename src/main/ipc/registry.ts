@@ -5,6 +5,7 @@ import type {
   WebContents,
 } from "electron";
 import { z } from "zod";
+import { DiagnosticFailureDispositionError } from "../diagnostic-failure";
 import {
   assertTrustedIpcSender,
   isApplicationUrl,
@@ -1236,6 +1237,36 @@ export class IpcHandlerRegistry {
       } catch (error: unknown) {
         if (error instanceof IpcCapabilityUnavailableError) {
           return responseSchema.parse(this.createFailure("not_configured"));
+        }
+        if (error instanceof DiagnosticFailureDispositionError) {
+          switch (error.disposition.kind) {
+            case "recorded_only":
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(error.disposition.response_error),
+                ),
+              );
+            case "unrecorded_only":
+              this.options.diagnostic.record(
+                error.disposition.unrecorded_error,
+                channel,
+              );
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(error.disposition.response_error),
+                ),
+              );
+            case "recorded_and_unrecorded":
+              this.options.diagnostic.record(
+                error.disposition.unrecorded_error,
+                channel,
+              );
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(error.disposition.response_error),
+                ),
+              );
+          }
         }
         if (
           error instanceof StartupGateNotReadyError

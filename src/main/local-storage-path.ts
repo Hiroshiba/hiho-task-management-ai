@@ -91,6 +91,14 @@ export type SecurePersistentFileRemovalResult =
     }
   | { readonly kind: "identity_removed_boundary_violation"; readonly error: unknown };
 
+/** サイズ上限を持つ永続ファイルの読み込み上限を超えたことを表します。 */
+export class SecurePersistentFileSizeLimitError extends Error {
+  public constructor(label: string) {
+    super(`${label}がサイズ上限を超えています。`);
+    this.name = "SecurePersistentFileSizeLimitError";
+  }
+}
+
 type SecureDirectorySnapshot = {
   readonly device: bigint;
   readonly inode: bigint;
@@ -851,7 +859,7 @@ function assertPersistentTextFileReadSize(
     readLimit.kind === "bounded"
     && stats.size > BigInt(readLimit.maximumBytes)
   ) {
-    throw new Error(`${label}がサイズ上限を超えています。`);
+    throw new SecurePersistentFileSizeLimitError(label);
   }
 }
 
@@ -877,11 +885,12 @@ function readPersistentTextFileAtMost(
   return buffer.subarray(0, bytesRead);
 }
 
-function readSecurePersistentTextFileInternal(
+function readSecurePersistentFileInternal<Result>(
   filePath: string,
   label: string,
   readLimit: PersistentTextFileReadLimit,
-): string | undefined {
+  decode: (buffer: Buffer) => Result,
+): Result | undefined {
   const normalizedPath = normalizeSecurePersistentFilePath(filePath);
   const validatedLabel = validateLabel(label);
   const parentPath = dirname(normalizedPath);
@@ -932,10 +941,7 @@ function readSecurePersistentTextFileInternal(
       ) {
         throw new Error(`${validatedLabel}が読み取り中に変化しました。`);
       }
-      if (readLimit.kind === "bounded") {
-        return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-      }
-      return buffer.toString("utf8");
+      return decode(buffer);
     },
     `${validatedLabel}の読み取りとファイル終了に失敗しました。`,
   );
@@ -948,9 +954,12 @@ export function readSecurePersistentTextFile(
   filePath: string,
   label: string,
 ): string | undefined {
-  return readSecurePersistentTextFileInternal(filePath, label, {
-    kind: "unbounded",
-  });
+  return readSecurePersistentFileInternal(
+    filePath,
+    label,
+    { kind: "unbounded" },
+    (buffer) => buffer.toString("utf8"),
+  );
 }
 
 /** 永続保存テキストを指定サイズ以下で検証済みファイルハンドルから読み取ります。 */
@@ -960,10 +969,27 @@ export function readSecurePersistentTextFileWithByteLimit(
   maximumBytes: number,
 ): string | undefined {
   const validatedMaximumBytes = persistentTextFileReadLimitSchema.parse(maximumBytes);
-  return readSecurePersistentTextFileInternal(filePath, label, {
-    kind: "bounded",
-    maximumBytes: validatedMaximumBytes,
-  });
+  return readSecurePersistentFileInternal(
+    filePath,
+    label,
+    { kind: "bounded", maximumBytes: validatedMaximumBytes },
+    (buffer) => new TextDecoder("utf-8", { fatal: true }).decode(buffer),
+  );
+}
+
+/** 永続保存ファイルを上限付きで検証済みファイルハンドルから読み取ります。 */
+export function readSecurePersistentFileBytesWithByteLimit(
+  filePath: string,
+  label: string,
+  maximumBytes: number,
+): Buffer | undefined {
+  const validatedMaximumBytes = persistentTextFileReadLimitSchema.parse(maximumBytes);
+  return readSecurePersistentFileInternal(
+    filePath,
+    label,
+    { kind: "bounded", maximumBytes: validatedMaximumBytes },
+    (buffer) => buffer,
+  );
 }
 
 /** 永続保存テキストを0600の一時ファイルから原子的に保存し、保存先の実体を返します。 */

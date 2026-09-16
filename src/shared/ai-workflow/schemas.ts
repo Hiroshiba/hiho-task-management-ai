@@ -413,7 +413,7 @@ const workflowProposalTurnSchema = z
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
     proposal: proposalViewSchema,
-    retry_count: z.number().int().nonnegative().max(1),
+    retry_count: z.number().int().nonnegative().max(2),
   })
   .strict();
 
@@ -423,7 +423,7 @@ const workflowNoProposalTurnSchema = z
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
     pending_proposal_action: z.enum(["keep", "discard"]),
-    retry_count: z.number().int().nonnegative().max(1),
+    retry_count: z.number().int().nonnegative().max(2),
   })
   .strict();
 
