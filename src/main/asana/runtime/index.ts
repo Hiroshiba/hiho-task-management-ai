@@ -4,6 +4,7 @@ export {
   type AsanaSyncRuntimeStateListener,
   type AsanaSyncRuntimeUnexpectedErrorNotifier,
 } from "./service";
+export { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 export {
   asanaSyncRuntimeConfigurationSchema,
   asanaSyncRuntimeErrorCodeSchema,

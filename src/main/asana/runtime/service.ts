@@ -22,6 +22,7 @@ import {
 import { StorageDatabase } from "../../storage";
 import { isoDateTimeSchema } from "../../../shared/domain";
 import { syncStateSchema } from "../../../shared/storage";
+import { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 import {
   asanaSyncRuntimeConfigurationSchema,
   asanaSyncRuntimeResultSchema,
@@ -62,6 +63,32 @@ type Deferred<T> = {
   readonly resolve: (value: T) => void;
   readonly reject: (reason: unknown) => void;
 };
+type SyncRunIntent = "automatic" | "full";
+type SyncRunBase = {
+  readonly generation: number;
+  readonly deferred: Deferred<AsanaSyncRuntimeInternalResult>;
+  readonly promise: Promise<AsanaSyncRuntimeInternalResult>;
+  readonly cycleController: AbortController;
+  readonly owner: AsanaOperationPriority;
+  readonly intent: SyncRunIntent;
+  readonly mode: AsanaSyncRuntimeSynchronizationMode | undefined;
+  readonly pendingMode: AsanaSyncRuntimeSynchronizationMode | undefined;
+};
+type QueuedSyncRun = SyncRunBase & {
+  readonly phase: "queued";
+  readonly pendingMode: undefined;
+};
+type PreflightingSyncRun = SyncRunBase & {
+  readonly phase: "preflighting";
+};
+type RunningSyncRun = SyncRunBase & {
+  readonly phase: "running";
+  readonly mode: AsanaSyncRuntimeSynchronizationMode;
+};
+type SyncRunState =
+  | QueuedSyncRun
+  | PreflightingSyncRun
+  | RunningSyncRun;
 
 function createDeferred<T>(): Deferred<T> {
   let resolveValue: ((value: T) => void) | undefined;
@@ -107,14 +134,17 @@ function validateFunction(value: unknown, message: string): void {
   }
 }
 
-function mergePendingModes(
-  first: AsanaSyncRuntimeSynchronizationMode,
-  second: AsanaSyncRuntimeSynchronizationMode,
-): AsanaSyncRuntimeSynchronizationMode {
+function mergeRequestedModes(
+  first: AsanaSyncRuntimeSynchronizationMode | undefined,
+  second: AsanaSyncRuntimeSynchronizationMode | undefined,
+): AsanaSyncRuntimeSynchronizationMode | undefined {
   if (first === "full" || second === "full") {
     return "full";
   }
-  return "delta";
+  if (first === "delta" || second === "delta") {
+    return "delta";
+  }
+  return undefined;
 }
 
 function classifyKnownError(error: unknown): AsanaSyncRuntimeErrorCode | undefined {
@@ -230,13 +260,8 @@ export class AsanaSyncRuntime {
     this.handleLifecycleAbort();
   };
   private activeRunController: AbortController | undefined;
-  private scheduledRunController: AbortController | undefined;
-  private scheduled: Promise<AsanaSyncRuntimeInternalResult> | undefined;
+  private scheduledRun: SyncRunState | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private pendingMode: AsanaSyncRuntimeSynchronizationMode | undefined;
-  private runningMode: AsanaSyncRuntimeSynchronizationMode | undefined;
-  private scheduledMode: AsanaSyncRuntimeSynchronizationMode | undefined;
-  private scheduledPriority: AsanaOperationPriority | undefined;
   private runGeneration = 0;
   private activeRunGeneration: number | undefined;
   private connectionState: RuntimeConnectionState;
@@ -351,8 +376,7 @@ export class AsanaSyncRuntime {
       }
       this.connectionState = { kind: "offline" };
       this.clearTimer();
-      this.pendingMode = undefined;
-      this.scheduledRunController?.abort();
+      this.scheduledRun?.cycleController.abort();
       this.activeRunController?.abort();
       this.operationQueue.abortActive();
       this.operationQueue.invalidatePendingMutations("offline");
@@ -374,8 +398,7 @@ export class AsanaSyncRuntime {
       this.connectionState = { kind: "recovery_pending" };
     }
     this.clearTimer();
-    this.pendingMode = undefined;
-    this.scheduledRunController?.abort();
+    this.scheduledRun?.cycleController.abort();
     this.activeRunController?.abort();
     this.operationQueue.abortActive();
     this.operationQueue.invalidatePendingMutations("offline");
@@ -415,10 +438,9 @@ export class AsanaSyncRuntime {
     if (!this.stopped) {
       this.stopped = true;
       this.connectionState = { kind: "offline" };
-      this.pendingMode = undefined;
       this.clearTimer();
       this.stopController.abort();
-      this.scheduledRunController?.abort();
+      this.scheduledRun?.cycleController.abort();
       this.activeRunController?.abort();
       this.publishState(this.createOfflineState());
       this.lifecycleSignal.removeEventListener(
@@ -426,9 +448,9 @@ export class AsanaSyncRuntime {
         this.lifecycleAbortListener,
       );
     }
-    const scheduled = this.scheduled;
-    if (scheduled != null) {
-      await scheduled;
+    const scheduledRun = this.scheduledRun;
+    if (scheduledRun != null) {
+      await scheduledRun.promise;
     }
   }
 
@@ -446,9 +468,14 @@ export class AsanaSyncRuntime {
       return createAbortResult();
     }
     try {
-      return await this.operationQueue.runOwned(signal, (context) =>
-        this.execute("delta", requiredTaskGids, context.signal),
-      );
+      return await this.operationQueue.runOwned(signal, async (context) => {
+        const readiness = await this.preflightSynchronization(context.signal);
+        if (readiness.kind === "unavailable") {
+          this.operationQueue.invalidatePendingMutations("synchronization_failed");
+          return readiness.result;
+        }
+        return this.execute("delta", requiredTaskGids, context.signal);
+      });
     } catch (error: unknown) {
       if (error instanceof AsanaRequestAbortedError) {
         this.operationQueue.invalidatePendingMutations("synchronization_failed");
@@ -471,15 +498,15 @@ export class AsanaSyncRuntime {
     if (this.stopped) {
       return createRejectedResult("stopped");
     }
-    const readiness = await this.ensureOnline(signal);
-    if (readiness.kind === "unavailable") {
-      return readiness.result;
+    if (this.connectionState.kind === "offline") {
+      return createRejectedResult("offline");
     }
-    const mode = forceFull ? "full" : this.selectMode();
-    return this.requestMode(mode, signal, priority);
+    const intent = forceFull ? "full" : "automatic";
+    const mode = forceFull ? "full" : undefined;
+    return this.requestMode(mode, intent, signal, priority);
   }
 
-  private async ensureOnline(signal: AbortSignal): Promise<OnlineReadiness> {
+  private ensureOnline(signal: AbortSignal): OnlineReadiness {
     validateAbortSignal(signal);
     if (signal.aborted) {
       return { kind: "unavailable", result: createAbortResult() };
@@ -493,15 +520,30 @@ export class AsanaSyncRuntime {
     if (this.connectionState.kind === "offline") {
       return { kind: "unavailable", result: createRejectedResult("offline") };
     }
+    return { kind: "ready" };
+  }
+
+  private async preflightSynchronization(
+    signal: AbortSignal,
+  ): Promise<OnlineReadiness> {
+    const readiness = this.ensureOnline(signal);
+    if (readiness.kind === "unavailable") {
+      return readiness;
+    }
     try {
       await this.beforeSynchronization(signal);
     } catch (error: unknown) {
-      if (signal.aborted) {
+      if (signal.aborted || error instanceof AsanaRequestAbortedError) {
+        this.operationQueue.invalidatePendingMutations("synchronization_failed");
+        this.recordAbortState();
         return { kind: "unavailable", result: createAbortResult() };
       }
+      this.operationQueue.invalidatePendingMutations("synchronization_failed");
       throw error;
     }
     if (signal.aborted) {
+      this.operationQueue.invalidatePendingMutations("synchronization_failed");
+      this.recordAbortState();
       return { kind: "unavailable", result: createAbortResult() };
     }
     if (this.stopped) {
@@ -549,7 +591,8 @@ export class AsanaSyncRuntime {
   }
 
   private requestMode(
-    mode: AsanaSyncRuntimeSynchronizationMode,
+    mode: AsanaSyncRuntimeSynchronizationMode | undefined,
+    intent: SyncRunIntent,
     signal: AbortSignal,
     priority: AsanaOperationPriority,
   ): Promise<AsanaSyncRuntimeInternalResult> {
@@ -557,91 +600,137 @@ export class AsanaSyncRuntime {
     if (signal.aborted) {
       return Promise.resolve(createAbortResult());
     }
-    const scheduled = this.scheduled;
-    if (scheduled != null) {
+    const scheduledRun = this.scheduledRun;
+    if (scheduledRun != null) {
       if (
-        priority === "user"
-        && this.scheduledPriority === "background"
-        && this.activeRunController == null
+        scheduledRun.phase === "queued"
+        && scheduledRun.owner === "background"
+        && priority === "user"
       ) {
-        const promotedMode = this.scheduledMode;
-        if (promotedMode == null) {
-          throw new Error("昇格対象の同期モードがありません。");
+        const promotedMode = mergeRequestedModes(scheduledRun.mode, mode);
+        const promotedIntent = scheduledRun.intent === "full" || intent === "full"
+          ? "full"
+          : "automatic";
+        scheduledRun.cycleController.abort();
+        if (this.scheduledRun?.generation === scheduledRun.generation) {
+          this.scheduledRun = undefined;
         }
-        this.scheduledRunController?.abort();
-        this.scheduled = undefined;
-        this.scheduledRunController = undefined;
-        this.scheduledMode = undefined;
-        this.scheduledPriority = undefined;
-        this.pendingMode = undefined;
-        return this.requestMode(
-          mergePendingModes(promotedMode, mode),
-          signal,
-          priority,
-        );
+        return this.scheduleRun(promotedMode, promotedIntent, signal, priority);
       }
-      const operationAborted = this.activeRunController == null
-        ? this.scheduledRunController?.signal.aborted === true
-        : this.activeRunController.signal.aborted;
-      if (operationAborted) {
-        this.pendingMode = this.pendingMode == null
-          ? mode
-          : mergePendingModes(this.pendingMode, mode);
-      } else if (
-        (this.runningMode === "delta" || this.scheduledMode === "delta")
-        && mode === "full"
-      ) {
-        this.pendingMode = "full";
+      const mergedIntent = scheduledRun.intent === "full" || intent === "full"
+        ? "full"
+        : "automatic";
+      let updatedRun: SyncRunState;
+      if (scheduledRun.phase === "queued") {
+        updatedRun = {
+          ...scheduledRun,
+          intent: mergedIntent,
+          mode: mergeRequestedModes(scheduledRun.mode, mode),
+          pendingMode: undefined,
+        };
+      } else if (scheduledRun.phase === "preflighting") {
+        const updatedMode = mode === "full" && scheduledRun.mode == null
+          ? "full"
+          : scheduledRun.mode;
+        updatedRun = {
+          ...scheduledRun,
+          intent: mergedIntent,
+          mode: updatedMode,
+          pendingMode: mode === "full" && scheduledRun.mode === "delta"
+            ? "full"
+            : scheduledRun.pendingMode,
+        };
+      } else {
+        updatedRun = {
+          ...scheduledRun,
+          intent: mergedIntent,
+          pendingMode: mode === "full" && scheduledRun.mode === "delta"
+            ? "full"
+            : scheduledRun.pendingMode,
+        };
       }
-      return this.waitForCaller(scheduled, signal);
+      this.scheduledRun = updatedRun;
+      return this.waitForCaller(scheduledRun.promise, signal);
     }
+    return this.scheduleRun(mode, intent, signal, priority);
+  }
+
+  private scheduleRun(
+    mode: AsanaSyncRuntimeSynchronizationMode | undefined,
+    intent: SyncRunIntent,
+    signal: AbortSignal,
+    owner: AsanaOperationPriority,
+  ): Promise<AsanaSyncRuntimeInternalResult> {
     this.clearTimer();
-    const generation = this.runGeneration + 1;
-    this.runGeneration = generation;
-    this.scheduledMode = mode;
-    this.pendingMode = undefined;
+    this.runGeneration += 1;
+    const generation = this.runGeneration;
     const deferred = createDeferred<AsanaSyncRuntimeInternalResult>();
     const cycleController = new AbortController();
-    this.scheduledRunController = cycleController;
-    this.scheduled = deferred.promise;
-    this.scheduledPriority = priority;
+    const scheduledRun: QueuedSyncRun = {
+      phase: "queued",
+      generation,
+      deferred,
+      promise: deferred.promise,
+      cycleController,
+      owner,
+      intent,
+      mode,
+      pendingMode: undefined,
+    };
+    this.scheduledRun = scheduledRun;
     const queuedSignal = createCombinedSignal([
       this.lifecycleSignal,
       this.stopController.signal,
       cycleController.signal,
     ]);
     const queued = this.operationQueue.enqueue({
-      priority,
+      priority: owner,
       kind: "synchronization",
       signal: queuedSignal,
-      run: (context) => {
-        const drained = this.drain(
-          this.scheduledMode ?? mode,
-          context.signal,
-          generation,
-        );
-        return drained;
-      },
+      run: (context) => this.drain(generation, context.signal),
     });
-    queued.then(
-      (result) => deferred.resolve(result),
-      (error: unknown) => {
-        if (error instanceof AsanaRequestAbortedError) {
-          deferred.resolve(createAbortResult());
-        } else {
-          deferred.reject(error);
-        }
-        if (this.scheduled === deferred.promise) {
-          this.scheduled = undefined;
-          this.scheduledRunController = undefined;
-          this.scheduledMode = undefined;
-          this.scheduledPriority = undefined;
-          this.pendingMode = undefined;
-          this.armTimer();
-        }
-      },
+    void queued.then(
+      (result) => this.completeRun(scheduledRun, result),
+      (error: unknown) => this.rejectRun(scheduledRun, error),
     );
     return this.waitForCaller(deferred.promise, signal);
+  }
+
+  private completeRun(
+    run: SyncRunBase,
+    result: AsanaSyncRuntimeInternalResult,
+  ): void {
+    if (this.scheduledRun?.generation === run.generation) {
+      this.scheduledRun = undefined;
+    }
+    run.deferred.resolve(result);
+    this.armTimer();
+  }
+
+  private rejectRun(run: SyncRunBase, error: unknown): void {
+    if (error instanceof AsanaRequestAbortedError) {
+      run.deferred.resolve(createAbortResult());
+    } else if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+      run.deferred.reject(error);
+    } else if (run.owner === "background") {
+      let rejection: unknown = error;
+      try {
+        this.notifyUnexpectedError(error);
+      } catch (diagnosticError: unknown) {
+        rejection = new AggregateError(
+          [error, diagnosticError],
+          "バックグラウンド同期エラーの記録に失敗しました。",
+          { cause: error },
+        );
+      }
+      run.deferred.reject(new AsanaSyncRuntimeAlreadyReportedError(rejection));
+    } else {
+      run.deferred.reject(error);
+    }
+    if (this.scheduledRun?.generation === run.generation) {
+      this.scheduledRun = undefined;
+    }
+    this.armTimer();
   }
 
   private waitForCaller(
@@ -692,13 +781,60 @@ export class AsanaSyncRuntime {
   }
 
   private async drain(
-    initialMode: AsanaSyncRuntimeSynchronizationMode,
-    sharedSignal: AbortSignal,
     generation: number,
+    sharedSignal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
-    let mode = initialMode;
+    const queuedRun = this.scheduledRun;
+    if (queuedRun == null || queuedRun.generation !== generation) {
+      throw new Error("同期キューの実行状態が一致しません。");
+    }
+    if (queuedRun.phase !== "queued") {
+      throw new Error("同期キューの開始状態が不正です。");
+    }
+    const preflightingRun: PreflightingSyncRun = {
+      ...queuedRun,
+      phase: "preflighting",
+      pendingMode: undefined,
+    };
+    this.scheduledRun = preflightingRun;
     this.activeRunGeneration = generation;
     try {
+      const selectedRun = this.scheduledRun;
+      if (
+        selectedRun == null
+        || selectedRun.generation !== generation
+        || selectedRun.phase !== "preflighting"
+      ) {
+        throw new Error("同期モード選択前の実行状態が一致しません。");
+      }
+      const selectedMode = selectedRun.mode
+        ?? (selectedRun.intent === "full" ? "full" : this.selectMode());
+      const modeSelectedRun: PreflightingSyncRun = {
+        ...selectedRun,
+        mode: selectedMode,
+      };
+      this.scheduledRun = modeSelectedRun;
+      const readiness = await this.preflightSynchronization(sharedSignal);
+      if (readiness.kind === "unavailable") {
+        return readiness.result;
+      }
+      const currentRun = this.scheduledRun;
+      const currentMode = currentRun?.mode;
+      if (
+        currentRun == null
+        || currentRun.generation !== generation
+        || currentRun.phase !== "preflighting"
+        || currentMode == null
+      ) {
+        throw new Error("同期前処理の実行状態が一致しません。");
+      }
+      let runningRun: RunningSyncRun = {
+        ...currentRun,
+        phase: "running",
+        mode: currentMode,
+      };
+      this.scheduledRun = runningRun;
+      let mode = runningRun.mode;
       while (true) {
         const operationController = new AbortController();
         this.activeRunController = operationController;
@@ -710,29 +846,43 @@ export class AsanaSyncRuntime {
           operationSignal,
           sharedSignal,
         );
-        this.runningMode = mode;
         let result: AsanaSyncRuntimeInternalResult;
         try {
           result = await this.execute(mode, [], operationSignal);
         } finally {
           removeOwnedSignal();
+          if (this.activeRunGeneration === generation) {
+            this.activeRunController = undefined;
+          }
         }
         if (
           result.kind === "aborted"
           || result.kind === "failed"
           || result.kind === "rejected"
         ) {
-          this.pendingMode = undefined;
           return result;
         }
         if (this.connectionState.kind !== "online" || this.stopped) {
-          this.pendingMode = undefined;
           return result;
         }
-        const pendingMode = this.pendingMode;
-        this.pendingMode = undefined;
+        const latestRun = this.scheduledRun;
+        if (
+          latestRun == null
+          || latestRun.generation !== generation
+          || latestRun.phase !== "running"
+        ) {
+          throw new Error("同期実行状態が一致しません。");
+        }
+        runningRun = latestRun;
+        const pendingMode = runningRun.pendingMode;
         if (pendingMode != null) {
           mode = pendingMode;
+          runningRun = {
+            ...runningRun,
+            mode,
+            pendingMode: undefined,
+          };
+          this.scheduledRun = runningRun;
           continue;
         }
         return result;
@@ -741,12 +891,6 @@ export class AsanaSyncRuntime {
       if (this.activeRunGeneration === generation) {
         this.activeRunController = undefined;
         this.activeRunGeneration = undefined;
-        this.runningMode = undefined;
-        this.scheduled = undefined;
-        this.scheduledRunController = undefined;
-        this.scheduledMode = undefined;
-        this.scheduledPriority = undefined;
-        this.armTimer();
       }
     }
   }
@@ -756,34 +900,6 @@ export class AsanaSyncRuntime {
     requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
-    let sideEffectStarted = false;
-    if (
-      signal.aborted
-      || this.connectionState.kind !== "online"
-      || this.stopped
-    ) {
-      this.operationQueue.invalidatePendingMutations("synchronization_failed");
-      if (signal.aborted) {
-        this.recordAbortState();
-        return createAbortResult();
-      }
-      if (this.stopped) {
-        return createRejectedResult("stopped");
-      }
-      return createRejectedResult("offline");
-    }
-    try {
-      sideEffectStarted = true;
-      await this.beforeSynchronization(signal);
-    } catch (error: unknown) {
-      if (signal.aborted || error instanceof AsanaRequestAbortedError) {
-        this.operationQueue.invalidatePendingMutations("synchronization_failed");
-        this.recordAbortState();
-        return createAbortResult();
-      }
-      this.operationQueue.invalidatePendingMutations("synchronization_failed");
-      throw error;
-    }
     if (
       signal.aborted
       || this.connectionState.kind !== "online"
@@ -824,9 +940,7 @@ export class AsanaSyncRuntime {
       return createSynchronizedResult(mode, result);
     } catch (error: unknown) {
       if (signal.aborted || error instanceof AsanaRequestAbortedError) {
-        if (sideEffectStarted) {
-          this.operationQueue.invalidatePendingMutations("synchronization_failed");
-        }
+        this.operationQueue.invalidatePendingMutations("synchronization_failed");
         this.recordAbortState();
         return createAbortResult();
       }
@@ -937,7 +1051,7 @@ export class AsanaSyncRuntime {
   private armTimer(): void {
     if (
       this.timer != null
-      || this.scheduled != null
+      || this.scheduledRun != null
       || this.connectionState.kind === "offline"
       || this.stopped
     ) {
@@ -959,7 +1073,9 @@ export class AsanaSyncRuntime {
         },
         (error: unknown) => {
           try {
-            this.notifyUnexpectedError(error);
+            if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
+              this.notifyUnexpectedError(error);
+            }
           } finally {
             this.armTimer();
           }
@@ -982,10 +1098,9 @@ export class AsanaSyncRuntime {
     }
     this.stopped = true;
     this.connectionState = { kind: "offline" };
-    this.pendingMode = undefined;
     this.clearTimer();
     this.stopController.abort();
-    this.scheduledRunController?.abort();
+    this.scheduledRun?.cycleController.abort();
     this.activeRunController?.abort();
     this.operationQueue.abortActive();
     this.operationQueue.invalidatePendingMutations("offline");

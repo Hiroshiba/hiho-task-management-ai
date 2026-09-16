@@ -221,6 +221,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
 const persistentErrorLogRecordSchema = z
   .object({
     occurred_at: isoDateTimeSchema,
+    severity: z.enum(["debug", "info", "warning", "error"]),
     source: persistentErrorLogSourceSchema,
     diagnostic_code: diagnosticCodeSchema,
     context: persistentErrorLogContextSchema,
@@ -595,14 +596,16 @@ export class PersistentErrorLog {
     source: PersistentErrorLogSource,
     diagnosticCode: DiagnosticRecord["code"],
     context: PersistentErrorLogContext,
+    severity: DiagnosticRecord["severity"],
     error: unknown,
   ): void {
     if (this.writing) {
       writePersistentErrorLogFailure(
-        {
-          "元エラー": error,
-          "書き込みエラー": new Error("永続エラーログの記録中に再入しました。"),
-        },
+        new AggregateError(
+          [error, new Error("永続エラーログの記録中に再入しました。")],
+          "永続エラーログの記録中に再入しました。",
+          { cause: error },
+        ),
       );
       return;
     }
@@ -610,6 +613,7 @@ export class PersistentErrorLog {
     try {
       const record = persistentErrorLogRecordSchema.parse({
         occurred_at: new Date().toISOString(),
+        severity,
         source,
         diagnostic_code: diagnosticCode,
         context,
@@ -617,10 +621,13 @@ export class PersistentErrorLog {
       });
       this.writeRecord(record);
     } catch (writeError) {
-      writePersistentErrorLogFailure({
-        "元エラー": error,
-        "書き込みエラー": writeError,
-      });
+      writePersistentErrorLogFailure(
+        new AggregateError(
+          [error, writeError],
+          "永続エラーログの保存に失敗しました。",
+          { cause: error },
+        ),
+      );
     } finally {
       this.writing = false;
     }
