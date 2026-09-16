@@ -5,6 +5,7 @@ import type {
   WebContents,
 } from "electron";
 import { z } from "zod";
+import { DiagnosticFailureDispositionError } from "../diagnostic-failure";
 import {
   assertTrustedIpcSender,
   isApplicationUrl,
@@ -339,8 +340,6 @@ const failureMessages: Record<IpcFailure["code"], string> = {
 type IpcOperationFailure =
   | {
       readonly kind: "already_reported";
-      readonly marker: AsanaSyncRuntimeAlreadyReportedError;
-      readonly cause: unknown;
     }
   | {
       readonly kind: "unreported";
@@ -349,9 +348,16 @@ type IpcOperationFailure =
 
 function classifyIpcOperationFailure(error: unknown): IpcOperationFailure {
   if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-    return { kind: "already_reported", marker: error, cause: error.cause };
+    return { kind: "already_reported" };
   }
   return { kind: "unreported", error };
+}
+
+function ipcResponseError(error: unknown): unknown {
+  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+    return error.cause;
+  }
+  return error;
 }
 
 function ipcFailureCodeForError(error: unknown): IpcFailure["code"] {
@@ -1259,6 +1265,42 @@ export class IpcHandlerRegistry {
         if (error instanceof IpcCapabilityUnavailableError) {
           return responseSchema.parse(this.createFailure("not_configured"));
         }
+        if (error instanceof DiagnosticFailureDispositionError) {
+          switch (error.disposition.kind) {
+            case "recorded_only":
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
+                ),
+              );
+            case "unrecorded_only":
+              this.options.diagnostic.record(
+                error.disposition.unrecorded_error,
+                channel,
+              );
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
+                ),
+              );
+            case "recorded_and_unrecorded":
+              this.options.diagnostic.record(
+                error.disposition.unrecorded_error,
+                channel,
+              );
+              return responseSchema.parse(
+                this.createFailure(
+                  ipcFailureCodeForError(
+                    ipcResponseError(error.disposition.response_error),
+                  ),
+                ),
+              );
+          }
+        }
         if (
           error instanceof StartupGateNotReadyError
           || error instanceof StartupGateFailedError
@@ -1273,9 +1315,7 @@ export class IpcHandlerRegistry {
         if (operationFailure.kind === "unreported") {
           this.options.diagnostic.record(operationFailure.error, channel);
         }
-        const code = operationFailure.kind === "already_reported"
-          ? ipcFailureCodeForError(operationFailure.cause)
-          : ipcFailureCodeForError(operationFailure.error);
+        const code = ipcFailureCodeForError(ipcResponseError(error));
         return responseSchema.parse(this.createFailure(code));
       }
     } finally {

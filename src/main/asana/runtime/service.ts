@@ -9,6 +9,10 @@ import {
 } from "../transport";
 import { AsanaRequestAbortedError } from "../scheduler";
 import {
+  combineDiagnosticFailures,
+  DiagnosticFailureDispositionError,
+} from "../../diagnostic-failure";
+import {
   AsanaOperationQueue,
   type AsanaOperationPriority,
 } from "../operation-queue";
@@ -109,6 +113,11 @@ function createDeferred<T>(): Deferred<T> {
 
 /** 予期しない同期エラーを通知する関数です。 */
 export type AsanaSyncRuntimeUnexpectedErrorNotifier = (
+  error: unknown,
+) => void;
+
+/** 同期失敗を最終的な未処理エラーへ渡す関数です。 */
+export type AsanaSyncRuntimeUnhandledErrorForwarder = (
   error: unknown,
 ) => void;
 
@@ -252,6 +261,7 @@ export class AsanaSyncRuntime {
   private readonly lifecycleSignal: AbortSignal;
   private readonly beforeSynchronization: BeforeSynchronization;
   private readonly notifyUnexpectedError: AsanaSyncRuntimeUnexpectedErrorNotifier;
+  private readonly forwardUnhandledError: AsanaSyncRuntimeUnhandledErrorForwarder;
   private readonly nowProvider: () => string;
   private readonly operationQueue: AsanaOperationQueue;
   private readonly stopController = new AbortController();
@@ -277,6 +287,7 @@ export class AsanaSyncRuntime {
     lifecycleSignal: AbortSignal,
     beforeSynchronization: BeforeSynchronization,
     notifyUnexpectedError: AsanaSyncRuntimeUnexpectedErrorNotifier,
+    forwardUnhandledError: AsanaSyncRuntimeUnhandledErrorForwarder,
     nowProvider: () => string,
     operationQueue: AsanaOperationQueue,
   ) {
@@ -285,6 +296,7 @@ export class AsanaSyncRuntime {
     validateAbortSignal(lifecycleSignal);
     validateFunction(beforeSynchronization, "同期前フックが必要です。");
     validateFunction(notifyUnexpectedError, "予期しないエラー通知関数が必要です。");
+    validateFunction(forwardUnhandledError, "未処理エラー転送関数が必要です。");
     validateFunction(nowProvider, "現在時刻関数が必要です。");
     if (!(operationQueue instanceof AsanaOperationQueue)) {
       throw new TypeError("Asana操作キューが必要です。");
@@ -295,6 +307,7 @@ export class AsanaSyncRuntime {
     this.lifecycleSignal = lifecycleSignal;
     this.beforeSynchronization = beforeSynchronization;
     this.notifyUnexpectedError = notifyUnexpectedError;
+    this.forwardUnhandledError = forwardUnhandledError;
     this.nowProvider = nowProvider;
     this.operationQueue = operationQueue;
     const existingState = this.readSyncState();
@@ -620,10 +633,18 @@ export class AsanaSyncRuntime {
       const mergedIntent = scheduledRun.intent === "full" || intent === "full"
         ? "full"
         : "automatic";
+      const ownershipTransferred = scheduledRun.owner === "background"
+        && priority === "user";
+      const deferred = ownershipTransferred
+        ? createDeferred<AsanaSyncRuntimeInternalResult>()
+        : scheduledRun.deferred;
       let updatedRun: SyncRunState;
       if (scheduledRun.phase === "queued") {
         updatedRun = {
           ...scheduledRun,
+          deferred,
+          promise: deferred.promise,
+          owner: ownershipTransferred ? "user" : scheduledRun.owner,
           intent: mergedIntent,
           mode: mergeRequestedModes(scheduledRun.mode, mode),
           pendingMode: undefined,
@@ -634,6 +655,9 @@ export class AsanaSyncRuntime {
           : scheduledRun.mode;
         updatedRun = {
           ...scheduledRun,
+          deferred,
+          promise: deferred.promise,
+          owner: ownershipTransferred ? "user" : scheduledRun.owner,
           intent: mergedIntent,
           mode: updatedMode,
           pendingMode: mode === "full" && scheduledRun.mode === "delta"
@@ -643,6 +667,9 @@ export class AsanaSyncRuntime {
       } else {
         updatedRun = {
           ...scheduledRun,
+          deferred,
+          promise: deferred.promise,
+          owner: ownershipTransferred ? "user" : scheduledRun.owner,
           intent: mergedIntent,
           pendingMode: mode === "full" && scheduledRun.mode === "delta"
             ? "full"
@@ -650,7 +677,10 @@ export class AsanaSyncRuntime {
         };
       }
       this.scheduledRun = updatedRun;
-      return this.waitForCaller(scheduledRun.promise, signal);
+      if (ownershipTransferred) {
+        scheduledRun.deferred.resolve(createAbortResult());
+      }
+      return this.waitForCaller(updatedRun.promise, signal);
     }
     return this.scheduleRun(mode, intent, signal, priority);
   }
@@ -700,37 +730,43 @@ export class AsanaSyncRuntime {
     run: SyncRunBase,
     result: AsanaSyncRuntimeInternalResult,
   ): void {
+    const completedRun = this.scheduledRun?.generation === run.generation
+      ? this.scheduledRun
+      : run;
     if (this.scheduledRun?.generation === run.generation) {
       this.scheduledRun = undefined;
     }
-    run.deferred.resolve(result);
+    completedRun.deferred.resolve(result);
     this.armTimer();
   }
 
   private rejectRun(run: SyncRunBase, error: unknown): void {
+    const rejectedRun = this.scheduledRun?.generation === run.generation
+      ? this.scheduledRun
+      : run;
+    let rearmTimer = true;
     if (error instanceof AsanaRequestAbortedError) {
-      run.deferred.resolve(createAbortResult());
+      rejectedRun.deferred.resolve(createAbortResult());
     } else if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-      run.deferred.reject(error);
-    } else if (run.owner === "background") {
-      let rejection: unknown = error;
-      try {
-        this.notifyUnexpectedError(error);
-      } catch (diagnosticError: unknown) {
-        rejection = new AggregateError(
-          [error, diagnosticError],
-          "バックグラウンド同期エラーの記録に失敗しました。",
-          { cause: error },
-        );
+      rejectedRun.deferred.reject(error);
+    } else if (rejectedRun.owner === "background") {
+      const rejection = this.notifyBackgroundFailure(error);
+      rejectedRun.deferred.reject(rejection);
+      if (
+        rejection instanceof DiagnosticFailureDispositionError
+        && rejection.disposition.kind !== "recorded_only"
+      ) {
+        rearmTimer = false;
       }
-      run.deferred.reject(new AsanaSyncRuntimeAlreadyReportedError(rejection));
     } else {
-      run.deferred.reject(error);
+      rejectedRun.deferred.reject(error);
     }
     if (this.scheduledRun?.generation === run.generation) {
       this.scheduledRun = undefined;
     }
-    this.armTimer();
+    if (rearmTimer) {
+      this.armTimer();
+    }
   }
 
   private waitForCaller(
@@ -1048,6 +1084,43 @@ export class AsanaSyncRuntime {
     }
   }
 
+  private processTimerFailure(error: unknown): void {
+    if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+      this.armTimer();
+      return;
+    }
+    if (error instanceof DiagnosticFailureDispositionError) {
+      switch (error.disposition.kind) {
+        case "recorded_only":
+          this.armTimer();
+          return;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          this.forwardTerminalError(error.disposition.unrecorded_error);
+          return;
+      }
+    }
+    this.processTimerFailure(this.notifyBackgroundFailure(error));
+  }
+
+  private notifyBackgroundFailure(
+    error: unknown,
+  ): AsanaSyncRuntimeAlreadyReportedError | DiagnosticFailureDispositionError {
+    try {
+      this.notifyUnexpectedError(error);
+      return new AsanaSyncRuntimeAlreadyReportedError(error);
+    } catch (diagnosticError: unknown) {
+      if (diagnosticError instanceof DiagnosticFailureDispositionError) {
+        return diagnosticError;
+      }
+      return combineDiagnosticFailures([error, diagnosticError]);
+    }
+  }
+
+  private forwardTerminalError(error: unknown): void {
+    queueMicrotask(() => this.forwardUnhandledError(error));
+  }
+
   private armTimer(): void {
     if (
       this.timer != null
@@ -1066,21 +1139,19 @@ export class AsanaSyncRuntime {
         this.lifecycleSignal,
         this.stopController.signal,
       ]);
-      const timerRun = this.requestSelectedMode(false, timerSignal, "background");
-      void timerRun.then(
-        () => {
-          this.armTimer();
-        },
-        (error: unknown) => {
-          try {
-            if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
-              this.notifyUnexpectedError(error);
-            }
-          } finally {
+      try {
+        const timerRun = this.requestSelectedMode(false, timerSignal, "background");
+        void timerRun.then(
+          () => {
             this.armTimer();
-          }
-        },
-      );
+          },
+          (error: unknown) => {
+            this.processTimerFailure(error);
+          },
+        );
+      } catch (error: unknown) {
+        this.processTimerFailure(error);
+      }
     }, onlineSyncIntervalMilliseconds);
   }
 

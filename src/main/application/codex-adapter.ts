@@ -10,6 +10,7 @@ import {
   CodexSessionService,
   type CodexSessionStartResult,
 } from "../codex/session";
+import { DiagnosticFailureDispositionError } from "../diagnostic-failure";
 import {
   setupCodexAvailabilitySchema,
   type SetupCodexAvailability,
@@ -33,13 +34,19 @@ type CodexAuthenticationState =
 function knownAvailability(
   error: unknown,
 ): Extract<SetupCodexAvailability, { readonly kind: "unavailable" }> | undefined {
-  if (error instanceof CodexExecutableNotFoundError) {
+  const responseError = error instanceof DiagnosticFailureDispositionError
+    ? error.disposition.response_error
+    : error;
+  if (responseError instanceof CodexExecutableNotFoundError) {
     return { kind: "unavailable", reason_code: "not_installed" };
   }
-  if (error instanceof CodexProcessError || error instanceof CodexVersionCommandError) {
+  if (
+    responseError instanceof CodexProcessError
+    || responseError instanceof CodexVersionCommandError
+  ) {
     return { kind: "unavailable", reason_code: "startup_failed" };
   }
-  if (error instanceof CodexSessionDisabledError) {
+  if (responseError instanceof CodexSessionDisabledError) {
     return { kind: "unavailable", reason_code: "disabled" };
   }
   return undefined;

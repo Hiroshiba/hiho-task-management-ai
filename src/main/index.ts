@@ -15,6 +15,10 @@ import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
 import {
+  diagnosticFailureDispositionFromError,
+  type DiagnosticFailureDisposition,
+} from "./diagnostic-failure";
+import {
   applicationDiagnosticSchema,
   type ApplicationDiagnostic,
 } from "./ai/proposal-application";
@@ -178,6 +182,7 @@ function recordServiceDiagnostic(
     case "ipc":
     case "sync_state_listener":
     case "ai_status_listener":
+    case "ai_delta_listener":
       diagnosticCode = "ipc.error";
       break;
     default:
@@ -198,6 +203,19 @@ function recordServiceDiagnostic(
       }
     : undefined;
   recordDiagnostic(diagnosticCode, diagnostic.severity, metadata);
+}
+
+function mainDiagnosticFailureDisposition(
+  error: unknown,
+): DiagnosticFailureDisposition {
+  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+    return {
+      kind: "recorded_only",
+      recorded_error: error,
+      response_error: error.cause,
+    };
+  }
+  return diagnosticFailureDispositionFromError(error);
 }
 
 function getRendererUrl(): string {
@@ -370,6 +388,12 @@ async function openObsidianUrl(
   signal.throwIfAborted();
 }
 
+function forwardUnhandledError(error: unknown): void {
+  queueMicrotask(() => {
+    throw error;
+  });
+}
+
 function createTaskHubApplication(controller: AbortController): TaskHubApplication {
   const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
   return new TaskHubApplication({
@@ -399,6 +423,7 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
       openObsidianUrl(obsidianUrl, signal),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
     diagnostic: recordServiceDiagnostic,
+    unhandled_error_forwarder: forwardUnhandledError,
     open_external_agent_review: async () => {
       const application = taskHubApplication;
       if (application == null) {
@@ -499,9 +524,23 @@ function enqueueBackgroundOperation(
       if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
         return;
       }
-      recordPersistentError("main", failureCode, "background_operation", "error", error);
-      if (!controller.signal.aborted) {
-        recordDiagnostic(failureCode, "error");
+      const disposition = diagnosticFailureDispositionFromError(error);
+      switch (disposition.kind) {
+        case "recorded_only":
+          return;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          recordPersistentError(
+            "main",
+            failureCode,
+            "background_operation",
+            "error",
+            disposition.unrecorded_error,
+          );
+          if (!controller.signal.aborted) {
+            recordDiagnostic(failureCode, "error");
+          }
+          return;
       }
     }
   });
@@ -884,10 +923,24 @@ async function startApplication(
       startupGate.markStopped();
       return;
     }
-    recordPersistentError("main", "app.error", "bootstrap", "error", error);
-    recordDiagnostic("app.error", "error");
+    const disposition = mainDiagnosticFailureDisposition(error);
+    switch (disposition.kind) {
+      case "recorded_only":
+        break;
+      case "unrecorded_only":
+      case "recorded_and_unrecorded":
+        recordPersistentError(
+          "main",
+          "app.error",
+          "bootstrap",
+          "error",
+          disposition.unrecorded_error,
+        );
+        recordDiagnostic("app.error", "error");
+        break;
+    }
     console.error("アプリケーションの起動に失敗しました。");
-    startupGate.markFailed(error);
+    startupGate.markFailed(disposition.response_error);
   }
 }
 
@@ -918,8 +971,26 @@ async function stopApplication(): Promise<void> {
     try {
       await application.stop();
     } catch (error) {
-      recordPersistentError("main", "app.error", "application_stop", "error", error);
-      recordDiagnostic("app.error", "error");
+      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+        console.error("アプリケーションの停止に失敗しました。");
+        return;
+      }
+      const disposition = diagnosticFailureDispositionFromError(error);
+      switch (disposition.kind) {
+        case "recorded_only":
+          break;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          recordPersistentError(
+            "main",
+            "app.error",
+            "application_stop",
+            "error",
+            disposition.unrecorded_error,
+          );
+          recordDiagnostic("app.error", "error");
+          break;
+      }
       console.error("アプリケーションの停止に失敗しました。");
     }
   }

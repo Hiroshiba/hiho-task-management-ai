@@ -43,6 +43,11 @@ import {
 } from "../../asana/transport";
 import { AsanaReadClient } from "../../asana/client/client";
 import {
+  combineDiagnosticFailureDispositions,
+  DiagnosticFailureDispositionError,
+  diagnosticFailureDispositionFromError,
+} from "../../diagnostic-failure";
+import {
   AsanaProposalOperationWriter,
   type ProposalOperationWriteAction,
 } from "./operation-writer";
@@ -941,7 +946,7 @@ async function finalizePendingJournals(
   reportDiagnostic: (
     error: unknown,
     fields: JournalDiagnosticFields,
-  ) => void,
+  ) => DiagnosticFailureDispositionError,
   signal: AbortSignal,
 ): Promise<void> {
   if (pending.length === 0) {
@@ -956,8 +961,12 @@ async function finalizePendingJournals(
       await postApply(requiredTaskGids, signal),
     );
   } catch (error: unknown) {
+    if (error instanceof DiagnosticFailureDispositionError) {
+      throw error;
+    }
+    let receipt: DiagnosticFailureDispositionError | undefined;
     for (const item of pending) {
-      reportDiagnostic(error, {
+      receipt = reportDiagnostic(error, {
         severity: "error",
         proposal_id: item.entry.proposal_id,
         operation_id: item.entry.operation_id,
@@ -972,7 +981,10 @@ async function finalizePendingJournals(
         phase: "post_apply",
       });
     }
-    throw error;
+    if (receipt == null) {
+      throw new Error("適用後同期の診断receiptがありません。");
+    }
+    throw receipt;
   }
   if (synchronization.kind === "recovery_required") {
     for (const item of pending) {
@@ -1013,7 +1025,7 @@ async function finalizePendingJournals(
       );
       journal.complete(item.entry.proposal_id, item.entry.operation_id, "applied");
     } catch (error: unknown) {
-      reportDiagnostic(error, {
+      const receipt = reportDiagnostic(error, {
         severity: "error",
         proposal_id: item.entry.proposal_id,
         operation_id: item.entry.operation_id,
@@ -1027,7 +1039,7 @@ async function finalizePendingJournals(
         attempt: 1,
         phase: "journal",
       });
-      throw error;
+      throw receipt;
     }
   }
 }
@@ -1683,7 +1695,6 @@ export class AsanaProposalApplicationCoordinator {
   private readonly timestampProvider: ProposalApplicationTimestampProvider;
   private readonly postApply: ProposalApplicationPostApply;
   private readonly diagnostic: ProposalApplicationDiagnostic;
-  private readonly reportedErrors = new WeakSet<object>();
 
   public constructor(
     readClient: AsanaReadClient,
@@ -1717,8 +1728,11 @@ export class AsanaProposalApplicationCoordinator {
       if (signal.aborted) {
         throw error;
       }
+      if (error instanceof DiagnosticFailureDispositionError) {
+        throw error;
+      }
       const parsedInput = asanaProposalApplicationInputSchema.safeParse(input);
-      this.reportEscapedError(error, {
+      throw this.escapeFailure(error, {
         severity: "error",
         ...(parsedInput.success ? { proposal_id: parsedInput.data.proposal_id } : {}),
         api_action: "journal_plan",
@@ -1728,7 +1742,6 @@ export class AsanaProposalApplicationCoordinator {
         attempt: 1,
         phase: "application",
       });
-      throw error;
     }
   }
 
@@ -2012,7 +2025,7 @@ export class AsanaProposalApplicationCoordinator {
               finalJournalResult("applied"),
             );
           } catch (error: unknown) {
-            this.reportOperationEventOnce(
+            const receipt = this.reportOperationEventOnce(
               error,
               { journal: disposition.entry, context },
               {
@@ -2027,7 +2040,7 @@ export class AsanaProposalApplicationCoordinator {
               },
               disposition.task_gid,
             );
-            throw error;
+            throw receipt;
           }
         } else if (disposition.block_group && context.group.atomic) {
           operationGroupsBlocked.add(context.group.group_id);
@@ -2080,7 +2093,7 @@ export class AsanaProposalApplicationCoordinator {
             signal.throwIfAborted();
             throw error;
           }
-          this.reportJournalEvent(error, {
+          const receipt = this.reportJournalEvent(error, {
             severity: "error",
             proposal_id: entry.proposal_id,
             operation_id: entry.operation_id,
@@ -2093,7 +2106,7 @@ export class AsanaProposalApplicationCoordinator {
             attempt: 1,
             phase: "preflight",
           });
-          throw error;
+          throw receipt;
         }
         const matches = matchingExternalTasks(uniqueTaskMap(projectTasks), createUuid);
         if (matches.length > 0) {
@@ -2173,7 +2186,7 @@ export class AsanaProposalApplicationCoordinator {
               "write_started",
             );
           } catch (error: unknown) {
-            this.reportOperationEventOnce(
+            const receipt = this.reportOperationEventOnce(
               error,
               { journal: entryForProgress, context },
               {
@@ -2188,7 +2201,7 @@ export class AsanaProposalApplicationCoordinator {
               },
               createdTaskGid ?? taskGid,
             );
-            throw error;
+            throw receipt;
           }
           entryForProgress = { ...entryForProgress, stage: "write_started" };
         }
@@ -2216,7 +2229,7 @@ export class AsanaProposalApplicationCoordinator {
             taskGid,
           );
         } catch (error: unknown) {
-          this.reportOperationEventOnce(
+          const receipt = this.reportOperationEventOnce(
             error,
             { journal: entryForProgress, context },
             {
@@ -2231,7 +2244,7 @@ export class AsanaProposalApplicationCoordinator {
             },
             createdTaskGid,
           );
-          throw error;
+          throw receipt;
         }
         entryForProgress = { ...entryForProgress, stage: "task_created" };
       };
@@ -2269,7 +2282,7 @@ export class AsanaProposalApplicationCoordinator {
         } else {
           phase = "external_write";
         }
-        this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
+        const receipt = this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
           severity: "error",
           api_action: lastWriteAction ?? "operation_writer",
           journal_stage: entryForProgress.stage,
@@ -2280,7 +2293,7 @@ export class AsanaProposalApplicationCoordinator {
           phase,
         }, createdTaskGid ?? taskGid);
         if (!isKnownAsanaOperationalError(error)) {
-          throw error;
+          throw receipt;
         }
         operationResults.set(
           context.operation.operation_id,
@@ -2324,7 +2337,7 @@ export class AsanaProposalApplicationCoordinator {
         writerResult = validateWriterResult(context, rawWriterResult, taskGid);
       } catch (error: unknown) {
         const certainty = observedEffectCertainty;
-        this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
+        const receipt = this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
           severity: "error",
           api_action: lastWriteAction ?? "operation_writer",
           journal_stage: entryForProgress.stage,
@@ -2336,7 +2349,7 @@ export class AsanaProposalApplicationCoordinator {
         }, createdTaskGid ?? (parsedWriterResult.success
           ? parsedWriterResult.data.task_gid
           : taskGid));
-        throw error;
+        throw receipt;
       }
       if (writerResult.outcome === "conflict") {
         const certainty = writerResult.side_effect === "possible"
@@ -2391,7 +2404,7 @@ export class AsanaProposalApplicationCoordinator {
             this.writer.createInitialExternalBaseline(createdBaselineInput),
           );
         } catch (error: unknown) {
-          this.reportOperationEventOnce(
+          const receipt = this.reportOperationEventOnce(
             error,
             { journal: entryForProgress, context },
             {
@@ -2406,7 +2419,7 @@ export class AsanaProposalApplicationCoordinator {
             },
             createdTaskGid,
           );
-          throw error;
+          throw receipt;
         }
       }
       let metadataEntry: PlannedApplicationJournal | undefined;
@@ -2426,7 +2439,7 @@ export class AsanaProposalApplicationCoordinator {
         const certainty = writerResult.outcome === "conflict"
           ? writerResult.side_effect
           : "confirmed";
-        this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
+        const receipt = this.reportOperationEventOnce(error, { journal: entryForProgress, context }, {
           severity: "error",
           api_action: lastWriteAction ?? "operation_writer",
           journal_stage: entryForProgress.stage,
@@ -2436,7 +2449,7 @@ export class AsanaProposalApplicationCoordinator {
           attempt: Math.max(1, writeAttemptCount),
           phase: "journal",
         }, createdTaskGid ?? writerResult.task_gid);
-        throw error;
+        throw receipt;
       }
       operationResults.set(
         context.operation.operation_id,
@@ -2512,52 +2525,54 @@ export class AsanaProposalApplicationCoordinator {
       if (signal.aborted) {
         throw error;
       }
-      const alreadyReported = typeof error === "object"
-        && error !== null
-        && this.reportedErrors.has(error);
-      if (!alreadyReported) {
-        let incomplete: readonly ApplicationJournal[];
-        try {
-          incomplete = this.journal.getIncomplete();
-        } catch (diagnosticError: unknown) {
-          throw new AggregateError(
-            [error, diagnosticError],
-            "適用ジャーナル復旧エラーの識別情報を読み出せませんでした。",
-            { cause: error },
-          );
-        }
-        if (incomplete.length === 0) {
-          this.reportEscapedError(error, {
-            severity: "error",
-            api_action: "journal_plan",
-            effect_certainty: "possible",
-            reason_code: "recovery_failed",
-            recovery_decision: "failed",
-            attempt: 1,
-            phase: "recovery",
-          });
-        } else {
-          for (const journal of incomplete) {
-            this.reportJournalEvent(error, {
-              severity: "error",
-              proposal_id: journal.proposal_id,
-              operation_id: journal.operation_id,
-              ...(hasApplicationJournalPlan(journal)
-                ? { operation_kind: journal.plan.operation.operation }
-                : {}),
-              api_action: "journal_plan",
-              journal_stage: journal.stage,
-              effect_certainty: effectCertaintyForJournalStage(journal.stage),
-              ...(journal.target.kind === "task" ? { task_gid: journal.target.gid } : {}),
-              reason_code: "recovery_failed",
-              recovery_decision: "failed",
-              attempt: 1,
-              phase: "recovery",
-            });
-          }
-        }
+      if (error instanceof DiagnosticFailureDispositionError) {
+        throw error;
       }
-      throw error;
+      let incomplete: readonly ApplicationJournal[];
+      try {
+        incomplete = this.journal.getIncomplete();
+      } catch (diagnosticError: unknown) {
+        throw new DiagnosticFailureDispositionError(
+          combineDiagnosticFailureDispositions(
+            diagnosticFailureDispositionFromError(error),
+            [diagnosticFailureDispositionFromError(diagnosticError)],
+          ),
+        );
+      }
+      if (incomplete.length === 0) {
+        throw this.reportEscapedError(error, {
+          severity: "error",
+          api_action: "journal_plan",
+          effect_certainty: "possible",
+          reason_code: "recovery_failed",
+          recovery_decision: "failed",
+          attempt: 1,
+          phase: "recovery",
+        });
+      }
+      let receipt: DiagnosticFailureDispositionError | undefined;
+      for (const journal of incomplete) {
+        receipt = this.reportJournalEvent(error, {
+          severity: "error",
+          proposal_id: journal.proposal_id,
+          operation_id: journal.operation_id,
+          ...(hasApplicationJournalPlan(journal)
+            ? { operation_kind: journal.plan.operation.operation }
+            : {}),
+          api_action: "journal_plan",
+          journal_stage: journal.stage,
+          effect_certainty: effectCertaintyForJournalStage(journal.stage),
+          ...(journal.target.kind === "task" ? { task_gid: journal.target.gid } : {}),
+          reason_code: "recovery_failed",
+          recovery_decision: "failed",
+          attempt: 1,
+          phase: "recovery",
+        });
+      }
+      if (receipt == null) {
+        throw new Error("復旧失敗の診断receiptがありません。");
+      }
+      throw receipt;
     }
   }
 
@@ -2944,7 +2959,7 @@ export class AsanaProposalApplicationCoordinator {
             finalJournalResult("unknown"),
           );
         } catch (error: unknown) {
-          this.reportOperationEventOnce(
+          const receipt = this.reportOperationEventOnce(
             error,
             entry,
             {
@@ -2959,7 +2974,7 @@ export class AsanaProposalApplicationCoordinator {
             },
             taskGid,
           );
-          throw error;
+          throw receipt;
         }
         addUnresolved(entry.journal, reasonCode, taskGid);
         this.reportOperationEvent(
@@ -3116,7 +3131,7 @@ export class AsanaProposalApplicationCoordinator {
         } catch (error: unknown) {
           const stage = stageByOperation.get(entry.journal.operation_id)
             ?? entry.journal.stage;
-          this.reportOperationEventOnce(
+          const receipt = this.reportOperationEventOnce(
             error,
             entry,
             {
@@ -3131,7 +3146,7 @@ export class AsanaProposalApplicationCoordinator {
             },
             taskGid,
           );
-          throw error;
+          throw receipt;
         }
       };
       for (const entry of state.entries) {
@@ -3171,7 +3186,7 @@ export class AsanaProposalApplicationCoordinator {
               if (stage == null) {
                 throw error;
               }
-              this.reportOperationEventOnce(
+              const receipt = this.reportOperationEventOnce(
                 error,
                 entry,
                 {
@@ -3187,7 +3202,7 @@ export class AsanaProposalApplicationCoordinator {
                 },
                 taskGidForResult(),
               );
-              throw error;
+              throw receipt;
             }
           }
           const stage = stageByOperation.get(operationId);
@@ -3224,7 +3239,7 @@ export class AsanaProposalApplicationCoordinator {
             | "read_task"
             | "read_project_tasks",
           phase: OperationDiagnosticFields["phase"],
-        ): void => {
+        ): DiagnosticFailureDispositionError => {
           const stage = stageByOperation.get(operationId);
           if (stage == null) {
             throw new Error("復旧対象の適用段階がありません。");
@@ -3233,7 +3248,7 @@ export class AsanaProposalApplicationCoordinator {
           if (effectCertainty == null) {
             throw new Error("復旧対象の外部作用確度がありません。");
           }
-          this.reportOperationEventOnce(
+          return this.reportOperationEventOnce(
             error,
             entry,
             {
@@ -3316,8 +3331,7 @@ export class AsanaProposalApplicationCoordinator {
                 signal.throwIfAborted();
                 throw error;
               }
-              reportRecoveryError(error, "read_project_tasks", "preflight");
-              throw error;
+              throw reportRecoveryError(error, "read_project_tasks", "preflight");
             }
             if (matches.length > 0) {
               completeNotApplied(entry, "external_id_collision", undefined);
@@ -3334,8 +3348,7 @@ export class AsanaProposalApplicationCoordinator {
                 signal.throwIfAborted();
                 throw error;
               }
-              reportRecoveryError(error, "read_task", "read_back");
-              throw error;
+              throw reportRecoveryError(error, "read_task", "read_back");
             }
             if (existingTask == null) {
               markUnresolved(entry, "task_not_found", mappedGid);
@@ -3351,8 +3364,7 @@ export class AsanaProposalApplicationCoordinator {
                 signal.throwIfAborted();
                 throw error;
               }
-              reportRecoveryError(error, "read_project_tasks", "read_back");
-              throw error;
+              throw reportRecoveryError(error, "read_project_tasks", "read_back");
             }
             if (matches.length > 1) {
               markUnresolved(entry, "duplicate_external_id", undefined);
@@ -3379,7 +3391,7 @@ export class AsanaProposalApplicationCoordinator {
                 if (stage == null) {
                   throw error;
                 }
-                this.reportOperationEventOnce(
+                const receipt = this.reportOperationEventOnce(
                   error,
                   entry,
                   {
@@ -3394,7 +3406,7 @@ export class AsanaProposalApplicationCoordinator {
                   },
                   createdTaskGid,
                 );
-                throw error;
+                throw receipt;
               }
               const stage = stageByOperation.get(operationId);
               if (stage == null) {
@@ -3483,7 +3495,7 @@ export class AsanaProposalApplicationCoordinator {
                   if (stage == null) {
                     throw error;
                   }
-                  this.reportOperationEventOnce(
+                  const receipt = this.reportOperationEventOnce(
                     error,
                     entry,
                     {
@@ -3498,7 +3510,7 @@ export class AsanaProposalApplicationCoordinator {
                     },
                     createdTaskGid,
                   );
-                  throw error;
+                  throw receipt;
                 }
                 const stage = stageByOperation.get(operationId);
                 if (stage == null) {
@@ -3516,14 +3528,13 @@ export class AsanaProposalApplicationCoordinator {
               signal.throwIfAborted();
               throw error;
             }
-            reportRecoveryError(
+            throw reportRecoveryError(
               error,
               lastWriteAction ?? "operation_writer",
               journalStages.indexOf(stageBeforeWrite) >= journalStages.indexOf("read_back")
                 ? "read_back"
                 : "external_write",
             );
-            throw error;
           }
           const expectedTaskGid = existingTask?.gid;
           const parsedWriterResult = asanaProposalOperationWriterResultSchema.safeParse(
@@ -3543,12 +3554,11 @@ export class AsanaProposalApplicationCoordinator {
               expectedTaskGid,
             );
           } catch (error: unknown) {
-            reportRecoveryError(
+            throw reportRecoveryError(
               error,
               lastWriteAction ?? "create_task",
               "read_back",
             );
-            throw error;
           }
           if (writerResult.outcome === "conflict") {
             markUnresolved(
@@ -3567,12 +3577,11 @@ export class AsanaProposalApplicationCoordinator {
               writerResult.task_gid,
             );
           } catch (error: unknown) {
-            reportRecoveryError(
+            throw reportRecoveryError(
               error,
               lastWriteAction ?? "create_task",
               "journal",
             );
-            throw error;
           }
           finishKnown(
             entry,
@@ -3601,8 +3610,7 @@ export class AsanaProposalApplicationCoordinator {
             signal.throwIfAborted();
             throw error;
           }
-          reportRecoveryError(error, "read_task", "read_back");
-          throw error;
+          throw reportRecoveryError(error, "read_task", "read_back");
         }
         if (task == null) {
           if (currentStage === "prepared") {
@@ -3635,8 +3643,7 @@ export class AsanaProposalApplicationCoordinator {
             signal.throwIfAborted();
             throw error;
           }
-          reportRecoveryError(error, "operation_writer", "read_back");
-          throw error;
+          throw reportRecoveryError(error, "operation_writer", "read_back");
         }
         if (
           inspection.core_state === "after"
@@ -3677,12 +3684,11 @@ export class AsanaProposalApplicationCoordinator {
             signal.throwIfAborted();
             throw error;
           }
-          reportRecoveryError(
+          throw reportRecoveryError(
             error,
             lastWriteAction ?? "operation_writer",
             "external_write",
           );
-          throw error;
         }
         const parsedWriterResult = asanaProposalOperationWriterResultSchema.safeParse(
           rawWriterResult,
@@ -3697,12 +3703,11 @@ export class AsanaProposalApplicationCoordinator {
         try {
           writerResult = validateWriterResult(entry.context, rawWriterResult, taskGid);
         } catch (error: unknown) {
-          reportRecoveryError(
+          throw reportRecoveryError(
             error,
             lastWriteAction ?? "operation_writer",
             "read_back",
           );
-          throw error;
         }
         if (writerResult.outcome === "conflict") {
           if (writerResult.side_effect === "none" && currentStageIndex < journalStages.indexOf("read_back")) {
@@ -3735,8 +3740,12 @@ export class AsanaProposalApplicationCoordinator {
           await this.postApply(requiredTaskGids, signal),
         );
       } catch (error: unknown) {
+        if (error instanceof DiagnosticFailureDispositionError) {
+          throw error;
+        }
+        let receipt: DiagnosticFailureDispositionError | undefined;
         for (const { pending } of pendingJournals) {
-          this.reportOperationEvent(
+          receipt = this.reportOperationEvent(
             error,
             pending.entry,
             {
@@ -3752,7 +3761,10 @@ export class AsanaProposalApplicationCoordinator {
             pending.task_gid,
           );
         }
-        throw error;
+        if (receipt == null) {
+          throw new Error("復旧後同期の診断receiptがありません。");
+        }
+        throw receipt;
       }
       if (synchronization.kind === "recovery_required") {
         for (const { state, pending } of pendingJournals) {
@@ -3799,7 +3811,7 @@ export class AsanaProposalApplicationCoordinator {
               finalJournalResult("applied"),
             );
           } catch (error: unknown) {
-            this.reportOperationEventOnce(
+            const receipt = this.reportOperationEventOnce(
               error,
               pending.entry,
               {
@@ -3814,7 +3826,7 @@ export class AsanaProposalApplicationCoordinator {
               },
               pending.task_gid,
             );
-            throw error;
+            throw receipt;
           }
         }
       }
@@ -3853,14 +3865,30 @@ export class AsanaProposalApplicationCoordinator {
   private reportJournalEvent(
     error: unknown,
     fields: JournalDiagnosticFields,
-  ): void {
-    const event = applicationJournalDiagnosticSchema.parse({
-      kind: "application_journal",
-      ...fields,
-    });
-    this.diagnostic(error, event);
-    if (typeof error === "object" && error !== null) {
-      this.reportedErrors.add(error);
+  ): DiagnosticFailureDispositionError {
+    try {
+      const event = applicationJournalDiagnosticSchema.parse({
+        kind: "application_journal",
+        ...fields,
+      });
+      this.diagnostic(error, event);
+      return new DiagnosticFailureDispositionError({
+        kind: "recorded_only",
+        recorded_error: error,
+        response_error: error instanceof DiagnosticFailureDispositionError
+          ? error.disposition.response_error
+          : error,
+      });
+    } catch (diagnosticError: unknown) {
+      if (diagnosticError instanceof DiagnosticFailureDispositionError) {
+        throw diagnosticError;
+      }
+      throw new DiagnosticFailureDispositionError(
+        combineDiagnosticFailureDispositions(
+          diagnosticFailureDispositionFromError(error),
+          [diagnosticFailureDispositionFromError(diagnosticError)],
+        ),
+      );
     }
   }
 
@@ -3869,8 +3897,8 @@ export class AsanaProposalApplicationCoordinator {
     entry: OperationDiagnosticContext,
     fields: OperationDiagnosticFields,
     taskGid: string | undefined,
-  ): void {
-    this.reportJournalEvent(error, {
+  ): DiagnosticFailureDispositionError {
+    return this.reportJournalEvent(error, {
       ...fields,
       proposal_id: entry.journal.proposal_id,
       operation_id: entry.journal.operation_id,
@@ -3884,29 +3912,31 @@ export class AsanaProposalApplicationCoordinator {
     entry: OperationDiagnosticContext,
     fields: OperationDiagnosticFields,
     taskGid: string | undefined,
-  ): void {
-    if (
-      typeof error === "object"
-      && error !== null
-      && this.reportedErrors.has(error)
-    ) {
-      return;
+  ): DiagnosticFailureDispositionError {
+    if (error instanceof DiagnosticFailureDispositionError) {
+      return error;
     }
-    this.reportOperationEvent(error, entry, fields, taskGid);
+    return this.reportOperationEvent(error, entry, fields, taskGid);
   }
 
   private reportEscapedError(
     error: unknown,
     fields: JournalDiagnosticFields,
-  ): void {
-    if (
-      typeof error === "object"
-      && error !== null
-      && this.reportedErrors.has(error)
-    ) {
-      return;
+  ): DiagnosticFailureDispositionError {
+    if (error instanceof DiagnosticFailureDispositionError) {
+      return error;
     }
-    this.reportJournalEvent(error, fields);
+    return this.reportJournalEvent(error, fields);
+  }
+
+  private escapeFailure(
+    error: unknown,
+    fields: JournalDiagnosticFields,
+  ): DiagnosticFailureDispositionError {
+    if (error instanceof DiagnosticFailureDispositionError) {
+      return error;
+    }
+    return this.reportJournalEvent(error, fields);
   }
 }
 

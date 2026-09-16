@@ -87,6 +87,7 @@ const applicationOptionsSchema = z
     open_obsidian_url: functionSchema,
     open_path: functionSchema,
     diagnostic: functionSchema,
+    unhandled_error_forwarder: functionSchema,
     open_external_agent_review: functionSchema,
   })
   .strict();
@@ -116,6 +117,7 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
     channel: string,
     diagnostic: ApplicationDiagnostic,
   ) => void;
+  readonly unhandled_error_forwarder: (error: unknown) => void;
   readonly open_external_agent_review: () => Promise<void> | void;
 };
 

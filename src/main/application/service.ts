@@ -88,6 +88,11 @@ import {
   type CodexSessionStartResult,
 } from "../codex/session";
 import type { CodexObsidianReadPort } from "../codex/obsidian";
+import {
+  combineDiagnosticFailures,
+  DiagnosticFailureDispositionError,
+  diagnosticFailureDispositionFromError,
+} from "../diagnostic-failure";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -95,8 +100,12 @@ import {
   type DiagnosticRecord,
 } from "./diagnostics";
 import {
+  AiWorkflowProposalFileStore,
   AiWorkflowService,
+  AiWorkflowRetryLogEventError,
+  aiWorkflowRetryLogEventSchema,
   createBaselineSnapshot,
+  type AiWorkflowRetryLogEvent,
   type ApprovalPreparationInput,
 } from "../ai/workflow";
 import {
@@ -303,6 +312,17 @@ type AiSessionStartResult =
   | { readonly kind: "started"; readonly session_id: string }
   | { readonly kind: "authentication_required" };
 
+type AiSessionStartRequestStopState =
+  | { readonly kind: "not_claimed" }
+  | {
+      readonly kind: "claimed";
+      readonly result: Promise<AiSessionPromiseResult>;
+    };
+
+type AiSessionCleanupDisposition =
+  | { readonly kind: "record" }
+  | { readonly kind: "propagate_unrecorded" };
+
 type AiSessionStartRecord = {
   readonly sessionId: string;
   readonly workspaceUserDataPath: string;
@@ -311,6 +331,7 @@ type AiSessionStartRecord = {
   workspace: CodexWorkspaceInitializationResult | undefined;
   session: CodexSessionService | undefined;
   externalToolBroker: ExternalToolBroker | undefined;
+  requestStopState: AiSessionStartRequestStopState;
   readonly completion: Promise<AiSessionStartResult>;
 };
 
@@ -1370,7 +1391,11 @@ export class TaskHubApplication {
     await this.stopAsyncService(this.displayOrder, errors);
     await this.stopAsyncService(this.runtime, errors);
     await this.stopAsyncService(this.operationQueue, errors);
-    await this.stopAsyncService(this.codexSession, errors);
+    try {
+      await this.codexSession.stop({ kind: "record" });
+    } catch (error: unknown) {
+      errors.push(error);
+    }
     await this.stopAsyncService(this.externalToolBrokerForStop(), errors);
     this.externalToolLifecycle = { kind: "stopped" };
     try {
@@ -1384,7 +1409,7 @@ export class TaskHubApplication {
       errors.push(error);
     }
     if (errors.length > 0) {
-      throw new AggregateError(errors, "アプリケーションの停止に失敗しました。");
+      throw combineDiagnosticFailures(errors);
     }
   }
 
@@ -1725,6 +1750,7 @@ export class TaskHubApplication {
       this.options.lifecycle_signal,
       (signal) => this.beforeAsanaSynchronization(signal),
       (error) => this.recordUnexpectedError(error, "sync"),
+      this.options.unhandled_error_forwarder,
       () => createNowIso(this.options.now_provider),
       this.operationQueue,
     );
@@ -1790,10 +1816,13 @@ export class TaskHubApplication {
   }
 
   private rethrowFeatureAbort(error: unknown, signal: AbortSignal): void {
+    const responseError = error instanceof DiagnosticFailureDispositionError
+      ? error.disposition.response_error
+      : error;
     if (
       signal.aborted
       || this.options.lifecycle_signal.aborted
-      || error instanceof CodexSessionAbortedError
+      || responseError instanceof CodexSessionAbortedError
     ) {
       throw error;
     }
@@ -1804,22 +1833,32 @@ export class TaskHubApplication {
     channel: string,
     message: string,
   ): void {
-    this.options.diagnostic(
-      new Error(message, { cause: error }),
-      channel,
-      serviceWarningDiagnostic,
-    );
+    const disposition = diagnosticFailureDispositionFromError(error);
+    switch (disposition.kind) {
+      case "recorded_only":
+        return;
+      case "unrecorded_only":
+        this.options.diagnostic(
+          new Error(message, { cause: disposition.unrecorded_error }),
+          channel,
+          serviceWarningDiagnostic,
+        );
+        return;
+      case "recorded_and_unrecorded":
+        this.options.diagnostic(
+          new Error(message, { cause: disposition.unrecorded_error }),
+          channel,
+          serviceWarningDiagnostic,
+        );
+        return;
+    }
   }
 
   private recordCodexKnownFailure(error: unknown, message: string): void {
     try {
       this.recordFeatureFailure(error, "codex", message);
     } catch (diagnosticError: unknown) {
-      throw new AggregateError(
-        [error, diagnosticError],
-        "Codex既知エラーの診断記録に失敗しました。",
-        { cause: error },
-      );
+      throw combineDiagnosticFailures([error, diagnosticError]);
     }
   }
 
@@ -2043,14 +2082,22 @@ export class TaskHubApplication {
   }
 
   private recordUnexpectedError(error: unknown, channel: string): void {
-    try {
-      this.options.diagnostic(error, channel, serviceErrorDiagnostic);
-    } catch (diagnosticError: unknown) {
-      throw new AggregateError(
-        [error, diagnosticError],
-        "予期しないエラーの診断記録に失敗しました。",
-        { cause: error },
-      );
+    const disposition = diagnosticFailureDispositionFromError(error);
+    switch (disposition.kind) {
+      case "recorded_only":
+        return;
+      case "unrecorded_only":
+      case "recorded_and_unrecorded":
+        try {
+          this.options.diagnostic(
+            disposition.unrecorded_error,
+            channel,
+            serviceErrorDiagnostic,
+          );
+        } catch (diagnosticError: unknown) {
+          throw combineDiagnosticFailures([error, diagnosticError]);
+        }
+        return;
     }
   }
 
@@ -2135,7 +2182,7 @@ export class TaskHubApplication {
     const sessionState = this.codexSession.getState();
     if (sessionState !== "disabled" && sessionState !== "stopped") {
       try {
-        await this.codexSession.stop();
+        await this.codexSession.stop({ kind: "record" });
       } catch (error: unknown) {
         errors.push(error);
       }
@@ -2161,11 +2208,19 @@ export class TaskHubApplication {
       errors,
     };
     try {
-      this.options.diagnostic(
-        new AggregateError(sourceErrors, message, { cause: sourceErrors[0] }),
-        "external_tools",
-        serviceErrorDiagnostic,
-      );
+      const disposition = combineDiagnosticFailures(sourceErrors).disposition;
+      switch (disposition.kind) {
+        case "recorded_only":
+          break;
+        case "unrecorded_only":
+        case "recorded_and_unrecorded":
+          this.options.diagnostic(
+            new Error(message, { cause: disposition.unrecorded_error }),
+            "external_tools",
+            serviceErrorDiagnostic,
+          );
+          break;
+      }
     } catch (error: unknown) {
       errors.push(error);
     }
@@ -3332,6 +3387,9 @@ export class TaskHubApplication {
         signal,
       );
     } catch (error: unknown) {
+      if (error instanceof DiagnosticFailureDispositionError) {
+        throw error;
+      }
       if (signal.aborted) {
         return postWriteRecoveryRequired("aborted");
       }
@@ -3358,6 +3416,9 @@ export class TaskHubApplication {
     try {
       runtimeResult = await resultPromise;
     } catch (error: unknown) {
+      if (error instanceof DiagnosticFailureDispositionError) {
+        throw error;
+      }
       if (signal.aborted) {
         return postWriteRecoveryRequired("aborted");
       }
@@ -4563,10 +4624,17 @@ export class TaskHubApplication {
     session: CodexSessionService,
     externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector,
     baselineStore: AiSessionBaselineStore,
+    sessionId: string,
+    tmpDirectoryPath: string,
   ): AiWorkflowService {
     const applicationCoordinator = this.requireApplicationCoordinator();
     return new AiWorkflowService({
+      sessionId,
       session,
+      proposalFileStore: new AiWorkflowProposalFileStore({
+        sessionId,
+        tmpDirectoryPath,
+      }),
       snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
       taskctlSnapshotProvider: (signal) =>
         this.requireAiTaskctlSnapshot(signal, baselineStore),
@@ -4588,7 +4656,20 @@ export class TaskHubApplication {
       prepareApprovalInput: (input, signal) =>
         this.prepareApprovalInput(input, signal),
       isOnline: () => this.isOnline(),
+      logRetryEvent: (event) => this.recordAiWorkflowRetryEvent(event),
     });
+  }
+
+  private recordAiWorkflowRetryEvent(event: AiWorkflowRetryLogEvent): void {
+    const validatedEvent = aiWorkflowRetryLogEventSchema.parse(event);
+    const diagnostic = validatedEvent.severity === "warning"
+      ? serviceWarningDiagnostic
+      : serviceErrorDiagnostic;
+    this.options.diagnostic(
+      new AiWorkflowRetryLogEventError(validatedEvent),
+      "codex",
+      diagnostic,
+    );
   }
 
   private async applyProposalApplication(
@@ -4670,13 +4751,17 @@ export class TaskHubApplication {
     if (reason === "explicit" && record.approvalInFlight) {
       throw new Error("承認適用中のAIセッションは終了できません。");
     }
+    const stopDisposition: AiSessionCleanupDisposition = reason === "explicit"
+      ? { kind: "propagate_unrecorded" }
+      : { kind: "record" };
     record.closing = true;
+    const sessionStopPromise = record.session.stop(stopDisposition);
     record.lifecycleController.abort();
     for (const controller of record.operations.keys()) {
       controller.abort();
     }
     const closePromise = (async (): Promise<void> => {
-      const stopPromises: Promise<void>[] = [record.session.stop()];
+      const stopPromises: Promise<void>[] = [sessionStopPromise];
       if (record.externalToolBroker != null) {
         stopPromises.push(record.externalToolBroker.stop());
       }
@@ -4733,7 +4818,7 @@ export class TaskHubApplication {
         errors.push(error);
       }
       if (errors.length > 0) {
-        throw new AggregateError(errors, "AIセッションの終了に失敗しました。");
+        throw combineDiagnosticFailures(errors);
       }
     })();
     record.closePromise = closePromise;
@@ -4742,17 +4827,27 @@ export class TaskHubApplication {
 
   private async closeAiSessionStart(
     start: AiSessionStartRecord,
+    disposition: AiSessionCleanupDisposition,
   ): Promise<void> {
-    const stopPromises: Promise<void>[] = [];
+    const stopResultPromises: Promise<AiSessionPromiseResult>[] = [];
     if (start.session != null) {
-      stopPromises.push(start.session.stop());
+      switch (start.requestStopState.kind) {
+        case "not_claimed":
+          stopResultPromises.push(
+            settleAiSessionPromise(start.session.stop(disposition)),
+          );
+          break;
+        case "claimed":
+          stopResultPromises.push(start.requestStopState.result);
+          break;
+      }
     }
     if (start.externalToolBroker != null) {
-      stopPromises.push(start.externalToolBroker.stop());
+      stopResultPromises.push(
+        settleAiSessionPromise(start.externalToolBroker.stop()),
+      );
     }
-    const stopResults = await Promise.all(
-      stopPromises.map((promise) => settleAiSessionPromise(promise)),
-    );
+    const stopResults = await Promise.all(stopResultPromises);
     const errors = stopResults
       .filter((result) => result.kind === "rejected")
       .map((result) => result.error);
@@ -4765,7 +4860,7 @@ export class TaskHubApplication {
       errors.push(error);
     }
     if (errors.length > 0) {
-      throw new AggregateError(errors, "AIセッションの開始後処理に失敗しました。");
+      throw combineDiagnosticFailures(errors);
     }
   }
 
@@ -4803,10 +4898,24 @@ export class TaskHubApplication {
     start: AiSessionStartRecord,
     signal: AbortSignal,
   ): Promise<AiSessionStartResult> {
-    const removeRequestAbort = this.linkAbortSignal(
-      signal,
-      start.lifecycleController,
-    );
+    const abortForRequest = (): void => {
+      if (start.requestStopState.kind === "not_claimed" && start.session != null) {
+        start.requestStopState = {
+          kind: "claimed",
+          result: settleAiSessionPromise(
+            start.session.stop({ kind: "propagate_unrecorded" }),
+          ),
+        };
+      }
+      start.lifecycleController.abort();
+    };
+    signal.addEventListener("abort", abortForRequest, { once: true });
+    if (signal.aborted) {
+      abortForRequest();
+    }
+    const removeRequestAbort = (): void => {
+      signal.removeEventListener("abort", abortForRequest);
+    };
     let lifecycleTransferred = false;
     try {
       start.workspace = this.createAiSessionWorkspace(start.sessionId);
@@ -4824,7 +4933,7 @@ export class TaskHubApplication {
         this.aiStartResult = startResult;
         this.codexAuthenticationRequired = true;
         this.publishAiStatus();
-        await this.closeAiSessionStart(start);
+        await this.closeAiSessionStart(start, { kind: "propagate_unrecorded" });
         return { kind: "authentication_required" };
       }
       if (this.stopped || start.lifecycleController.signal.aborted) {
@@ -4840,6 +4949,8 @@ export class TaskHubApplication {
         start.session,
         externalToolResources.collector,
         baselineStore,
+        start.sessionId,
+        start.workspace.tmpDirectoryPath,
       );
       const removeDeltaListener = workflow.onDelta((delta) => {
         this.publishAiDelta(ipcAiDeltaEventSchema.parse({
@@ -4877,13 +4988,11 @@ export class TaskHubApplication {
       return { kind: "started", session_id: start.sessionId };
     } catch (error: unknown) {
       try {
-        await this.closeAiSessionStart(start);
+        await this.closeAiSessionStart(start, this.stopped
+          ? { kind: "record" }
+          : { kind: "propagate_unrecorded" });
       } catch (cleanupError: unknown) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "AIセッションの開始と後処理に失敗しました。",
-          { cause: error },
-        );
+        throw combineDiagnosticFailures([error, cleanupError]);
       }
       throw error;
     } finally {
@@ -4918,6 +5027,7 @@ export class TaskHubApplication {
       workspace: undefined,
       session: undefined,
       externalToolBroker: undefined,
+      requestStopState: { kind: "not_claimed" },
       completion: Promise.resolve().then<AiSessionStartResult>(() =>
         this.runAiSessionStart(start, signal)),
     };

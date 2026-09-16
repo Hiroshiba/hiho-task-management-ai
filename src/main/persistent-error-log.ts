@@ -17,7 +17,15 @@ import { isAbsolute, join, resolve } from "node:path";
 import { inspect } from "node:util";
 import { z } from "zod";
 import { isoDateTimeSchema } from "../shared/domain";
-import { diagnosticCodeSchema } from "../shared/storage";
+import {
+  diagnosticCodeSchema,
+  diagnosticLogEntrySchema,
+} from "../shared/storage";
+import {
+  AiWorkflowRetryLogEventError,
+  aiWorkflowRetryLogEventSchema,
+  type AiWorkflowRetryLogEvent,
+} from "./ai/workflow/retry";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import {
   CodexRpcError,
@@ -31,23 +39,13 @@ import {
   codexThreadStartCapabilityFailureCodeSchema,
   type CodexThreadStartCapabilityFailureCode,
 } from "./codex/session/errors";
+import { redactSensitiveText } from "./redact-sensitive-text";
 
 const maximumLogBytes = 1 * 1024 * 1024;
 const maximumZodIssues = 10;
 const maximumZodIssuePathElements = 10;
 const persistentErrorLogFileName = "taskhub-error.log";
 const persistentErrorLogFailureMessage = "永続エラーログの書き込みに失敗しました。";
-const credentialAssignmentPattern =
-  /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization|password|secret|credential)\b(\s*[:=])\s*(?:bearer\s+)?(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}\]&#?]+)/giu;
-const jsonCredentialPattern =
-  /((?:["'])(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization|password|secret|credential)(?:["'])\s*:\s*)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')/giu;
-const bearerPattern = /\b(bearer\s+)(?:"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}\]]+)/giu;
-const credentialQueryPattern =
-  /([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|password|secret|token|code)=)[^&#\s]+/giu;
-const obviousCredentialPattern =
-  /\b(?:sk|rk|gh[pousr]|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/giu;
-const jwtPattern =
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu;
 let persistentErrorLogFailureOutputEnabled = true;
 
 const persistentErrorLogSourceSchema = z.enum([
@@ -198,6 +196,7 @@ type ErrorDetail = {
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
   rpc_message?: string | undefined;
+  retry_event?: AiWorkflowRetryLogEvent | undefined;
 };
 
 const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
@@ -214,6 +213,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
       rpc_operation: codexRpcOperationSchema.optional(),
       rpc_code: codexRpcCodeSchema.optional(),
       rpc_message: z.string().optional(),
+      retry_event: aiWorkflowRetryLogEventSchema.optional(),
     })
     .strict(),
 );
@@ -221,7 +221,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
 const persistentErrorLogRecordSchema = z
   .object({
     occurred_at: isoDateTimeSchema,
-    severity: z.enum(["debug", "info", "warning", "error"]),
+    severity: diagnosticLogEntrySchema.shape.severity,
     source: persistentErrorLogSourceSchema,
     diagnostic_code: diagnosticCodeSchema,
     context: persistentErrorLogContextSchema,
@@ -320,16 +320,6 @@ function getStackTrace(value: unknown): string {
   return redactSensitiveText(value.stack);
 }
 
-function redactSensitiveText(value: string): string {
-  return value
-    .replace(credentialQueryPattern, "$1<伏せ字>")
-    .replace(jsonCredentialPattern, "$1<伏せ字>")
-    .replace(bearerPattern, "$1<伏せ字>")
-    .replace(credentialAssignmentPattern, "$1$2<伏せ字>")
-    .replace(obviousCredentialPattern, "<伏せ字>")
-    .replace(jwtPattern, "<伏せ字>");
-}
-
 type CodexRpcDetail = {
   rpc_operation?: CodexRpcOperation | undefined;
   rpc_code?: number | undefined;
@@ -344,6 +334,17 @@ function getCodexRpcDetail(value: unknown): CodexRpcDetail {
     rpc_operation: codexRpcOperationSchema.parse(value.operation),
     rpc_code: codexRpcCodeSchema.parse(value.rpcCode),
     rpc_message: redactSensitiveText(codexRpcMessageSchema.parse(value.rpcMessage)),
+  };
+}
+
+function getAiWorkflowRetryEventDetail(
+  value: unknown,
+): Pick<ErrorDetail, "retry_event"> {
+  if (!(value instanceof AiWorkflowRetryLogEventError)) {
+    return {};
+  }
+  return {
+    retry_event: aiWorkflowRetryLogEventSchema.parse(value.event),
   };
 }
 
@@ -475,6 +476,7 @@ function createErrorDetail(
       ...getSafeCodexTurnFailureDetail(value),
       ...getSafeCodexThreadStartCapabilityDetail(value),
       ...getCodexRpcDetail(value),
+      ...getAiWorkflowRetryEventDetail(value),
     };
 
     if (value instanceof Error && Object.prototype.hasOwnProperty.call(value, "cause")) {
@@ -574,7 +576,7 @@ function restoreAppendStart(
   throw normalizeThrownError(appendError, "永続エラーログの書き込みに失敗しました。");
 }
 
-/** 開発者向けのエラーを再起動後も確認できるJSONLログへ保存します。 */
+/** エラー詳細と安全な訂正再試行イベントをJSONLログへ保存します。 */
 export class PersistentErrorLog {
   private readonly logsPath: string;
   private readonly errorLogPath: string;
@@ -591,7 +593,7 @@ export class PersistentErrorLog {
     }
   }
 
-  /** 元エラーの本文とスタックトレースを記録します。 */
+  /** エラー詳細と安全な訂正再試行イベントを記録します。 */
   public record(
     source: PersistentErrorLogSource,
     diagnosticCode: DiagnosticRecord["code"],
