@@ -1351,6 +1351,7 @@ function orderApplicableContexts(
 function markAtomicGroupBlocked(
   contexts: readonly OperationContext[],
   selectedOperationIds: ReadonlySet<string>,
+  existingJournalOperationIds: ReadonlySet<string>,
   groupId: string,
   operationResults: Map<string, ApplicationOperationResult>,
   failedTemporaryRefs: Set<string>,
@@ -1360,6 +1361,7 @@ function markAtomicGroupBlocked(
     if (
       context.group.group_id !== groupId
       || !selectedOperationIds.has(context.operation.operation_id)
+      || existingJournalOperationIds.has(context.operation.operation_id)
       || operationResults.has(context.operation.operation_id)
     ) {
       continue;
@@ -1770,6 +1772,7 @@ export class AsanaProposalApplicationCoordinator {
         }
       }
     }
+    const existingJournalOperationIds = new Set(existingJournals.keys());
     const approvalInput = {
       ...validatedInput.approval_input,
       journal_task_mappings: mappingArray(mappings),
@@ -2004,6 +2007,7 @@ export class AsanaProposalApplicationCoordinator {
           markAtomicGroupBlocked(
             contexts,
             selected,
+            existingJournalOperationIds,
             context.group.group_id,
             operationResults,
             failedTemporaryRefs,
@@ -2057,6 +2061,7 @@ export class AsanaProposalApplicationCoordinator {
           markAtomicGroupBlocked(
             contexts,
             selected,
+            existingJournalOperationIds,
             context.group.group_id,
             operationResults,
             failedTemporaryRefs,
@@ -2158,6 +2163,7 @@ export class AsanaProposalApplicationCoordinator {
             markAtomicGroupBlocked(
               contexts,
               selected,
+              existingJournalOperationIds,
               context.group.group_id,
               operationResults,
               failedTemporaryRefs,
@@ -2328,6 +2334,7 @@ export class AsanaProposalApplicationCoordinator {
           markAtomicGroupBlocked(
             contexts,
             selected,
+            existingJournalOperationIds,
             context.group.group_id,
             operationResults,
             failedTemporaryRefs,
@@ -2473,6 +2480,7 @@ export class AsanaProposalApplicationCoordinator {
         markAtomicGroupBlocked(
           contexts,
           selected,
+          existingJournalOperationIds,
           context.group.group_id,
           operationResults,
           failedTemporaryRefs,
