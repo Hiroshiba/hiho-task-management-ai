@@ -29,6 +29,8 @@ const maximumQuestionBytes = 4 * 1024;
 const maximumTitleBytes = 1024;
 const maximumMessageBytes = 16 * 1024;
 
+export const maximumCodexResponseJsonBytes = 96 * 1024;
+
 const nonBlankTitleSchema = createUtf8ByteLimitedStringSchema(
   maximumTitleBytes,
 ).refine((value) => value.trim().length > 0, {
@@ -775,7 +777,7 @@ const generatedProposalSchema = proposalSchema.safeExtend({
   groups: z.array(generatedProposalGroupSchema).min(1).max(maximumProposalGroups),
 });
 
-/** AIが提案ファイルへ書き込む変更案を検証するスキーマです。 */
+/** AIが生成する変更案を検証するスキーマです。 */
 export const codexGeneratedProposalSchema = generatedProposalSchema;
 
 const withdrawConfirmationSchema = z
@@ -831,19 +833,10 @@ const proposalResponseSchema = z
   })
   .strict();
 
-const generatedProposalResponseSchema = proposalResponseSchema
-  .omit({ proposal: true })
-  .extend({
-    proposal_file_id: identifierSchema,
-  });
-
-const proposalFileErrorResponseSchema = z
-  .object({
-    kind: z.literal("proposal_file_error"),
-    error_code: z.literal("write_failed"),
-    message: messageSchema,
-  })
-  .strict();
+const generatedProposalResponseSchema = proposalResponseSchema.extend({
+  proposal_file_id: identifierSchema,
+  proposal: codexGeneratedProposalSchema,
+});
 
 const noProposalResponseSchema = z
   .object({
@@ -863,7 +856,6 @@ export const codexResponseSchema = z.discriminatedUnion("kind", [
 /** AIが新規生成する構造化出力を検証するスキーマです。 */
 export const codexGeneratedResponseSchema = z.discriminatedUnion("kind", [
   generatedProposalResponseSchema,
-  proposalFileErrorResponseSchema,
   noProposalResponseSchema,
 ]);
 

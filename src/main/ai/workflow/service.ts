@@ -4,7 +4,6 @@ import {
   baselineSnapshotSchema,
   canonicalizeJson,
   dependenciesSchema,
-  isJsonValue,
   type Duration,
   gidSchema,
   identifierSchema,
@@ -17,12 +16,10 @@ import {
   type TaskSnapshot,
 } from "../../../shared/domain";
 import {
-  codexGeneratedProposalSchema,
   codexResponseSchema,
   proposalOperationSchema,
   proposalSchema,
   type CodexResponse,
-  type CodexGeneratedResponse,
   type Proposal,
   type ProposalOperation,
 } from "../../../shared/ai";
@@ -103,6 +100,7 @@ import {
 } from "./proposal-file";
 import {
   aiWorkflowPreviousDigestSchema,
+  aiWorkflowCandidateDigestSchema,
   aiWorkflowRetryLogEventSchema,
   aiWorkflowSafeErrorProjectionSchema,
   aiWorkflowValidationErrorsSchema,
@@ -398,8 +396,10 @@ export interface AiWorkflowSessionPort {
 /** AIターン用提案ファイルの発行と読み書きを提供する境界です。 */
 export interface AiWorkflowProposalFilePort {
   createDraft(baseProposal: Proposal | undefined): AiWorkflowProposalFileLease;
-  readProposal(proposalFileId: string): AiWorkflowProposalCandidate;
-  inspectProposalCandidate(proposalFileId: string): AiWorkflowCandidateDigest;
+  stageProposal(
+    proposalFileId: string,
+    proposal: Proposal,
+  ): AiWorkflowProposalCandidate;
   refreshDraft(
     proposalFileId: string,
     baseProposal: Proposal | undefined,
@@ -454,8 +454,7 @@ const proposalFilePortSchema = z.custom<AiWorkflowProposalFilePort>(
     && value != null
     && [
       "createDraft",
-      "readProposal",
-      "inspectProposalCandidate",
+      "stageProposal",
       "refreshDraft",
       "writeValidationErrors",
       "dispose",
@@ -588,18 +587,6 @@ function compareStrings(left: string, right: string): number {
     return 1;
   }
   return 0;
-}
-
-function canonicalizeGeneratedJsonSchema(schema: unknown): string {
-  const serialized = JSON.stringify(schema);
-  if (serialized == null) {
-    throw new Error("生成された変更案スキーマをJSONへ変換できません。");
-  }
-  const parsed: unknown = JSON.parse(serialized);
-  if (!isJsonValue(parsed)) {
-    throw new Error("生成された変更案スキーマがJSON値ではありません。");
-  }
-  return canonicalizeJson(parsed);
 }
 
 function createTaskSnapshot(task: Task): TaskSnapshot {
@@ -1611,14 +1598,11 @@ function createTurnPrompt(
   );
   const taskNotesSourceIdPattern =
     `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
-  const proposalFileSchema = z.toJSONSchema(codexGeneratedProposalSchema, {
-    target: "draft-07",
-  });
   const correctionInstructions = retryContext.kind === "initial"
     ? []
     : [
-        "前回の検証エラーを修正してください。検証エラーファイルは読み取り専用で、内容を変更・削除しないでください。記載されたJSON Pointerと型付きcodeに従い、提案ファイルだけを修正してください。",
-        "検証エラーには会話本文や根拠本文を含めていません。提案ファイルの既存内容と今回のコンテキストを照合してください。",
+        "前回の検証エラーを修正してください。検証エラーファイルは読み取り専用で、内容を変更・削除しないでください。記載されたJSON Pointerと型付きcodeに従い、response_jsonの完全なproposalを訂正してください。",
+        "検証エラーには会話本文や根拠本文を含めていません。提案ファイルの直近候補と今回のコンテキストを照合してください。",
         "<validation_errors>",
         canonicalizeJson({
           attempt: retryContext.failedAttempt,
@@ -1629,10 +1613,9 @@ function createTurnPrompt(
       ];
   return [
     "TaskHubの構造化変更案だけを検討してください。",
-    "変更案を返す場合は、指定された提案ファイルを完全な変更案JSONへ更新し、最終応答には発行済みproposal_file_idだけを指定してください。",
-    "提案ファイルの内容が変更案の正本であり、最終応答へ変更案JSONを埋め込まないでください。",
-    "提案ファイルを削除、移動、置換しないでください。アプリが事前に作成した指定パスの同じファイルへ完全なUTF-8 JSONを書き込み、書き込みを完了してファイルを閉じてから最終応答を返してください。バックグラウンドwriterや完了前の非同期書き込みを残さないでください。",
-    "提案ファイルのUTF-8バイト数は256KiB以下にしてください。書き込みに失敗した場合はproposal_file_idを返さず、最終応答へkind: proposal_file_error、error_code: write_failed、messageを指定してください。",
+    "変更案を返す場合は、response_jsonへproposal_file_idと完全なproposalを指定してください。",
+    "提案ファイルはアプリが保持する前案または直近候補を読むための読み取り専用文脈です。提案ファイルを変更、削除、移動、置換しないでください。",
+    "完全な新しい変更案は提案ファイルへ書き込まず、response_jsonのproposalへ返してください。",
     ...correctionInstructions,
     "<baseline_context>",
     canonicalizeJson(context),
@@ -1643,9 +1626,6 @@ function createTurnPrompt(
       proposal_file_path: proposalFile.proposal_file_path,
     }),
     "</proposal_file>",
-    "<proposal_file_schema>",
-    canonicalizeGeneratedJsonSchema(proposalFileSchema),
-    "</proposal_file_schema>",
     "<target_task_context>",
     canonicalizeJson(targetTaskContext),
     "</target_task_context>",
@@ -3029,7 +3009,7 @@ export class AiWorkflowService {
             }
             throw new AiWorkflowSyncError(error);
           }
-          const classification = this.classifyRetryFailure(error, proposalFile);
+          const classification = this.classifyRetryFailure(error);
           if (classification.kind === "not_retryable") {
             throw error;
           }
@@ -3219,7 +3199,6 @@ export class AiWorkflowService {
 
   private classifyRetryFailure(
     error: unknown,
-    proposalFile: AiWorkflowProposalFileLease,
   ):
     | { readonly kind: "retryable"; readonly failure: AiWorkflowRetryableFailureError }
     | { readonly kind: "not_retryable" } {
@@ -3229,35 +3208,16 @@ export class AiWorkflowService {
     if (!(error instanceof CodexSessionOutputValidationError)) {
       return { kind: "not_retryable" };
     }
-    try {
-      return {
-        kind: "retryable",
-        failure: createStructuredOutputFailure(
-          error,
-          this.options.proposalFileStore.inspectProposalCandidate(
-            proposalFile.proposal_file_id,
-          ),
-        ),
-      };
-    } catch (inspectionError: unknown) {
-      if (!(inspectionError instanceof AiWorkflowRetryableFailureError)) {
-        throw inspectionError;
-      }
-      const outputFailure = createStructuredOutputFailure(error, inspectionError.candidateDigest);
-      return {
-        kind: "retryable",
-        failure: new AiWorkflowRetryableFailureError(
-          [...outputFailure.issues, ...inspectionError.issues],
-          inspectionError.candidateDigest,
-          inspectionError.recoveryAction,
-          new AggregateError(
-            [error, inspectionError],
-            "構造化出力と提案ファイルの検証に失敗しました。",
-            { cause: error },
-          ),
-        ),
-      };
-    }
+    return {
+      kind: "retryable",
+      failure: createStructuredOutputFailure(
+        error,
+        aiWorkflowCandidateDigestSchema.parse({
+          kind: "unavailable",
+          reason: "not_staged",
+        }),
+      ),
+    };
   }
 
   private writeValidationErrorsSafely(
@@ -3463,15 +3423,12 @@ export class AiWorkflowService {
       ),
     };
     const generatedResponse = sessionTurnResult.response;
-    if (generatedResponse.kind === "proposal_file_error") {
-      const failure = this.proposalFileWriteFailure(proposalFile, generatedResponse);
-      throw failure;
-    }
     let validatedResponse: ValidatedGeneratedResponse;
     if (generatedResponse.kind === "proposal") {
-      const candidate = this.readProposalFile(
+      const candidate = this.stageProposalFile(
         generatedResponse.proposal_file_id,
         proposalFile,
+        generatedResponse.proposal,
       );
       const response = codexResponseSchema.parse({
         kind: generatedResponse.kind,
@@ -3553,46 +3510,6 @@ export class AiWorkflowService {
     };
   }
 
-  private proposalFileWriteFailure(
-    proposalFile: AiWorkflowProposalFileLease,
-    response: Extract<CodexGeneratedResponse, { readonly kind: "proposal_file_error" }>,
-  ): AiWorkflowRetryableFailureError {
-    const issue = aiWorkflowValidationIssueSchema.parse({
-      phase: "proposal_file",
-      code: "proposal_file_write_failed",
-      json_pointer: "/error_code",
-    });
-    try {
-      return new AiWorkflowRetryableFailureError(
-        [issue],
-        this.options.proposalFileStore.inspectProposalCandidate(
-          proposalFile.proposal_file_id,
-        ),
-        "fresh_lease",
-        new AiWorkflowProposalFileError(
-          "AI変更案ファイルへの書き込みに失敗しました。",
-          new Error(response.error_code),
-        ),
-      );
-    } catch (error: unknown) {
-      if (!(error instanceof AiWorkflowRetryableFailureError)) {
-        throw error;
-      }
-      return new AiWorkflowRetryableFailureError(
-        [issue, ...error.issues],
-        error.candidateDigest,
-        "fresh_lease",
-        new AggregateError(
-          [new AiWorkflowProposalFileError(
-            "AI変更案ファイルへの書き込みに失敗しました。",
-            new Error(response.error_code),
-          ), error],
-          "変更案ファイルの書き込み失敗と候補ファイル確認に失敗しました。",
-        ),
-      );
-    }
-  }
-
   private disposeTurnFilesSafely(
     proposalFileId: string,
     logicalTurnId: string,
@@ -3665,9 +3582,10 @@ export class AiWorkflowService {
     return commit.result;
   }
 
-  private readProposalFile(
+  private stageProposalFile(
     proposalFileId: string,
     expectedProposalFile: AiWorkflowProposalFileLease,
+    proposal: Proposal,
   ): AiWorkflowProposalCandidate {
     if (proposalFileId !== expectedProposalFile.proposal_file_id) {
       const issue = aiWorkflowValidationIssueSchema.parse({
@@ -3675,48 +3593,19 @@ export class AiWorkflowService {
         code: "proposal_file_id_mismatch",
         json_pointer: "/proposal_file_id",
       });
-      let inspection:
-        | { readonly kind: "inspected"; readonly digest: AiWorkflowCandidateDigest }
-        | { readonly kind: "failed"; readonly error: unknown };
-      try {
-        inspection = {
-          kind: "inspected",
-          digest: this.options.proposalFileStore.inspectProposalCandidate(
-            expectedProposalFile.proposal_file_id,
-          ),
-        };
-      } catch (error: unknown) {
-        inspection = { kind: "failed", error };
-      }
-      if (inspection.kind === "failed") {
-        if (!(inspection.error instanceof AiWorkflowRetryableFailureError)) {
-          throw inspection.error;
-        }
-        throw new AiWorkflowRetryableFailureError(
-          [issue, ...inspection.error.issues],
-          inspection.error.candidateDigest,
-          "fresh_lease",
-          new AggregateError(
-            [
-              new AiWorkflowProposalFileError(
-                "AI応答の変更案ファイルIDが今回のAIターンへ発行したIDと一致しません。",
-              ),
-              inspection.error,
-            ],
-            "変更案ファイルIDの不一致と発行済みファイルの確認に失敗しました。",
-          ),
-        );
-      }
       throw new AiWorkflowRetryableFailureError(
         [issue],
-        inspection.digest,
+        aiWorkflowCandidateDigestSchema.parse({
+          kind: "unavailable",
+          reason: "not_staged",
+        }),
         "fresh_lease",
         new AiWorkflowProposalFileError(
           "AI応答の変更案ファイルIDが今回のAIターンへ発行したIDと一致しません。",
         ),
       );
     }
-    return this.options.proposalFileStore.readProposal(proposalFileId);
+    return this.options.proposalFileStore.stageProposal(proposalFileId, proposal);
   }
 
   /** 保持中の変更案を取得してRenderer向けDTOへ変換します。 */

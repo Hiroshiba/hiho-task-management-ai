@@ -17,7 +17,6 @@ import {
   normalizeSecurePersistentFilePath,
   removeSecurePersistentFileFromIsolation,
   readSecurePersistentFileBytesWithByteLimit,
-  SecurePersistentFileSizeLimitError,
   type SecurePersistentFileIdentity,
   type SecurePersistentFileIsolationResult,
   type SecurePersistentFileLocation,
@@ -25,19 +24,11 @@ import {
 } from "../../local-storage-path";
 import {
   AiWorkflowProposalFileError,
-  AiWorkflowRetryableFailureError,
 } from "./errors";
 import {
   aiWorkflowCandidateDigestSchema,
-  aiWorkflowProposalFileErrorCodeSchema,
-  aiWorkflowRetryCodeSchema,
-  aiWorkflowRetryPhaseSchema,
-  aiWorkflowValidationIssueSchema,
   aiWorkflowValidationErrorsSchema,
-  aiWorkflowZodIssueCodeSchema,
   type AiWorkflowCandidateDigest,
-  type AiWorkflowProposalFileErrorCode,
-  type AiWorkflowValidationIssue,
 } from "./retry";
 
 const maximumProposalFileBytes = 256 * 1024;
@@ -89,11 +80,6 @@ type ActiveValidationErrorsFile = {
   readonly location: ActiveProposalFileLocation;
 };
 
-type ProposalFileBytes = {
-  readonly bytes: Buffer;
-  readonly digest: AiWorkflowCandidateDigest;
-};
-
 export type AiWorkflowProposalCandidate = {
   readonly proposal: Proposal;
   readonly candidate_digest: AiWorkflowCandidateDigest;
@@ -124,56 +110,6 @@ function candidateDigest(bytes: Buffer): AiWorkflowCandidateDigest {
     kind: "available",
     sha256: createHash("sha256").update(bytes).digest("hex"),
   });
-}
-
-function jsonPointer(path: readonly PropertyKey[]): string {
-  const secretLikeFieldName = /(?:password|token|secret|credential|authorization|api[_-]?key)/iu;
-  const segments = path.map((segment) => {
-    if (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0) {
-      return String(segment);
-    }
-    if (
-      typeof segment !== "string"
-      || !/^[A-Za-z0-9_-]{1,64}$/u.test(segment)
-      || secretLikeFieldName.test(segment)
-    ) {
-      return "unknown_field";
-    }
-    return segment.replaceAll("~", "~0").replaceAll("/", "~1");
-  });
-  return segments.length === 0 ? "" : `/${segments.join("/")}`;
-}
-
-function proposalFileFailure(
-  code: AiWorkflowProposalFileErrorCode,
-  pointer: string,
-  candidateDigestValue: AiWorkflowCandidateDigest,
-  recoveryAction: "reuse_lease" | "fresh_lease",
-  cause: unknown,
-): AiWorkflowRetryableFailureError {
-  const validatedCode = aiWorkflowProposalFileErrorCodeSchema.parse(code);
-  return new AiWorkflowRetryableFailureError(
-    [aiWorkflowValidationIssueSchema.parse({
-      phase: aiWorkflowRetryPhaseSchema.parse("proposal_file"),
-      code: aiWorkflowRetryCodeSchema.parse(validatedCode),
-      json_pointer: pointer,
-    })],
-    candidateDigestValue,
-    recoveryAction,
-    cause,
-  );
-}
-
-function candidateValidationIssues(
-  errors: readonly z.ZodIssue[],
-  code: AiWorkflowValidationIssue["code"],
-): AiWorkflowValidationIssue[] {
-  return errors.map((error) => aiWorkflowValidationIssueSchema.parse({
-    phase: "proposal_file",
-    code,
-    json_pointer: jsonPointer(error.path),
-    validator_code: aiWorkflowZodIssueCodeSchema.parse(error.code),
-  }));
 }
 
 function isProposalFileWithinDirectory(
@@ -397,6 +333,103 @@ export class AiWorkflowProposalFileStore {
     return lease;
   }
 
+  /** 応答の変更案を正規化して提案ファイルへ保存し、保存内容を検証します。 */
+  public stageProposal(
+    proposalFileId: string,
+    proposal: Proposal,
+  ): AiWorkflowProposalCandidate {
+    const parsedProposalFileId = identifierSchema.parse(proposalFileId);
+    const activeFile = this.activeFiles.get(parsedProposalFileId);
+    if (activeFile == null) {
+      throw new AiWorkflowProposalFileError(
+        "指定された変更案ファイルは現在のAIターンへ発行されていません。",
+      );
+    }
+    if (activeFile.location.kind !== "source_path") {
+      throw new AiWorkflowProposalFileError(
+        "AI変更案ファイルの保存位置が失われています。",
+      );
+    }
+    const validatedProposal = codexGeneratedProposalSchema.parse(proposal);
+    const content = canonicalizeJson(validatedProposal);
+    assertProposalFileSize(content);
+    let writtenIdentity: ProposalFileIdentity;
+    try {
+      const currentIdentity = assertSecurePersistentFileSnapshot(
+        activeFile.lease.proposal_file_path,
+        activeFile.identity,
+        "AI変更案ファイル",
+      );
+      if (currentIdentity.kind === "missing") {
+        throw new Error("AI変更案ファイルが保存前に消失しました。");
+      }
+      writtenIdentity = writeSecurePersistentTextFileAtomically(
+        activeFile.lease.proposal_file_path,
+        content,
+        "AI変更案ファイル",
+      );
+    } catch (error: unknown) {
+      throw new AiWorkflowProposalFileError(
+        "AI変更案ファイルへ変更案を保存できません。",
+        error,
+      );
+    }
+    this.activeFiles.set(parsedProposalFileId, {
+      ...activeFile,
+      identity: writtenIdentity,
+      location: { kind: "source_path" },
+    });
+    let capturedIdentity: ProposalFileIdentity;
+    try {
+      const captured = assertSecurePersistentFileSnapshot(
+        activeFile.lease.proposal_file_path,
+        writtenIdentity,
+        "AI変更案ファイル",
+      );
+      if (captured.kind === "missing") {
+        throw new Error("AI変更案ファイルを保存後に確認できません。");
+      }
+      capturedIdentity = captured;
+      this.activeFiles.set(parsedProposalFileId, {
+        ...activeFile,
+        identity: capturedIdentity,
+        location: { kind: "source_path" },
+      });
+      const bytes = readSecurePersistentFileBytesWithByteLimit(
+        activeFile.lease.proposal_file_path,
+        "AI変更案ファイル",
+        maximumProposalFileBytes,
+      );
+      if (bytes == null) {
+        throw new Error("AI変更案ファイルを保存後に読み込めません。");
+      }
+      const afterReadIdentity = assertSecurePersistentFileSnapshot(
+        activeFile.lease.proposal_file_path,
+        capturedIdentity,
+        "AI変更案ファイル",
+      );
+      if (afterReadIdentity.kind === "missing") {
+        throw new Error("AI変更案ファイルが読み取り後に消失しました。");
+      }
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const parsedContent: unknown = JSON.parse(decoded);
+      const readProposal = codexGeneratedProposalSchema.parse(parsedContent);
+      const canonicalBytes = Buffer.from(content, "utf8");
+      if (!bytes.equals(canonicalBytes)) {
+        throw new Error("AI変更案ファイルの保存内容が正規化後の変更案と一致しません。");
+      }
+      return {
+        proposal: proposalSchema.parse(readProposal),
+        candidate_digest: candidateDigest(canonicalBytes),
+      };
+    } catch (error: unknown) {
+      throw new AiWorkflowProposalFileError(
+        "AI変更案ファイルの保存内容を安全に検証できません。",
+        error,
+      );
+    }
+  }
+
   /** 検証エラーをAIへ渡すセッション専用ファイルのパスを返します。 */
   public validationErrorsFilePath(logicalTurnId: string): string {
     const parsedTurnId = identifierSchema.parse(logicalTurnId);
@@ -570,150 +603,6 @@ export class AiWorkflowProposalFileStore {
         };
     }
     throw new Error("未対応のAI変更案ファイル削除結果です。");
-  }
-
-  /** AIターン完了後に提案ファイルを安全に読み込みます。 */
-  public readProposal(proposalFileId: string): AiWorkflowProposalCandidate {
-    const candidate = this.readProposalBytes(proposalFileId);
-    let content: string;
-    try {
-      content = new TextDecoder("utf-8", { fatal: true }).decode(candidate.bytes);
-    } catch (error: unknown) {
-      throw proposalFileFailure(
-        "proposal_file_invalid_utf8",
-        "",
-        candidate.digest,
-        "reuse_lease",
-        error,
-      );
-    }
-    let parsedContent: unknown;
-    try {
-      parsedContent = JSON.parse(content);
-    } catch (error: unknown) {
-      throw proposalFileFailure(
-        "proposal_file_invalid_json",
-        "",
-        candidate.digest,
-        "reuse_lease",
-        error,
-      );
-    }
-    const parsedProposal = codexGeneratedProposalSchema.safeParse(parsedContent);
-    if (!parsedProposal.success) {
-      const issues = candidateValidationIssues(
-        parsedProposal.error.issues,
-        "proposal_file_schema_invalid",
-      );
-      throw new AiWorkflowRetryableFailureError(
-        issues.length === 0
-          ? [aiWorkflowValidationIssueSchema.parse({
-              phase: "proposal_file",
-              code: "proposal_file_schema_invalid",
-              json_pointer: "",
-            })]
-          : issues,
-        candidate.digest,
-        "reuse_lease",
-        parsedProposal.error,
-      );
-    }
-    return {
-      proposal: parsedProposal.data,
-      candidate_digest: candidate.digest,
-    };
-  }
-
-  /** 現在の変更案候補を安全に読み取りSHA-256を返します。 */
-  public inspectProposalCandidate(proposalFileId: string): AiWorkflowCandidateDigest {
-    return this.readProposalBytes(proposalFileId).digest;
-  }
-
-  private readProposalBytes(proposalFileId: string): ProposalFileBytes {
-    const parsedProposalFileId = identifierSchema.parse(proposalFileId);
-    const activeFile = this.activeFiles.get(parsedProposalFileId);
-    if (activeFile == null) {
-      throw proposalFileFailure(
-        "proposal_file_boundary_violation",
-        "/proposal_file_id",
-        { kind: "unavailable", reason: "unsafe" },
-        "fresh_lease",
-        new AiWorkflowProposalFileError(
-          "指定された変更案ファイルは現在のAIターンへ発行されていません。",
-        ),
-      );
-    }
-    if (activeFile.location.kind !== "source_path") {
-      throw proposalFileFailure(
-        "proposal_file_boundary_violation",
-        "",
-        { kind: "unavailable", reason: "unsafe" },
-        "fresh_lease",
-        new AiWorkflowProposalFileError(
-          "AI変更案ファイルの安全な読み込み位置が失われています。",
-        ),
-      );
-    }
-    try {
-      const expectedIdentity = assertSecurePersistentFileSnapshot(
-        activeFile.lease.proposal_file_path,
-        activeFile.identity,
-        "AI変更案ファイル",
-      );
-      const proposalFilePath = activeFile.lease.proposal_file_path;
-      if (expectedIdentity.kind === "missing") {
-        throw proposalFileFailure(
-          "proposal_file_boundary_violation",
-          "",
-          { kind: "unavailable", reason: "missing" },
-          "fresh_lease",
-          new AiWorkflowProposalFileError("AI変更案ファイルが見つかりません。"),
-        );
-      }
-      const bytes = readSecurePersistentFileBytesWithByteLimit(
-        proposalFilePath,
-        "AI変更案ファイル",
-        maximumProposalFileBytes,
-      );
-      assertSecurePersistentFileSnapshot(
-        proposalFilePath,
-        activeFile.identity,
-        "AI変更案ファイル",
-      );
-      if (bytes == null) {
-        throw proposalFileFailure(
-          "proposal_file_boundary_violation",
-          "",
-          { kind: "unavailable", reason: "missing" },
-          "fresh_lease",
-          new AiWorkflowProposalFileError("AI変更案ファイルが見つかりません。"),
-        );
-      }
-      return {
-        bytes,
-        digest: candidateDigest(bytes),
-      };
-    } catch (error: unknown) {
-      if (error instanceof AiWorkflowRetryableFailureError) {
-        throw error;
-      }
-      if (error instanceof SecurePersistentFileSizeLimitError) {
-        throw proposalFileFailure(
-          "proposal_file_too_large",
-          "",
-          { kind: "unavailable", reason: "too_large" },
-          "reuse_lease",
-          error,
-        );
-      }
-      throw proposalFileFailure(
-        "proposal_file_boundary_violation",
-        "",
-        { kind: "unavailable", reason: "unsafe" },
-        "fresh_lease",
-        error,
-      );
-    }
   }
 
   private createRefreshedDraft(
