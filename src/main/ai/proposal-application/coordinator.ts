@@ -3006,6 +3006,15 @@ export class AsanaProposalApplicationCoordinator {
           | "task_not_found",
         taskGid: string | undefined,
       ): void => {
+        const observedEffectCertainty = observedEffectByOperation.get(
+          entry.context.operation.operation_id,
+        );
+        if (observedEffectCertainty == null) {
+          throw new Error("復旧対象の外部作用確度がありません。");
+        }
+        if (observedEffectCertainty !== "none") {
+          throw new Error("外部作用がnoneではない操作を未適用として確定できません。");
+        }
         const stage = stageByOperation.get(entry.journal.operation_id);
         if (stage == null) {
           throw new Error("復旧対象の適用段階がありません。");
@@ -3667,8 +3676,15 @@ export class AsanaProposalApplicationCoordinator {
         if (
           inspection.core_state === "conflict"
           || inspection.metadata_state === "conflict"
-          || currentStageIndex >= journalStages.indexOf("read_back")
         ) {
+          if (observedEffectByOperation.get(operationId) === "none") {
+            completeNotApplied(entry, "writer_conflict", taskGid);
+          } else {
+            markUnresolved(entry, "recovery_required", taskGid);
+          }
+          continue;
+        }
+        if (currentStageIndex >= journalStages.indexOf("read_back")) {
           markUnresolved(entry, "recovery_required", taskGid);
           continue;
         }
@@ -3710,7 +3726,11 @@ export class AsanaProposalApplicationCoordinator {
           );
         }
         if (writerResult.outcome === "conflict") {
-          if (writerResult.side_effect === "none" && currentStageIndex < journalStages.indexOf("read_back")) {
+          if (
+            writerResult.side_effect === "none"
+            && observedEffectByOperation.get(operationId) === "none"
+            && currentStageIndex < journalStages.indexOf("read_back")
+          ) {
             completeNotApplied(entry, "writer_conflict", taskGid);
           } else {
             markUnresolved(entry, "recovery_required", taskGid);
