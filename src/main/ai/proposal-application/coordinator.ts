@@ -437,13 +437,6 @@ function targetGid(
   return mappings.get(operation.target.ref);
 }
 
-function temporaryTargetRef(operation: ProposalOperation): string | undefined {
-  if (operation.operation === "create_task") {
-    return undefined;
-  }
-  return operation.target.kind === "temporary" ? operation.target.ref : undefined;
-}
-
 function operationTemporaryReferences(
   operation: ProposalOperation,
 ): readonly string[] {
@@ -1360,6 +1353,7 @@ function markAtomicGroupBlocked(
   selectedOperationIds: ReadonlySet<string>,
   groupId: string,
   operationResults: Map<string, ApplicationOperationResult>,
+  failedTemporaryRefs: Set<string>,
   mappings: ReadonlyMap<string, string>,
 ): void {
   for (const context of contexts) {
@@ -1369,6 +1363,9 @@ function markAtomicGroupBlocked(
       || operationResults.has(context.operation.operation_id)
     ) {
       continue;
+    }
+    if (context.operation.operation === "create_task") {
+      failedTemporaryRefs.add(context.operation.temporary_ref);
     }
     operationResults.set(
       context.operation.operation_id,
@@ -1860,6 +1857,9 @@ export class AsanaProposalApplicationCoordinator {
             targetGid(context.operation, mappings),
           ),
         );
+        if (context.operation.operation === "create_task") {
+          failedTemporaryRefs.add(context.operation.temporary_ref);
+        }
         continue;
       }
       const group = approvalGroups.get(context.group.group_id);
@@ -1905,6 +1905,9 @@ export class AsanaProposalApplicationCoordinator {
           targetGid(context.operation, mappings),
           ),
         );
+        if (context.operation.operation === "create_task") {
+          failedTemporaryRefs.add(context.operation.temporary_ref);
+        }
       }
     }
     const applicableContexts = orderApplicableContexts(
@@ -1960,12 +1963,16 @@ export class AsanaProposalApplicationCoordinator {
       if (operationResults.has(context.operation.operation_id)) {
         continue;
       }
-      const temporaryRef = temporaryTargetRef(context.operation);
+      const hasFailedTemporaryReference = operationTemporaryReferences(
+        context.operation,
+      ).some((temporaryRef) => failedTemporaryRefs.has(temporaryRef));
       if (
-        temporaryRef != null
-        && failedTemporaryRefs.has(temporaryRef)
+        hasFailedTemporaryReference
         && !existingJournals.has(context.operation.operation_id)
       ) {
+        if (context.operation.operation === "create_task") {
+          failedTemporaryRefs.add(context.operation.temporary_ref);
+        }
         this.reportJournalEvent(
           new Error("一時参照元の操作が完了していないため、この操作を適用しませんでした。"),
           {
@@ -1999,6 +2006,7 @@ export class AsanaProposalApplicationCoordinator {
             selected,
             context.group.group_id,
             operationResults,
+            failedTemporaryRefs,
             mappings,
           );
         }
@@ -2051,6 +2059,7 @@ export class AsanaProposalApplicationCoordinator {
             selected,
             context.group.group_id,
             operationResults,
+            failedTemporaryRefs,
             mappings,
           );
         }
@@ -2151,6 +2160,7 @@ export class AsanaProposalApplicationCoordinator {
               selected,
               context.group.group_id,
               operationResults,
+              failedTemporaryRefs,
               mappings,
             );
           }
@@ -2320,6 +2330,7 @@ export class AsanaProposalApplicationCoordinator {
             selected,
             context.group.group_id,
             operationResults,
+            failedTemporaryRefs,
             mappings,
           );
         }
@@ -2464,6 +2475,7 @@ export class AsanaProposalApplicationCoordinator {
           selected,
           context.group.group_id,
           operationResults,
+          failedTemporaryRefs,
           mappings,
         );
       }
@@ -2483,6 +2495,9 @@ export class AsanaProposalApplicationCoordinator {
         && !operationResults.has(context.operation.operation_id)
       ) {
         const taskGid = targetGid(context.operation, mappings);
+        if (context.operation.operation === "create_task") {
+          failedTemporaryRefs.add(context.operation.temporary_ref);
+        }
         operationResults.set(
           context.operation.operation_id,
           createOperationResult(
