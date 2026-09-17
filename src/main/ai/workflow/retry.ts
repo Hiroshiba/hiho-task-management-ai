@@ -50,7 +50,6 @@ export const aiWorkflowRetryPhaseSchema = z.enum([
 
 export const aiWorkflowRetryCodeSchema = z.enum([
   "structured_output_invalid",
-  "proposal_file_write_failed",
   "proposal_file_read_failed",
   "proposal_file_id_mismatch",
   "proposal_file_boundary_violation",
@@ -66,7 +65,6 @@ export const aiWorkflowRetryCodeSchema = z.enum([
 ]);
 
 export const aiWorkflowProposalFileErrorCodeSchema = z.enum([
-  "proposal_file_write_failed",
   "proposal_file_read_failed",
   "proposal_file_id_mismatch",
   "proposal_file_boundary_violation",
@@ -84,7 +82,7 @@ export const aiWorkflowCandidateDigestSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({
     kind: z.literal("unavailable"),
-    reason: z.enum(["missing", "unsafe", "too_large", "read_failed"]),
+    reason: z.enum(["missing", "unsafe", "too_large", "read_failed", "not_staged"]),
   }).strict(),
 ]);
 

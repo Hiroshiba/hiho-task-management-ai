@@ -64,6 +64,7 @@ import {
 } from "../../diagnostic-failure";
 import {
   codexGeneratedResponseSchema,
+  maximumCodexResponseJsonBytes,
   type CodexGeneratedResponse,
 } from "../../../shared/ai";
 import {
@@ -151,7 +152,7 @@ const finalAgentMessageSchema = z
 
 const structuredOutputEnvelopeSchema = z
   .object({
-    response_json: createUtf8ByteLimitedStringSchema(maximumFinalMessageBytes),
+    response_json: createUtf8ByteLimitedStringSchema(maximumCodexResponseJsonBytes),
   })
   .strict();
 
