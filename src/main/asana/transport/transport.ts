@@ -346,6 +346,9 @@ export class AsanaTransport {
         throw new AsanaPaymentRequiredError();
       }
       if (response.status === 429) {
+        if (!retrySafe) {
+          throw new AsanaRateLimitError();
+        }
         const delay = parseRetryAfter(response.headers.get("retry-after"));
         if (temporaryRetryCount >= maximumTemporaryRetries) {
           throw new AsanaRateLimitError();

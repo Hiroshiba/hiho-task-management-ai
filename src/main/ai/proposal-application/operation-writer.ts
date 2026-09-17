@@ -30,6 +30,11 @@ import {
   type AsanaTaskUpdate,
 } from "../../asana/client/task-write-client";
 import {
+  createReadBackDelaysMilliseconds,
+  waitForCreateReadBack,
+} from "../../asana/create-read-back";
+import { AsanaHttpError } from "../../asana/transport";
+import {
   asanaProposalOperationWriterInputSchema,
   asanaProposalOperationWriterResultSchema,
   type AsanaProposalOperationWriterInput,
@@ -50,6 +55,20 @@ type TaskStatusValue = "not_started" | "in_progress" | "completed" | "withdrawn"
 type WriterInput = AsanaProposalOperationWriterInput;
 type WriterResult = AsanaProposalOperationWriterResult;
 type WriterConflictReasonCode = Extract<WriterResult, { outcome: "conflict" }>["reason_code"];
+type CreateReadBackPendingReason = "projection" | "not_found";
+type CreateReadBackObservation =
+  | { readonly kind: "ready"; readonly task: AsanaTaskResponse }
+  | {
+      readonly kind: "pending";
+      readonly reason: CreateReadBackPendingReason;
+    }
+  | {
+      readonly kind: "conflict";
+      readonly reason_code: Extract<
+        WriterConflictReasonCode,
+        "read_back_mismatch" | "external_unreadable" | "external_identity_mismatch"
+      >;
+    };
 type SectionGids = AsanaProposalWriterSectionGids;
 type TemporaryRefMapping = AsanaProposalWriterTemporaryRefMapping;
 type AsanaTag = z.infer<typeof asanaTagResponseSchema>;
@@ -92,6 +111,17 @@ type ExternalMergePlan =
       readonly kind: "conflict";
       readonly reason_code: "merge_conflict" | "external_capacity_exceeded";
     };
+
+/** 作成済みタスクが読み戻せないことを表します。 */
+export class CreateTaskNotFoundError extends Error {
+  public readonly taskGid: string;
+
+  public constructor(taskGid: string) {
+    super("作成済みタスクを読み戻せません。");
+    this.name = "CreateTaskNotFoundError";
+    this.taskGid = taskGid;
+  }
+}
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -1099,7 +1129,7 @@ function expectedExternalWriteGuard(expected: ExpectedExternal): OperationWriteG
   };
 }
 
-function classifyCreateCore(
+function classifyCreateStaticFields(
   task: AsanaTaskResponse,
   input: WriterInput,
   operation: CreateOperation,
@@ -1107,8 +1137,7 @@ function classifyCreateCore(
   tags: readonly AsanaTag[],
 ): FieldClassification {
   if (
-    !taskHasProject(task, input.project_gid)
-    || task.name !== operation.after.title
+    task.name !== operation.after.title
     || task.notes !== (operation.after.notes ?? "")
     || !sameDueValue(
       taskDueValue(task),
@@ -1141,41 +1170,6 @@ function classifyCreateCore(
         && areaTags[0]?.name === areaTag.name
       ? "after"
       : "conflict";
-  const status = expectedStatus(
-    operation.after.status ?? "not_started",
-    input.section_gids,
-  );
-  const memberships = task.memberships.filter(
-    (membership) => membership.project.gid === input.project_gid,
-  );
-  if (memberships.length > 1) {
-    return "conflict";
-  }
-  const membership = memberships[0];
-  let statusState: FieldClassification;
-  if (membership == null) {
-    statusState = task.completed ? "conflict" : "before";
-  } else if (membership.section == null) {
-    statusState = "conflict";
-  } else if (
-    membership.section.gid === status.section_gid
-    && task.completed === status.completed
-  ) {
-    statusState = "after";
-  } else if (
-    membership.section.gid === status.section_gid
-    && !task.completed
-    && status.completed
-  ) {
-    statusState = "partial";
-  } else if (
-    membership.section.gid === input.section_gids.not_started
-    && !task.completed
-  ) {
-    statusState = "before";
-  } else {
-    statusState = "conflict";
-  }
   const expectedParent = operation.after.parent == null
     ? null
     : resolveTargetGid(operation.after.parent, mappings);
@@ -1185,7 +1179,7 @@ function classifyCreateCore(
     : currentParent == null && expectedParent != null
       ? "before"
       : "conflict";
-  const states = [importState, areaState, statusState, parentState];
+  const states = [importState, areaState, parentState];
   if (states.some((state) => state === "conflict")) {
     return "conflict";
   }
@@ -1196,6 +1190,173 @@ function classifyCreateCore(
     return "before";
   }
   return "partial";
+}
+
+function classifyCreateCore(
+  task: AsanaTaskResponse,
+  input: WriterInput,
+  operation: CreateOperation,
+  mappings: ReadonlyMap<string, string>,
+  tags: readonly AsanaTag[],
+): FieldClassification {
+  const staticState = classifyCreateStaticFields(
+    task,
+    input,
+    operation,
+    mappings,
+    tags,
+  );
+  if (staticState === "conflict") {
+    return "conflict";
+  }
+  const status = expectedStatus(
+    operation.after.status ?? "not_started",
+    input.section_gids,
+  );
+  const memberships = task.memberships.filter(
+    (membership) => membership.project.gid === input.project_gid,
+  );
+  if (memberships.length !== 1) {
+    return "conflict";
+  }
+  const membership = memberships[0];
+  if (membership == null || membership.section == null) {
+    return "conflict";
+  }
+  const statusState: FieldClassification =
+    membership.section.gid === status.section_gid
+    && task.completed === status.completed
+      ? "after"
+      : membership.section.gid === status.section_gid
+          && !task.completed
+          && status.completed
+        ? "partial"
+        : "conflict";
+  const states = [staticState, statusState];
+  if (states.some((state) => state === "conflict")) {
+    return "conflict";
+  }
+  if (states.every((state) => state === "after")) {
+    return "after";
+  }
+  if (states.every((state) => state === "before")) {
+    return "before";
+  }
+  return "partial";
+}
+
+function classifyCreateReadBack(
+  task: AsanaTaskResponse,
+  input: WriterInput,
+  operation: CreateOperation,
+  mappings: ReadonlyMap<string, string>,
+  tags: readonly AsanaTag[],
+  expectedExternal: ExpectedExternal,
+): CreateReadBackObservation {
+  const staticState = classifyCreateStaticFields(
+    task,
+    input,
+    operation,
+    mappings,
+    tags,
+  );
+  if (staticState === "conflict") {
+    return { kind: "conflict", reason_code: "read_back_mismatch" };
+  }
+  if (task.completed) {
+    return { kind: "conflict", reason_code: "read_back_mismatch" };
+  }
+  const status = expectedStatus(
+    operation.after.status ?? "not_started",
+    input.section_gids,
+  );
+  const externalPending = task.external == null;
+  if (!externalPending) {
+    const currentExternal = readCurrentExternal(task);
+    if (currentExternal.kind === "conflict") {
+      return currentExternal;
+    }
+    if (currentExternal.value.response.gid !== expectedExternal.gid) {
+      return { kind: "conflict", reason_code: "external_identity_mismatch" };
+    }
+    if (!sameExternalData(currentExternal.value.data, expectedExternal.data)) {
+      return { kind: "conflict", reason_code: "read_back_mismatch" };
+    }
+  }
+  const memberships = task.memberships.filter(
+    (membership) => membership.project.gid === input.project_gid,
+  );
+  if (memberships.length > 1) {
+    return { kind: "conflict", reason_code: "read_back_mismatch" };
+  }
+  if (memberships.length === 0) {
+    return { kind: "pending", reason: "projection" };
+  }
+  const membership = memberships[0];
+  if (membership == null) {
+    throw new Error("作成タスクのプロジェクト所属を取得できません。");
+  }
+  if (membership.section == null) {
+    return { kind: "pending", reason: "projection" };
+  }
+  if (membership.section.gid !== status.section_gid) {
+    return { kind: "conflict", reason_code: "read_back_mismatch" };
+  }
+  if (externalPending) {
+    return { kind: "pending", reason: "projection" };
+  }
+  return { kind: "ready", task };
+}
+
+async function readCreatedTaskWithProjectionRetry(
+  readClient: AsanaReadClient,
+  taskGid: string,
+  input: WriterInput,
+  operation: CreateOperation,
+  mappings: ReadonlyMap<string, string>,
+  tags: readonly AsanaTag[],
+  expectedExternal: ExpectedExternal,
+  signal: AbortSignal,
+): Promise<CreateReadBackObservation> {
+  let pendingReason: CreateReadBackPendingReason = "projection";
+  for (
+    let observationIndex = 0;
+    observationIndex <= createReadBackDelaysMilliseconds.length;
+    observationIndex += 1
+  ) {
+    if (observationIndex > 0) {
+      const delay = createReadBackDelaysMilliseconds[observationIndex - 1];
+      if (delay == null) {
+        throw new Error("作成タスクの読み戻し待機時間を取得できません。");
+      }
+      await waitForCreateReadBack(delay, signal);
+    }
+    let observation: CreateReadBackObservation;
+    try {
+      const task = parseTask(
+        await readClient.getTask(taskGid, signal),
+        taskGid,
+      );
+      observation = classifyCreateReadBack(
+        task,
+        input,
+        operation,
+        mappings,
+        tags,
+        expectedExternal,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof AsanaHttpError) || error.status !== 404) {
+        throw error;
+      }
+      observation = { kind: "pending", reason: "not_found" };
+    }
+    if (observation.kind !== "pending") {
+      return observation;
+    }
+    pendingReason = observation.reason;
+  }
+  return { kind: "pending", reason: pendingReason };
 }
 
 async function fetchWorkspaceTags(
@@ -1332,14 +1493,10 @@ function classifyStatusTransition(
   projectGid: string,
   before: StatusDefinition,
   after: StatusDefinition,
-  allowMissingMembership: boolean,
 ): FieldClassification {
   const memberships = task.memberships.filter(
     (membership) => membership.project.gid === projectGid,
   );
-  if (memberships.length === 0 && allowMissingMembership && !task.completed) {
-    return "before";
-  }
   if (memberships.length !== 1) {
     return "conflict";
   }
@@ -1369,7 +1526,6 @@ async function applyStatus(
   projectGid: string,
   before: StatusDefinition,
   after: StatusDefinition,
-  allowMissingMembership: boolean,
   readClient: AsanaReadClient,
   writeClient: AsanaTaskWriteClient,
   beforeWrite: OperationWriteGuard,
@@ -1383,7 +1539,6 @@ async function applyStatus(
     projectGid,
     before,
     after,
-    allowMissingMembership,
   );
   if (state === "conflict") {
     return { kind: "conflict", side_effect: "none" };
@@ -1392,7 +1547,10 @@ async function applyStatus(
     return { kind: "completed", changed };
   }
   const membership = taskProjectMembership(task, projectGid);
-  if (membership == null || membership.section == null || membership.section.gid !== after.section_gid) {
+  if (membership == null || membership.section == null) {
+    return { kind: "conflict", side_effect: changed ? "possible" : "none" };
+  }
+  if (membership.section.gid !== after.section_gid) {
     const guardReason = beforeWrite(task);
     if (guardReason != null) {
       return {
@@ -1401,24 +1559,13 @@ async function applyStatus(
         reason_code: guardReason,
       };
     }
-    if (membership == null) {
-      onWriteAttempt("add_task_to_project");
-      await writeClient.addTaskToProject(
-        taskGid,
-        projectGid,
-        after.section_gid,
-        { kind: "none" },
-        signal,
-      );
-    } else {
-      onWriteAttempt("add_task_to_section");
-      await writeClient.addTaskToSection(
-        taskGid,
-        after.section_gid,
-        { kind: "none" },
-        signal,
-      );
-    }
+    onWriteAttempt("add_task_to_section");
+    await writeClient.addTaskToSection(
+      taskGid,
+      after.section_gid,
+      { kind: "none" },
+      signal,
+    );
     changed = true;
     task = parseTask(await readClient.getTask(taskGid, signal), taskGid);
     state = classifyStatusTransition(
@@ -1426,7 +1573,6 @@ async function applyStatus(
       projectGid,
       before,
       after,
-      allowMissingMembership,
     );
     if (state !== "partial" && state !== "after") {
       return { kind: "conflict", side_effect: "possible" };
@@ -1438,7 +1584,6 @@ async function applyStatus(
     projectGid,
     before,
     after,
-    allowMissingMembership,
   );
   if (state === "after") {
     return { kind: "completed", changed };
@@ -1468,7 +1613,6 @@ async function applyStatus(
       projectGid,
       before,
       after,
-      allowMissingMembership,
     );
     if (state !== "after") {
       return { kind: "conflict", side_effect: "possible" };
@@ -1529,7 +1673,6 @@ async function applyNonCreateAsanaOperation(
         input.project_gid,
         before,
         after,
-        false,
         readClient,
         writeClient,
         beforeWrite,
@@ -1839,33 +1982,49 @@ export class AsanaProposalOperationWriter {
     const operation = input.operation;
     const expectedExternal = createExternalState(input, operation, mappings);
     const tags = await fetchWorkspaceTags(this.readClient, input.workspace_gid, signal);
+    const mappedTaskGid = mappings.get(operation.temporary_ref);
+    let recoveryTaskGid = mappedTaskGid;
     if (input.existing_task != null) {
-      const existing = parseTask(input.existing_task, undefined);
-      const currentExternal = readCurrentExternal(existing);
-      if (currentExternal.kind === "conflict") {
-        return externalConflictResult(
-          operation.operation_id,
-          existing.gid,
-          currentExternal.reason_code,
-          "possible",
-        );
+      const existingReference = parseTask(input.existing_task, undefined);
+      if (mappedTaskGid != null && existingReference.gid !== mappedTaskGid) {
+        throw new Error("create_taskの復旧対象GIDがtemporary_ref対応と一致しません。");
       }
-      if (currentExternal.value.response.gid !== expectedExternal.gid) {
-        return externalConflictResult(
-          operation.operation_id,
-          existing.gid,
-          "external_identity_mismatch",
-          "possible",
-        );
-      }
-      if (!taskExternalMatches(existing, expectedExternal)) {
+      recoveryTaskGid = existingReference.gid;
+    }
+    if (recoveryTaskGid != null) {
+      const existingReadBack = await readCreatedTaskWithProjectionRetry(
+        this.readClient,
+        recoveryTaskGid,
+        input,
+        operation,
+        mappings,
+        tags,
+        expectedExternal,
+        signal,
+      );
+      if (existingReadBack.kind === "pending") {
+        if (
+          existingReadBack.reason === "not_found"
+          && mappedTaskGid != null
+        ) {
+          throw new CreateTaskNotFoundError(recoveryTaskGid);
+        }
         return createConflictResult(
           operation.operation_id,
-          existing.gid,
+          recoveryTaskGid,
           "read_back_mismatch",
           "possible",
         );
       }
+      if (existingReadBack.kind === "conflict") {
+        return createConflictResult(
+          operation.operation_id,
+          recoveryTaskGid,
+          existingReadBack.reason_code,
+          "possible",
+        );
+      }
+      const existing = existingReadBack.task;
       const coreState = classifyCreateCore(existing, input, operation, mappings, tags);
       if (coreState === "conflict") {
         return createConflictResult(
@@ -1916,6 +2075,10 @@ export class AsanaProposalOperationWriter {
 
     const creationInput: AsanaTaskCreationInput = {
       project_gid: input.project_gid,
+      section_gid: expectedStatus(
+        operation.after.status ?? "not_started",
+        input.section_gids,
+      ).section_gid,
       title: operation.after.title,
       completed: false,
       external: {
@@ -1936,10 +2099,33 @@ export class AsanaProposalOperationWriter {
       signal,
     );
     onCreateTaskCreated(operation.operation_id, createdTaskReference.gid);
-    const created = parseTask(
-      await this.readClient.getTask(createdTaskReference.gid, signal),
+    const createdReadBack = await readCreatedTaskWithProjectionRetry(
+      this.readClient,
       createdTaskReference.gid,
+      input,
+      operation,
+      mappings,
+      tags,
+      expectedExternal,
+      signal,
     );
+    if (createdReadBack.kind === "pending") {
+      return createConflictResult(
+        operation.operation_id,
+        createdTaskReference.gid,
+        "read_back_mismatch",
+        "possible",
+      );
+    }
+    if (createdReadBack.kind === "conflict") {
+      return createConflictResult(
+        operation.operation_id,
+        createdTaskReference.gid,
+        createdReadBack.reason_code,
+        "possible",
+      );
+    }
+    const created = createdReadBack.task;
     const createdExternal = readCurrentExternal(created);
     if (createdExternal.kind === "conflict") {
       return externalConflictResult(
@@ -2064,7 +2250,6 @@ export class AsanaProposalOperationWriter {
       input.project_gid,
       expectedStatus("not_started", input.section_gids),
       expectedStatus(operation.after.status ?? "not_started", input.section_gids),
-      true,
       this.readClient,
       this.writeClient,
       beforeWrite,

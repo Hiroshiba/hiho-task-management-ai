@@ -49,6 +49,7 @@ import {
 } from "../../diagnostic-failure";
 import {
   AsanaProposalOperationWriter,
+  CreateTaskNotFoundError,
   type ProposalOperationWriteAction,
 } from "./operation-writer";
 import {
@@ -206,6 +207,7 @@ type RecoveryApplicationState = {
   readonly plannedEntries: readonly PlannedRecoveryEntry[];
   readonly settings: RecoverySettings;
   readonly mappings: Map<string, string>;
+  readonly unavailableTemporaryRefs: Set<string>;
   readonly blockedGroupIds: ReadonlySet<string>;
   readonly selected: Set<string>;
   readonly operationResults: Map<string, ApplicationOperationResult>;
@@ -2741,6 +2743,7 @@ export class AsanaProposalApplicationCoordinator {
     for (const [proposalId] of plannedJournalsByProposal) {
       throwIfAborted(signal);
       const mappings = new Map<string, string>();
+      const unavailableTemporaryRefs = new Set<string>();
       const entries: PlannedRecoveryEntry[] = [];
       const plannedEntries: PlannedRecoveryEntry[] = [];
       const operationIds = new Set<string>();
@@ -2756,6 +2759,13 @@ export class AsanaProposalApplicationCoordinator {
         }
         for (const mapping of journal.plan.temporary_ref_to_gid) {
           addTemporaryMapping(mappings, mapping.temporary_ref, mapping.task_gid);
+        }
+        if (
+          journal.plan.operation.operation === "create_task"
+          && journal.final_result != null
+          && journal.final_result !== "applied"
+        ) {
+          unavailableTemporaryRefs.add(journal.plan.operation.temporary_ref);
         }
       }
       for (const journal of allProposalJournals) {
@@ -2912,6 +2922,7 @@ export class AsanaProposalApplicationCoordinator {
         plannedEntries,
         settings,
         mappings,
+        unavailableTemporaryRefs,
         blockedGroupIds,
         selected: new Set(),
         operationResults,
@@ -2937,6 +2948,13 @@ export class AsanaProposalApplicationCoordinator {
       }
       const blockedGroups = new Set(state.blockedGroupIds);
       const statePending: RecoveryPendingJournal[] = [];
+      const markCreateTemporaryRefUnavailable = (
+        entry: PlannedRecoveryEntry,
+      ): void => {
+        if (entry.context.operation.operation === "create_task") {
+          state.unavailableTemporaryRefs.add(entry.context.operation.temporary_ref);
+        }
+      };
       const markUnresolved = (
         entry: PlannedRecoveryEntry,
         reasonCode: RecoveryReasonCode,
@@ -2952,6 +2970,7 @@ export class AsanaProposalApplicationCoordinator {
         if (effectCertainty == null) {
           throw new Error("復旧対象の外部作用確度がありません。");
         }
+        markCreateTemporaryRefUnavailable(entry);
         try {
           this.journal.complete(
             entry.journal.proposal_id,
@@ -3019,6 +3038,7 @@ export class AsanaProposalApplicationCoordinator {
         if (stage == null) {
           throw new Error("復旧対象の適用段階がありません。");
         }
+        markCreateTemporaryRefUnavailable(entry);
         this.journal.complete(
           entry.journal.proposal_id,
           entry.journal.operation_id,
@@ -3169,6 +3189,11 @@ export class AsanaProposalApplicationCoordinator {
         if (currentStageIndex < 0) {
           throw new Error("復旧対象の適用段階が不正です。");
         }
+        const unavailableTemporaryReference = operationTemporaryReferences(
+          entry.context.operation,
+        ).find((temporaryRef) =>
+          !state.mappings.has(temporaryRef)
+          || state.unavailableTemporaryRefs.has(temporaryRef));
         let createdTaskGid: string | undefined;
         if (entry.context.operation.operation === "create_task") {
           createdTaskGid = state.mappings.get(entry.context.operation.temporary_ref);
@@ -3282,6 +3307,10 @@ export class AsanaProposalApplicationCoordinator {
           || currentStage === "metadata_verified"
           || currentStage === "ranking_recalculated"
         ) {
+          if (unavailableTemporaryReference != null) {
+            markUnresolved(entry, "recovery_required", taskGidForResult());
+            continue;
+          }
           const taskGid = taskGidForResult();
           if (taskGid == null) {
             markUnresolved(entry, "recovery_required", taskGid);
@@ -3310,10 +3339,7 @@ export class AsanaProposalApplicationCoordinator {
           }
           continue;
         }
-        const missingTemporaryReference = operationTemporaryReferences(
-          entry.context.operation,
-        ).find((temporaryRef) => !state.mappings.has(temporaryRef));
-        if (missingTemporaryReference != null) {
+        if (unavailableTemporaryReference != null) {
           if (currentStage === "prepared") {
             completeNotApplied(entry, "task_not_found", taskGidForResult());
           } else {
@@ -3349,21 +3375,7 @@ export class AsanaProposalApplicationCoordinator {
             if (mappedGid != null) {
               throw new Error("prepared create_taskに作成済みGID対応が残っています。");
             }
-          } else if (mappedGid != null) {
-            try {
-              existingTask = await readTask(mappedGid);
-            } catch (error) {
-              if (signal.aborted) {
-                signal.throwIfAborted();
-                throw error;
-              }
-              throw reportRecoveryError(error, "read_task", "read_back");
-            }
-            if (existingTask == null) {
-              markUnresolved(entry, "task_not_found", mappedGid);
-              continue;
-            }
-          } else {
+          } else if (mappedGid == null) {
             let matches: readonly AsanaTaskResponse[];
             try {
               const tasks = await loadProjectTasks(state.settings.project_gid);
@@ -3533,6 +3545,10 @@ export class AsanaProposalApplicationCoordinator {
               onWriteAttempt,
             );
           } catch (error) {
+            if (error instanceof CreateTaskNotFoundError) {
+              markUnresolved(entry, "task_not_found", error.taskGid);
+              continue;
+            }
             if (signal.aborted) {
               signal.throwIfAborted();
               throw error;

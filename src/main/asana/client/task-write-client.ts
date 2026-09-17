@@ -74,6 +74,7 @@ const externalDataInputSchema = z
 const taskCreationInputSchema = z
   .object({
     project_gid: gidSchema,
+    section_gid: gidSchema,
     title: taskTitleSchema,
     notes: z.string().optional(),
     completed: z.boolean().optional(),
@@ -161,7 +162,16 @@ const createTaskBodySchema = z
     data: z
       .object({
         name: taskTitleSchema,
-        projects: z.array(gidSchema).length(1),
+        memberships: z
+          .array(
+            z
+              .object({
+                project: gidSchema,
+                section: gidSchema,
+              })
+              .strict(),
+          )
+          .length(1),
         notes: z.string().optional(),
         completed: z.boolean().optional(),
         due_on: dateSchema.optional(),
@@ -317,7 +327,10 @@ export class AsanaTaskWriteClient {
     const validatedInput = taskCreationInputSchema.parse(input);
     const data: JsonObject = {
       name: validatedInput.title,
-      projects: [validatedInput.project_gid],
+      memberships: [{
+        project: validatedInput.project_gid,
+        section: validatedInput.section_gid,
+      }],
       external: validatedInput.external,
       ...(validatedInput.notes != null
         ? { notes: validatedInput.notes }

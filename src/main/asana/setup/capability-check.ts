@@ -13,6 +13,11 @@ import { createInitialCustomExternalData } from "../../domain/external-data-inge
 import { AsanaRequestAbortedError } from "../scheduler";
 import { AsanaReadClient } from "../client/client";
 import {
+  createReadBackDelaysMilliseconds,
+  waitForCreateReadBack,
+} from "../create-read-back";
+import { AsanaHttpError } from "../transport";
+import {
   AsanaTaskWriteClient,
   type AsanaTaskUpdate,
 } from "../client/task-write-client";
@@ -107,6 +112,17 @@ type CapabilityCheckWriteClient = Pick<
   | "addTaskTag"
   | "removeTaskTag"
 >;
+
+type CreatedTaskReadObservation =
+  | { readonly kind: "ready"; readonly task: AsanaTaskResponse }
+  | { readonly kind: "pending" };
+type CreatedTaskReadExpectation = {
+  readonly project_gid: string;
+  readonly section_gid: string;
+  readonly title: string;
+  readonly external_gid: string;
+  readonly external_data: string;
+};
 
 function validateAbortSignal(signal: AbortSignal): void {
   if (
@@ -285,6 +301,7 @@ export class AsanaCapabilityCheckService {
           this.writeClient.createTask(
             {
               project_gid: validatedInput.project_gid,
+              section_gid: validatedInput.section_gids.not_started,
               title,
               external: {
                 gid: initialization.gid,
@@ -296,12 +313,15 @@ export class AsanaCapabilityCheckService {
       );
       const testTaskGid = createdTaskReference.gid;
       createdTaskGid = testTaskGid;
-      let currentTask = await this.readTask(testTaskGid, signal);
-      assertTaskProjectMembership(currentTask, validatedInput.project_gid);
-      assertExternalData(
-        currentTask,
-        initialization.gid,
-        initialization.data,
+      let currentTask = await this.runStep(
+        "external_data_read_failed",
+        async () => this.readCreatedTask(testTaskGid, {
+          project_gid: validatedInput.project_gid,
+          section_gid: validatedInput.section_gids.not_started,
+          title,
+          external_gid: initialization.gid,
+          external_data: initialization.data,
+        }, signal),
       );
 
       const updatedTitle = `${title} 更新`;
@@ -437,6 +457,109 @@ export class AsanaCapabilityCheckService {
         failure,
       );
     }
+  }
+
+  private async readCreatedTask(
+    taskGid: string,
+    expectation: CreatedTaskReadExpectation,
+    signal: AbortSignal,
+  ): Promise<AsanaTaskResponse> {
+    for (
+      let observationIndex = 0;
+      observationIndex <= createReadBackDelaysMilliseconds.length;
+      observationIndex += 1
+    ) {
+      if (observationIndex > 0) {
+        const delay = createReadBackDelaysMilliseconds[observationIndex - 1];
+        if (delay == null) {
+          throw new Error("能力検査タスクの読み戻し待機時間を取得できません。");
+        }
+        await waitForCreateReadBack(delay, signal);
+      }
+      let observation: CreatedTaskReadObservation;
+      try {
+        const task = parseTask(await this.readClient.getTask(taskGid, signal));
+        if (task.gid !== taskGid) {
+          throw new Error("能力検査タスクのGIDが対象と一致しません。");
+        }
+        observation = this.createdTaskReadObservation(task, expectation);
+      } catch (error: unknown) {
+        if (!(error instanceof AsanaHttpError) || error.status !== 404) {
+          throw error;
+        }
+        observation = { kind: "pending" };
+      }
+      if (observation.kind === "ready") {
+        return observation.task;
+      }
+    }
+    throw new AsanaCapabilityCheckError(
+      "readback_mismatch",
+      new Error("能力検査タスクの作成結果を読み戻せません。"),
+    );
+  }
+
+  private createdTaskReadObservation(
+    task: AsanaTaskResponse,
+    expectation: CreatedTaskReadExpectation,
+  ): CreatedTaskReadObservation {
+    if (
+      task.name !== expectation.title
+      || task.notes !== ""
+      || task.completed
+      || task.due_on != null
+      || task.due_at != null
+      || task.tags.length !== 0
+      || task.parent != null
+    ) {
+      throw new AsanaCapabilityCheckError(
+        "readback_mismatch",
+        new Error("能力検査タスクの作成結果が一致しません。"),
+      );
+    }
+    const externalPending = task.external == null;
+    if (!externalPending) {
+      assertExternalData(
+        task,
+        expectation.external_gid,
+        expectation.external_data,
+      );
+    }
+    const memberships = task.memberships.filter(
+      (membership) => membership.project.gid === expectation.project_gid,
+    );
+    if (memberships.length > 1) {
+      throw new AsanaCapabilityCheckError(
+        "readback_mismatch",
+        new Error("能力検査タスクのプロジェクト所属が重複しています。"),
+      );
+    }
+    if (memberships.length === 0) {
+      return { kind: "pending" };
+    }
+    const membership = memberships[0];
+    if (membership == null) {
+      throw new Error("能力検査タスクのプロジェクト所属を取得できません。");
+    }
+    if (membership.section == null) {
+      return { kind: "pending" };
+    }
+    if (membership.section.gid !== expectation.section_gid) {
+      throw new AsanaCapabilityCheckError(
+        "readback_mismatch",
+        new Error("能力検査タスクのセクション所属が一致しません。"),
+      );
+    }
+    assertTaskProjectMembership(task, expectation.project_gid);
+    assertTaskSectionMembership(
+      task,
+      expectation.project_gid,
+      expectation.section_gid,
+    );
+    if (externalPending) {
+      return { kind: "pending" };
+    }
+    return { kind: "ready", task };
   }
 
   private async readTask(
