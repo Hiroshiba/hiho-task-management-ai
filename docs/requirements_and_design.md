@@ -1835,12 +1835,16 @@ coordinatorの診断済みの証明は、例外オブジェクトの共有identi
 - エラー発生時刻、処理段階、HTTPステータス、Events同期状態。
 - Asana GID、proposal ID、operation ID。原因特定に必要な場合だけ記録する。
 - 通常のエラーでは、例外の種別、エラーメッセージ、スタックトレース全文。causeでつながる元の例外とAggregateError内の各例外も保存する。循環参照は明示し、深さや件数による切り捨てはしない。
+- 最終的なAsana REST APIのHTTP失敗は、中央transportが一度だけ正規化する。JSONLのErrorDetailにはHTTPステータス、request ID、公式ErrorResponseの `errors[]` 各要素にある `message`、`help`、`phrase` だけを共通の伏せ字処理後に構造化して保存する。非JSON、JSON破損、shape不正、本文取得不能、本文読み取りの期限超過、本文サイズ上限超過は本文を保存せず固定分類だけを保存する。
+- Asana HTTP失敗をconflict、専用エラー、同期失敗状態、初回能力検査の失敗状態へ変換する場合も、元の原因を既存の最終ownerへ渡して一度だけ記録する。後続の `task_not_found` など状態確定のイベントは元のHTTP失敗と分けて記録する。
+- HTTPエラー本文を読まない早期分類でもResponse bodyを有限時間で解放する。解放できない場合は本文を保存せず本文取得不能として扱い、callerの中断は既存の中断エラーとして伝播する。
+- full syncが影響タスクのGET 404を`missing_gids`へ変換する場合は、削除済みタスクを観測する正常な同期結果として診断ログ対象外とする。この例外はfull syncの影響タスク取得だけに適用し、ほかの最終HTTP失敗は除外しない。
 - Codex RPC操作名、数値コード、診断メッセージ、標準エラー出力、プロセス終了状態。
 - 検証エラー種別。
 - AI変更案の訂正試行では、セッションとターンのID、試行回数と上限、検証段階、型付きコード、候補ハッシュ、エラーのfingerprint、JSON Pointer、再試行判断。
 - 適用・復旧では、操作種別、API操作、ジャーナル段階、外部書き込みの確実性、理由コード、復旧判断、試行回数、処理段階。
 
-適用・復旧で発生したwarningとerrorは、既存のSQLite診断ログとJSONLの両方へ流す。記録するのは原因と安全な識別情報だけとし、提案本文、API応答、外部本文、秘密情報を追加しない。原因の例外とcauseのつながりは保持する。
+適用・復旧で発生したwarningとerrorは、既存のSQLite診断ログとJSONLの両方へ流す。Asanaのraw API response、request body、未知フィールド、成功応答、OAuth token endpointの応答は保存しない。最終HTTP失敗で許可する公式ErrorResponseの3フィールドは `errors[]` 各要素にある値だけとし、共通の伏せ字処理後にJSONLへ保存する。SQLiteにはHTTPステータスと安全なGID、proposal ID、operation IDだけを保存し、request IDと自由文は保存しない。原因の例外とcauseのつながりは保持する。
 
 `journal_stage` は最後に永続化できた段階、`effect_certainty` は観測済みの外部状態を表し、独立に記録する。適用処理の読み戻しや復旧時の照合で、タスク属性とCustom external dataがともに変更後の状態と確認できた後は、ジャーナル保存に失敗しても `effect_certainty=confirmed` とする。その失敗には実際のproposal ID、operation ID、確認済みのタスクGIDを記録する。
 
@@ -2185,7 +2189,7 @@ Custom external dataが利用できない場合、依存・Obsidian関連・停�
 - IPCが操作単位で狭く定義される。
 - Codexのシェルに任意ネットワーク権限がない。
 - アプリからAsana削除APIを呼ぶ経路がない。
-- 警告・エラー時の開発者ログは§19.4の役割に従ってSQLiteとJSONLへ記録し、AI向け検証エラーファイルはセッション専用の一時領域へ保存する。再試行はwarning、最終失敗はerrorとし、各イベントが両ログに1件ずつ記録される。成功イベント、秘密情報、提案本文、根拠本文、API応答、外部本文、プロンプトは診断情報に保存しない。
+- 警告・エラー時の開発者ログは§19.4の役割に従ってSQLiteとJSONLへ記録し、AI向け検証エラーファイルはセッション専用の一時領域へ保存する。再試行はwarning、最終失敗はerrorとし、各イベントが両ログに1件ずつ記録される。成功イベント、秘密情報、提案本文、根拠本文、Asanaのraw API response、外部本文、プロンプトを診断情報に保存しない。最終Asana HTTP失敗で許可する公式ErrorResponseの `errors[]` 各要素の3フィールドは、JSONLに限り伏せ字後に保存する。
 
 ### 24.10 レスポンシブ配置
 
@@ -2367,7 +2371,7 @@ OpenAI API課金は使わないが、CodexのChatGPTサブスクリプション�
 - オフラインは読み取り専用で、変更キューなし。
 - 完全削除なし。すべて取り下げ。
 - AI変更案の要整理は人間の判断が必要な未確定操作に限り、安全な復旧後に解消する。承認競合や外部状態確定後のローカル同期失敗は通常結果とログで示す。
-- 開発者ログは警告・エラー時に原因と状態を追える安全化情報だけをSQLiteとJSONLへ保存し、成功イベント、秘密値、提案本文、API応答、外部本文、プロンプトを保存しない。
+- 開発者ログは警告・エラー時に原因と状態を追える安全化情報だけをSQLiteとJSONLへ保存し、成功イベント、秘密値、提案本文、Asanaのraw API response、外部本文、プロンプトを保存しない。最終Asana HTTP失敗の公式ErrorResponseの `errors[]` 各要素にある `message`、`help`、`phrase` は伏せ字後にJSONLへ保存し、SQLiteにはHTTPステータスと安全な識別子だけを保存する。
 - 必要な能力またはプラットフォーム別のサンドボックスを確認できない場合はAIだけを停止し、Asana機能を継続する。Codex版ごとの未公開機能を完全に監査しないことは残余リスクとする。
 - Electron / Vite / TypeScript / Vue / Reka UI / Tailwind CSS / pnpm、Windows / macOS。
 - 自動テストは実装しない。

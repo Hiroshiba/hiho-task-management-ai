@@ -124,6 +124,7 @@ export type AsanaSyncRuntimeUnhandledErrorForwarder = (
 /** 同期状態の変更を受け取る関数です。 */
 export type AsanaSyncRuntimeStateListener = (
   state: AsanaSyncRuntimeState,
+  cause?: unknown,
 ) => void;
 
 function validateAbortSignal(signal: AbortSignal): void {
@@ -989,9 +990,9 @@ export class AsanaSyncRuntime {
       }
       this.lastErrorCode = knownCode;
       if (knownCode === "authentication_required") {
-        this.publishState(this.createAuthenticationRequiredState());
+        this.publishState(this.createAuthenticationRequiredState(), error);
       } else {
-        this.publishState(this.createErrorState(knownCode));
+        this.publishState(this.createErrorState(knownCode), error);
       }
       return createFailedResult(knownCode, error);
     }
@@ -1073,11 +1074,11 @@ export class AsanaSyncRuntime {
     });
   }
 
-  private publishState(state: AsanaSyncRuntimeState): void {
+  private publishState(state: AsanaSyncRuntimeState, cause?: unknown): void {
     this.state = asanaSyncRuntimeStateSchema.parse(state);
     for (const listener of this.listeners) {
       try {
-        listener(this.state);
+        listener(this.state, cause);
       } catch (error: unknown) {
         this.notifyUnexpectedError(error);
       }

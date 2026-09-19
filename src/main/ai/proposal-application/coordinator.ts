@@ -83,6 +83,9 @@ type ApplicationOutcome = ApplicationOperationResult["outcome"];
 type ApplicationGroupOutcome = ApplicationGroupResult["outcome"];
 type WriterInput = AsanaProposalOperationWriterInput;
 type WriterResult = AsanaProposalOperationWriterResult;
+export type PostWriteSynchronizationResultWithCause = PostWriteSynchronizationResult & {
+  readonly cause?: unknown;
+};
 type BaselineExternal = NonNullable<WriterInput["baseline_external_data"]>;
 type RecoverySettings = Pick<
   AsanaProposalRecoveryInput["applications"][number],
@@ -220,6 +223,46 @@ type RecoveryPendingJournal = {
   readonly entry: PlannedRecoveryEntry;
   readonly task_gid: string;
 };
+
+function parsePostWriteSynchronizationResult(
+  value: PostWriteSynchronizationResultWithCause,
+): PostWriteSynchronizationResultWithCause {
+  const { cause, ...result } = value;
+  const parsed = asanaPostWriteSynchronizationResultSchema.parse(result);
+  return Object.prototype.hasOwnProperty.call(value, "cause")
+    ? { ...parsed, cause }
+    : parsed;
+}
+
+function reportSharedPostApplyCause(
+  error: unknown,
+  fields: JournalDiagnosticFields,
+  reportDiagnostic: (
+    error: unknown,
+    fields: JournalDiagnosticFields,
+  ) => DiagnosticFailureDispositionError,
+): DiagnosticFailureDispositionError {
+  const disposition = diagnosticFailureDispositionFromError(error);
+  if (
+    disposition.kind === "recorded_only"
+    && error instanceof DiagnosticFailureDispositionError
+  ) {
+    return error;
+  }
+  if (disposition.kind === "recorded_and_unrecorded") {
+    const unrecordedReceipt = reportDiagnostic(disposition.unrecorded_error, fields);
+    return new DiagnosticFailureDispositionError(
+      combineDiagnosticFailureDispositions(
+        disposition,
+        [unrecordedReceipt.disposition],
+      ),
+    );
+  }
+  return reportDiagnostic(
+    disposition.kind === "unrecorded_only" ? disposition.unrecorded_error : error,
+    fields,
+  );
+}
 
 function hasApplicationJournalPlan(
   journal: ApplicationJournal,
@@ -950,18 +993,27 @@ async function finalizePendingJournals(
   const requiredTaskGids = sortedUniqueTaskGids(
     pending.map((item) => item.task_gid),
   );
-  let synchronization: PostWriteSynchronizationResult;
+  let synchronization: PostWriteSynchronizationResultWithCause;
   try {
-    synchronization = asanaPostWriteSynchronizationResultSchema.parse(
+    synchronization = parsePostWriteSynchronizationResult(
       await postApply(requiredTaskGids, signal),
     );
   } catch (error: unknown) {
-    if (error instanceof DiagnosticFailureDispositionError) {
-      throw error;
-    }
-    let receipt: DiagnosticFailureDispositionError | undefined;
+    const receipt = reportSharedPostApplyCause(
+      error,
+      {
+        severity: "error",
+        api_action: "post_apply",
+        effect_certainty: "confirmed",
+        reason_code: "local_resync_required",
+        recovery_decision: "local_sync_pending",
+        attempt: 1,
+        phase: "post_apply",
+      },
+      reportDiagnostic,
+    );
     for (const item of pending) {
-      receipt = reportDiagnostic(error, {
+      reportDiagnostic(new Error("外部状態は確定しましたが、ローカル同期を完了できませんでした。"), {
         severity: "error",
         proposal_id: item.entry.proposal_id,
         operation_id: item.entry.operation_id,
@@ -976,12 +1028,24 @@ async function finalizePendingJournals(
         phase: "post_apply",
       });
     }
-    if (receipt == null) {
-      throw new Error("適用後同期の診断receiptがありません。");
-    }
     throw receipt;
   }
   if (synchronization.kind === "recovery_required") {
+    if (synchronization.cause != null) {
+      reportSharedPostApplyCause(
+        synchronization.cause,
+        {
+          severity: "error",
+          api_action: "post_apply",
+          effect_certainty: "confirmed",
+          reason_code: "local_resync_required",
+          recovery_decision: "local_sync_pending",
+          attempt: 1,
+          phase: "post_apply",
+        },
+        reportDiagnostic,
+      );
+    }
     for (const item of pending) {
       reportDiagnostic(
         new Error("外部状態は確定しましたが、ローカル同期を完了できませんでした。"),
@@ -2310,38 +2374,51 @@ export class AsanaProposalApplicationCoordinator {
           attempt: Math.max(1, writeAttemptCount),
           phase,
         }, createdTaskGid ?? taskGid);
-        if (!isKnownAsanaOperationalError(error)) {
-          throw receipt;
-        }
-        operationResults.set(
-          context.operation.operation_id,
-          certainty === "none"
-            ? createOperationResult(
-              context.group.group_id,
-              context.operation.operation_id,
-              "not_applied",
-              "external_api_failed",
-              createdTaskGid ?? taskGid,
-            )
-            : unknownOperationResult(
-              context,
-              "recovery_required",
-              createdTaskGid ?? taskGid,
-            ),
-        );
-        if (context.group.atomic) {
-          operationGroupsBlocked.add(context.group.group_id);
-          markAtomicGroupBlocked(
-            contexts,
-            selected,
-            existingJournalOperationIds,
-            context.group.group_id,
-            operationResults,
-            failedTemporaryRefs,
-            mappings,
+        if (error instanceof CreateTaskNotFoundError) {
+          if (receipt.disposition.kind !== "recorded_only") {
+            throw receipt;
+          }
+          rawWriterResult = asanaProposalOperationWriterResultSchema.parse({
+            operation_id: context.operation.operation_id,
+            task_gid: error.taskGid,
+            outcome: "conflict",
+            reason_code: "read_back_mismatch",
+            side_effect: "possible",
+          });
+        } else {
+          if (!isKnownAsanaOperationalError(error)) {
+            throw receipt;
+          }
+          operationResults.set(
+            context.operation.operation_id,
+            certainty === "none"
+              ? createOperationResult(
+                context.group.group_id,
+                context.operation.operation_id,
+                "not_applied",
+                "external_api_failed",
+                createdTaskGid ?? taskGid,
+              )
+              : unknownOperationResult(
+                context,
+                "recovery_required",
+                createdTaskGid ?? taskGid,
+              ),
           );
+          if (context.group.atomic) {
+            operationGroupsBlocked.add(context.group.group_id);
+            markAtomicGroupBlocked(
+              contexts,
+              selected,
+              existingJournalOperationIds,
+              context.group.group_id,
+              operationResults,
+              failedTemporaryRefs,
+              mappings,
+            );
+          }
+          continue;
         }
-        continue;
       }
       const parsedWriterResult = asanaProposalOperationWriterResultSchema.safeParse(
         rawWriterResult,
@@ -2711,14 +2788,20 @@ export class AsanaProposalApplicationCoordinator {
     };
     const readTask = async (
       taskGid: string,
-    ): Promise<AsanaTaskResponse | undefined> => {
+    ): Promise<
+      | { readonly kind: "found"; readonly task: AsanaTaskResponse }
+      | { readonly kind: "missing"; readonly error: AsanaHttpError }
+    > => {
       try {
-        return asanaTaskResponseSchema.parse(
-          await this.readClient.getTask(taskGid, signal),
-        );
+        return {
+          kind: "found",
+          task: asanaTaskResponseSchema.parse(
+            await this.readClient.getTask(taskGid, signal),
+          ),
+        };
       } catch (error) {
         if (error instanceof AsanaHttpError && error.status === 404) {
-          return undefined;
+          return { kind: "missing", error };
         }
         throw error;
       }
@@ -3569,6 +3652,11 @@ export class AsanaProposalApplicationCoordinator {
             );
           } catch (error) {
             if (error instanceof CreateTaskNotFoundError) {
+              reportRecoveryError(
+                error,
+                lastWriteAction ?? "operation_writer",
+                "read_back",
+              );
               markUnresolved(entry, "task_not_found", error.taskGid);
               continue;
             }
@@ -3650,9 +3738,9 @@ export class AsanaProposalApplicationCoordinator {
           }
           continue;
         }
-        let task: AsanaTaskResponse | undefined;
+        let taskRead: Awaited<ReturnType<typeof readTask>>;
         try {
-          task = await readTask(taskGid);
+          taskRead = await readTask(taskGid);
         } catch (error) {
           if (signal.aborted) {
             signal.throwIfAborted();
@@ -3660,7 +3748,8 @@ export class AsanaProposalApplicationCoordinator {
           }
           throw reportRecoveryError(error, "read_task", "read_back");
         }
-        if (task == null) {
+        if (taskRead.kind === "missing") {
+          reportRecoveryError(taskRead.error, "read_task", "read_back");
           if (currentStage === "prepared") {
             completeNotApplied(entry, "task_not_found", taskGid);
           } else {
@@ -3793,19 +3882,28 @@ export class AsanaProposalApplicationCoordinator {
       const requiredTaskGids = sortedUniqueTaskGids(
         pendingJournals.map(({ pending }) => pending.task_gid),
       );
-      let synchronization: PostWriteSynchronizationResult;
+      let synchronization: PostWriteSynchronizationResultWithCause;
       try {
-        synchronization = asanaPostWriteSynchronizationResultSchema.parse(
+        synchronization = parsePostWriteSynchronizationResult(
           await this.postApply(requiredTaskGids, signal),
         );
       } catch (error: unknown) {
-        if (error instanceof DiagnosticFailureDispositionError) {
-          throw error;
-        }
-        let receipt: DiagnosticFailureDispositionError | undefined;
+        const receipt = reportSharedPostApplyCause(
+          error,
+          {
+            severity: "error",
+            api_action: "post_apply",
+            effect_certainty: "confirmed",
+            reason_code: "local_resync_required",
+            recovery_decision: "local_sync_pending",
+            attempt: 1,
+            phase: "post_apply",
+          },
+          (cause, fields) => this.reportJournalEvent(cause, fields),
+        );
         for (const { pending } of pendingJournals) {
-          receipt = this.reportOperationEvent(
-            error,
+          this.reportOperationEvent(
+            new Error("外部状態は確定しましたが、ローカル同期を完了できませんでした。"),
             pending.entry,
             {
               severity: "error",
@@ -3820,12 +3918,24 @@ export class AsanaProposalApplicationCoordinator {
             pending.task_gid,
           );
         }
-        if (receipt == null) {
-          throw new Error("復旧後同期の診断receiptがありません。");
-        }
         throw receipt;
       }
       if (synchronization.kind === "recovery_required") {
+        if (synchronization.cause != null) {
+          reportSharedPostApplyCause(
+            synchronization.cause,
+            {
+              severity: "error",
+              api_action: "post_apply",
+              effect_certainty: "confirmed",
+              reason_code: "local_resync_required",
+              recovery_decision: "local_sync_pending",
+              attempt: 1,
+              phase: "post_apply",
+            },
+            (cause, fields) => this.reportJournalEvent(cause, fields),
+          );
+        }
         for (const { state, pending } of pendingJournals) {
           this.reportOperationEvent(
             new Error("外部状態は確定しましたが、ローカル同期の再開が必要です。"),
@@ -4006,4 +4116,4 @@ export type ProposalApplicationTimestampProvider = () => string;
 export type ProposalApplicationPostApply = (
   requiredTaskGids: readonly string[],
   signal: AbortSignal,
-) => Promise<PostWriteSynchronizationResult>;
+) => Promise<PostWriteSynchronizationResultWithCause>;

@@ -23,6 +23,7 @@ import {
   type ApplicationDiagnostic,
 } from "./ai/proposal-application";
 import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
+import { AsanaHttpError } from "./asana/transport";
 import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
@@ -124,6 +125,51 @@ function recordPersistentError(
   logger.record(source, diagnosticCode, context, severity, error);
 }
 
+function collectAsanaHttpStatuses(
+  error: unknown,
+  statuses: Set<number>,
+  ancestors: WeakSet<object>,
+): void {
+  if (typeof error !== "object" || error == null) {
+    return;
+  }
+  if (ancestors.has(error)) {
+    return;
+  }
+  ancestors.add(error);
+  try {
+    if (error instanceof AsanaHttpError && error.source === "rest") {
+      statuses.add(error.status);
+    }
+    if (error instanceof Error && Object.prototype.hasOwnProperty.call(error, "cause")) {
+      collectAsanaHttpStatuses(error.cause, statuses, ancestors);
+    }
+    if (error instanceof AggregateError) {
+      for (const aggregateError of error.errors) {
+        collectAsanaHttpStatuses(aggregateError, statuses, ancestors);
+      }
+    }
+  } finally {
+    ancestors.delete(error);
+  }
+}
+
+function getUniqueAsanaHttpStatus(error: unknown): number | undefined {
+  const statuses = new Set<number>();
+  collectAsanaHttpStatuses(error, statuses, new WeakSet<object>());
+  if (statuses.size !== 1) {
+    return undefined;
+  }
+  let status: number | undefined;
+  for (const value of statuses) {
+    status = value;
+  }
+  if (status === undefined) {
+    throw new Error("Asana HTTP statusの抽出結果が不正です。");
+  }
+  return status;
+}
+
 function registerUncaughtExceptionMonitor(): void {
   if (uncaughtExceptionMonitorRegistered) {
     return;
@@ -143,15 +189,28 @@ function registerUncaughtExceptionMonitor(): void {
 function recordDiagnostic(
   code: DiagnosticRecord["code"],
   severity: DiagnosticRecord["severity"],
-  metadata?: Pick<DiagnosticRecord, "asana_gid" | "operation_id" | "proposal_id">,
+  metadata?: Pick<
+    DiagnosticRecord,
+    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+  >,
+  error?: unknown,
 ): void {
+  const httpStatus = error == null ? undefined : getUniqueAsanaHttpStatus(error);
+  let resolvedMetadata = metadata;
+  if (resolvedMetadata == null) {
+    if (httpStatus != null) {
+      resolvedMetadata = { http_status: httpStatus };
+    }
+  } else if (resolvedMetadata.http_status == null && httpStatus != null) {
+    resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
+  }
   const application = taskHubApplication;
   if (application == null) {
     console.error("診断情報を記録できませんでした。");
     return;
   }
   try {
-    application.recordDiagnostic(code, severity, metadata);
+    application.recordDiagnostic(code, severity, resolvedMetadata);
   } catch (error) {
     recordPersistentError("main", "storage.error", "diagnostic_storage", "error", error);
     console.error("診断情報を記録できませんでした。");
@@ -202,7 +261,7 @@ function recordServiceDiagnostic(
         ...(diagnostic.task_gid == null ? {} : { asana_gid: diagnostic.task_gid }),
       }
     : undefined;
-  recordDiagnostic(diagnosticCode, diagnostic.severity, metadata);
+  recordDiagnostic(diagnosticCode, diagnostic.severity, metadata, error);
 }
 
 function mainDiagnosticFailureDisposition(
@@ -463,11 +522,11 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
       const externalUrl = assertAllowedExternalUrl(url);
       void shell.openExternal(externalUrl.href).catch((error) => {
         recordPersistentError("main", "app.error", "external_url", "error", error);
-        recordDiagnostic("app.error", "error");
+        recordDiagnostic("app.error", "error", undefined, error);
       });
     } catch (error) {
       recordPersistentError("main", "app.error", "external_url", "error", error);
-      recordDiagnostic("app.error", "error");
+      recordDiagnostic("app.error", "error", undefined, error);
     }
     return { action: "deny" };
   });
@@ -498,7 +557,7 @@ function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
     registry.dispose();
   } catch (error) {
     recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
-    recordDiagnostic("ipc.error", "error");
+    recordDiagnostic("ipc.error", "error", undefined, error);
   }
   if (mainWindowRegistry === registry) {
     mainWindowRegistry = undefined;
@@ -538,7 +597,7 @@ function enqueueBackgroundOperation(
             disposition.unrecorded_error,
           );
           if (!controller.signal.aborted) {
-            recordDiagnostic(failureCode, "error");
+            recordDiagnostic(failureCode, "error", undefined, disposition.unrecorded_error);
           }
           return;
       }
@@ -816,7 +875,7 @@ async function createMainWindow(
     diagnostic: {
       record: (error) => {
         recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
-        recordDiagnostic("ipc.error", "error");
+        recordDiagnostic("ipc.error", "error", undefined, error);
       },
     },
   });
@@ -936,7 +995,7 @@ async function startApplication(
           "error",
           disposition.unrecorded_error,
         );
-        recordDiagnostic("app.error", "error");
+        recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
         break;
     }
     console.error("アプリケーションの起動に失敗しました。");
@@ -957,7 +1016,7 @@ async function stopApplication(): Promise<void> {
       ipcMain.removeHandler(appGetVersionChannel);
     } catch (error) {
       recordPersistentError("main", "ipc.error", "application_stop", "error", error);
-      recordDiagnostic("ipc.error", "error");
+      recordDiagnostic("ipc.error", "error", undefined, error);
     }
     versionIpcRegistered = false;
   }
@@ -988,7 +1047,7 @@ async function stopApplication(): Promise<void> {
             "error",
             disposition.unrecorded_error,
           );
-          recordDiagnostic("app.error", "error");
+          recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
           break;
       }
       console.error("アプリケーションの停止に失敗しました。");
@@ -1019,7 +1078,7 @@ async function bootstrap(): Promise<void> {
           return;
         }
         recordPersistentError("main", "app.error", "main_window", "error", error);
-        recordDiagnostic("app.error", "error");
+        recordDiagnostic("app.error", "error", undefined, error);
       });
     }
   });
@@ -1058,7 +1117,7 @@ app.on("before-quit", (event) => {
     app.quit();
   }).catch((error) => {
     recordPersistentError("main", "app.error", "application_quit", "error", error);
-    recordDiagnostic("app.error", "error");
+    recordDiagnostic("app.error", "error", undefined, error);
     console.error("アプリケーションの停止に失敗しました。");
     shutdownState = { kind: "stopped" };
     app.quit();
@@ -1072,7 +1131,7 @@ if (!singleInstanceLockAcquired) {
   app.on("second-instance", showAndFocusMainWindow);
   void bootstrap().catch((error) => {
     recordPersistentError("main", "app.error", "bootstrap", "error", error);
-    recordDiagnostic("app.error", "error");
+    recordDiagnostic("app.error", "error", undefined, error);
     console.error("アプリケーションの起動に失敗しました。");
     app.quit();
   });

@@ -21,6 +21,7 @@ import {
   type SetupReconciliationResult,
 } from "../asana/setup";
 import type { AsanaSetupClient } from "../asana/client/setup-client";
+import { hasRestAsanaHttpError } from "../asana/transport";
 import { validateVaultMappingPath } from "../obsidian";
 import type { StorageDatabase } from "../storage";
 import type { DeviceSettings, VaultMapping } from "../../shared/storage";
@@ -116,6 +117,8 @@ export type SetupCapabilityPort = Pick<
   AsanaCapabilityCheckService,
   "check"
 >;
+
+export type SetupCapabilityFailureReporter = (error: unknown) => void;
 
 export type SetupDatabasePort = Pick<
   StorageDatabase,
@@ -215,6 +218,7 @@ export type SetupOrchestratorOptions = {
   readonly asana: SetupAsanaPort;
   readonly resources: SetupResourcePort;
   readonly capability: SetupCapabilityPort;
+  readonly reportCapabilityFailure: SetupCapabilityFailureReporter;
   readonly database: SetupDatabasePort;
   readonly checkpoint: SetupCheckpointPort;
   readonly externalTool: SetupExternalToolPort;
@@ -229,6 +233,7 @@ const setupOrchestratorOptionsSchema = z
     asana: z.unknown(),
     resources: z.unknown(),
     capability: z.unknown(),
+    reportCapabilityFailure: z.unknown(),
     database: z.unknown(),
     checkpoint: z.unknown(),
     externalTool: z.unknown(),
@@ -625,6 +630,7 @@ export class SetupOrchestrator {
   private readonly asana: SetupAsanaPort;
   private readonly resources: SetupResourcePort;
   private readonly capability: SetupCapabilityPort;
+  private readonly reportCapabilityFailure: SetupCapabilityFailureReporter;
   private readonly database: SetupDatabasePort;
   private readonly checkpoint: SetupCheckpointPort;
   private readonly externalTool: SetupExternalToolPort;
@@ -664,6 +670,10 @@ export class SetupOrchestrator {
     validateFunction(options.asana.createProject, "プロジェクト作成関数が必要です。");
     validateFunction(options.resources.coordinate, "リソース調整関数が必要です。");
     validateFunction(options.capability.check, "能力検査関数が必要です。");
+    validateFunction(
+      options.reportCapabilityFailure,
+      "能力検査失敗の診断関数が必要です。",
+    );
     validateFunction(options.database.saveDeviceSettings, "端末設定保存関数が必要です。");
     validateFunction(options.database.getDeviceSettings, "端末設定取得関数が必要です。");
     validateFunction(options.database.saveVaultMapping, "Vault保存関数が必要です。");
@@ -678,6 +688,7 @@ export class SetupOrchestrator {
     this.asana = options.asana;
     this.resources = options.resources;
     this.capability = options.capability;
+    this.reportCapabilityFailure = options.reportCapabilityFailure;
     this.database = options.database;
     this.checkpoint = options.checkpoint;
     this.externalTool = options.externalTool;
@@ -1221,6 +1232,9 @@ export class SetupOrchestrator {
     } catch (error: unknown) {
       const reasonCode = capabilityFailureReason(error);
       if (reasonCode != null) {
+        if (hasRestAsanaHttpError(error)) {
+          this.reportCapabilityFailure(error);
+        }
         this.state = parseState({
           kind: "asana_capability_failed",
           step: "asana_capability",

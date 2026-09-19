@@ -18,6 +18,8 @@ import {
   AsanaRateLimitError,
   AsanaResponseError,
   AsanaTransportError,
+  type AsanaHttpErrorResponse,
+  safeParseAsanaHttpErrorResponse,
 } from "./errors";
 import { asanaSyncTokenSchema } from "../sync-token";
 import type {
@@ -28,6 +30,9 @@ import type {
 
 const asanaBaseUrl = "https://app.asana.com/api/1.0/";
 const fetchTimeoutMilliseconds = 30_000;
+const responseBodyReadTimeoutMilliseconds = 5_000;
+const maximumResponseBodyBytes = 64 * 1_024;
+const responseBodyCancellationTimeoutMilliseconds = 100;
 const maximumTemporaryRetries = 3;
 const retryBackoffMilliseconds: readonly [number, number, number] = [
   500,
@@ -244,6 +249,261 @@ function validateRequest<T>(request: AsanaRequest<T>): void {
   }
 }
 
+type ResponseBodyReadResult =
+  | { readonly kind: "read"; readonly bytes: Uint8Array }
+  | { readonly kind: "unavailable" | "timeout" | "too_large" };
+
+type ResponseBodyChunkResult =
+  | { readonly kind: "read"; readonly value: ReadableStreamReadResult<Uint8Array> }
+  | { readonly kind: "aborted" | "unavailable" | "timeout" };
+
+type ResponseBodyCancellationResult = "cancelled" | "failed" | "timed_out";
+
+type NonSuccessfulResponseResult =
+  | { readonly kind: "events_reset"; readonly syncToken: string }
+  | { readonly kind: "refresh_authentication" }
+  | { readonly kind: "retry"; readonly delay: number }
+  | { readonly kind: "throw"; readonly error: Error };
+
+async function readResponseBodyChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  timeoutMilliseconds: number,
+): Promise<ResponseBodyChunkResult> {
+  if (signal.aborted) {
+    return { kind: "aborted" };
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeoutPromise = new Promise<ResponseBodyChunkResult>((resolve) => {
+    timeout = setTimeout(() => {
+      resolve({ kind: "timeout" });
+    }, timeoutMilliseconds);
+  });
+  const abortPromise = new Promise<ResponseBodyChunkResult>((resolve) => {
+    onAbort = () => {
+      resolve({ kind: "aborted" });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+  });
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => reader.read()).then(
+        (value): ResponseBodyChunkResult => ({ kind: "read", value }),
+        (): ResponseBodyChunkResult => ({ kind: "unavailable" }),
+      ),
+      timeoutPromise,
+      abortPromise,
+    ]);
+  } finally {
+    if (timeout != null) {
+      clearTimeout(timeout);
+    }
+    if (onAbort != null) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+async function cancelResponseBodyReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ResponseBodyCancellationResult> {
+  let cancellation: Promise<ResponseBodyCancellationResult>;
+  try {
+    cancellation = reader.cancel().then(
+      () => "cancelled" as const,
+      () => "failed" as const,
+    );
+  } catch {
+    return "failed";
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<ResponseBodyCancellationResult>((resolve) => {
+    timeout = setTimeout(() => {
+      resolve("timed_out");
+    }, responseBodyCancellationTimeoutMilliseconds);
+  });
+  try {
+    return await Promise.race([cancellation, timeoutPromise]);
+  } finally {
+    if (timeout != null) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function cancelAndClassifyResponseBody(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  kind: Exclude<ResponseBodyReadResult, { kind: "read" }>["kind"],
+): Promise<ResponseBodyReadResult> {
+  const cancellation = await cancelResponseBodyReader(reader);
+  if (signal.aborted) {
+    throw new AsanaRequestAbortedError();
+  }
+  return cancellation === "cancelled"
+    ? { kind }
+    : { kind: "unavailable" };
+}
+
+async function releaseResponseBody(
+  response: Response,
+  signal: AbortSignal,
+): Promise<"released" | "unavailable"> {
+  if (response.body == null) {
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
+    return "released";
+  }
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch {
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
+    return "unavailable";
+  }
+  const cancellation = await cancelResponseBodyReader(reader);
+  let releaseError: unknown;
+  try {
+    reader.releaseLock();
+  } catch (error) {
+    releaseError = error;
+  }
+  if (signal.aborted) {
+    throw new AsanaRequestAbortedError();
+  }
+  return cancellation === "cancelled" && releaseError == null
+    ? "released"
+    : "unavailable";
+}
+
+async function consumeResponseBodyReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ResponseBodyReadResult> {
+  let cancellationStarted = false;
+  const cancelAndClassify = async (
+    kind: Exclude<ResponseBodyReadResult, { kind: "read" }>["kind"],
+  ): Promise<ResponseBodyReadResult> => {
+    cancellationStarted = true;
+    return cancelAndClassifyResponseBody(reader, signal, kind);
+  };
+  try {
+    if (signal.aborted) {
+      return await cancelAndClassify("unavailable");
+    }
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    const deadline = Date.now() + responseBodyReadTimeoutMilliseconds;
+    while (true) {
+      const remainingMilliseconds = deadline - Date.now();
+      if (remainingMilliseconds <= 0) {
+        return await cancelAndClassify("timeout");
+      }
+      const chunk = await readResponseBodyChunk(
+        reader,
+        signal,
+        remainingMilliseconds,
+      );
+      if (chunk.kind === "aborted") {
+        return await cancelAndClassify("unavailable");
+      }
+      if (chunk.kind === "timeout") {
+        return await cancelAndClassify("timeout");
+      }
+      if (chunk.kind === "unavailable") {
+        return await cancelAndClassify("unavailable");
+      }
+      if (chunk.kind !== "read") {
+        throw new Error("Asana API応答の本文読み取り結果が不正です。");
+      }
+      if (chunk.value.done) {
+        if (signal.aborted) {
+          return await cancelAndClassify("unavailable");
+        }
+        return { kind: "read", bytes: Buffer.concat(chunks, totalBytes) };
+      }
+      if (signal.aborted) {
+        return await cancelAndClassify("unavailable");
+      }
+      if (chunk.value.value == null) {
+        return await cancelAndClassify("unavailable");
+      }
+      totalBytes += chunk.value.value.byteLength;
+      if (totalBytes > maximumResponseBodyBytes) {
+        return await cancelAndClassify("too_large");
+      }
+      chunks.push(chunk.value.value);
+    }
+  } catch (error) {
+    if (!cancellationStarted) {
+      cancellationStarted = true;
+      await cancelResponseBodyReader(reader);
+    }
+    if (signal.aborted || error instanceof AsanaRequestAbortedError) {
+      throw new AsanaRequestAbortedError();
+    }
+    return { kind: "unavailable" };
+  }
+}
+
+async function readResponseBody(
+  response: Response,
+  signal: AbortSignal,
+): Promise<ResponseBodyReadResult> {
+  const contentLength = response.headers.get("content-length");
+  if (
+    contentLength != null
+    && /^\d+$/u.test(contentLength)
+    && BigInt(contentLength) > BigInt(maximumResponseBodyBytes)
+  ) {
+    const release = await releaseResponseBody(response, signal);
+    return release === "released" ? { kind: "too_large" } : { kind: "unavailable" };
+  }
+  if (response.body == null) {
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
+    return { kind: "unavailable" };
+  }
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch {
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
+    return { kind: "unavailable" };
+  }
+  let body: ResponseBodyReadResult | undefined;
+  let readError: unknown;
+  let releaseError: unknown;
+  try {
+    body = await consumeResponseBodyReader(reader, signal);
+  } catch (error) {
+    readError = error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch (error) {
+      releaseError = error;
+    }
+  }
+  if (signal.aborted || readError instanceof AsanaRequestAbortedError) {
+    throw new AsanaRequestAbortedError();
+  }
+  if (releaseError != null || readError != null || body == null) {
+    return { kind: "unavailable" };
+  }
+  return body;
+}
+
 /** Asana APIのレスポンスをスケジュールして取得します。 */
 export class AsanaTransport {
   private readonly scheduler: AsanaRequestScheduler;
@@ -330,55 +590,133 @@ export class AsanaTransport {
         continue;
       }
 
-      if (response.status === 412 && isEventsRequest(request)) {
-        const syncToken = await this.parseEventsResetResponse(response);
-        throw new AsanaEventsResetError(syncToken);
-      }
-      if (response.status === 401) {
-        if (authenticationRetried) {
-          throw new AsanaAuthenticationError();
-        }
-        refreshedToken = await this.refreshAfterUnauthorized(accessToken);
-        authenticationRetried = true;
-        continue;
-      }
-      if (response.status === 402) {
-        throw new AsanaPaymentRequiredError();
-      }
-      if (response.status === 429) {
-        if (!retrySafe) {
-          throw new AsanaRateLimitError();
-        }
-        const delay = parseRetryAfter(response.headers.get("retry-after"));
-        if (temporaryRetryCount >= maximumTemporaryRetries) {
-          throw new AsanaRateLimitError();
-        }
-        await this.waitForRetry(delay, signal);
-        temporaryRetryCount += 1;
-        continue;
-      }
-      if (response.status >= 500 && response.status <= 599 && retrySafe) {
-        if (temporaryRetryCount >= maximumTemporaryRetries) {
-          throw new AsanaHttpError(
-            response.status,
-            this.requestId(response),
-          );
-        }
-        await this.waitForRetry(
-          getRetryBackoff(temporaryRetryCount),
-          signal,
-        );
-        temporaryRetryCount += 1;
-        continue;
-      }
       if (!response.ok) {
-        throw new AsanaHttpError(
-          response.status,
-          this.requestId(response),
+        const result = await this.consumeNonSuccessfulResponse(
+          response,
+          request,
+          signal,
+          authenticationRetried,
+          retrySafe,
+          temporaryRetryCount,
         );
+        if (signal.aborted) {
+          throw new AsanaRequestAbortedError();
+        }
+        switch (result.kind) {
+          case "events_reset":
+            throw new AsanaEventsResetError(result.syncToken);
+          case "refresh_authentication":
+            refreshedToken = await this.refreshAfterUnauthorized(accessToken, signal);
+            authenticationRetried = true;
+            continue;
+          case "retry":
+            await this.waitForRetry(result.delay, signal);
+            temporaryRetryCount += 1;
+            continue;
+          case "throw":
+            throw result.error;
+        }
       }
-      return this.parseSuccessfulResponse(response, request.response_schema);
+      return this.parseSuccessfulResponse(response, request.response_schema, signal);
     }
+  }
+
+  private async consumeNonSuccessfulResponse<T>(
+    response: Response,
+    request: AsanaRequest<T>,
+    signal: AbortSignal,
+    authenticationRetried: boolean,
+    retrySafe: boolean,
+    temporaryRetryCount: number,
+  ): Promise<NonSuccessfulResponseResult> {
+    if (response.status === 412 && isEventsRequest(request)) {
+      try {
+        return {
+          kind: "events_reset",
+          syncToken: await this.parseEventsResetResponse(response, signal),
+        };
+      } catch (error) {
+        if (error instanceof AsanaRequestAbortedError) {
+          throw error;
+        }
+        return {
+          kind: "throw",
+          error: error instanceof AsanaResponseError
+            ? error
+            : new AsanaResponseError(error),
+        };
+      }
+    }
+    if (response.status === 401) {
+      const httpError = await this.createHttpError(response, signal);
+      return authenticationRetried
+        ? { kind: "throw", error: new AsanaAuthenticationError(httpError) }
+        : { kind: "refresh_authentication" };
+    }
+    if (response.status === 402) {
+      return {
+        kind: "throw",
+        error: new AsanaPaymentRequiredError(
+          await this.createHttpError(response, signal),
+        ),
+      };
+    }
+    if (response.status === 429) {
+      if (!retrySafe) {
+        return {
+          kind: "throw",
+          error: new AsanaRateLimitError(
+            await this.createHttpError(response, signal),
+          ),
+        };
+      }
+      let delay: number | undefined;
+      let retryAfterError: AsanaRateLimitError | undefined;
+      try {
+        delay = parseRetryAfter(response.headers.get("retry-after"));
+      } catch (error) {
+        if (!(error instanceof AsanaRateLimitError)) {
+          throw error;
+        }
+        retryAfterError = error;
+      }
+      const httpError = await this.createHttpError(response, signal);
+      if (retryAfterError != null) {
+        return {
+          kind: "throw",
+          error: new AsanaRateLimitError(
+            new AggregateError(
+              [httpError, retryAfterError],
+              "Asana APIのRetry-AfterとHTTP応答を記録しました。",
+            ),
+          ),
+        };
+      }
+      if (delay == null) {
+        throw new Error("Asana APIの再試行待機時間がありません。");
+      }
+      if (temporaryRetryCount >= maximumTemporaryRetries) {
+        return {
+          kind: "throw",
+          error: new AsanaRateLimitError(httpError),
+        };
+      }
+      return { kind: "retry", delay };
+    }
+    if (response.status >= 500 && response.status <= 599 && retrySafe) {
+      const httpError = await this.createHttpError(response, signal);
+      if (temporaryRetryCount >= maximumTemporaryRetries) {
+        return { kind: "throw", error: httpError };
+      }
+      return {
+        kind: "retry",
+        delay: getRetryBackoff(temporaryRetryCount),
+      };
+    }
+    return {
+      kind: "throw",
+      error: await this.createHttpError(response, signal),
+    };
   }
 
   private executeAttempt<T>(
@@ -438,14 +776,30 @@ export class AsanaTransport {
     }
   }
 
-  private async refreshAfterUnauthorized(usedToken: string): Promise<string> {
+  private async refreshAfterUnauthorized(
+    usedToken: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
     const pendingRefresh = this.refreshState;
     if (pendingRefresh != null && pendingRefresh.sourceToken === usedToken) {
-      return pendingRefresh.promise;
+      const token = await pendingRefresh.promise;
+      if (signal.aborted) {
+        throw new AsanaRequestAbortedError();
+      }
+      return token;
     }
     if (pendingRefresh != null) {
       await pendingRefresh.promise;
+      if (signal.aborted) {
+        throw new AsanaRequestAbortedError();
+      }
       const currentToken = await this.getAccessToken();
+      if (signal.aborted) {
+        throw new AsanaRequestAbortedError();
+      }
       if (currentToken !== usedToken) {
         return currentToken;
       }
@@ -454,10 +808,16 @@ export class AsanaTransport {
       this.lastRefreshSourceToken === usedToken
       && this.lastRefreshToken != null
     ) {
+      if (signal.aborted) {
+        throw new AsanaRequestAbortedError();
+      }
       return this.lastRefreshToken;
     }
 
     const currentToken = await this.getAccessToken();
+    if (signal.aborted) {
+      throw new AsanaRequestAbortedError();
+    }
     if (currentToken !== usedToken) {
       return currentToken;
     }
@@ -477,7 +837,11 @@ export class AsanaTransport {
     };
     this.refreshState = refreshState;
     try {
-      return await refreshPromise;
+      const token = await refreshPromise;
+      if (signal.aborted) {
+        throw new AsanaRequestAbortedError();
+      }
+      return token;
     } finally {
       if (this.refreshState === refreshState) {
         this.refreshState = undefined;
@@ -524,23 +888,92 @@ export class AsanaTransport {
   }
 
   private requestId(response: Response): string | undefined {
-    return response.headers.get("x-request-id")
-      ?? response.headers.get("x-asana-request-id")
-      ?? undefined;
+    const requestId = response.headers.get("x-request-id");
+    if (requestId != null && requestId.length > 0) {
+      return requestId;
+    }
+    const asanaRequestId = response.headers.get("x-asana-request-id");
+    return asanaRequestId == null || asanaRequestId.length === 0
+      ? undefined
+      : asanaRequestId;
   }
 
-  private async parseEventsResetResponse(response: Response): Promise<string> {
+  private async createHttpError(
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<AsanaHttpError> {
+    return new AsanaHttpError(
+      response.status,
+      this.requestId(response),
+      await this.parseHttpErrorResponse(response, signal),
+      "rest",
+    );
+  }
+
+  private async parseHttpErrorResponse(
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<AsanaHttpErrorResponse> {
     if (!isJsonContentType(response.headers.get("content-type"))) {
-      throw new AsanaResponseError(
-        new Error("Asana Events APIのContent-Typeがapplication/jsonではありません。"),
-      );
+      const release = await releaseResponseBody(response, signal);
+      return {
+        response_body_kind: release === "released" ? "non_json" : "unavailable",
+      };
+    }
+
+    const body = await readResponseBody(response, signal);
+    if (body.kind !== "read") {
+      return { response_body_kind: body.kind };
     }
 
     let payload: unknown;
     try {
-      payload = await response.json();
-    } catch (error) {
-      throw new AsanaResponseError(error);
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(body.bytes);
+      payload = JSON.parse(text);
+    } catch {
+      return { response_body_kind: "invalid_json" };
+    }
+
+    const parsed = safeParseAsanaHttpErrorResponse(payload);
+    if (parsed == null) {
+      return { response_body_kind: "invalid_shape" };
+    }
+    return {
+      response_body_kind: "parsed",
+      ...parsed,
+    };
+  }
+
+  private async parseEventsResetResponse(
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<string> {
+    if (!isJsonContentType(response.headers.get("content-type"))) {
+      const release = await releaseResponseBody(response, signal);
+      throw new AsanaResponseError(
+        new Error(
+          release === "released"
+            ? "Asana Events APIのContent-Typeがapplication/jsonではありません。"
+            : "Asana Events APIの応答本文を解放できません。",
+        ),
+      );
+    }
+
+    const body = await readResponseBody(response, signal);
+    if (body.kind !== "read") {
+      throw new AsanaResponseError(
+        new Error(`Asana Events APIの応答本文を取得できません。分類: ${body.kind}`),
+      );
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(body.bytes),
+      );
+    } catch {
+      throw new AsanaResponseError(
+        new Error("Asana Events APIの応答本文をJSONとして解釈できません。"),
+      );
     }
     try {
       const parsed = eventsResetResponseSchema.parse(payload);
@@ -553,6 +986,7 @@ export class AsanaTransport {
   private async parseSuccessfulResponse<T>(
     response: Response,
     schema: z.ZodType<T>,
+    signal: AbortSignal,
   ): Promise<T> {
     if (response.status === 204) {
       try {
@@ -562,8 +996,13 @@ export class AsanaTransport {
       }
     }
     if (!isJsonContentType(response.headers.get("content-type"))) {
+      const release = await releaseResponseBody(response, signal);
       throw new AsanaResponseError(
-        new Error("Asana APIのContent-Typeがapplication/jsonではありません。"),
+        new Error(
+          release === "released"
+            ? "Asana APIのContent-Typeがapplication/jsonではありません。"
+            : "Asana APIの応答本文を解放できません。",
+        ),
       );
     }
 

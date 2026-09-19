@@ -1,3 +1,87 @@
+import { z } from "zod";
+
+const asanaHttpErrorResponseBodyKindSchema = z.enum([
+  "parsed",
+  "non_json",
+  "invalid_json",
+  "invalid_shape",
+  "unavailable",
+  "timeout",
+  "too_large",
+]);
+
+const asanaHttpErrorResponseErrorSchema = z
+  .object({
+    message: z.string().optional(),
+    help: z.string().optional(),
+    phrase: z.string().optional(),
+  })
+  .strip()
+  .superRefine((error, context) => {
+    if (error.message == null && error.help == null && error.phrase == null) {
+      context.addIssue({
+        code: "custom",
+        message: "Asana APIのErrorResponse要素に許可されたフィールドがありません。",
+      });
+    }
+  });
+
+function rejectTopLevelErrorFields(
+  value: unknown,
+  context: z.RefinementCtx,
+): unknown {
+  if (typeof value === "object" && value != null && !Array.isArray(value)) {
+    for (const key of ["message", "help", "phrase"]) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        context.addIssue({
+          code: "custom",
+          message: `Asana APIのErrorResponseに${key}をトップレベル指定できません。`,
+        });
+      }
+    }
+  }
+  return value;
+}
+
+const asanaHttpErrorResponseFieldsSchema = z.object({
+  errors: z.array(asanaHttpErrorResponseErrorSchema).min(1),
+}).strip();
+const asanaHttpErrorResponsePayloadSchema = z.preprocess(
+  rejectTopLevelErrorFields,
+  asanaHttpErrorResponseFieldsSchema,
+);
+const asanaHttpErrorResponseSchema = z.preprocess(
+  rejectTopLevelErrorFields,
+  z.union([
+    asanaHttpErrorResponseFieldsSchema.extend({
+      response_body_kind: z.literal("parsed").optional(),
+    }),
+    z.object({
+      response_body_kind: asanaHttpErrorResponseBodyKindSchema.exclude(["parsed"]),
+    }).strip(),
+  ]),
+);
+
+export function safeParseAsanaHttpErrorResponse(
+  value: unknown,
+): AsanaHttpErrorResponse | undefined {
+  const parsed = asanaHttpErrorResponsePayloadSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+const asanaHttpErrorStatusSchema = z.number().int().min(100).max(599);
+const asanaHttpErrorRequestIdSchema = z.string().min(1);
+const asanaHttpErrorSourceSchema = z.enum(["rest", "oauth"]);
+
+export type AsanaHttpErrorResponseBodyKind = z.infer<
+  typeof asanaHttpErrorResponseBodyKindSchema
+>;
+export type AsanaHttpErrorResponseError = z.infer<
+  typeof asanaHttpErrorResponseErrorSchema
+>;
+export type AsanaHttpErrorResponse = z.infer<typeof asanaHttpErrorResponseSchema>;
+export type AsanaHttpErrorSource = z.infer<typeof asanaHttpErrorSourceSchema>;
+
 /** Asana APIとの通信に失敗したことを表します。 */
 export class AsanaTransportError extends Error {
   public constructor(cause: unknown) {
@@ -35,8 +119,8 @@ export class AsanaEventsResetError extends Error {
 
 /** Asana APIが支払いを要求したことを表します。 */
 export class AsanaPaymentRequiredError extends Error {
-  public constructor() {
-    super("Asana APIの利用に支払いが必要です。");
+  public constructor(cause?: unknown) {
+    super("Asana APIの利用に支払いが必要です。", { cause });
     this.name = "AsanaPaymentRequiredError";
   }
 }
@@ -45,21 +129,75 @@ export class AsanaPaymentRequiredError extends Error {
 export class AsanaHttpError extends Error {
   public readonly status: number;
   public readonly requestId?: string;
+  public readonly source: AsanaHttpErrorSource;
+  public readonly errors?: readonly AsanaHttpErrorResponseError[];
+  public readonly responseBodyKind?: AsanaHttpErrorResponseBodyKind;
 
-  public constructor(status: number, requestId: string | undefined) {
+  public constructor(
+    status: number,
+    requestId: string | undefined,
+    response: AsanaHttpErrorResponse,
+    source: AsanaHttpErrorSource,
+  ) {
     super("Asana APIがHTTPエラーを返しました。");
     this.name = "AsanaHttpError";
-    this.status = status;
+    this.status = asanaHttpErrorStatusSchema.parse(status);
+    this.source = asanaHttpErrorSourceSchema.parse(source);
+    const validatedResponse = asanaHttpErrorResponseSchema.parse(response);
     if (requestId != null) {
-      this.requestId = requestId;
+      this.requestId = asanaHttpErrorRequestIdSchema.parse(requestId);
     }
+    if ("errors" in validatedResponse) {
+      this.errors = validatedResponse.errors;
+    }
+    if (validatedResponse.response_body_kind != null) {
+      this.responseBodyKind = validatedResponse.response_body_kind;
+    }
+  }
+}
+
+/** REST由来のAsana HTTPエラーを原因連鎖から検出します。 */
+export function hasRestAsanaHttpError(value: unknown): boolean {
+  return hasRestAsanaHttpErrorIn(value, new WeakSet<object>());
+}
+
+function hasRestAsanaHttpErrorIn(
+  value: unknown,
+  ancestors: WeakSet<object>,
+): boolean {
+  if (typeof value !== "object" || value == null) {
+    return false;
+  }
+  if (ancestors.has(value)) {
+    return false;
+  }
+  ancestors.add(value);
+  try {
+    if (value instanceof AsanaHttpError && value.source === "rest") {
+      return true;
+    }
+    if (
+      value instanceof Error
+      && Object.prototype.hasOwnProperty.call(value, "cause")
+      && hasRestAsanaHttpErrorIn(value.cause, ancestors)
+    ) {
+      return true;
+    }
+    if (value instanceof AggregateError) {
+      return value.errors.some((error) => hasRestAsanaHttpErrorIn(error, ancestors));
+    }
+    return false;
+  } finally {
+    ancestors.delete(value);
   }
 }
 
 /** Asana APIのレート制限により再試行できないことを表します。 */
 export class AsanaRateLimitError extends Error {
-  public constructor() {
-    super("Asana APIのRetry-Afterが不正です、または再試行上限に達しました。");
+  public constructor(cause?: unknown) {
+    super("Asana APIのRetry-Afterが不正です、または再試行上限に達しました。", {
+      cause,
+    });
     this.name = "AsanaRateLimitError";
   }
 }
