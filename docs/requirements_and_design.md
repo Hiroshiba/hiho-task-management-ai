@@ -1168,7 +1168,7 @@ GUI編集後は再検証する。適用不可になった操作は承認UI内で
 
 作成POSTの拒否を外部作用なしと確定できるのは、`create_task` の作成POSTで、作成済みGIDがなく、最上位のエラーがRESTの直接 `AsanaHttpError` または既知の認証・支払い・レート制限エラーであり、原因連鎖のREST statusが一意で400、401、402、403、404、429、451のいずれかの場合だけである。任意の `AggregateError` 内にstatusがあるだけの場合、408、未知の4xx、5xx、応答なし、2xx本文の形式不正、作成後のGET・タグ・親操作の失敗は外部作用の可能性を残し、既存の復旧状態へ進める。401後の認証更新失敗は、最初のREST 401と更新失敗をcauseへ保持した認証エラーとして扱う。更新成功後の401は既存の一度だけの再送を維持する。
 
-確定拒否では、元HTTPエラーのapplication journal診断をJSONLとSQLiteへ各1回ずつ厳格に試み、診断成否にかかわらず `journal.complete(not_applied)` を原子的に試みる。completionに失敗した場合は別の診断を記録し、診断とcompletionの記録済み・未記録状態を合成して上位へ伝播する。元HTTP診断、completion、必要なcompletion診断のすべてが成功した場合だけ `not_applied` を返す。診断失敗やcompletion失敗で返す内容には内部reason codeを含めない。
+確定拒否では、元HTTPエラーのapplication journal診断をJSONLとSQLiteへ各1回ずつ厳格に試み、診断成否にかかわらず `journal.complete(not_applied)` を原子的に試みる。元HTTP診断が失敗してもcompletionが成功すればジャーナルは `not_applied` で確定し、未記録分を上位へ伝播する。completionに失敗した場合だけ別の診断を記録し、診断とcompletionの記録済み・未記録状態を合成して上位へ伝播する。元HTTP診断とcompletionがともに成功した場合だけ `not_applied` を返す。診断失敗やcompletion失敗で返す内容には内部reason codeを含めない。
 
 作成直後は、`external`、`memberships` 内の対象プロジェクト、目的の `section` の未投影、またはGETの404だけを、上限を設けたGETで再観測する。この再観測では、作成要求や追加書き込みを再実行しない。目的外のセクション、作成時に指定したタスク属性やCustom external dataの不一致、別UUID、不正な `external` は直ちに競合として扱い、上書きしない。安全な初期状態を確認してから、未適用のタグと親タスクだけを設定する。
 
@@ -2137,7 +2137,7 @@ Custom external dataが利用できない場合、依存・Obsidian関連・停�
 - タスク属性とCustom external dataの適用状況を独立に確認し、変更後に一致する側へ再書き込みしない。許可した状態・タグの部分適用だけを再開し、第三状態やマージ競合では書き込まない。
 - `read_back`・`metadata_verified` の再適用・復旧は操作の外部書き込みや読み戻しを再実行せず、ローカル同期と順位再計算だけを行う。`ranking_recalculated` は最終結果の保存だけを行う。ローカル同期失敗後も、この再開範囲を維持する。
 - 承認競合、一括グループの実行阻止、書き込み前のAPI失敗、external IDの衝突、外部状態確定後の同期失敗は要整理に増えず、安全な復旧が成功した項目は消える。
-- 作成POSTの確定拒否は `not_applied` として原子的に完了し、診断またはcompletionが失敗した場合は復旧待ちの状態を保ったまま上位へ伝播する。次回は永続化済みの `write_started` に従って保守的に復旧し、作成POSTを再送しない。
+- 作成POSTの確定拒否は、元HTTP診断が失敗しても `journal.complete(not_applied)` が成功すればジャーナルを `not_applied` で原子的に確定し、未記録分を上位へ伝播する。completionに失敗した場合だけ復旧待ちの状態を保ったまま上位へ伝播し、次回は永続化済みの `write_started` に従って保守的に復旧する。作成POSTを再送しない。
 - 正常な保存済みの計画では、永続化済みの段階と観測済みの外部状態から未適用と確定できる処理だけを再開する。`final_result=unknown` を外部状態の再取得や書き込みの対象にせず、復旧計画の破損・欠落や不整合データとともに個別の手動解消へ委ねる。
 
 ### 24.6 Codex
