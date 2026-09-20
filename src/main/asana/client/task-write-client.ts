@@ -162,6 +162,7 @@ const createTaskBodySchema = z
     data: z
       .object({
         name: taskTitleSchema,
+        projects: z.array(gidSchema).length(1),
         memberships: z
           .array(
             z
@@ -180,7 +181,26 @@ const createTaskBodySchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((body, context) => {
+    const projectGid = body.data.projects[0];
+    const membership = body.data.memberships[0];
+    if (projectGid == null || membership == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["data"],
+        message: "作成タスクのプロジェクト指定が不足しています。",
+      });
+      return;
+    }
+    if (membership.project !== projectGid) {
+      context.addIssue({
+        code: "custom",
+        path: ["data", "memberships", 0, "project"],
+        message: "作成タスクのプロジェクト指定が一致しません。",
+      });
+    }
+  });
 
 const taskUpdateBodySchema = z
   .object({
@@ -327,6 +347,7 @@ export class AsanaTaskWriteClient {
     const validatedInput = taskCreationInputSchema.parse(input);
     const data: JsonObject = {
       name: validatedInput.title,
+      projects: [validatedInput.project_gid],
       memberships: [{
         project: validatedInput.project_gid,
         section: validatedInput.section_gid,

@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { TaskHubApplication } from "./application/service";
 import {
+  DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
   type DiagnosticFailureDisposition,
 } from "./diagnostic-failure";
@@ -23,7 +24,7 @@ import {
   type ApplicationDiagnostic,
 } from "./ai/proposal-application";
 import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
-import { AsanaHttpError } from "./asana/transport";
+import { getUniqueAsanaHttpStatus } from "./asana/transport";
 import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
@@ -125,49 +126,18 @@ function recordPersistentError(
   logger.record(source, diagnosticCode, context, severity, error);
 }
 
-function collectAsanaHttpStatuses(
+function recordPersistentErrorStrict(
+  source: PersistentErrorLogSource,
+  diagnosticCode: DiagnosticRecord["code"],
+  context: PersistentErrorLogContext,
+  severity: DiagnosticRecord["severity"],
   error: unknown,
-  statuses: Set<number>,
-  ancestors: WeakSet<object>,
 ): void {
-  if (typeof error !== "object" || error == null) {
-    return;
+  const logger = getPersistentErrorLog();
+  if (logger == null) {
+    throw new Error("永続エラーログを初期化できません。", { cause: error });
   }
-  if (ancestors.has(error)) {
-    return;
-  }
-  ancestors.add(error);
-  try {
-    if (error instanceof AsanaHttpError && error.source === "rest") {
-      statuses.add(error.status);
-    }
-    if (error instanceof Error && Object.prototype.hasOwnProperty.call(error, "cause")) {
-      collectAsanaHttpStatuses(error.cause, statuses, ancestors);
-    }
-    if (error instanceof AggregateError) {
-      for (const aggregateError of error.errors) {
-        collectAsanaHttpStatuses(aggregateError, statuses, ancestors);
-      }
-    }
-  } finally {
-    ancestors.delete(error);
-  }
-}
-
-function getUniqueAsanaHttpStatus(error: unknown): number | undefined {
-  const statuses = new Set<number>();
-  collectAsanaHttpStatuses(error, statuses, new WeakSet<object>());
-  if (statuses.size !== 1) {
-    return undefined;
-  }
-  let status: number | undefined;
-  for (const value of statuses) {
-    status = value;
-  }
-  if (status === undefined) {
-    throw new Error("Asana HTTP statusの抽出結果が不正です。");
-  }
-  return status;
+  logger.recordStrict(source, diagnosticCode, context, severity, error);
 }
 
 function registerUncaughtExceptionMonitor(): void {
@@ -217,6 +187,94 @@ function recordDiagnostic(
   }
 }
 
+function recordDiagnosticStrict(
+  code: DiagnosticRecord["code"],
+  severity: DiagnosticRecord["severity"],
+  metadata: Pick<
+    DiagnosticRecord,
+    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+  > | undefined,
+  error: unknown,
+): void {
+  const httpStatus = getUniqueAsanaHttpStatus(error);
+  let resolvedMetadata = metadata;
+  if (resolvedMetadata == null) {
+    if (httpStatus != null) {
+      resolvedMetadata = { http_status: httpStatus };
+    }
+  } else if (resolvedMetadata.http_status == null && httpStatus != null) {
+    resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
+  }
+  const application = taskHubApplication;
+  if (application == null) {
+    throw new Error("診断情報を記録するアプリケーションがありません。", { cause: error });
+  }
+  application.recordDiagnostic(code, severity, resolvedMetadata);
+}
+
+function aggregateDiagnosticSinkFailures(failures: readonly unknown[]): unknown {
+  if (failures.length === 0) {
+    throw new Error("診断sinkの失敗がありません。");
+  }
+  if (failures.length === 1) {
+    const [failure] = failures;
+    if (failure == null) {
+      throw new Error("診断sinkの失敗を取得できません。");
+    }
+    return failure;
+  }
+  return new AggregateError(failures, "診断sinkの記録に複数の失敗がありました。");
+}
+
+function recordApplicationJournalDiagnostic(
+  error: unknown,
+  diagnosticCode: DiagnosticRecord["code"],
+  diagnostic: Extract<ApplicationDiagnostic, { readonly kind: "application_journal" }>,
+  metadata: Pick<
+    DiagnosticRecord,
+    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+  >,
+): void {
+  const persistentError = new Error(JSON.stringify(diagnostic), { cause: error });
+  const failures: unknown[] = [];
+  let recordedSinkCount = 0;
+  try {
+    recordPersistentErrorStrict(
+      "service",
+      diagnosticCode,
+      "service_diagnostic",
+      diagnostic.severity,
+      persistentError,
+    );
+    recordedSinkCount += 1;
+  } catch (sinkError) {
+    failures.push(sinkError);
+  }
+  try {
+    recordDiagnosticStrict(diagnosticCode, diagnostic.severity, metadata, error);
+    recordedSinkCount += 1;
+  } catch (sinkError) {
+    failures.push(sinkError);
+  }
+  if (failures.length === 0) {
+    return;
+  }
+  const unrecordedError = aggregateDiagnosticSinkFailures(failures);
+  if (recordedSinkCount > 0) {
+    throw new DiagnosticFailureDispositionError({
+      kind: "recorded_and_unrecorded",
+      recorded_error: error,
+      unrecorded_error: unrecordedError,
+      response_error: error,
+    });
+  }
+  throw new DiagnosticFailureDispositionError({
+    kind: "unrecorded_only",
+    unrecorded_error: unrecordedError,
+    response_error: error,
+  });
+}
+
 function recordServiceDiagnostic(
   error: unknown,
   channel: string,
@@ -247,13 +305,6 @@ function recordServiceDiagnostic(
     default:
       diagnosticCode = "app.error";
   }
-  recordPersistentError(
-    "service",
-    diagnosticCode,
-    "service_diagnostic",
-    diagnostic.severity,
-    new Error(JSON.stringify(diagnostic), { cause: error }),
-  );
   const metadata = diagnostic.kind === "application_journal"
     ? {
         ...(diagnostic.proposal_id == null ? {} : { proposal_id: diagnostic.proposal_id }),
@@ -261,6 +312,20 @@ function recordServiceDiagnostic(
         ...(diagnostic.task_gid == null ? {} : { asana_gid: diagnostic.task_gid }),
       }
     : undefined;
+  if (diagnostic.kind === "application_journal") {
+    if (metadata == null) {
+      throw new Error("application journal診断のmetadataがありません。");
+    }
+    recordApplicationJournalDiagnostic(error, diagnosticCode, diagnostic, metadata);
+    return;
+  }
+  recordPersistentError(
+    "service",
+    diagnosticCode,
+    "service_diagnostic",
+    diagnostic.severity,
+    new Error(JSON.stringify(diagnostic), { cause: error }),
+  );
   recordDiagnostic(diagnosticCode, diagnostic.severity, metadata, error);
 }
 
