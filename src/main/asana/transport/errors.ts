@@ -192,6 +192,49 @@ function hasRestAsanaHttpErrorIn(
   }
 }
 
+function collectRestAsanaHttpStatuses(
+  value: unknown,
+  statuses: Set<number>,
+  ancestors: WeakSet<object>,
+): void {
+  if (typeof value !== "object" || value == null) {
+    return;
+  }
+  if (ancestors.has(value)) {
+    return;
+  }
+  ancestors.add(value);
+  try {
+    if (value instanceof AsanaHttpError && value.source === "rest") {
+      statuses.add(value.status);
+    }
+    if (value instanceof Error && Object.prototype.hasOwnProperty.call(value, "cause")) {
+      collectRestAsanaHttpStatuses(value.cause, statuses, ancestors);
+    }
+    if (value instanceof AggregateError) {
+      for (const aggregateError of value.errors) {
+        collectRestAsanaHttpStatuses(aggregateError, statuses, ancestors);
+      }
+    }
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+/** 原因連鎖から一意なREST由来Asana HTTP statusを取得します。 */
+export function getUniqueAsanaHttpStatus(value: unknown): number | undefined {
+  const statuses = new Set<number>();
+  collectRestAsanaHttpStatuses(value, statuses, new WeakSet<object>());
+  if (statuses.size !== 1) {
+    return undefined;
+  }
+  const [status] = statuses;
+  if (status == null) {
+    throw new Error("Asana HTTP statusの抽出結果が不正です。");
+  }
+  return status;
+}
+
 /** Asana APIのレート制限により再試行できないことを表します。 */
 export class AsanaRateLimitError extends Error {
   public constructor(cause?: unknown) {

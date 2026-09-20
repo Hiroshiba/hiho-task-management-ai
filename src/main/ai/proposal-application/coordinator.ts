@@ -40,12 +40,14 @@ import {
   AsanaRateLimitError,
   AsanaResponseError,
   AsanaTransportError,
+  getUniqueAsanaHttpStatus,
 } from "../../asana/transport";
 import { AsanaReadClient } from "../../asana/client/client";
 import {
   combineDiagnosticFailureDispositions,
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
+  type DiagnosticFailureDisposition,
 } from "../../diagnostic-failure";
 import {
   AsanaProposalOperationWriter,
@@ -224,6 +226,16 @@ type RecoveryPendingJournal = {
   readonly task_gid: string;
 };
 
+const definitiveCreateTaskRejectionStatuses: ReadonlySet<number> = new Set([
+  400,
+  401,
+  402,
+  403,
+  404,
+  429,
+  451,
+]);
+
 function parsePostWriteSynchronizationResult(
   value: PostWriteSynchronizationResultWithCause,
 ): PostWriteSynchronizationResultWithCause {
@@ -320,6 +332,31 @@ function isKnownAsanaOperationalError(error: unknown): boolean {
     || error instanceof AsanaHttpError
     || error instanceof AsanaPaymentRequiredError
     || error instanceof AsanaRateLimitError;
+}
+
+function isKnownCreateTaskRejectionError(error: unknown): boolean {
+  return error instanceof AsanaHttpError
+    || error instanceof AsanaAuthenticationError
+    || error instanceof AsanaPaymentRequiredError
+    || error instanceof AsanaRateLimitError;
+}
+
+function isDefinitiveCreateTaskRejection(
+  operation: ProposalOperation,
+  lastWriteAction: ProposalOperationWriteAction | undefined,
+  createdTaskGid: string | undefined,
+  error: unknown,
+): boolean {
+  if (
+    operation.operation !== "create_task"
+    || lastWriteAction !== "create_task"
+    || createdTaskGid != null
+    || !isKnownCreateTaskRejectionError(error)
+  ) {
+    return false;
+  }
+  const status = getUniqueAsanaHttpStatus(error);
+  return status != null && definitiveCreateTaskRejectionStatuses.has(status);
 }
 
 function normalizeJournalPort(journal: JournalPort): ApplicationJournalStorePort {
@@ -2352,6 +2389,37 @@ export class AsanaProposalApplicationCoordinator {
         if (context.operation.operation === "create_task") {
           failedTemporaryRefs.add(context.operation.temporary_ref);
         }
+        if (
+          isDefinitiveCreateTaskRejection(
+            context.operation,
+            lastWriteAction,
+            createdTaskGid,
+            error,
+          )
+        ) {
+          const result = this.completeDefinitiveCreateTaskRejection(
+            error,
+            entry,
+            entryForProgress,
+            context,
+            writeAttemptCount,
+            taskGid,
+          );
+          operationResults.set(context.operation.operation_id, result);
+          if (context.group.atomic) {
+            operationGroupsBlocked.add(context.group.group_id);
+            markAtomicGroupBlocked(
+              contexts,
+              selected,
+              existingJournalOperationIds,
+              context.group.group_id,
+              operationResults,
+              failedTemporaryRefs,
+              mappings,
+            );
+          }
+          continue;
+        }
         const certainty = currentEffectCertainty();
         const reasonCode = certainty === "none"
           ? "external_api_failed"
@@ -2613,6 +2681,93 @@ export class AsanaProposalApplicationCoordinator {
       validatedInput.approval_input.proposal,
       selected,
       operationResults,
+    );
+  }
+
+  private completeDefinitiveCreateTaskRejection(
+    error: unknown,
+    entry: PlannedApplicationJournal,
+    entryForProgress: PlannedApplicationJournal,
+    context: OperationContext,
+    writeAttemptCount: number,
+    taskGid: string | undefined,
+  ): ApplicationOperationResult {
+    let diagnosticDisposition: DiagnosticFailureDisposition;
+    try {
+      diagnosticDisposition = this.reportOperationEventOnce(
+        error,
+        { journal: entryForProgress, context },
+        {
+          severity: "error",
+          api_action: "create_task",
+          journal_stage: entryForProgress.stage,
+          effect_certainty: "none",
+          reason_code: "external_api_failed",
+          recovery_decision: "not_applied",
+          attempt: Math.max(1, writeAttemptCount),
+          phase: "external_write",
+        },
+        taskGid,
+      ).disposition;
+    } catch (diagnosticError: unknown) {
+      diagnosticDisposition = diagnosticFailureDispositionFromError(diagnosticError);
+    }
+
+    type CompletionState =
+      | { readonly kind: "completed" }
+      | { readonly kind: "failed"; readonly error: unknown };
+    let completion: CompletionState;
+    try {
+      this.journal.complete(
+        entry.proposal_id,
+        entry.operation_id,
+        finalJournalResult("not_applied"),
+      );
+      completion = { kind: "completed" };
+    } catch (completionError: unknown) {
+      completion = { kind: "failed", error: completionError };
+    }
+
+    if (completion.kind === "failed") {
+      let completionDiagnosticDisposition: DiagnosticFailureDisposition;
+      try {
+        completionDiagnosticDisposition = this.reportOperationEventOnce(
+          completion.error,
+          { journal: entryForProgress, context },
+          {
+            severity: "error",
+            api_action: "journal_plan",
+            journal_stage: entryForProgress.stage,
+            effect_certainty: "none",
+            reason_code: "recovery_required",
+            recovery_decision: "unresolved",
+            attempt: Math.max(1, writeAttemptCount),
+            phase: "journal",
+          },
+          taskGid,
+        ).disposition;
+      } catch (diagnosticError: unknown) {
+        completionDiagnosticDisposition = diagnosticFailureDispositionFromError(
+          diagnosticError,
+        );
+      }
+      throw new DiagnosticFailureDispositionError(
+        combineDiagnosticFailureDispositions(
+          diagnosticDisposition,
+          [completionDiagnosticDisposition],
+        ),
+      );
+    }
+
+    if (diagnosticDisposition.kind !== "recorded_only") {
+      throw new DiagnosticFailureDispositionError(diagnosticDisposition);
+    }
+    return createOperationResult(
+      context.group.group_id,
+      context.operation.operation_id,
+      "not_applied",
+      "external_api_failed",
+      taskGid,
     );
   }
 

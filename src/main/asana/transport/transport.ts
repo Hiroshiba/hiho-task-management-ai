@@ -261,7 +261,10 @@ type ResponseBodyCancellationResult = "cancelled" | "failed" | "timed_out";
 
 type NonSuccessfulResponseResult =
   | { readonly kind: "events_reset"; readonly syncToken: string }
-  | { readonly kind: "refresh_authentication" }
+  | {
+      readonly kind: "refresh_authentication";
+      readonly error: AsanaHttpError;
+    }
   | { readonly kind: "retry"; readonly delay: number }
   | { readonly kind: "throw"; readonly error: Error };
 
@@ -605,10 +608,24 @@ export class AsanaTransport {
         switch (result.kind) {
           case "events_reset":
             throw new AsanaEventsResetError(result.syncToken);
-          case "refresh_authentication":
-            refreshedToken = await this.refreshAfterUnauthorized(accessToken, signal);
+          case "refresh_authentication": {
+            try {
+              refreshedToken = await this.refreshAfterUnauthorized(accessToken, signal);
+            } catch (error) {
+              if (error instanceof AsanaRequestAbortedError || signal.aborted) {
+                throw error;
+              }
+              throw new AsanaAuthenticationError(
+                new AggregateError(
+                  [result.error, error],
+                  "Asana APIの401応答と認証更新失敗を記録しました。",
+                  { cause: result.error },
+                ),
+              );
+            }
             authenticationRetried = true;
             continue;
+          }
           case "retry":
             await this.waitForRetry(result.delay, signal);
             temporaryRetryCount += 1;
@@ -651,7 +668,7 @@ export class AsanaTransport {
       const httpError = await this.createHttpError(response, signal);
       return authenticationRetried
         ? { kind: "throw", error: new AsanaAuthenticationError(httpError) }
-        : { kind: "refresh_authentication" };
+        : { kind: "refresh_authentication", error: httpError };
     }
     if (response.status === 402) {
       return {

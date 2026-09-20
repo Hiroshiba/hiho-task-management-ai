@@ -665,14 +665,38 @@ export class PersistentErrorLog {
     severity: DiagnosticRecord["severity"],
     error: unknown,
   ): void {
+    this.recordInternal(source, diagnosticCode, context, severity, error, false);
+  }
+
+  /** application journal診断を記録し、保存失敗を呼び出し元へ返します。 */
+  public recordStrict(
+    source: PersistentErrorLogSource,
+    diagnosticCode: DiagnosticRecord["code"],
+    context: PersistentErrorLogContext,
+    severity: DiagnosticRecord["severity"],
+    error: unknown,
+  ): void {
+    this.recordInternal(source, diagnosticCode, context, severity, error, true);
+  }
+
+  private recordInternal(
+    source: PersistentErrorLogSource,
+    diagnosticCode: DiagnosticRecord["code"],
+    context: PersistentErrorLogContext,
+    severity: DiagnosticRecord["severity"],
+    error: unknown,
+    strict: boolean,
+  ): void {
     if (this.writing) {
-      writePersistentErrorLogFailure(
-        new AggregateError(
-          [error, new Error("永続エラーログの記録中に再入しました。")],
-          "永続エラーログの記録中に再入しました。",
-          { cause: error },
-        ),
+      const reentrantError = new AggregateError(
+        [error, new Error("永続エラーログの記録中に再入しました。")],
+        "永続エラーログの記録中に再入しました。",
+        { cause: error },
       );
+      if (strict) {
+        throw reentrantError;
+      }
+      writePersistentErrorLogFailure(reentrantError);
       return;
     }
     this.writing = true;
@@ -687,6 +711,9 @@ export class PersistentErrorLog {
       });
       this.writeRecord(record);
     } catch (writeError) {
+      if (strict) {
+        throw writeError;
+      }
       writePersistentErrorLogFailure(
         new AggregateError(
           [error, writeError],

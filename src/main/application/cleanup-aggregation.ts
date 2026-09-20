@@ -63,6 +63,14 @@ const proposalConflictCleanupItemsSchema = z.array(
 const brokenVaultLinkCleanupItemsSchema = z.array(
   brokenVaultLinkCleanupItemSchema,
 );
+const unknownApplicationReasonCodeSchema = z.enum([
+  "recovery_required",
+  "recovery_context_missing",
+  "task_not_found",
+  "duplicate_external_id",
+  "journal_target_mismatch",
+  "local_resync_required",
+]);
 const localCleanupItemsInputSchema = z
   .object({
     proposal_conflicts: proposalConflictCleanupItemsSchema,
@@ -78,6 +86,27 @@ export type BrokenVaultLinkCleanupItem = z.infer<
   typeof brokenVaultLinkCleanupItemSchema
 >;
 
+type UnknownApplicationReasonCode = z.infer<
+  typeof unknownApplicationReasonCodeSchema
+>;
+
+function unknownReasonMessage(reasonCode: UnknownApplicationReasonCode): string {
+  switch (reasonCode) {
+    case "recovery_required":
+      return "外部状態を確定できないため、適用結果を確認して手動で解消してください。";
+    case "recovery_context_missing":
+      return "復旧に必要な記録がないため、適用結果を確認して手動で解消してください。";
+    case "task_not_found":
+      return "対象タスクを確認できないため、Asanaの状態を確認して手動で解消してください。";
+    case "duplicate_external_id":
+      return "外部IDが重複しているため、重複を解消してから手動で適用してください。";
+    case "journal_target_mismatch":
+      return "適用記録の対象が一致しないため、記録とAsanaの状態を確認して手動で解消してください。";
+    case "local_resync_required":
+      return "Asanaへの反映後にローカル同期が完了していないため、同期を実行してください。";
+  }
+}
+
 function createProposalConflictItem(
   proposalId: string,
   operationId: string,
@@ -88,9 +117,12 @@ function createProposalConflictItem(
   const outcomeMessage = outcome === "not_applied"
     ? "適用されませんでした"
     : "適用結果を確定できません";
+  const detailMessage = outcome === "not_applied"
+    ? ""
+    : ` ${unknownReasonMessage(unknownApplicationReasonCodeSchema.parse(reasonCode))}`;
   const item = {
     kind: "proposal_conflict",
-    message: `AI変更案 ${proposalId} の操作 ${operationId} は${outcomeMessage}。理由コードは ${reasonCode} です。`,
+    message: `AI変更案 ${proposalId} の操作 ${operationId} は${outcomeMessage}。${detailMessage}`,
     proposal_id: proposalId,
     operation_id: operationId,
   };

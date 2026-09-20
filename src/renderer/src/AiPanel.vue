@@ -250,6 +250,10 @@ function applicationReasonLabel(reason: string): string {
       return "外部IDが重複しています";
     case "journal_target_mismatch":
       return "適用記録の対象が一致しません";
+    case "external_api_failed":
+      return "Asanaへの反映に失敗し、変更は行われませんでした。詳細はエラーログを確認してください。";
+    case "local_resync_required":
+      return "Asanaへの反映後に同期が完了していません。同期を実行してください。";
     default:
       throw new Error("未知の適用理由コードです。");
   }
