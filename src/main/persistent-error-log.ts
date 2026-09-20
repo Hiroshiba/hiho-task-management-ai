@@ -39,6 +39,10 @@ import {
   codexThreadStartCapabilityFailureCodeSchema,
   type CodexThreadStartCapabilityFailureCode,
 } from "./codex/session/errors";
+import {
+  AsanaHttpError,
+  type AsanaHttpErrorResponseBodyKind,
+} from "./asana/transport";
 import { redactSensitiveText } from "./redact-sensitive-text";
 
 const maximumLogBytes = 1 * 1024 * 1024;
@@ -176,6 +180,7 @@ type SafeZodIssuePathSegment = z.infer<typeof safeZodIssuePathSegmentSchema>;
 type SafeZodIssueCode = z.infer<typeof safeZodIssueCodeSchema>;
 type SafeZodIssueExpected = z.infer<typeof safeZodIssueExpectedSchema>;
 type SafeCodexTurnFailure = z.infer<typeof safeCodexTurnFailureSchema>;
+type AsanaHttpErrorResponseBodyKindValue = AsanaHttpErrorResponseBodyKind;
 
 export type PersistentErrorLogSource = z.infer<
   typeof persistentErrorLogSourceSchema
@@ -197,7 +202,40 @@ type ErrorDetail = {
   rpc_code?: number | undefined;
   rpc_message?: string | undefined;
   retry_event?: AiWorkflowRetryLogEvent | undefined;
+  asana_http?: AsanaHttpErrorDetail | undefined;
 };
+
+const asanaHttpErrorDetailSchema = z
+  .object({
+    status: z.number().int().min(100).max(599),
+    request_id: z.string().optional(),
+    errors: z
+      .array(
+        z
+          .object({
+            message: z.string().optional(),
+            help: z.string().optional(),
+            phrase: z.string().optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
+    response_body_kind: z
+      .enum([
+        "parsed",
+        "non_json",
+        "invalid_json",
+        "invalid_shape",
+        "unavailable",
+        "timeout",
+        "too_large",
+      ] satisfies AsanaHttpErrorResponseBodyKindValue[])
+      .optional(),
+  })
+  .strict();
+
+type AsanaHttpErrorDetail = z.infer<typeof asanaHttpErrorDetailSchema>;
 
 const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
   z
@@ -214,6 +252,7 @@ const errorDetailSchema: z.ZodType<ErrorDetail> = z.lazy(() =>
       rpc_code: codexRpcCodeSchema.optional(),
       rpc_message: z.string().optional(),
       retry_event: aiWorkflowRetryLogEventSchema.optional(),
+      asana_http: asanaHttpErrorDetailSchema.optional(),
     })
     .strict(),
 );
@@ -318,6 +357,30 @@ function getStackTrace(value: unknown): string {
     return "";
   }
   return redactSensitiveText(value.stack);
+}
+
+function getAsanaHttpDetail(
+  value: unknown,
+): Pick<ErrorDetail, "asana_http"> {
+  if (!(value instanceof AsanaHttpError) || value.source !== "rest") {
+    return {};
+  }
+  const errors = value.errors?.map((error) => ({
+    ...(error.message == null ? {} : { message: redactSensitiveText(error.message) }),
+    ...(error.help == null ? {} : { help: redactSensitiveText(error.help) }),
+    ...(error.phrase == null ? {} : { phrase: redactSensitiveText(error.phrase) }),
+  }));
+  const detail = asanaHttpErrorDetailSchema.parse({
+    status: value.status,
+    ...(value.requestId == null
+      ? {}
+      : { request_id: redactSensitiveText(value.requestId) }),
+    ...(errors == null ? {} : { errors }),
+    ...(value.responseBodyKind == null
+      ? {}
+      : { response_body_kind: value.responseBodyKind }),
+  });
+  return { asana_http: detail };
 }
 
 type CodexRpcDetail = {
@@ -477,6 +540,7 @@ function createErrorDetail(
       ...getSafeCodexThreadStartCapabilityDetail(value),
       ...getCodexRpcDetail(value),
       ...getAiWorkflowRetryEventDetail(value),
+      ...getAsanaHttpDetail(value),
     };
 
     if (value instanceof Error && Object.prototype.hasOwnProperty.call(value, "cause")) {

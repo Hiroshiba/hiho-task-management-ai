@@ -464,6 +464,7 @@ export class AsanaCapabilityCheckService {
     expectation: CreatedTaskReadExpectation,
     signal: AbortSignal,
   ): Promise<AsanaTaskResponse> {
+    let notFoundError: AsanaHttpError | undefined;
     for (
       let observationIndex = 0;
       observationIndex <= createReadBackDelaysMilliseconds.length;
@@ -487,6 +488,7 @@ export class AsanaCapabilityCheckService {
         if (!(error instanceof AsanaHttpError) || error.status !== 404) {
           throw error;
         }
+        notFoundError = error;
         observation = { kind: "pending" };
       }
       if (observation.kind === "ready") {
@@ -495,7 +497,10 @@ export class AsanaCapabilityCheckService {
     }
     throw new AsanaCapabilityCheckError(
       "readback_mismatch",
-      new Error("能力検査タスクの作成結果を読み戻せません。"),
+      new Error(
+        "能力検査タスクの作成結果を読み戻せません。",
+        notFoundError == null ? undefined : { cause: notFoundError },
+      ),
     );
   }
 

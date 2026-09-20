@@ -5,6 +5,7 @@ export { setupFullSyncInputSchema } from "./service";
 export type {
   SetupAsanaPort,
   SetupCapabilityPort,
+  SetupCapabilityFailureReporter,
   SetupCheckpointPort,
   SetupCodexPort,
   SetupDatabasePort,

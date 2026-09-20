@@ -58,9 +58,11 @@ type WriterConflictReasonCode = Extract<WriterResult, { outcome: "conflict" }>["
 type CreateReadBackPendingReason = "projection" | "not_found";
 type CreateReadBackObservation =
   | { readonly kind: "ready"; readonly task: AsanaTaskResponse }
+  | { readonly kind: "pending"; readonly reason: "projection" }
   | {
       readonly kind: "pending";
-      readonly reason: CreateReadBackPendingReason;
+      readonly reason: "not_found";
+      readonly not_found_error: AsanaHttpError;
     }
   | {
       readonly kind: "conflict";
@@ -116,8 +118,8 @@ type ExternalMergePlan =
 export class CreateTaskNotFoundError extends Error {
   public readonly taskGid: string;
 
-  public constructor(taskGid: string) {
-    super("作成済みタスクを読み戻せません。");
+  public constructor(taskGid: string, cause: AsanaHttpError) {
+    super("作成済みタスクを読み戻せません。", { cause });
     this.name = "CreateTaskNotFoundError";
     this.taskGid = taskGid;
   }
@@ -1319,6 +1321,7 @@ async function readCreatedTaskWithProjectionRetry(
   signal: AbortSignal,
 ): Promise<CreateReadBackObservation> {
   let pendingReason: CreateReadBackPendingReason = "projection";
+  let notFoundError: AsanaHttpError | undefined;
   for (
     let observationIndex = 0;
     observationIndex <= createReadBackDelaysMilliseconds.length;
@@ -1349,12 +1352,27 @@ async function readCreatedTaskWithProjectionRetry(
       if (!(error instanceof AsanaHttpError) || error.status !== 404) {
         throw error;
       }
-      observation = { kind: "pending", reason: "not_found" };
+      notFoundError = error;
+      observation = {
+        kind: "pending",
+        reason: "not_found",
+        not_found_error: error,
+      };
     }
     if (observation.kind !== "pending") {
       return observation;
     }
     pendingReason = observation.reason;
+  }
+  if (pendingReason === "not_found") {
+    if (notFoundError == null) {
+      throw new Error("作成タスクの読み戻し失敗原因がありません。");
+    }
+    return {
+      kind: "pending",
+      reason: "not_found",
+      not_found_error: notFoundError,
+    };
   }
   return { kind: "pending", reason: pendingReason };
 }
@@ -2003,11 +2021,11 @@ export class AsanaProposalOperationWriter {
         signal,
       );
       if (existingReadBack.kind === "pending") {
-        if (
-          existingReadBack.reason === "not_found"
-          && mappedTaskGid != null
-        ) {
-          throw new CreateTaskNotFoundError(recoveryTaskGid);
+        if (existingReadBack.reason === "not_found") {
+          throw new CreateTaskNotFoundError(
+            recoveryTaskGid,
+            existingReadBack.not_found_error,
+          );
         }
         return createConflictResult(
           operation.operation_id,
@@ -2110,6 +2128,12 @@ export class AsanaProposalOperationWriter {
       signal,
     );
     if (createdReadBack.kind === "pending") {
+      if (createdReadBack.reason === "not_found") {
+        throw new CreateTaskNotFoundError(
+          createdTaskReference.gid,
+          createdReadBack.not_found_error,
+        );
+      }
       return createConflictResult(
         operation.operation_id,
         createdTaskReference.gid,

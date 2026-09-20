@@ -10,6 +10,7 @@ export {
 export {
   AsanaProposalApplicationCoordinator,
   type ProposalApplicationPostApply,
+  type PostWriteSynchronizationResultWithCause,
   type ProposalApplicationTimestampProvider,
   type ProposalApplicationUuidGenerator,
 } from "./coordinator";

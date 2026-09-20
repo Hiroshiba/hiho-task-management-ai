@@ -23,6 +23,7 @@ import {
   type AsanaProposalOperationWriterInput,
   type AsanaProposalOperationWriterResult,
   type PostWriteSynchronizationResult,
+  type PostWriteSynchronizationResultWithCause,
 } from "../ai/proposal-application";
 import { AsanaReadClient } from "../asana/client/client";
 import {
@@ -35,6 +36,7 @@ import {
   AsanaAuthenticationError,
   AsanaEventsResetError,
   AsanaHttpError,
+  hasRestAsanaHttpError,
   AsanaPaymentRequiredError,
   AsanaRateLimitError,
   AsanaResponseError,
@@ -141,6 +143,8 @@ export type AsanaGuiEditRelationGraphValidator = (
 /** GUI編集の操作IDを発行する関数です。 */
 export type AsanaGuiEditOperationIdProvider = () => string;
 
+type AsanaGuiEditFailureReporter = (error: unknown) => void;
+
 function isKnownAsanaOperationalError(error: unknown): boolean {
   return error instanceof AsanaTransportError
     || error instanceof AsanaResponseError
@@ -192,6 +196,14 @@ function baselineExternal(
       data: ingestion.data,
     },
   };
+}
+
+function parsePostWriteSynchronizationResult(
+  value: PostWriteSynchronizationResultWithCause,
+): PostWriteSynchronizationResult {
+  const { cause, ...result } = value;
+  void cause;
+  return asanaPostWriteSynchronizationResultSchema.parse(result);
 }
 
 function statusFromTask(
@@ -749,7 +761,7 @@ function statusTargetForOperation(
 export type AsanaGuiEditPostApply = (
   requiredTaskGids: readonly string[],
   signal: AbortSignal,
-) => Promise<PostWriteSynchronizationResult>;
+) => Promise<PostWriteSynchronizationResultWithCause>;
 
 /** オンラインのGUI直接編集をAsanaへ反映します。 */
 export class AsanaGuiEditService {
@@ -760,6 +772,7 @@ export class AsanaGuiEditService {
   private readonly readClient: AsanaGuiEditReadClient;
   private readonly statusWriteClient: AsanaGuiEditStatusWriteClient;
   private readonly operationIdProvider: AsanaGuiEditOperationIdProvider;
+  private readonly reportFailure: AsanaGuiEditFailureReporter;
 
   public constructor(
     writer: AsanaProposalOperationWriter,
@@ -769,6 +782,7 @@ export class AsanaGuiEditService {
     readClient: AsanaGuiEditReadClient,
     statusWriteClient: AsanaGuiEditStatusWriteClient,
     operationIdProvider: AsanaGuiEditOperationIdProvider,
+    reportFailure: AsanaGuiEditFailureReporter,
   ) {
     if (typeof postApply !== "function") {
       throw new TypeError("GUI編集後の同期・順位再計算関数が必要です。");
@@ -792,6 +806,9 @@ export class AsanaGuiEditService {
     if (typeof operationIdProvider !== "function") {
       throw new TypeError("GUI操作ID発行関数が必要です。");
     }
+    if (typeof reportFailure !== "function") {
+      throw new TypeError("GUI編集失敗の診断関数が必要です。");
+    }
     this.writer = writer;
     this.postApply = postApply;
     this.onlineStateProvider = onlineStateProvider;
@@ -799,6 +816,7 @@ export class AsanaGuiEditService {
     this.readClient = readClient;
     this.statusWriteClient = statusWriteClient;
     this.operationIdProvider = operationIdProvider;
+    this.reportFailure = reportFailure;
   }
 
   /** GUI編集要求を検証してオンライン時だけAsanaへ反映します。 */
@@ -1209,7 +1227,7 @@ export class AsanaGuiEditService {
     result: AsanaGuiEditResult,
     signal: AbortSignal,
   ): Promise<AsanaGuiEditResult> {
-    const synchronization = asanaPostWriteSynchronizationResultSchema.parse(
+    const synchronization = parsePostWriteSynchronizationResult(
       await this.postApply([result.task_gid], signal),
     );
     if (synchronization.kind === "synchronized") {
@@ -1244,6 +1262,9 @@ export class AsanaGuiEditService {
       synchronization.kind === "recovery_required"
       && (signal.aborted || isKnownAsanaOperationalError(error))
     ) {
+      if (hasRestAsanaHttpError(error)) {
+        this.reportFailure(error);
+      }
       return asanaGuiEditResultSchema.parse({
         operation_id: operationId,
         task_gid: taskGid,
@@ -1271,7 +1292,7 @@ export class AsanaGuiEditService {
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResult> {
     try {
-      return asanaPostWriteSynchronizationResultSchema.parse(
+      return parsePostWriteSynchronizationResult(
         await this.postApply([taskGid], signal),
       );
     } catch (postApplyError: unknown) {

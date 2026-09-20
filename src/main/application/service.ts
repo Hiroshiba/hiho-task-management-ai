@@ -118,6 +118,7 @@ import {
   type AsanaProposalRecoveryResult,
   type PostWriteSynchronizationFailureCode,
   type PostWriteSynchronizationResult,
+  type PostWriteSynchronizationResultWithCause,
 } from "../ai/proposal-application";
 import {
   AsanaGuiEditService,
@@ -723,7 +724,7 @@ class AsanaOAuthRefreshHttpError extends AsanaHttpError {
   public readonly cause: AsanaOAuthHttpError;
 
   public constructor(error: AsanaOAuthHttpError) {
-    super(error.status, error.requestId);
+    super(error.status, error.requestId, { response_body_kind: "unavailable" }, "oauth");
     this.cause = error;
   }
 }
@@ -806,9 +807,19 @@ function postWriteRecoveryRequired(
   });
 }
 
+function postWriteRecoveryRequiredWithCause(
+  errorCode: PostWriteSynchronizationFailureCode,
+  cause: unknown,
+): PostWriteSynchronizationResultWithCause {
+  return {
+    ...postWriteRecoveryRequired(errorCode),
+    cause,
+  };
+}
+
 function postWriteSynchronizationFromRuntimeResult(
   result: AsanaSyncRuntimeInternalResult,
-): PostWriteSynchronizationResult {
+): PostWriteSynchronizationResultWithCause {
   switch (result.kind) {
     case "synchronized":
       return asanaPostWriteSynchronizationResultSchema.parse({
@@ -829,7 +840,7 @@ function postWriteSynchronizationFromRuntimeResult(
         case "events_reset":
         case "request_aborted":
         case "sync_in_progress":
-          return postWriteRecoveryRequired(result.error_code);
+          return postWriteRecoveryRequiredWithCause(result.error_code, result.cause);
         case "unexpected_error":
           throw new Error("書き込み後の同期が想定外エラーで停止しました。", {
             cause: result.cause,
@@ -1271,6 +1282,8 @@ export class TaskHubApplication {
       asana: this.setupClient,
       resources: this.resources,
       capability: this.capability,
+      reportCapabilityFailure: (error) =>
+        this.options.diagnostic(error, "setup", serviceErrorDiagnostic),
       database: {
         saveDeviceSettings: (value) => this.database.saveDeviceSettings(value),
         getDeviceSettings: () => this.database.getDeviceSettings(),
@@ -1318,7 +1331,10 @@ export class TaskHubApplication {
   public recordDiagnostic(
     code: DiagnosticRecord["code"],
     severity: DiagnosticRecord["severity"],
-    metadata?: Pick<DiagnosticRecord, "asana_gid" | "operation_id" | "proposal_id">,
+    metadata?: Pick<
+      DiagnosticRecord,
+      "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+    >,
   ): void {
     this.diagnostics.record({ code, severity, ...metadata });
   }
@@ -1754,8 +1770,8 @@ export class TaskHubApplication {
       () => createNowIso(this.options.now_provider),
       this.operationQueue,
     );
-    const removeRuntimeSubscription = runtime.subscribe((runtimeState) => {
-      this.handleRuntimeState(runtimeState);
+    const removeRuntimeSubscription = runtime.subscribe((runtimeState, cause) => {
+      this.handleRuntimeState(runtimeState, cause);
     });
     const displayOrder = createAsanaDisplayOrderService(
       this.transport,
@@ -1805,6 +1821,7 @@ export class TaskHubApplication {
           this.interactiveWriteClient.updateTask(taskGid, update, signal),
       },
       randomUUID,
+      (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
     );
     this.runtime = runtime;
     this.removeRuntimeSubscription = removeRuntimeSubscription;
@@ -3341,7 +3358,7 @@ export class TaskHubApplication {
   private afterGuiEdit(
     requiredTaskGids: readonly string[],
     signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResult> {
+  ): Promise<PostWriteSynchronizationResultWithCause> {
     return this.resolvePostWriteSynchronization(
       this.requireRuntime().afterGuiEdit(requiredTaskGids, signal),
       signal,
@@ -3351,7 +3368,7 @@ export class TaskHubApplication {
   private async afterAiApply(
     requiredTaskGids: readonly string[],
     signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResult> {
+  ): Promise<PostWriteSynchronizationResultWithCause> {
     if (this.journalRecoveryRunning) {
       return this.synchronizeRecoveredApplicationJournals(requiredTaskGids, signal);
     }
@@ -3359,12 +3376,14 @@ export class TaskHubApplication {
       throw new Error("AI変更案の適用状態が同期開始条件を満たしません。");
     }
     this.aiApplicationState = "synchronizing";
+    this.syncFailureDiagnosticSuppressionCount += 1;
     try {
       return await this.resolvePostWriteSynchronization(
         this.requireRuntime().afterAiApply(requiredTaskGids, signal),
         signal,
       );
     } finally {
+      this.syncFailureDiagnosticSuppressionCount -= 1;
       this.aiApplicationState = "applying";
     }
   }
@@ -3372,7 +3391,7 @@ export class TaskHubApplication {
   private async synchronizeRecoveredApplicationJournals(
     requiredTaskGids: readonly string[],
     signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResult> {
+  ): Promise<PostWriteSynchronizationResultWithCause> {
     const context = this.requireContext();
     try {
       await this.syncCoordinator.coordinate(
@@ -3395,7 +3414,7 @@ export class TaskHubApplication {
       }
       const classification = classifyPostWriteSynchronizationError(error);
       if (classification.kind === "recovery_required") {
-        return postWriteRecoveryRequired(classification.error_code);
+        return postWriteRecoveryRequiredWithCause(classification.error_code, error);
       }
       throw new Error("AI適用ジャーナル復旧後の同期に失敗しました。", {
         cause: error,
@@ -3411,7 +3430,7 @@ export class TaskHubApplication {
   private async resolvePostWriteSynchronization(
     resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
     signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResult> {
+  ): Promise<PostWriteSynchronizationResultWithCause> {
     let runtimeResult: AsanaSyncRuntimeInternalResult;
     try {
       runtimeResult = await resultPromise;
@@ -3424,7 +3443,7 @@ export class TaskHubApplication {
       }
       const classification = classifyPostWriteSynchronizationError(error);
       if (classification.kind === "recovery_required") {
-        return postWriteRecoveryRequired(classification.error_code);
+        return postWriteRecoveryRequiredWithCause(classification.error_code, error);
       }
       throw new Error("書き込み後の同期で想定外エラーが発生しました。", {
         cause: error,
@@ -3460,7 +3479,7 @@ export class TaskHubApplication {
     await this.afterLocalStateRefresh(signal);
   }
 
-  private recordSyncStateDiagnostic(state: AsanaSyncRuntimeState): void {
+  private recordSyncStateDiagnostic(state: AsanaSyncRuntimeState, cause?: unknown): void {
     const diagnosticState = this.syncDiagnosticState;
     if (state.kind === "syncing") {
       if (diagnosticState.kind === "idle") {
@@ -3490,7 +3509,9 @@ export class TaskHubApplication {
     ) {
       if (this.syncFailureDiagnosticSuppressionCount === 0) {
         this.options.diagnostic(
-          new Error("Asana同期で認証または既知のエラーが発生しました。"),
+          cause == null
+            ? new Error("Asana同期で認証または既知のエラーが発生しました。")
+            : cause,
           "sync",
           serviceErrorDiagnostic,
         );
@@ -3498,7 +3519,7 @@ export class TaskHubApplication {
     }
   }
 
-  private handleRuntimeState(state: AsanaSyncRuntimeState): void {
+  private handleRuntimeState(state: AsanaSyncRuntimeState, cause?: unknown): void {
     const ipcState = toIpcSyncState(state);
     for (const listener of this.syncStateListeners) {
       try {
@@ -3507,7 +3528,7 @@ export class TaskHubApplication {
         this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic);
       }
     }
-    this.recordSyncStateDiagnostic(state);
+    this.recordSyncStateDiagnostic(state, cause);
     if (
       state.last_successful_sync_at == null
       || state.last_successful_sync_at === this.lastDisplaySyncAt
