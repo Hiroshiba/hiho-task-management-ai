@@ -13,6 +13,8 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 | macOS x64   | ZIP                | 隔離属性を保持したまま展開し、TaskHub.appをアプリケーションフォルダーへ移す                                                |
 | Windows x64 | 通常NSIS、NSIS Web | ダウンロード元の情報を保持し、デジタル署名を確認してインストーラーを実行する。NSIS Webは追加のパッケージをダウンロードする |
 
+固定のedge Releaseには旧版のassetも残ります。初回導入と手動更新では、導入する`version`が更新メタデータの`version`と一致することを確認してください。macOSの署名済みZIPは`edge-mac.yml`、Windowsの署名済み通常NSISは`edge.yml`の`path`と`files.url`が参照するファイルを選びます。
+
 macOS arm64ネイティブ版、DMG、Windows ZIPは生成しません。自己署名のため、証明書の登録後もmacOSのGatekeeperやWindowsのSmartScreenの警告が残る場合があります。macOSでは配布元と署名を確認して個別アプリの許可操作を行います。詳しい操作は端末の初期設定を参照し、隔離属性の削除やOSの保護設定全体の無効化は行わないでください。Smart App Controlが強制されているWindows端末は対象外です。
 
 アプリ内の自動更新・差分更新は未実装です。署名版同士の手動更新では、更新前の版と設定を下記の方法で記録してから、次の操作を行います。
@@ -80,10 +82,18 @@ pnpm run package
 以下の手順は、中央の`sign-release`への`version`入力追加が中央の既定ブランチへ反映されてから実行してください。
 
 1. 検証を済ませ、公開するコミットが中央のソースの要件を満たすことを確認します。配布する`version`は、先頭に`v`を付けないSemVerで、既に配布した版より大きい値を決めます。edge配布ではprereleaseの先頭識別子を`edge`にし、たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`にします。ルートの`package.json`の`version`と一致させる必要はなく、配布版を変えるためだけのソース更新は不要です。中央は既存版との大小を検証しません。
-2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
+2. `edge`タグを公開するコミットへ向け、対象リポジトリへpushします。GitHub上の`edge`タグが指すコミットSHAが、手順1でソースの要件を確認したコミットSHAと一致することを確認します。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。中央はReleaseのdraftとprereleaseを変更しません。
 3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`、`version`に手順1で決めた版を指定します。3つとも必須入力です。ビルド・署名・公開中は`edge`タグとReleaseを変更しないでください。次の配布でタグを移動する場合も、前の実行を完了させてから行います。
-4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータのサイズ・hash・versionが公開ファイルと一致することを確認します。更新メタデータの`path`と`files.url`が公開後のasset名と大文字小文字を含めて一致することを確認します。
+4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータのサイズ・hash・versionが公開ファイルと一致することを確認します。更新メタデータの`path`と`files.url`が公開後のasset名と大文字小文字を含めて一致することを確認します。draftで署名・検証した場合は、次の導入手順へ進む前にReleaseを公開します。
 5. 両OSの実機で、[インストールと更新](#インストールと更新)の手順に沿って初回導入と次の署名版への手動更新を行い、起動・版・設定保持を確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。未実装の自動更新・差分更新と、未検証の旧未署名版からの移行を成功扱いにしないでください。
+
+手順2で既存の`edge`タグを移動する場合は、TaskHubの作業ディレクトリで次を実行します。`COMMIT_SHA`を手順1で確認したコミットSHAに置き換え、最後に表示されるGitHub上のコミットSHAが一致することを確認してから手順3へ進みます。
+
+```sh
+git tag --force edge COMMIT_SHA
+git push --force https://github.com/Hiroshiba/hiho-task-management-ai.git refs/tags/edge
+gh api repos/Hiroshiba/hiho-task-management-ai/commits/edge --jq '.sha'
+```
 
 手順3はGitHub CLIでも実行できます。
 
@@ -91,7 +101,7 @@ pnpm run package
 gh workflow run sign-release.yml --repo Hiroshiba/oreore-codesigner --ref main -f repository=Hiroshiba/hiho-task-management-ai -f tag=edge -f version=0.1.1-edge.1
 ```
 
-更新メタデータのchannelは指定した`version`から決まり、`0.1.1-edge.1`なら`edge`、通常版の`1.2.3`なら`latest`です。タグ名やReleaseのprerelease設定からは決まりません。通常版を公開する場合は、たとえば`v1.2.3`タグと同名のReleaseを用意し、`tag=v1.2.3`、`version=1.2.3`で実行します。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
+更新メタデータのchannelは指定した`version`から決まり、`0.1.1-edge.1`なら`edge`、通常版の`1.2.3`なら`latest`です。タグ名やReleaseのprerelease設定からは決まりません。通常版を公開する場合は、たとえば`v1.2.3`タグと同名のReleaseを用意し、`tag=v1.2.3`、`version=1.2.3`で実行します。通常版はReleaseの公開時にprereleaseを外します。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
 
 中央は同名assetを置換しますが、異なる名前の既存assetは削除しません。固定のedge Releaseでは、旧版を名前に含むassetは別名なら残り、同名の`edge.yml`と`edge-mac.yml`は置換されます。初回の署名公開が成功して整合を確認した後、旧未署名版の次の5件だけをReleaseから削除してください。後続版の署名済みblockmapは、中央の更新用成果物として保持してください。
 
