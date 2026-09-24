@@ -24,6 +24,11 @@ import {
   type ProposalOperation,
 } from "../../../shared/ai";
 import {
+  ProposalWorkspace,
+  type ProposalWorkspaceIssue,
+  type ProposalWorkspaceValidation,
+} from "../proposal-workspace";
+import {
   aiWorkflowApprovalRequestSchema,
   aiWorkflowApprovalResultSchema,
   aiWorkflowImpactSchema,
@@ -85,19 +90,12 @@ import {
   AiWorkflowEditError,
   AiWorkflowError,
   AiWorkflowOfflineError,
-  AiWorkflowProposalFileError,
   AiWorkflowProposalNotFoundError,
   AiWorkflowRetryableFailureError,
   AiWorkflowSelectionError,
   AiWorkflowStateError,
   AiWorkflowSyncError,
 } from "./errors";
-import {
-  aiWorkflowProposalFileLeaseSchema,
-  type AiWorkflowProposalFileLease,
-  type AiWorkflowProposalCandidate,
-  type AiWorkflowProposalFileRefreshResult,
-} from "./proposal-file";
 import {
   aiWorkflowPreviousDigestSchema,
   aiWorkflowCandidateDigestSchema,
@@ -125,7 +123,6 @@ import {
 } from "./selection";
 import {
   DiagnosticFailureDispositionError,
-  combineDiagnosticFailures,
 } from "../../diagnostic-failure";
 import { redactSensitiveText } from "../../redact-sensitive-text";
 
@@ -191,7 +188,6 @@ type ValidatedGeneratedResponse =
   | {
       readonly kind: "proposal";
       readonly response: Extract<CodexResponse, { readonly kind: "proposal" }>;
-      readonly candidate: AiWorkflowProposalCandidate;
     };
 
 type WorkflowValidation = {
@@ -229,7 +225,7 @@ type TurnRetryPromptContext =
   | { readonly kind: "initial" }
   | {
       readonly kind: "correction";
-      readonly validationErrorsPath: string;
+      readonly validationErrors: AiWorkflowValidationErrors;
       readonly failedAttempt: number;
     };
 
@@ -240,24 +236,23 @@ type TurnExecutionInput = {
   readonly turnGeneration: number;
   readonly pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined;
   readonly logicalTurnId: string;
-  readonly proposalFile: AiWorkflowProposalFileLease;
+  readonly retryProposal: Proposal | undefined;
 };
 
 type TurnAttemptInput = TurnExecutionInput & {
   readonly attempt: number;
   readonly retryPromptContext: TurnRetryPromptContext;
+  readonly workspaceState: { value?: ProposalWorkspace };
 };
 
 type TurnExecutionResult =
   | {
       readonly kind: "succeeded";
       readonly commit: TurnCommit;
-      readonly proposalFile: AiWorkflowProposalFileLease;
     }
   | {
       readonly kind: "failed";
       readonly error: unknown;
-      readonly proposalFile: AiWorkflowProposalFileLease;
     };
 
 type PreparedTurnState =
@@ -283,7 +278,8 @@ type TurnRetryState =
       readonly kind: "pending";
       readonly failure: AiWorkflowRetryableFailureError;
       readonly previousDigest: AiWorkflowPreviousDigest;
-      readonly validationErrorsPath: string;
+      readonly validationErrors: AiWorkflowValidationErrors;
+      readonly retryProposal: Proposal | undefined;
       readonly failedAttempt: number;
     };
 
@@ -306,10 +302,6 @@ type TurnCommit =
       readonly replacingProposalId: string | undefined;
       readonly prepared: PreparedTurn;
     };
-
-type ProposalFileDisposalResult =
-  | { readonly kind: "succeeded" }
-  | { readonly kind: "failed"; readonly error: unknown };
 
 type RetryEventLogResult =
   | { readonly kind: "succeeded" }
@@ -390,24 +382,11 @@ export interface AiWorkflowSessionPort {
   ): Promise<CodexSessionTurnResult>;
   freezeTaskctlSnapshot(snapshot: TaskctlSnapshot): void;
   releaseTaskctlSnapshot(): void;
+  activateProposalWorkspace(
+    workspace: ProposalWorkspace,
+    validate: (proposal: Proposal) => ProposalWorkspaceValidation<null>,
+  ): void;
   onDelta(listener: CodexSessionDeltaListener): () => void;
-}
-
-/** AIターン用提案ファイルの発行と読み書きを提供する境界です。 */
-export interface AiWorkflowProposalFilePort {
-  createDraft(baseProposal: Proposal | undefined): AiWorkflowProposalFileLease;
-  stageProposal(
-    proposalFileId: string,
-    proposal: Proposal,
-  ): AiWorkflowProposalCandidate;
-  refreshDraft(
-    proposalFileId: string,
-    baseProposal: Proposal | undefined,
-  ): AiWorkflowProposalFileRefreshResult;
-  writeValidationErrors(logicalTurnId: string, errors: unknown): string;
-  dispose(proposalFileId: string): void;
-  disposeValidationErrors(logicalTurnId: string): void;
-  disposeAll(): void;
 }
 
 /** 最新状態を再取得してAsana適用入力を作る関数の型です。 */
@@ -423,7 +402,6 @@ export type AiWorkflowOnlineStateProvider = () => boolean;
 export interface AiWorkflowOptions {
   readonly sessionId: string;
   readonly session: AiWorkflowSessionPort;
-  readonly proposalFileStore: AiWorkflowProposalFilePort;
   readonly snapshotProvider: AiWorkflowSnapshotProvider;
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
   readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
@@ -443,27 +421,11 @@ const sessionPortSchema = z.custom<AiWorkflowSessionPort>(
       "startTurnWithPreparation",
       "freezeTaskctlSnapshot",
       "releaseTaskctlSnapshot",
+      "activateProposalWorkspace",
       "onDelta",
     ].every((name) => typeof Reflect.get(value, name) === "function");
   },
   "AIセッション境界が不正です。",
-);
-
-const proposalFilePortSchema = z.custom<AiWorkflowProposalFilePort>(
-  (value) => typeof value === "object"
-    && value != null
-    && [
-      "createDraft",
-      "stageProposal",
-      "refreshDraft",
-      "writeValidationErrors",
-      "dispose",
-      "disposeValidationErrors",
-      "disposeAll",
-    ].every(
-      (name) => typeof Reflect.get(value, name) === "function",
-    ),
-  "AI変更案ファイル境界が不正です。",
 );
 
 const snapshotProviderSchema = z.custom<AiWorkflowSnapshotProvider>(
@@ -549,7 +511,6 @@ const aiWorkflowOptionsSchema = z
   .object({
     sessionId: identifierSchema,
     session: sessionPortSchema,
-    proposalFileStore: proposalFilePortSchema,
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
@@ -1571,10 +1532,213 @@ function createInheritedEvidenceAliases(
   };
 }
 
+function rebindInitialOperation(
+  operation: ProposalOperation,
+  prepared: PreparedTurn,
+  previous: StoredProposal | undefined,
+): ProposalOperation {
+  const baseline_snapshot_hash = prepared.baseline_snapshot_hash;
+  if (operation.operation === "create_task") {
+    return proposalOperationSchema.parse(resolveInheritedSplitInstructionReference({
+      ...operation,
+      baseline_snapshot_hash,
+    }, prepared));
+  }
+  const reboundEvidence = operation.operation === "complete" || operation.operation === "withdraw"
+    ? resolveInheritedStatusEvidence(operation, prepared)
+    : operation;
+  if (reboundEvidence.target.kind !== "existing") {
+    return proposalOperationSchema.parse({ ...reboundEvidence, baseline_snapshot_hash });
+  }
+  const task = findTaskByGid(prepared.snapshot, reboundEvidence.target.gid);
+  if (task == null) {
+    return proposalOperationSchema.parse({ ...reboundEvidence, baseline_snapshot_hash });
+  }
+  let before: unknown = reboundEvidence.before;
+  switch (reboundEvidence.operation) {
+    case "update_title":
+      before = task.title;
+      break;
+    case "update_notes":
+      before = task.notes;
+      break;
+    case "set_status":
+    case "complete":
+    case "withdraw":
+      if (reboundEvidence.operation === "set_status"
+        || task.status === "not_started" || task.status === "in_progress") {
+        before = task.status;
+      }
+      break;
+    case "set_importance":
+      before = task.importance;
+      break;
+    case "set_due":
+    case "clear_due":
+      if (task.due_on != null) {
+        before = { kind: "due_on", due_on: task.due_on };
+      } else if (task.due_at != null) {
+        before = { kind: "due_at", due_at: task.due_at };
+      } else if (reboundEvidence.operation === "set_due") {
+        before = { kind: "absent" };
+      }
+      break;
+    case "set_duration":
+    case "clear_duration":
+      if (task.duration != null) {
+        before = task.duration;
+      } else if (reboundEvidence.operation === "set_duration") {
+        before = { kind: "absent" };
+      }
+      break;
+    case "set_area":
+      before = task.area;
+      break;
+    case "set_dependencies":
+      before = task.dependencies.map((dependency) => ({
+        target: { kind: "existing", gid: dependency.task_gid },
+        scope: dependency.scope,
+        source: dependency.source,
+      }));
+      break;
+    case "set_parent":
+      before = task.parent_gid == null
+        ? { kind: "absent" }
+        : { kind: "existing", gid: task.parent_gid };
+      break;
+    case "set_parent_work_mode":
+      before = task.parent_work_mode;
+      break;
+    case "link_obsidian":
+      break;
+    case "unlink_obsidian":
+      before = task.obsidian_links.find((link) =>
+        link.vault_id === reboundEvidence.before.vault_id
+        && link.path === reboundEvidence.before.path) ?? reboundEvidence.before;
+      break;
+  }
+  let rebound = proposalOperationSchema.parse({
+    ...reboundEvidence,
+    baseline_snapshot_hash,
+    before,
+  });
+  if (
+    previous != null
+    && (rebound.operation === "complete" || rebound.operation === "withdraw")
+    && rebound.status_evidence.kind === "task_or_note_explicit"
+    && rebound.status_evidence.reference.kind === "task"
+  ) {
+    const reference = rebound.status_evidence.reference;
+    const statusOperation = rebound.operation;
+    const previousSource = [...previous.source_map.values()].find((source) =>
+      source.kind === "task_notes"
+      && source.task_gid === task.gid
+      && createStatusEvidenceLocator(source.source_id, statusOperation, task.gid)
+        === reference.locator);
+    const currentSource = prepared.source_map.get(
+      createTaskNotesSourceId(
+        prepared.user_message_source_id.slice("user-message:".length),
+        task.gid,
+      ),
+    );
+    if (
+      previousSource?.kind === "task_notes"
+      && currentSource?.kind === "task_notes"
+      && verifiedSourceExcerpt(previousSource, reference.excerpt) != null
+      && verifiedSourceExcerpt(currentSource, reference.excerpt) != null
+    ) {
+      rebound = proposalOperationSchema.parse({
+        ...rebound,
+        status_evidence: {
+          ...rebound.status_evidence,
+          reference: { ...reference, locator: currentSource.source_id },
+        },
+      });
+    }
+  }
+  return rebound;
+}
+
+function rebindInitialProposal(
+  proposal: Proposal | undefined,
+  prepared: PreparedTurn,
+  previous: StoredProposal | undefined,
+): Proposal | undefined {
+  if (proposal == null) {
+    return undefined;
+  }
+  return proposalSchema.parse({
+    ...proposal,
+    groups: proposal.groups.map((group) => ({
+      ...group,
+      operations: group.operations.map((operation) =>
+        rebindInitialOperation(operation, prepared, previous)),
+    })),
+  });
+}
+
+function workspaceCandidateDigest(proposal: Proposal): AiWorkflowCandidateDigest {
+  return aiWorkflowCandidateDigestSchema.parse({
+    kind: "available",
+    sha256: createHash("sha256").update(canonicalizeJson(proposal)).digest("hex"),
+  });
+}
+
+function readWorkspaceProposal(workspace: ProposalWorkspace): Proposal {
+  const status = workspace.getStatus();
+  let offset = 0;
+  let content = "";
+  while (true) {
+    const chunk = workspace.read({
+      workspace_id: status.workspace_id,
+      revision: status.revision,
+      target: { kind: "proposal" },
+      offset,
+    });
+    content += chunk.content;
+    if (chunk.next_offset == null) {
+      return proposalSchema.parse(JSON.parse(content));
+    }
+    offset = chunk.next_offset;
+  }
+}
+
+function workspaceValidationIssues(
+  issues: readonly AiWorkflowValidationIssue[],
+): ProposalWorkspaceIssue[] {
+  return issues.map((issue) => ({
+    code: issue.code,
+    json_pointer: issue.json_pointer,
+    message: `変更案の検証に失敗しました。${issue.validator_code ?? issue.code}`,
+    ...(issue.group_id == null ? {} : { group_id: issue.group_id }),
+    ...(issue.operation_id == null ? {} : { operation_id: issue.operation_id }),
+  }));
+}
+
+function validateWorkspaceProposal(
+  proposal: Proposal,
+  prepared: PreparedTurn,
+): ProposalWorkspaceValidation<null> {
+  let bound: BoundProposalEvidence;
+  try {
+    bound = bindProposalEvidence(proposal, prepared, workspaceCandidateDigest(proposal));
+  } catch (error: unknown) {
+    if (error instanceof AiWorkflowRetryableFailureError) {
+      return { kind: "invalid", issues: workspaceValidationIssues(error.issues) };
+    }
+    throw error;
+  }
+  const stored = createStoredProposal("workspace-validation", bound, prepared);
+  const issues = proposalValidationIssues(stored);
+  return issues.length === 0
+    ? { kind: "valid", proposal: bound.proposal, value: null }
+    : { kind: "invalid", issues: workspaceValidationIssues(issues) };
+}
+
 function createTurnPrompt(
   request: AiWorkflowTurnRequest,
   prepared: PreparedTurn,
-  proposalFile: AiWorkflowProposalFileLease,
+  workspace: ProposalWorkspace,
   retryContext: TurnRetryPromptContext,
 ): string {
   const context = aiWorkflowTurnContextSchema.parse({
@@ -1601,31 +1765,33 @@ function createTurnPrompt(
   const correctionInstructions = retryContext.kind === "initial"
     ? []
     : [
-        "前回の検証エラーを修正してください。検証エラーファイルは読み取り専用で、内容を変更・削除しないでください。記載されたJSON Pointerと型付きcodeに従い、response_jsonの完全なproposalを訂正してください。",
-        "検証エラーには会話本文や根拠本文を含めていません。提案ファイルの直近候補と今回のコンテキストを照合してください。",
+        "前回の検証エラーを修正してください。記載されたJSON Pointerと型付きcodeに従ってワークスペースを編集してください。",
+        "検証エラーには会話本文や根拠本文を含めていません。ワークスペースの候補と今回のコンテキストを照合してください。",
         "<validation_errors>",
         canonicalizeJson({
           attempt: retryContext.failedAttempt,
           max_attempts: aiWorkflowMaximumRetryAttempts,
-          path: retryContext.validationErrorsPath,
+          errors: retryContext.validationErrors.errors.slice(0, 12),
         }),
         "</validation_errors>",
       ];
   return [
     "TaskHubの構造化変更案だけを検討してください。",
-    "変更案を返す場合は、response_jsonへproposal_file_idと完全なproposalを指定してください。",
-    "提案ファイルはアプリが保持する前案または直近候補を読むための読み取り専用文脈です。提案ファイルを変更、削除、移動、置換しないでください。",
-    "完全な新しい変更案は提案ファイルへ書き込まず、response_jsonのproposalへ返してください。",
+    "変更案は今回のproposal_workspace dynamic toolで読み取り、意味編集、検証、提出してください。",
+    "editはreplace_allで全体を置換できます。大きな案はset_title、insert_group、insert_operationなどの分割編集で構築できます。",
+    "各編集でedit_batch_idに新しいID、expected_revisionに現在の改訂番号を指定してください。read、diff、validateはoffsetで続きを読めます。",
+    "提出が成功した場合だけ、response_jsonへ今回のworkspace_idと提出したrevision、短いmessageとquestionsを指定してください。完全なproposalは最終応答へ含めないでください。",
     ...correctionInstructions,
     "<baseline_context>",
     canonicalizeJson(context),
     "</baseline_context>",
-    "<proposal_file>",
+    "<proposal_workspace>",
     canonicalizeJson({
-      proposal_file_id: proposalFile.proposal_file_id,
-      proposal_file_path: proposalFile.proposal_file_path,
+      workspace_id: workspace.workspaceId,
+      revision: workspace.getStatus().revision,
+      baseline_snapshot_hash: workspace.baselineSnapshotHash,
     }),
-    "</proposal_file>",
+    "</proposal_workspace>",
     "<target_task_context>",
     canonicalizeJson(targetTaskContext),
     "</target_task_context>",
@@ -2610,33 +2776,12 @@ function createValidationErrorsDocument(
   });
 }
 
-function addRetryFailureCause(
-  failure: AiWorkflowRetryableFailureError,
-  issue: AiWorkflowValidationIssue,
-  secondaryError: unknown,
-  message: string,
-): AiWorkflowRetryableFailureError {
-  return new AiWorkflowRetryableFailureError(
-    [issue, ...failure.issues],
-    failure.candidateDigest,
-    failure.recoveryAction,
-    new AggregateError(
-      [failure, secondaryError],
-      message,
-      { cause: failure },
-    ),
-  );
-}
-
 function safeErrorDescription(error: unknown): AiWorkflowSafeErrorDescription {
   if (error instanceof AiWorkflowRetryableFailureError) {
     return "AI変更案の検証に失敗しました。";
   }
   if (error instanceof CodexSessionOutputValidationError) {
     return "Codexの構造化出力を検証できませんでした。";
-  }
-  if (error instanceof AiWorkflowProposalFileError) {
-    return "AI変更案ファイルを安全に処理できませんでした。";
   }
   if (error instanceof AggregateError) {
     return "複数の処理に失敗しました。";
@@ -2735,13 +2880,6 @@ function createSafeErrorProjection(error: unknown): AiWorkflowSafeErrorProjectio
     };
   }
   return aiWorkflowSafeErrorProjectionSchema.parse(project(error));
-}
-
-function combineTurnExecutionAndDisposalFailures(
-  executionError: unknown,
-  disposalError: unknown,
-): DiagnosticFailureDispositionError {
-  return combineDiagnosticFailures([executionError, disposalError]);
 }
 
 function createRetryLogEvent(
@@ -2920,9 +3058,6 @@ export class AiWorkflowService {
     const turnGeneration = this.sessionGeneration;
     const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
     const logicalTurnId = identifierSchema.parse(randomUUID());
-    const proposalFile = aiWorkflowProposalFileLeaseSchema.parse(
-      this.options.proposalFileStore.createDraft(baseProposal?.proposal),
-    );
     const execution = await this.executeTurn({
       request,
       signal,
@@ -2930,27 +3065,10 @@ export class AiWorkflowService {
       turnGeneration,
       pendingWithdrawConfirmation,
       logicalTurnId,
-      proposalFile,
+      retryProposal: undefined,
     });
-    const disposal = this.disposeTurnFilesSafely(
-      execution.proposalFile.proposal_file_id,
-      logicalTurnId,
-    );
     if (execution.kind === "failed") {
-      if (disposal.kind === "failed") {
-        throw combineTurnExecutionAndDisposalFailures(
-          execution.error,
-          disposal.error,
-        );
-      }
       throw execution.error;
-    }
-    if (disposal.kind === "failed") {
-      throw new DiagnosticFailureDispositionError({
-        kind: "unrecorded_only",
-        unrecorded_error: disposal.error,
-        response_error: disposal.error,
-      });
     }
     return this.commitTurn(execution.commit);
   }
@@ -2958,7 +3076,6 @@ export class AiWorkflowService {
   private async executeTurn(
     input: TurnExecutionInput,
   ): Promise<TurnExecutionResult> {
-    let proposalFile = input.proposalFile;
     let retryState: TurnRetryState = { kind: "initial" };
     try {
       for (let attempt = 1; attempt <= aiWorkflowMaximumRetryAttempts; attempt += 1) {
@@ -2988,17 +3105,21 @@ export class AiWorkflowService {
           ? { kind: "initial" }
           : {
               kind: "correction",
-              validationErrorsPath: retryState.validationErrorsPath,
+              validationErrors: retryState.validationErrors,
               failedAttempt: retryState.failedAttempt,
             };
+        const workspaceState: { value?: ProposalWorkspace } = {};
         try {
           const commit = await this.executeTurnAttempt({
             ...input,
-            proposalFile,
+            retryProposal: retryState.kind === "pending"
+              ? retryState.retryProposal
+              : input.retryProposal,
             attempt,
             retryPromptContext,
+            workspaceState,
           });
-          return { kind: "succeeded", commit, proposalFile };
+          return { kind: "succeeded", commit };
         } catch (error: unknown) {
           const responseError = error instanceof DiagnosticFailureDispositionError
             ? error.disposition.response_error
@@ -3013,7 +3134,7 @@ export class AiWorkflowService {
           if (classification.kind === "not_retryable") {
             throw error;
           }
-          let failure = classification.failure;
+          const failure = classification.failure;
           const previousDigest: AiWorkflowPreviousDigest = retryState.kind === "initial"
             ? aiWorkflowPreviousDigestSchema.parse({
                 kind: "unavailable",
@@ -3025,22 +3146,6 @@ export class AiWorkflowService {
             failure,
             previousDigest,
           );
-          const writeResult = this.writeValidationErrorsSafely(
-            input.logicalTurnId,
-            validationErrors,
-          );
-          const writeFailure = writeResult.kind === "failed"
-            ? addRetryFailureCause(
-                failure,
-                aiWorkflowValidationIssueSchema.parse({
-                  phase: "proposal_file",
-                  code: "validation_errors_write_failed",
-                  json_pointer: "",
-                }),
-                writeResult.error,
-                "検証エラーファイルを書き込めませんでした。",
-              )
-            : failure;
           if (attempt === aiWorkflowMaximumRetryAttempts) {
             const logResult = safelyLogRetryEvent(
               this.options.logRetryEvent,
@@ -3049,151 +3154,50 @@ export class AiWorkflowService {
                 this.options.sessionId,
                 input.logicalTurnId,
                 attempt,
-                writeFailure,
+                failure,
                 previousDigest,
                 "stop",
               ),
             );
             const finalFailure = new AiWorkflowError(
               "AI変更案の訂正を3回の試行で完了できませんでした。",
-              writeFailure,
+              failure,
             );
-            const recordedFinalFailure = logResult.kind === "succeeded"
-              ? new DiagnosticFailureDispositionError({
-                  kind: "recorded_only",
-                  recorded_error: finalFailure,
-                  response_error: finalFailure,
-                })
-              : finalFailure;
-            const secondaryErrors = [
-              ...(writeResult.kind === "failed" ? [writeResult.error] : []),
-              ...(logResult.kind === "failed" ? [logResult.error] : []),
-            ];
-            if (secondaryErrors.length > 0) {
-              if (logResult.kind === "succeeded") {
-                throw combineDiagnosticFailures([
-                  recordedFinalFailure,
-                  ...secondaryErrors,
-                ]);
-              }
+            if (logResult.kind === "failed") {
               throw new AggregateError(
-                [recordedFinalFailure, ...secondaryErrors],
-                "AI変更案の最終検証失敗と後処理に失敗しました。",
-                { cause: recordedFinalFailure },
+                [finalFailure, logResult.error],
+                "AI変更案の最終検証失敗を記録できませんでした。",
+                { cause: finalFailure },
               );
             }
-            throw recordedFinalFailure;
+            throw new DiagnosticFailureDispositionError({
+              kind: "recorded_only",
+              recorded_error: finalFailure,
+              response_error: finalFailure,
+            });
           }
-          if (writeResult.kind === "failed") {
-            const logResult = safelyLogRetryEvent(
-              this.options.logRetryEvent,
-              createRetryLogEvent(
-                "error",
-                this.options.sessionId,
-                input.logicalTurnId,
-                attempt,
-                writeFailure,
-                previousDigest,
-                "stop",
-              ),
-            );
-            const validationWriteFailure = new AggregateError(
-              [
-                writeFailure,
-                ...(logResult.kind === "failed" ? [logResult.error] : []),
-              ],
-              "AI変更案の検証失敗をAI向けファイルへ保存できませんでした。",
-              { cause: writeFailure },
-            );
-            if (logResult.kind === "succeeded") {
-              throw new DiagnosticFailureDispositionError({
-                kind: "recorded_only",
-                recorded_error: validationWriteFailure,
-                response_error: validationWriteFailure,
-              });
-            }
-            throw validationWriteFailure;
+          const workspace = workspaceState.value;
+          let retryProposal: Proposal | undefined;
+          if (workspace != null && workspace.getStatus().completion === "structurally_complete") {
+            retryProposal = readWorkspaceProposal(workspace);
+          } else if (retryState.kind === "pending") {
+            retryProposal = retryState.retryProposal;
+          } else {
+            retryProposal = input.retryProposal;
           }
-          if (failure.recoveryAction === "fresh_lease") {
-            const refreshed = this.options.proposalFileStore.refreshDraft(
-              proposalFile.proposal_file_id,
-              input.baseProposal?.proposal,
-            );
-            switch (refreshed.kind) {
-              case "refreshed":
-                proposalFile = aiWorkflowProposalFileLeaseSchema.parse(refreshed.lease);
-                break;
-              case "refreshed_with_boundary_error": {
-                proposalFile = aiWorkflowProposalFileLeaseSchema.parse(refreshed.lease);
-                failure = addRetryFailureCause(
-                  failure,
-                  aiWorkflowValidationIssueSchema.parse({
-                    phase: "proposal_file",
-                    code: "proposal_file_boundary_violation",
-                    json_pointer: "",
-                  }),
-                  refreshed.error,
-                  "変更案ファイル再発行時に境界違反を検出しました。",
-                );
-                break;
-              }
-              case "blocked":
-                {
-                  const recoveryFailure = addRetryFailureCause(
-                    failure,
-                    aiWorkflowValidationIssueSchema.parse({
-                      phase: "proposal_file",
-                      code: "proposal_file_boundary_violation",
-                      json_pointer: "",
-                    }),
-                    refreshed.error,
-                    "変更案ファイルを安全に再発行できませんでした。",
-                  );
-                  const logResult = safelyLogRetryEvent(
-                    this.options.logRetryEvent,
-                    createRetryLogEvent(
-                      "error",
-                      this.options.sessionId,
-                      input.logicalTurnId,
-                      attempt,
-                      recoveryFailure,
-                      previousDigest,
-                      "stop",
-                    ),
-                  );
-                  const recoveryErrors = [
-                    recoveryFailure,
-                    ...(logResult.kind === "failed" ? [logResult.error] : []),
-                  ];
-                  const recoveryFailureWithLogResult = new AggregateError(
-                    recoveryErrors,
-                    "変更案ファイルの再発行と検証失敗の回復に失敗しました。",
-                    { cause: recoveryFailure },
-                  );
-                  if (logResult.kind === "succeeded") {
-                    throw new DiagnosticFailureDispositionError({
-                      kind: "recorded_only",
-                      recorded_error: recoveryFailureWithLogResult,
-                      response_error: recoveryFailureWithLogResult,
-                    });
-                  }
-                  throw recoveryFailureWithLogResult;
-                }
-            }
-          }
-          const validationErrorsPath = writeResult.path;
           retryState = {
             kind: "pending",
             failure,
             previousDigest,
-            validationErrorsPath,
+            validationErrors,
+            retryProposal,
             failedAttempt: attempt,
           };
         }
       }
       throw new Error("再試行上限を超えてAI変更案の試行が継続しました。");
     } catch (error: unknown) {
-      return { kind: "failed", error, proposalFile };
+      return { kind: "failed", error };
     }
   }
 
@@ -3218,25 +3222,6 @@ export class AiWorkflowService {
         }),
       ),
     };
-  }
-
-  private writeValidationErrorsSafely(
-    logicalTurnId: string,
-    errors: AiWorkflowValidationErrors,
-  ):
-    | { readonly kind: "written"; readonly path: string }
-    | { readonly kind: "failed"; readonly error: unknown } {
-    try {
-      return {
-        kind: "written",
-        path: this.options.proposalFileStore.writeValidationErrors(
-          logicalTurnId,
-          errors,
-        ),
-      };
-    } catch (error: unknown) {
-      return { kind: "failed", error };
-    }
   }
 
   private async executeTurnAttempt(
@@ -3329,9 +3314,10 @@ export class AiWorkflowService {
       turnGeneration,
       pendingWithdrawConfirmation,
       logicalTurnId,
-      proposalFile,
+      retryProposal,
       attempt,
       retryPromptContext,
+      workspaceState,
     } = input;
     const attemptId = identifierSchema.parse(randomUUID());
     let preparedState: PreparedTurnState = { kind: "pending" };
@@ -3386,18 +3372,31 @@ export class AiWorkflowService {
             inherited_status_evidence_aliases: inheritedAliases.status,
             inherited_split_instruction_aliases: inheritedAliases.split,
           };
+          const initialProposal = rebindInitialProposal(
+            retryProposal ?? baseProposal?.proposal,
+            prepared,
+            baseProposal,
+          );
+          const workspace = new ProposalWorkspace({
+            workspace_id: identifierSchema.parse(randomUUID()),
+            baseline_snapshot_hash: baselineSnapshotHash,
+            ...(initialProposal == null ? {} : { initial_proposal: initialProposal }),
+          });
           this.options.session.freezeTaskctlSnapshot(taskctlSnapshot);
           updateResources({
             kind: "collector_active_snapshot_frozen",
             attemptId,
           });
           preparedState = { kind: "ready", value: prepared };
+          workspaceState.value = workspace;
+          this.options.session.activateProposalWorkspace(workspace, (proposal) =>
+            validateWorkspaceProposal(proposal, prepared));
           return [{
             type: "text",
             text: createTurnPrompt(
               request,
               prepared,
-              proposalFile,
+              workspace,
               retryPromptContext,
             ),
           }];
@@ -3423,23 +3422,45 @@ export class AiWorkflowService {
       ),
     };
     const generatedResponse = sessionTurnResult.response;
+    const workspace = workspaceState.value;
+    if (workspace == null) {
+      throw new AiWorkflowStateError("AI変更案ワークスペースが作成されませんでした。");
+    }
     let validatedResponse: ValidatedGeneratedResponse;
     if (generatedResponse.kind === "proposal") {
-      const candidate = this.stageProposalFile(
-        generatedResponse.proposal_file_id,
-        proposalFile,
-        generatedResponse.proposal,
-      );
+      const status = workspace.getStatus();
+      if (
+        generatedResponse.workspace_id !== status.workspace_id
+        || generatedResponse.revision !== status.revision
+        || status.state !== "submitted"
+      ) {
+        throw new AiWorkflowRetryableFailureError(
+          [aiWorkflowValidationIssueSchema.parse({
+            phase: "proposal_workspace",
+            code: generatedResponse.workspace_id !== status.workspace_id
+              || generatedResponse.revision !== status.revision
+              ? "proposal_workspace_reference_mismatch"
+              : "proposal_workspace_not_submitted",
+            json_pointer: generatedResponse.workspace_id !== status.workspace_id
+              ? "/workspace_id"
+              : "/revision",
+          })],
+          aiWorkflowCandidateDigestSchema.parse({ kind: "unavailable", reason: "not_staged" }),
+          "reuse_lease",
+          new AiWorkflowError("AI変更案ワークスペースの提出と最終応答が一致しません。"),
+        );
+      }
+      const proposal = readWorkspaceProposal(workspace);
       const response = codexResponseSchema.parse({
         kind: generatedResponse.kind,
         message: generatedResponse.message,
         questions: generatedResponse.questions,
-        proposal: candidate.proposal,
+        proposal,
       });
       if (response.kind !== "proposal") {
-        throw new Error("提案ファイル応答が提案応答へ変換されませんでした。");
+        throw new Error("ワークスペース応答が提案応答へ変換されませんでした。");
       }
-      validatedResponse = { kind: "proposal", response, candidate };
+      validatedResponse = { kind: "proposal", response };
     } else {
       const response = codexResponseSchema.parse(generatedResponse);
       if (response.kind !== "no_proposal") {
@@ -3471,11 +3492,12 @@ export class AiWorkflowService {
         prepared: turnPrepared,
       };
     }
-    const { response, candidate } = validatedResponse;
+    const { response } = validatedResponse;
+    const candidateDigest = workspaceCandidateDigest(response.proposal);
     const bound = bindProposalEvidence(
       proposalSchema.parse(response.proposal),
       turnPrepared,
-      candidate.candidate_digest,
+      candidateDigest,
     );
     const proposalId = identifierSchema.parse(randomUUID());
     const stored = createStoredProposal(proposalId, bound, turnPrepared);
@@ -3483,7 +3505,7 @@ export class AiWorkflowService {
     if (validationIssues.length > 0) {
       throw new AiWorkflowRetryableFailureError(
         validationIssues,
-        candidate.candidate_digest,
+        candidateDigest,
         "reuse_lease",
         new AiWorkflowError("基本検証またはグラフ検証が変更案を適用可能と判定しませんでした。"),
       );
@@ -3507,51 +3529,6 @@ export class AiWorkflowService {
       storedProposal: stored,
       replacingProposalId: request.base_proposal_id,
       prepared: turnPrepared,
-    };
-  }
-
-  private disposeTurnFilesSafely(
-    proposalFileId: string,
-    logicalTurnId: string,
-  ): ProposalFileDisposalResult {
-    const errors: unknown[] = [];
-    try {
-      this.options.proposalFileStore.dispose(proposalFileId);
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    try {
-      this.options.proposalFileStore.disposeValidationErrors(logicalTurnId);
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    if (errors.length === 0) {
-      return { kind: "succeeded" };
-    }
-    if (errors.length === 1) {
-      const error = errors[0];
-      if (error == null) {
-        return {
-          kind: "failed",
-          error: new Error("AIターンファイルの破棄エラーを取得できません。"),
-        };
-      }
-      return { kind: "failed", error };
-    }
-    const primaryError = errors[0];
-    if (primaryError == null) {
-      return {
-        kind: "failed",
-        error: new Error("AIターンファイルの破棄エラーを取得できません。"),
-      };
-    }
-    return {
-      kind: "failed",
-      error: new AggregateError(
-        errors,
-        "提案ファイルと検証エラーファイルの破棄に失敗しました。",
-        { cause: primaryError },
-      ),
     };
   }
 
@@ -3580,32 +3557,6 @@ export class AiWorkflowService {
         break;
     }
     return commit.result;
-  }
-
-  private stageProposalFile(
-    proposalFileId: string,
-    expectedProposalFile: AiWorkflowProposalFileLease,
-    proposal: Proposal,
-  ): AiWorkflowProposalCandidate {
-    if (proposalFileId !== expectedProposalFile.proposal_file_id) {
-      const issue = aiWorkflowValidationIssueSchema.parse({
-        phase: "proposal_file",
-        code: "proposal_file_id_mismatch",
-        json_pointer: "/proposal_file_id",
-      });
-      throw new AiWorkflowRetryableFailureError(
-        [issue],
-        aiWorkflowCandidateDigestSchema.parse({
-          kind: "unavailable",
-          reason: "not_staged",
-        }),
-        "fresh_lease",
-        new AiWorkflowProposalFileError(
-          "AI応答の変更案ファイルIDが今回のAIターンへ発行したIDと一致しません。",
-        ),
-      );
-    }
-    return this.options.proposalFileStore.stageProposal(proposalFileId, proposal);
   }
 
   /** 保持中の変更案を取得してRenderer向けDTOへ変換します。 */
@@ -3769,7 +3720,6 @@ export class AiWorkflowService {
     if (this.lifecycle.kind === "disposed") {
       return;
     }
-    this.options.proposalFileStore.disposeAll();
     this.removeSessionDelta();
     this.options.session.releaseTaskctlSnapshot();
     this.deltaListeners.clear();

@@ -8,7 +8,6 @@ export {
   type ApprovalPreparationInput,
   type AiWorkflowOnlineStateProvider,
   type AiWorkflowOptions,
-  type AiWorkflowProposalFilePort,
   type AiWorkflowSessionPort,
   type AiWorkflowSnapshotProvider,
   type AiWorkflowExternalStatusEvidenceCollector,

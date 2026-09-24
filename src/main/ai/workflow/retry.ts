@@ -42,6 +42,7 @@ export const aiWorkflowValidationDetailCodeSchema = z.union([
 export const aiWorkflowRetryPhaseSchema = z.enum([
   "structured_output",
   "proposal_file",
+  "proposal_workspace",
   "evidence_binding",
   "basic_validation",
   "graph_validation",
@@ -58,6 +59,8 @@ export const aiWorkflowRetryCodeSchema = z.enum([
   "proposal_file_invalid_json",
   "proposal_file_schema_invalid",
   "validation_errors_write_failed",
+  "proposal_workspace_not_submitted",
+  "proposal_workspace_reference_mismatch",
   "evidence_binding_invalid",
   "proposal_basic_validation_failed",
   "proposal_graph_validation_failed",

@@ -836,10 +836,13 @@ const proposalResponseSchema = z
   })
   .strict();
 
-const generatedProposalResponseSchema = proposalResponseSchema.extend({
-  proposal_file_id: identifierSchema,
-  proposal: codexGeneratedProposalSchema,
-});
+const generatedProposalResponseSchema = z.object({
+  kind: z.literal("proposal"),
+  message: messageSchema,
+  questions: questionsSchema,
+  workspace_id: identifierSchema,
+  revision: z.number().int().nonnegative().safe(),
+}).strict();
 
 const noProposalResponseSchema = z
   .object({
