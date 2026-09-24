@@ -23,5 +23,7 @@ linux:
 extraResources:
   - from: build/icon.png
     to: icon.png
+nsis:
+  artifactName: ${productName}-Setup-${version}-full.${ext}
 nsisWeb:
   artifactName: ${productName}-Setup-${version}.${ext}
