@@ -108,6 +108,22 @@ export class ProposalWorkspaceConflictError extends Error {
   }
 }
 
+/** ワークスペースへの利用者入力を拒否したことを表します。 */
+export class ProposalWorkspaceInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalWorkspaceInputError";
+  }
+}
+
+/** 意味編集の利用者入力を拒否したことを表します。 */
+export class ProposalWorkspaceEditError extends ProposalWorkspaceInputError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalWorkspaceEditError";
+  }
+}
+
 export type ProposalWorkspaceOptions = {
   workspace_id: string;
   baseline_snapshot_hash: string;
@@ -123,7 +139,7 @@ const workspaceOptionsSchema = z.object({
 function requireGroup(draft: Draft, groupId: string): DraftGroup {
   const group = draft.groups.find((candidate) => candidate.group_id === groupId);
   if (group == null) {
-    throw new Error(`group_id ${groupId} がワークスペースにありません。`);
+    throw new ProposalWorkspaceEditError(`group_id ${groupId} がワークスペースにありません。`);
   }
   return group;
 }
@@ -144,7 +160,7 @@ function requireOperation(
       return { group, index, operation };
     }
   }
-  throw new Error(`operation_id ${operationId} がワークスペースにありません。`);
+  throw new ProposalWorkspaceEditError(`operation_id ${operationId} がワークスペースにありません。`);
 }
 
 function insertionIndex<T>(
@@ -157,7 +173,7 @@ function insertionIndex<T>(
   }
   const index = values.findIndex((value) => getId(value) === beforeId);
   if (index < 0) {
-    throw new Error(`挿入位置のID ${beforeId} が対象にありません。`);
+    throw new ProposalWorkspaceEditError(`挿入位置のID ${beforeId} が対象にありません。`);
   }
   return index;
 }
@@ -169,7 +185,7 @@ function applyEdit(draft: Draft, edit: ProposalWorkspaceEdit): void {
       return;
     case "insert_group": {
       if (draft.groups.some((group) => group.group_id === edit.group_id)) {
-        throw new Error(`group_id ${edit.group_id} が重複しています。`);
+        throw new ProposalWorkspaceEditError(`group_id ${edit.group_id} が重複しています。`);
       }
       const index = insertionIndex(
         draft.groups,
@@ -189,7 +205,7 @@ function applyEdit(draft: Draft, edit: ProposalWorkspaceEdit): void {
     case "move_group": {
       const index = draft.groups.findIndex((group) => group.group_id === edit.group_id);
       if (index < 0) {
-        throw new Error(`group_id ${edit.group_id} がワークスペースにありません。`);
+        throw new ProposalWorkspaceEditError(`group_id ${edit.group_id} がワークスペースにありません。`);
       }
       const moved = draft.groups.splice(index, 1)[0];
       if (moved == null) {
@@ -206,7 +222,7 @@ function applyEdit(draft: Draft, edit: ProposalWorkspaceEdit): void {
     case "remove_group": {
       const index = draft.groups.findIndex((group) => group.group_id === edit.group_id);
       if (index < 0) {
-        throw new Error(`group_id ${edit.group_id} がワークスペースにありません。`);
+        throw new ProposalWorkspaceEditError(`group_id ${edit.group_id} がワークスペースにありません。`);
       }
       draft.groups.splice(index, 1);
       return;
@@ -223,7 +239,7 @@ function applyEdit(draft: Draft, edit: ProposalWorkspaceEdit): void {
     }
     case "replace_operation": {
       if (edit.operation.operation_id !== edit.operation_id) {
-        throw new Error("操作の置換でoperation_idを変更できません。");
+        throw new ProposalWorkspaceEditError("操作の置換でoperation_idを変更できません。");
       }
       const location = requireOperation(draft, edit.operation_id);
       location.group.operations[location.index] = edit.operation;
@@ -255,7 +271,7 @@ function applyEdit(draft: Draft, edit: ProposalWorkspaceEdit): void {
 
 function assertDraftIdentity(draft: Draft): void {
   if (draft.groups.length > maximumProposalGroups) {
-    throw new Error(`グループ数は${maximumProposalGroups}件までです。`);
+    throw new ProposalWorkspaceEditError(`グループ数は${maximumProposalGroups}件までです。`);
   }
   const groupIds = new Set<string>();
   const operationIds = new Set<string>();
@@ -263,28 +279,28 @@ function assertDraftIdentity(draft: Draft): void {
   let operationCount = 0;
   for (const group of draft.groups) {
     if (groupIds.has(group.group_id)) {
-      throw new Error(`group_id ${group.group_id} が重複しています。`);
+      throw new ProposalWorkspaceEditError(`group_id ${group.group_id} が重複しています。`);
     }
     groupIds.add(group.group_id);
     if (group.operations.length > maximumGroupOperations) {
-      throw new Error(`グループ内の操作数は${maximumGroupOperations}件までです。`);
+      throw new ProposalWorkspaceEditError(`グループ内の操作数は${maximumGroupOperations}件までです。`);
     }
     operationCount += group.operations.length;
     for (const operation of group.operations) {
       if (operationIds.has(operation.operation_id)) {
-        throw new Error(`operation_id ${operation.operation_id} が重複しています。`);
+        throw new ProposalWorkspaceEditError(`operation_id ${operation.operation_id} が重複しています。`);
       }
       operationIds.add(operation.operation_id);
       if (operation.operation === "create_task") {
         if (temporaryRefs.has(operation.temporary_ref)) {
-          throw new Error(`temporary_ref ${operation.temporary_ref} が重複しています。`);
+          throw new ProposalWorkspaceEditError(`temporary_ref ${operation.temporary_ref} が重複しています。`);
         }
         temporaryRefs.add(operation.temporary_ref);
       }
     }
   }
   if (operationCount > maximumProposalOperations) {
-    throw new Error(`変更案全体の操作数は${maximumProposalOperations}件までです。`);
+    throw new ProposalWorkspaceEditError(`変更案全体の操作数は${maximumProposalOperations}件までです。`);
   }
 }
 
@@ -432,7 +448,7 @@ function mergeChanges(
 
 function assertStringBoundary(value: string, offset: number): void {
   if (offset > value.length) {
-    throw new Error("読み取り開始位置が内容の末尾を超えています。");
+    throw new ProposalWorkspaceInputError("読み取り開始位置が内容の末尾を超えています。");
   }
   const previous = value.charCodeAt(offset - 1);
   const current = value.charCodeAt(offset);
@@ -440,7 +456,7 @@ function assertStringBoundary(value: string, offset: number): void {
     previous >= 0xd800 && previous <= 0xdbff
     && current >= 0xdc00 && current <= 0xdfff
   ) {
-    throw new Error("読み取り開始位置が文字の途中です。");
+    throw new ProposalWorkspaceInputError("読み取り開始位置が文字の途中です。");
   }
 }
 
@@ -556,7 +572,7 @@ export class ProposalWorkspace {
   applyBatch(input: ProposalWorkspaceBatch): ProposalWorkspaceStatus {
     const parsed = proposalWorkspaceBatchSchema.parse(input);
     if (Buffer.byteLength(JSON.stringify(parsed), "utf8") > maximumProposalWorkspaceArgumentBytes) {
-      throw new Error("編集バッチが128 KiBの上限を超えています。");
+      throw new ProposalWorkspaceEditError("編集バッチが128 KiBの上限を超えています。");
     }
     this.assertWorkspaceId(parsed.workspace_id);
     const content = JSON.stringify(parsed);
@@ -629,7 +645,7 @@ export class ProposalWorkspace {
     this.assertWorkspaceId(parsed.workspace_id);
     this.assertRevision(parsed.revision);
     if (parsed.from_revision > this.revision) {
-      throw new Error("差分の開始改訂番号が現在の改訂番号を超えています。");
+      throw new ProposalWorkspaceInputError("差分の開始改訂番号が現在の改訂番号を超えています。");
     }
     return chunk(mergeChanges(this.history, parsed.from_revision), {
       workspace_id: this.workspaceId,

@@ -16,7 +16,6 @@ import {
 import {
   maximumProposalOperations,
   maximumProposalWorkspaceResponseBytes,
-  proposalSchema,
   proposalWorkspaceEditSchema,
   proposalWorkspaceReadTargetSchema,
 } from "../ai";
@@ -30,7 +29,7 @@ const maximumMessageBytes = 4 * 1_024;
 const maximumRegistrationBytes = 4 * 1_024;
 const maximumCapabilities = 16;
 const maximumProposals = 100;
-const maximumWorkspaceCliResponseBytes = maximumProposalWorkspaceResponseBytes - 1_024;
+export const maximumWorkspaceCliResponseBytes = maximumProposalWorkspaceResponseBytes - 1_024;
 const workspaceRevisionSchema = z.number().int().nonnegative().safe();
 const workspaceOffsetSchema = z.number().int().nonnegative().safe();
 
@@ -74,7 +73,6 @@ const externalAgentCapabilitySchema = z.enum([
   "tasks.areas",
   "tasks.search-local",
   "proposals.prepare",
-  "proposals.create",
   "proposals.read",
   "proposals.apply-edits",
   "proposals.diff",
@@ -155,17 +153,6 @@ export const externalAgentProposalPrepareInputSchema = z.object({
   project_gid: gidSchema,
   request_id: identifierSchema,
   source_text: nonBlankMessageSchema,
-}).strict();
-
-/** 外部連携から完全な変更案を提出する要求を検証するスキーマです。 */
-export const externalAgentCreateProposalInputSchema = z.object({
-  operation: z.literal("proposals.create"),
-  instance_id: identifierSchema,
-  context_id: identifierSchema,
-  project_gid: gidSchema,
-  request_id: identifierSchema,
-  proposal_context_id: identifierSchema,
-  proposal: proposalSchema,
 }).strict();
 
 const workspaceBindingSchema = z.object({
@@ -249,7 +236,6 @@ export const externalAgentRequestInputSchema = z.discriminatedUnion("operation",
   externalAgentTaskAreasInputSchema,
   externalAgentTaskSearchLocalInputSchema,
   externalAgentProposalPrepareInputSchema,
-  externalAgentCreateProposalInputSchema,
   externalAgentProposalReadInputSchema,
   externalAgentProposalApplyEditsInputSchema,
   externalAgentProposalDiffInputSchema,
@@ -621,14 +607,6 @@ export const externalAgentProposalSubmitResponseSchema = z.object({
   ]),
 }).strict().superRefine(assertWorkspaceCliResponseSize);
 
-/** 外部連携の提案受付応答を検証するスキーマです。 */
-export const externalAgentProposalCreateResponseSchema = z
-  .object({
-    operation: z.literal("proposals.create"),
-    proposal: externalAgentProposalSchema,
-  })
-  .strict();
-
 /** 外部連携の提案状態応答を検証するスキーマです。 */
 export const externalAgentProposalStatusResponseSchema = z
   .object({
@@ -704,7 +682,6 @@ export const externalAgentReviewOpenResponseSchema = z
 export const externalAgentResponseSchema = z.discriminatedUnion("operation", [
   externalAgentTaskQueryResponseSchema,
   externalAgentProposalPrepareResponseSchema,
-  externalAgentProposalCreateResponseSchema,
   externalAgentProposalReadResponseSchema,
   externalAgentProposalApplyEditsResponseSchema,
   externalAgentProposalDiffResponseSchema,
@@ -808,9 +785,6 @@ export const externalAgentGuiStateSchema = z
 /** 外部GUIへ通知する状態変更スナップショットを検証するスキーマです。 */
 export const externalAgentGuiChangedStateSchema = externalAgentGuiStateSchema;
 
-export type ExternalAgentCreateProposalInput = z.infer<
-  typeof externalAgentCreateProposalInputSchema
->;
 export type ExternalAgentErrorCode = z.infer<typeof externalAgentErrorCodeSchema>;
 export type ExternalAgentTaskListInput = z.infer<typeof externalAgentTaskListInputSchema>;
 export type ExternalAgentTaskDetailInput = z.infer<
@@ -876,9 +850,6 @@ export type ExternalAgentProposalValidateResponse = z.infer<
 >;
 export type ExternalAgentProposalSubmitResponse = z.infer<
   typeof externalAgentProposalSubmitResponseSchema
->;
-export type ExternalAgentProposalCreateResponse = z.infer<
-  typeof externalAgentProposalCreateResponseSchema
 >;
 export type ExternalAgentProposalStatusResponse = z.infer<
   typeof externalAgentProposalStatusResponseSchema
