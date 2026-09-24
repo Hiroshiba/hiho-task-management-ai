@@ -52,7 +52,7 @@ pnpm run dev -- --mock=all
 pnpm run dev -- --mock=asana,readModel
 ```
 
-検証と配布には次のコマンドを使います。
+検証とローカル梱包には次のコマンドを使います。
 
 ```sh
 pnpm run lint
@@ -69,7 +69,8 @@ pnpm run package
 1. ルートの`package.json`の`version`を公開ごとに単調増加させます。prereleaseの先頭識別子は`edge`を維持します。たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`です。検証を済ませ、公開するソースを`main`へ反映します。
 2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
 3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`を指定します。署名・公開中は`edge`タグとReleaseを変更しないでください。
-4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、更新メタデータを含む8件のassetを確認します。メタデータの参照先・サイズ・hash・versionが公開ファイルと一致することを確認し、中央の[検証項目](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md)に沿って導入と手動更新を実機で確認します。
+4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータの参照先・サイズ・hash・versionが公開ファイルと一致することを確認します。
+5. 両OSの実機で初回導入と新しい署名版への手動上書きを行い、それぞれ起動とversionを確認します。上書き時は設定・データの保持も確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。
 
 手順3はGitHub CLIでも実行できます。
 
