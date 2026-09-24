@@ -79,7 +79,7 @@ pnpm run package
 
 以下の手順は、中央の`sign-release`への`version`入力追加が中央の既定ブランチへ反映されてから実行してください。
 
-1. 検証を済ませ、公開するソースを`main`へ反映します。配布する`version`は、先頭に`v`を付けないSemVerで、既に配布した版より大きい値を決めます。edge配布ではprereleaseの先頭識別子を`edge`にし、たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`にします。ルートの`package.json`の`version`と一致させる必要はなく、配布版を変えるためだけのソース更新は不要です。中央は既存版との大小を検証しません。
+1. 検証を済ませ、公開するコミットが中央のソースの要件を満たすことを確認します。配布する`version`は、先頭に`v`を付けないSemVerで、既に配布した版より大きい値を決めます。edge配布ではprereleaseの先頭識別子を`edge`にし、たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`にします。ルートの`package.json`の`version`と一致させる必要はなく、配布版を変えるためだけのソース更新は不要です。中央は既存版との大小を検証しません。
 2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
 3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`、`version`に手順1で決めた版を指定します。3つとも必須入力です。ビルド・署名・公開中は`edge`タグとReleaseを変更しないでください。次の配布でタグを移動する場合も、前の実行を完了させてから行います。
 4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータのサイズ・hash・versionが公開ファイルと一致することを確認します。更新メタデータの`path`と`files.url`が公開後のasset名と大文字小文字を含めて一致することを確認します。
