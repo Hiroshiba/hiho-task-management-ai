@@ -87,6 +87,27 @@ export type ProposalWorkspaceSubmission<T> =
   | { kind: "submitted"; revision: number; proposal: Proposal; value: T }
   | { kind: "invalid"; revision: number; issues: ProposalWorkspaceIssue[] };
 
+export type ProposalWorkspaceValidationResult<T> =
+  | { kind: "valid"; revision: number; proposal: Proposal; value: T }
+  | { kind: "invalid"; revision: number; issues: ProposalWorkspaceIssue[] };
+
+export type ProposalWorkspaceConflictCode =
+  | "workspace_mismatch"
+  | "revision_mismatch"
+  | "edit_batch_id_reused"
+  | "state_mismatch";
+
+/** ワークスペースの競合を呼び出し側で分類するためのエラーです。 */
+export class ProposalWorkspaceConflictError extends Error {
+  readonly code: ProposalWorkspaceConflictCode;
+
+  constructor(code: ProposalWorkspaceConflictCode, message: string) {
+    super(message);
+    this.name = "ProposalWorkspaceConflictError";
+    this.code = code;
+  }
+}
+
 export type ProposalWorkspaceOptions = {
   workspace_id: string;
   baseline_snapshot_hash: string;
@@ -493,19 +514,28 @@ export class ProposalWorkspace {
 
   private assertWorkspaceId(workspaceId: string): void {
     if (workspaceId !== this.workspaceId) {
-      throw new Error("ワークスペースIDが現在のワークスペースと一致しません。");
+      throw new ProposalWorkspaceConflictError(
+        "workspace_mismatch",
+        "ワークスペースIDが現在のワークスペースと一致しません。",
+      );
     }
   }
 
   private assertDraft(): void {
     if (this.state !== "draft") {
-      throw new Error("提出済みワークスペースは編集できません。");
+      throw new ProposalWorkspaceConflictError(
+        "state_mismatch",
+        "提出済みワークスペースは編集・検証・再提出できません。",
+      );
     }
   }
 
   private assertRevision(revision: number): void {
     if (revision !== this.revision) {
-      throw new Error("ワークスペースの改訂番号が一致しません。");
+      throw new ProposalWorkspaceConflictError(
+        "revision_mismatch",
+        "ワークスペースの改訂番号が一致しません。",
+      );
     }
   }
 
@@ -533,7 +563,10 @@ export class ProposalWorkspace {
     const previousBatch = this.batches.get(parsed.edit_batch_id);
     if (previousBatch != null) {
       if (previousBatch.content !== content) {
-        throw new Error("同じedit_batch_idに異なる編集内容を指定できません。");
+        throw new ProposalWorkspaceConflictError(
+          "edit_batch_id_reused",
+          "同じedit_batch_idに異なる編集内容を指定できません。",
+        );
       }
       return structuredClone(previousBatch.status);
     }
@@ -605,11 +638,11 @@ export class ProposalWorkspace {
     }, parsed.offset ?? 0);
   }
 
-  /** 完成案を検証して提出済みとして封印します。 */
-  submit<T>(
+  /** 完成案を変更せずに検証します。 */
+  validate<T>(
     input: ProposalWorkspaceSubmit,
     validate: (proposal: Proposal) => ProposalWorkspaceValidation<T>,
-  ): ProposalWorkspaceSubmission<T> {
+  ): ProposalWorkspaceValidationResult<T> {
     const parsed = proposalWorkspaceSubmitSchema.parse(input);
     this.assertWorkspaceId(parsed.workspace_id);
     this.assertDraft();
@@ -656,12 +689,29 @@ export class ProposalWorkspace {
         }
       }
     }
-    this.state = "submitted";
     return {
-      kind: "submitted",
+      kind: "valid",
       revision: this.revision,
       proposal: validatedProposal,
       value: validation.value,
+    };
+  }
+
+  /** 完成案を検証して提出済みとして封印します。 */
+  submit<T>(
+    input: ProposalWorkspaceSubmit,
+    validate: (proposal: Proposal) => ProposalWorkspaceValidation<T>,
+  ): ProposalWorkspaceSubmission<T> {
+    const result = this.validate(input, validate);
+    if (result.kind === "invalid") {
+      return result;
+    }
+    this.state = "submitted";
+    return {
+      kind: "submitted",
+      revision: result.revision,
+      proposal: result.proposal,
+      value: result.value,
     };
   }
 }

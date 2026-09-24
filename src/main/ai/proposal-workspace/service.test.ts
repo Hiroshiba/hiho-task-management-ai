@@ -8,7 +8,11 @@ import {
   type ProposalWorkspaceBatch,
   type ProposalWorkspaceRead,
 } from "../../../shared/ai";
-import { ProposalWorkspace } from "./service";
+import {
+  ProposalWorkspace,
+  ProposalWorkspaceConflictError,
+  type ProposalWorkspaceConflictCode,
+} from "./service";
 
 const baselineHash = "a".repeat(64);
 const workspaceId = "workspace-1";
@@ -53,6 +57,17 @@ function readAll(
     assert.ok(result.next_offset > offset);
     offset = result.next_offset;
   }
+}
+
+function expectConflict(run: () => unknown, code: ProposalWorkspaceConflictCode): void {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error: unknown) {
+    caught = error;
+  }
+  assert.ok(caught instanceof ProposalWorkspaceConflictError);
+  assert.equal(caught.code, code);
 }
 
 void test("分割編集で初回の大きな案を構築し、完成後に封印する", () => {
@@ -326,4 +341,106 @@ void test("読み取りと意味差分を改訂番号へ固定して64 KiB以内
     revision: 0,
     target: { kind: "summary" },
   }), /改訂番号/);
+});
+
+void test("validateはdraftを封印せず、操作別invalidを含む検証結果を返せる", () => {
+  const workspace = new ProposalWorkspace({
+    workspace_id: workspaceId,
+    baseline_snapshot_hash: baselineHash,
+  });
+  const incomplete = workspace.validate({
+    workspace_id: workspaceId,
+    expected_revision: 0,
+  }, () => {
+    throw new Error("不完全な案を意味検証へ渡してはいけません。");
+  });
+  assert.equal(incomplete.kind, "invalid");
+  workspace.applyBatch({
+    workspace_id: workspaceId,
+    edit_batch_id: "batch-1",
+    expected_revision: 0,
+    edits: [
+      { kind: "set_title", title: "変更案" },
+      { kind: "insert_group", group_id: "group-1", atomic: false },
+      {
+        kind: "insert_operation",
+        group_id: "group-1",
+        operation: createOperation("operation-1", baselineHash, "内容"),
+      },
+    ],
+  });
+  const operationResults = [{ operation_id: "operation-1", kind: "invalid" }];
+  const validated = workspace.validate({
+    workspace_id: workspaceId,
+    expected_revision: 1,
+  }, (proposal) => ({ kind: "valid", proposal, value: operationResults }));
+  assert.equal(validated.kind, "valid");
+  if (validated.kind !== "valid") {
+    throw new Error("完成案を検証できませんでした。");
+  }
+  assert.deepEqual(validated.value, operationResults);
+  assert.equal(workspace.getStatus().state, "draft");
+  assert.equal(workspace.getStatus().revision, 1);
+  const rejected = workspace.validate({
+    workspace_id: workspaceId,
+    expected_revision: 1,
+  }, () => ({
+    kind: "invalid",
+    issues: [{ code: "evidence_invalid", json_pointer: "/groups/0/operations/0", message: "根拠を確認できません。" }],
+  }));
+  assert.equal(rejected.kind, "invalid");
+  assert.equal(workspace.getStatus().state, "draft");
+  const submitted = workspace.submit({
+    workspace_id: workspaceId,
+    expected_revision: 1,
+  }, (proposal) => ({ kind: "valid", proposal, value: operationResults }));
+  assert.equal(submitted.kind, "submitted");
+});
+
+void test("改訂番号、バッチID、ワークスペース状態の競合を型付きで判別できる", () => {
+  const workspace = new ProposalWorkspace({
+    workspace_id: workspaceId,
+    baseline_snapshot_hash: baselineHash,
+  });
+  const batch: ProposalWorkspaceBatch = {
+    workspace_id: workspaceId,
+    edit_batch_id: "batch-1",
+    expected_revision: 0,
+    edits: [
+      { kind: "set_title", title: "変更案" },
+      { kind: "insert_group", group_id: "group-1", atomic: false },
+      {
+        kind: "insert_operation",
+        group_id: "group-1",
+        operation: createOperation("operation-1", baselineHash, "内容"),
+      },
+    ],
+  };
+  const accepted = workspace.applyBatch(batch);
+  expectConflict(() => workspace.read({
+    workspace_id: "different-workspace",
+    revision: 1,
+    target: { kind: "summary" },
+  }), "workspace_mismatch");
+  expectConflict(() => workspace.applyBatch({
+    workspace_id: workspaceId,
+    edit_batch_id: "batch-2",
+    expected_revision: 0,
+    edits: [{ kind: "set_title", title: "別案" }],
+  }), "revision_mismatch");
+  expectConflict(() => workspace.applyBatch({
+    ...batch,
+    edits: [{ kind: "set_title", title: "別案" }],
+  }), "edit_batch_id_reused");
+  assert.equal(workspace.getStatus().revision, 1);
+  const submitted = workspace.submit({
+    workspace_id: workspaceId,
+    expected_revision: 1,
+  }, (proposal) => ({ kind: "valid", proposal, value: null }));
+  assert.equal(submitted.kind, "submitted");
+  expectConflict(() => workspace.validate({
+    workspace_id: workspaceId,
+    expected_revision: 1,
+  }, (proposal) => ({ kind: "valid", proposal, value: null })), "state_mismatch");
+  assert.deepEqual(workspace.applyBatch(batch), accepted);
 });
