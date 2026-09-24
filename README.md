@@ -15,7 +15,16 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 macOS arm64ネイティブ版、DMG、Windows ZIPは生成しません。自己署名のため、証明書の登録後もmacOSのGatekeeperやWindowsのSmartScreenの警告が残る場合があります。macOSでは配布元と署名を確認して個別アプリの許可操作を行います。詳しい操作は端末の初期設定を参照し、隔離属性の削除やOSの保護設定全体の無効化は行わないでください。Smart App Controlが強制されているWindows端末は対象外です。
 
-アプリ内自動更新は未実装です。旧未署名版からの初回移行も、その後の更新も、新しい署名版を手動で導入してください。設定・データの保存先は変えませんが、異なる配布形式からの上書き導入は実機で未検証です。
+アプリ内の自動更新・差分更新は未実装です。署名版同士の手動更新では、更新前の版と設定を下記の方法で記録してから、次の操作を行います。
+
+- macOS x64では、ブラウザーでedge Releaseから次版の署名済みZIPを取得します。TaskHubを終了し、隔離属性を保持したままZIPを展開して、`/Applications/TaskHub.app`を置き換えます。置き換えたアプリを起動します。
+- Windows x64では、ブラウザーでedge Releaseから次版の署名済み通常NSISを取得します。ダウンロード元の情報を保持してデジタル署名を確認し、TaskHubを終了して通常NSISを再実行します。インストール先のTaskHubを起動します。NSIS Webは初回導入用です。
+
+初回導入後と更新前後に、実際に起動するアプリの版表記を記録します。macOSでは`/Applications/TaskHub.app/Contents/Info.plist`の`CFBundleShortVersionString`、Windowsではインストール先の`TaskHub.exe`のプロパティの「詳細」にあるファイルバージョンを確認します。prereleaseを含む版表記は実成果物で未確認です。Releaseの更新メタデータの`version`と実際の成果物の版表記の対応を確かめてから照合し、表記から次版を識別できない場合は版の確認を未完了として記録してください。
+
+設定保持の検証では、初回導入後にObsidianのVaultを登録し、ヘッダーの「設定」に表示されるVault IDと絶対パスを更新前後で比較します。更新後に初回設定をやり直さず起動でき、登録値が保持されることを確認してください。Asanaのタスクが表示されることだけでは、ローカルデータの保持を確認したことにはなりません。
+
+旧未署名版からの移行は、署名版同士の更新とは別に実機検証が必要です。設定・データの保存先は変えませんが、移行時の保持は未検証です。旧Windows ZIPからの移行は、既存フォルダーの単純な上書きではなく、署名済み通常NSISによるインストールになります。旧macOS版からの置き換えも未検証です。
 
 ## 開発
 
@@ -62,6 +71,8 @@ pnpm run package:dir
 pnpm run package
 ```
 
+`package`と`package:dir`はローカル梱包用で、中央の署名済みRelease成果物の生成・公開手順ではなく、配布には中央の`sign-release`が公開した成果物を使います。
+
 ## 署名版の公開
 
 公開には中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)を満たす必要があります。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
@@ -70,7 +81,7 @@ pnpm run package
 2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
 3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`を指定します。署名・公開中は`edge`タグとReleaseを変更しないでください。
 4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータの参照先・サイズ・hash・versionが公開ファイルと一致することを確認します。
-5. 両OSの実機で初回導入と新しい署名版への手動上書きを行い、それぞれ起動とversionを確認します。上書き時は設定・データの保持も確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。
+5. 両OSの実機で、[インストールと更新](#インストールと更新)の手順に沿って初回導入と次の署名版への手動更新を行い、起動・版・設定保持を確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。未実装の自動更新・差分更新と、未検証の旧未署名版からの移行を成功扱いにしないでください。
 
 手順3はGitHub CLIでも実行できます。
 
