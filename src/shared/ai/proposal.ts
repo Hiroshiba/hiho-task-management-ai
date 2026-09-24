@@ -264,10 +264,6 @@ const createTaskFieldsSchema = z
   })
   .strict();
 
-const generatedCreateTaskFieldsSchema = createTaskFieldsSchema.extend({
-  duration: durationSchema,
-});
-
 const splitCreationSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -354,10 +350,6 @@ const createTaskOperationSchema = createTaskOperationBaseSchema
   .extend({ after: createTaskFieldsSchema })
   .strict()
   .superRefine(validateCreateTaskOperation);
-
-const generatedCreateTaskOperationSchema = createTaskOperationSchema.safeExtend({
-  after: generatedCreateTaskFieldsSchema,
-});
 
 const updateTitleOperationSchema = z
   .object({
@@ -538,11 +530,6 @@ export const proposalOperationSchema = z.discriminatedUnion("operation", [
   ...nonCreateOperationSchemas,
 ]);
 
-const generatedProposalOperationSchema = z.discriminatedUnion("operation", [
-  generatedCreateTaskOperationSchema,
-  ...nonCreateOperationSchemas,
-]);
-
 type ProposalOperationValue = z.infer<typeof proposalOperationSchema>;
 type ProposalTarget = z.infer<typeof targetSchema>;
 type ProposalParentValue = z.infer<typeof parentValueSchema>;
@@ -686,13 +673,6 @@ const proposalGroupSchema = z
   })
   .strict();
 
-const generatedProposalGroupSchema = proposalGroupSchema.extend({
-  operations: z
-    .array(generatedProposalOperationSchema)
-    .min(1)
-    .max(maximumGroupOperations),
-});
-
 function validateProposalContents(
   proposal: {
     readonly groups: readonly {
@@ -775,13 +755,6 @@ export function createExternalReviewEvidenceLocator(
 ): string {
   return `external-review:${identifierSchema.parse(proposalContextId)}:${identifierSchema.parse(operationId)}`;
 }
-
-const generatedProposalSchema = proposalSchema.safeExtend({
-  groups: z.array(generatedProposalGroupSchema).min(1).max(maximumProposalGroups),
-});
-
-/** AIが生成する変更案を検証するスキーマです。 */
-export const codexGeneratedProposalSchema = generatedProposalSchema;
 
 const withdrawConfirmationSchema = z
   .object({

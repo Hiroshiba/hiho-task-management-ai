@@ -16,11 +16,6 @@ export {
   type WorkflowProposalViewInput,
 } from "./service";
 export {
-  AiWorkflowProposalFileStore,
-  aiWorkflowProposalFileLeaseSchema,
-  type AiWorkflowProposalFileLease,
-} from "./proposal-file";
-export {
   assertSelectedProposalGraphIsSafe,
   eligibleOperationIds,
   preserveSelection,
@@ -30,7 +25,6 @@ export {
   AiWorkflowEditError,
   AiWorkflowError,
   AiWorkflowOfflineError,
-  AiWorkflowProposalFileError,
   AiWorkflowProposalNotFoundError,
   AiWorkflowSelectionError,
   AiWorkflowStateError,

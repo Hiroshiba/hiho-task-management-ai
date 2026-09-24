@@ -1,6 +1,5 @@
 export {
   codexGeneratedResponseSchema,
-  codexGeneratedProposalSchema,
   codexResponseSchema,
   createExternalReviewEvidenceLocator,
   maximumCodexResponseJsonBytes,
