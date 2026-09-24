@@ -77,19 +77,23 @@ pnpm run package
 
 公開には中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)を満たす必要があります。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
 
-1. ルートの`package.json`の`version`を公開ごとに単調増加させます。prereleaseの先頭識別子は`edge`を維持します。たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`です。検証を済ませ、公開するソースを`main`へ反映します。
+以下の手順は、中央の`sign-release`への`version`入力追加が中央の既定ブランチへ反映されてから実行してください。
+
+1. 検証を済ませ、公開するソースを`main`へ反映します。配布する`version`は、先頭に`v`を付けないSemVerで、既に配布した版より大きい値を決めます。edge配布ではprereleaseの先頭識別子を`edge`にし、たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`にします。ルートの`package.json`の`version`と一致させる必要はなく、配布版を変えるためだけのソース更新は不要です。中央は既存版との大小を検証しません。
 2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
-3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`を指定します。署名・公開中は`edge`タグとReleaseを変更しないでください。
+3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`、`version`に手順1で決めた版を指定します。3つとも必須入力です。ビルド・署名・公開中は`edge`タグとReleaseを変更しないでください。次の配布でタグを移動する場合も、前の実行を完了させてから行います。
 4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、中央が新たに公開する更新メタデータを含む8件のassetを確認します。メタデータのサイズ・hash・versionが公開ファイルと一致することを確認します。更新メタデータの`path`と`files.url`が公開後のasset名と大文字小文字を含めて一致することを確認します。
 5. 両OSの実機で、[インストールと更新](#インストールと更新)の手順に沿って初回導入と次の署名版への手動更新を行い、起動・版・設定保持を確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。未実装の自動更新・差分更新と、未検証の旧未署名版からの移行を成功扱いにしないでください。
 
 手順3はGitHub CLIでも実行できます。
 
 ```sh
-gh workflow run sign-release.yml --repo Hiroshiba/oreore-codesigner --ref main -f repository=Hiroshiba/hiho-task-management-ai -f tag=edge
+gh workflow run sign-release.yml --repo Hiroshiba/oreore-codesigner --ref main -f repository=Hiroshiba/hiho-task-management-ai -f tag=edge -f version=0.1.1-edge.1
 ```
 
-中央は同名assetを置換しますが、異なる名前の既存assetは削除しません。初回の署名公開が成功して整合を確認した後、旧未署名版の次の5件だけをReleaseから削除してください。後続版の署名済みblockmapは、中央の更新用成果物として保持してください。
+更新メタデータのchannelは指定した`version`から決まり、`0.1.1-edge.1`なら`edge`、通常版の`1.2.3`なら`latest`です。タグ名やReleaseのprerelease設定からは決まりません。通常版を公開する場合は、たとえば`v1.2.3`タグと同名のReleaseを用意し、`tag=v1.2.3`、`version=1.2.3`で実行します。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
+
+中央は同名assetを置換しますが、異なる名前の既存assetは削除しません。固定のedge Releaseでは、旧版を名前に含むassetは別名なら残り、同名の`edge.yml`と`edge-mac.yml`は置換されます。初回の署名公開が成功して整合を確認した後、旧未署名版の次の5件だけをReleaseから削除してください。後続版の署名済みblockmapは、中央の更新用成果物として保持してください。
 
 - `TaskHub-0.1.0-arm64-mac.zip`
 - `TaskHub-0.1.0-arm64.dmg`
