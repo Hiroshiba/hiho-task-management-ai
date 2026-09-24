@@ -25,6 +25,3 @@ extraResources:
     to: icon.png
 nsisWeb:
   artifactName: ${productName}-Setup-${version}.${ext}
-  publish:
-    provider: generic
-    url: https://github.com/Hiroshiba/hiho-task-management-ai/releases/download/edge
