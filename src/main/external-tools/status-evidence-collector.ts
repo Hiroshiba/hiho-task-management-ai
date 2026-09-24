@@ -229,8 +229,8 @@ export class ExternalToolStatusEvidenceCollector {
     return externalToolStatusEvidenceCollectionSchema.parse(extracted);
   }
 
-  /** AIターンの構造化根拠を確定してメモリから除去します。 */
-  public finishTurn(
+  /** 収集中のAIターンの構造化根拠を保持したまま取得します。 */
+  public snapshotTurn(
     attemptId: string,
     signal: AbortSignal,
   ): readonly ExternalToolStatusEvidence[] {
@@ -245,10 +245,18 @@ export class ExternalToolStatusEvidenceCollector {
     }
     const active = this.requireActiveCollection(attempt.attempt_id);
     throwIfAborted(active.signal);
-    const evidence = externalToolStatusEvidenceCollectionSchema.parse(
+    return externalToolStatusEvidenceCollectionSchema.parse(
       [...active.evidence_by_locator.values()].sort((left, right) =>
         compareStrings(left.locator, right.locator)),
     );
+  }
+
+  /** AIターンの構造化根拠を確定してメモリから除去します。 */
+  public finishTurn(
+    attemptId: string,
+    signal: AbortSignal,
+  ): readonly ExternalToolStatusEvidence[] {
+    const evidence = this.snapshotTurn(attemptId, signal);
     this.state = { kind: "inactive" };
     return evidence;
   }

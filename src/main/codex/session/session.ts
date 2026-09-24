@@ -76,6 +76,8 @@ import {
 } from "../../../shared/ai";
 import {
   ProposalWorkspace,
+  type ProposalWorkspaceIssue,
+  type ProposalWorkspaceStatus,
   type ProposalWorkspaceValidation,
 } from "../../ai/proposal-workspace";
 import {
@@ -216,6 +218,11 @@ type ActiveProposalWorkspace = {
   readonly validate: (proposal: z.infer<typeof proposalSchema>) => ProposalWorkspaceValidation<null>;
 };
 
+type ProposalWorkspaceIssuesResult =
+  | Omit<ProposalWorkspaceStatus, "issues">
+  | { readonly workspace_id: string; readonly revision: number; readonly valid: false }
+  | { readonly kind: "invalid"; readonly workspace_id: string; readonly revision: number };
+
 function serializeProposalWorkspaceToolResponse(
   value: unknown,
   success: boolean,
@@ -231,6 +238,29 @@ function serializeProposalWorkspaceToolResponse(
     }, false);
   }
   return { contentItems: [{ type: "inputText", text: serialized }], success };
+}
+
+function serializeProposalWorkspaceIssuesResponse(
+  result: ProposalWorkspaceIssuesResult,
+  issues: readonly ProposalWorkspaceIssue[],
+  offset: number,
+  success: boolean,
+): DynamicToolCallResponse {
+  const start = Math.min(offset, issues.length);
+  let end = Math.min(start + 50, issues.length);
+  while (end >= start) {
+    const page = {
+      ...result,
+      issues: issues.slice(start, end),
+      issue_count: issues.length,
+      ...(end < issues.length ? { next_offset: end } : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(page), "utf8") <= maximumProposalWorkspaceResponseBytes) {
+      return serializeProposalWorkspaceToolResponse(page, success);
+    }
+    end -= 1;
+  }
+  throw new CodexSessionError("AI変更案ワークスペースの診断結果を分割できません。");
 }
 
 function readProposalWorkspaceDraft(workspace: ProposalWorkspace): z.infer<typeof proposalSchema> {
@@ -2302,14 +2332,22 @@ export class CodexSessionService {
           ...(parsed.data.offset == null ? {} : { offset: parsed.data.offset }),
         }), true);
         break;
-      case "edit":
-        response = serializeProposalWorkspaceToolResponse(workspace.applyBatch({
+      case "edit": {
+        const status = workspace.applyBatch({
           workspace_id: parsed.data.workspace_id,
           edit_batch_id: parsed.data.edit_batch_id,
           expected_revision: parsed.data.expected_revision,
           edits: parsed.data.edits,
-        }), true);
+        });
+        response = serializeProposalWorkspaceIssuesResponse({
+          workspace_id: status.workspace_id,
+          baseline_snapshot_hash: status.baseline_snapshot_hash,
+          revision: status.revision,
+          state: status.state,
+          completion: status.completion,
+        }, status.issues, 0, true);
         break;
+      }
       case "validate": {
         const status = workspace.getStatus();
         if (status.revision !== parsed.data.expected_revision) {
@@ -2319,20 +2357,17 @@ export class CodexSessionService {
           ? validate(readProposalWorkspaceDraft(workspace))
           : { kind: "invalid" as const, issues: status.issues };
         const offset = parsed.data.offset ?? 0;
-        const issues = validation.kind === "invalid"
-          ? validation.issues.slice(offset, offset + 50)
-          : [];
-        response = serializeProposalWorkspaceToolResponse({
-          workspace_id: status.workspace_id,
-          revision: status.revision,
-          valid: validation.kind === "valid",
-          ...(validation.kind === "invalid" ? {
-            issues,
-            ...(offset + issues.length < validation.issues.length
-              ? { next_offset: offset + issues.length }
-              : {}),
-          } : {}),
-        }, validation.kind === "valid");
+        response = validation.kind === "valid"
+          ? serializeProposalWorkspaceToolResponse({
+            workspace_id: status.workspace_id,
+            revision: status.revision,
+            valid: true,
+          }, true)
+          : serializeProposalWorkspaceIssuesResponse({
+            workspace_id: status.workspace_id,
+            revision: status.revision,
+            valid: false,
+          }, validation.issues, offset, false);
         break;
       }
       case "submit": {
@@ -2340,18 +2375,17 @@ export class CodexSessionService {
           workspace_id: parsed.data.workspace_id,
           expected_revision: parsed.data.expected_revision,
         }, validate);
-        response = serializeProposalWorkspaceToolResponse(
-          submitted.kind === "submitted"
-            ? { kind: "submitted", workspace_id: workspace.workspaceId, revision: submitted.revision }
-            : {
-                kind: "invalid",
-                workspace_id: workspace.workspaceId,
-                revision: submitted.revision,
-                issues: submitted.issues.slice(0, 50),
-                ...(submitted.issues.length > 50 ? { next_offset: 50 } : {}),
-              },
-          submitted.kind === "submitted",
-        );
+        response = submitted.kind === "submitted"
+          ? serializeProposalWorkspaceToolResponse({
+            kind: "submitted",
+            workspace_id: workspace.workspaceId,
+            revision: submitted.revision,
+          }, true)
+          : serializeProposalWorkspaceIssuesResponse({
+            kind: "invalid",
+            workspace_id: workspace.workspaceId,
+            revision: submitted.revision,
+          }, submitted.issues, 0, false);
         break;
       }
     }

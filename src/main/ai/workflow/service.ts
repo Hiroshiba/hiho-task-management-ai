@@ -366,6 +366,10 @@ export type AiWorkflowBaselineExternalDataProvider = (
 /** ターン単位で外部ツールの構造化状態記録を収集する境界です。 */
 export interface AiWorkflowExternalStatusEvidenceCollector {
   beginTurn(turnId: string, signal: AbortSignal): void | PromiseLike<void>;
+  snapshotTurn(
+    turnId: string,
+    signal: AbortSignal,
+  ): readonly TrustedExternalStatusEvidence[];
   finishTurn(
     turnId: string,
     signal: AbortSignal,
@@ -448,7 +452,7 @@ const externalStatusEvidenceCollectorSchema = z.custom<
 >(
   (value) => typeof value === "object"
     && value != null
-    && ["beginTurn", "finishTurn", "cancelTurn"].every(
+    && ["beginTurn", "snapshotTurn", "finishTurn", "cancelTurn"].every(
       (name) => typeof Reflect.get(value, name) === "function",
     ),
   "外部状態根拠収集境界が必要です。",
@@ -1719,6 +1723,20 @@ function validateWorkspaceProposal(
   proposal: Proposal,
   prepared: PreparedTurn,
 ): ProposalWorkspaceValidation<null> {
+  const durationIssues = proposal.groups.flatMap((group, groupIndex) =>
+    group.operations.flatMap((operation, operationIndex) =>
+      operation.operation === "create_task" && operation.after.duration == null
+        ? [{
+            code: "create_task_duration_required",
+            json_pointer: `/groups/${groupIndex}/operations/${operationIndex}/after/duration`,
+            message: "新規タスクの所要時間を指定してください。",
+            group_id: group.group_id,
+            operation_id: operation.operation_id,
+          }]
+        : []));
+  if (durationIssues.length > 0) {
+    return { kind: "invalid", issues: durationIssues };
+  }
   let bound: BoundProposalEvidence;
   try {
     bound = bindProposalEvidence(proposal, prepared, workspaceCandidateDigest(proposal));
@@ -3389,8 +3407,15 @@ export class AiWorkflowService {
           });
           preparedState = { kind: "ready", value: prepared };
           workspaceState.value = workspace;
-          this.options.session.activateProposalWorkspace(workspace, (proposal) =>
-            validateWorkspaceProposal(proposal, prepared));
+          this.options.session.activateProposalWorkspace(workspace, (proposal) => {
+            const externalEvidence = trustedExternalStatusEvidenceSchema.parse(
+              this.options.externalStatusEvidenceCollector.snapshotTurn(attemptId, signal),
+            );
+            return validateWorkspaceProposal(proposal, {
+              ...prepared,
+              trusted_status_evidence: createTrustedStatusEvidence(snapshot, externalEvidence),
+            });
+          });
           return [{
             type: "text",
             text: createTurnPrompt(
@@ -3462,6 +3487,18 @@ export class AiWorkflowService {
       }
       validatedResponse = { kind: "proposal", response };
     } else {
+      if (workspace.getStatus().state === "submitted") {
+        throw new AiWorkflowRetryableFailureError(
+          [aiWorkflowValidationIssueSchema.parse({
+            phase: "proposal_workspace",
+            code: "proposal_workspace_response_mismatch",
+            json_pointer: "/kind",
+          })],
+          workspaceCandidateDigest(readWorkspaceProposal(workspace)),
+          "reuse_lease",
+          new AiWorkflowError("提出済みワークスペースに提案なし応答を指定できません。"),
+        );
+      }
       const response = codexResponseSchema.parse(generatedResponse);
       if (response.kind !== "no_proposal") {
         throw new Error("提案なし応答が提案なし応答として検証されませんでした。");

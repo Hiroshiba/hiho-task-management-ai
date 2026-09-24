@@ -52,6 +52,7 @@ export const aiWorkflowRetryCodeSchema = z.enum([
   "structured_output_invalid",
   "proposal_workspace_not_submitted",
   "proposal_workspace_reference_mismatch",
+  "proposal_workspace_response_mismatch",
   "evidence_binding_invalid",
   "proposal_basic_validation_failed",
   "proposal_graph_validation_failed",
