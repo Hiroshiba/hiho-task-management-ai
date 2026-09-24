@@ -16,9 +16,9 @@ import {
   taskStatusSchema,
 } from "../domain";
 
-const maximumProposalGroups = 32;
-const maximumGroupOperations = 64;
-const maximumProposalOperations = 256;
+export const maximumProposalGroups = 32;
+export const maximumGroupOperations = 64;
+export const maximumProposalOperations = 256;
 const maximumQuestions = 8;
 const maximumEvidenceReferences = 16;
 const maximumDependencyReferences = 64;
@@ -36,6 +36,9 @@ const nonBlankTitleSchema = createUtf8ByteLimitedStringSchema(
 ).refine((value) => value.trim().length > 0, {
   message: "タイトルを空にできません。",
 });
+
+/** AI変更案のタイトルを検証するスキーマです。 */
+export const proposalTitleSchema = nonBlankTitleSchema;
 const nonBlankReasonSchema = createUtf8ByteLimitedStringSchema(
   maximumReasonBytes,
 ).refine((value) => value.trim().length > 0, {
