@@ -25,7 +25,7 @@ import {
   taskctlSearchQuerySchema,
 } from "../taskctl";
 
-const maximumMessageBytes = 4 * 1_024;
+export const maximumExternalAgentMessageBytes = 4 * 1_024;
 const maximumRegistrationBytes = 4 * 1_024;
 const maximumCapabilities = 16;
 const maximumProposals = 100;
@@ -37,7 +37,7 @@ const workspaceOffsetSchema = z.number().int().nonnegative().safe();
 export const externalAgentProtocolVersion = 3;
 
 const nonBlankMessageSchema = createUtf8ByteLimitedStringSchema(
-  maximumMessageBytes,
+  maximumExternalAgentMessageBytes,
 ).refine((value) => value.trim().length > 0, {
   message: "メッセージを空白だけにできません。",
 });
@@ -393,7 +393,7 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
   z
     .object({
       kind: z.literal("current"),
-      proposal: externalAgentProposalSchema,
+      proposal: externalAgentProposalMetadataSchema,
     })
     .strict(),
   z
@@ -511,30 +511,36 @@ const workspaceIssueSchema = z.object({
   code: identifierSchema,
   json_pointer: z.string(),
   message: nonBlankMessageSchema,
+  message_truncated: z.boolean(),
   group_id: identifierSchema.optional(),
   operation_id: identifierSchema.optional(),
 }).strict();
 
-const workspaceReviewErrorSchema = z.object({
-  code: identifierSchema,
-  message: nonBlankMessageSchema,
-}).strict();
-
-const workspaceReviewDecisionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("valid") }).strict(),
-  z.object({
-    kind: z.literal("invalid"),
-    errors: z.array(workspaceReviewErrorSchema).min(1),
-  }).strict(),
-]);
+const workspaceReviewDecisionSchema = z.object({ kind: z.enum(["valid", "invalid"]) }).strict();
 
 const workspaceOperationReviewSchema = z.object({
+  kind: z.literal("operation"),
   group_id: identifierSchema,
   operation_id: identifierSchema,
   basic: workspaceReviewDecisionSchema,
   graph: workspaceReviewDecisionSchema,
   eligible: z.boolean(),
 }).strict();
+
+const workspaceDiagnosticSchema = z.object({
+  kind: z.literal("diagnostic"),
+  group_id: identifierSchema,
+  operation_id: identifierSchema,
+  phase: z.enum(["basic", "graph"]),
+  code: identifierSchema,
+  message: nonBlankMessageSchema,
+  message_truncated: z.boolean(),
+}).strict();
+
+const workspaceReviewEntrySchema = z.discriminatedUnion("kind", [
+  workspaceOperationReviewSchema,
+  workspaceDiagnosticSchema,
+]);
 
 const workspaceValidationPageSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -548,7 +554,8 @@ const workspaceValidationPageSchema = z.discriminatedUnion("kind", [
     kind: z.literal("operations"),
     offset: workspaceOffsetSchema,
     operation_count: z.number().int().positive().safe(),
-    operation_reviews: z.array(workspaceOperationReviewSchema).max(50),
+    entry_count: z.number().int().positive().safe(),
+    entries: z.array(workspaceReviewEntrySchema).max(50),
     next_offset: workspaceOffsetSchema.optional(),
   }).strict(),
 ]);
@@ -566,15 +573,21 @@ export const externalAgentProposalValidateResponseSchema = z.object({
   }
   const count = response.review.kind === "issues"
     ? response.review.issue_count
-    : response.review.operation_count;
+    : response.review.entry_count;
   const pageLength = response.review.kind === "issues"
     ? response.review.issues.length
-    : response.review.operation_reviews.length;
+    : response.review.entries.length;
+  if (response.review.kind === "operations" && response.review.operation_count > response.review.entry_count) {
+    context.addIssue({ code: "custom", path: ["review", "operation_count"], message: "操作数が検証項目数を超えています。" });
+  }
   if (response.review.offset + pageLength > count) {
     context.addIssue({ code: "custom", path: ["review", "offset"], message: "検証結果の位置が件数を超えています。" });
   }
   if (response.review.next_offset == null && response.review.offset + pageLength !== count) {
     context.addIssue({ code: "custom", path: ["review", "next_offset"], message: "検証結果に続きの位置がありません。" });
+  }
+  if (pageLength === 0 && response.review.offset < count) {
+    context.addIssue({ code: "custom", path: ["review"], message: "続きがある空の検証ページは返せません。" });
   }
   if (
     response.review.next_offset != null
@@ -697,8 +710,17 @@ export const externalAgentErrorResponseSchema = z
     kind: z.literal("error"),
     code: externalAgentErrorCodeSchema,
     message: nonBlankMessageSchema,
+    current_revision: workspaceRevisionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((response, context) => {
+    if (response.code === "stale_revision" && response.current_revision == null) {
+      context.addIssue({ code: "custom", path: ["current_revision"], message: "古い改訂番号には現在の改訂番号を返してください。" });
+    }
+    if (response.code !== "stale_revision" && response.current_revision != null) {
+      context.addIssue({ code: "custom", path: ["current_revision"], message: "版競合以外に現在の改訂番号を返せません。" });
+    }
+  });
 
 /** 外部GUIから提案を選択する入力を検証するスキーマです。 */
 export const externalAgentGuiSelectInputSchema = z.object({

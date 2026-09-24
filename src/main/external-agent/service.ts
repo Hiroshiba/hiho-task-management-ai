@@ -120,6 +120,7 @@ import {
   externalAgentReviewOpenResponseSchema,
   externalAgentTaskQueryResponseSchema,
   externalAgentProtocolVersion,
+  maximumExternalAgentMessageBytes,
   maximumWorkspaceCliResponseBytes,
 } from "../../shared/external-agent";
 import type { IpcExternalAgentPort } from "../ipc";
@@ -324,12 +325,42 @@ function nowIso(nowProvider: () => Date): string {
 function createErrorResponse(
   code: ExternalAgentErrorCode,
   message: string,
+  currentRevision?: number,
 ): Record<string, unknown> {
   return externalAgentErrorResponseSchema.parse({
     kind: "error",
     code,
     message,
+    ...(currentRevision == null ? {} : { current_revision: currentRevision }),
   });
+}
+
+function normalizeDiagnosticMessage(message: string): {
+  readonly message: string;
+  readonly message_truncated: boolean;
+} {
+  if (getUtf8ByteLength(message) <= maximumExternalAgentMessageBytes) {
+    return { message, message_truncated: false };
+  }
+  const suffix = "…";
+  const maximumPrefixBytes = maximumExternalAgentMessageBytes - getUtf8ByteLength(suffix);
+  let prefix = "";
+  let bytes = 0;
+  for (const character of message) {
+    const characterBytes = getUtf8ByteLength(character);
+    if (bytes + characterBytes > maximumPrefixBytes) {
+      break;
+    }
+    prefix += character;
+    bytes += characterBytes;
+  }
+  return { message: `${prefix}${suffix}`, message_truncated: true };
+}
+
+function normalizeWorkspaceIssue(issue: ProposalWorkspaceIssue): ProposalWorkspaceIssue & {
+  readonly message_truncated: boolean;
+} {
+  return { ...issue, ...normalizeDiagnosticMessage(issue.message) };
 }
 
 function isProposalStatusMutable(status: ExternalAgentProposalStatus): boolean {
@@ -376,6 +407,22 @@ function createProposalResult(
     state: record.state,
     view: record.view,
   });
+}
+
+function createProposalStatusSummary(
+  record: ExternalProposalRecord,
+): Extract<ExternalAgentProposalStatusResult, { readonly kind: "current" }>["proposal"] {
+  return {
+    proposal_id: record.proposal_id,
+    request_id: record.request_id,
+    instance_id: record.instance_id,
+    context_id: record.context_id,
+    proposal_context_id: record.proposal_context_id,
+    operation_ids: [...record.operation_ids],
+    revision: record.revision,
+    source: "external_tool",
+    state: record.state,
+  };
 }
 
 function limitWorkspaceChunk(
@@ -429,6 +476,9 @@ function paginateWorkspaceEntries<T>(
   }
   let end = Math.min(offset + 50, entries.length);
   while (end >= offset) {
+    if (end === offset && end < entries.length) {
+      break;
+    }
     const nextOffset = end < entries.length ? end : undefined;
     const page = entries.slice(offset, end);
     if (getUtf8ByteLength(JSON.stringify(createResponse(page, nextOffset))) <= maximumWorkspaceCliResponseBytes) {
@@ -518,7 +568,14 @@ export class ExternalAgentService implements IpcExternalAgentPort {
           case "workspace_mismatch":
             return createErrorResponse("context_mismatch", error.message);
           case "revision_mismatch":
-            return createErrorResponse("stale_revision", error.message);
+            if (!("workspace_id" in parsedInput)) {
+              throw error;
+            }
+            return createErrorResponse(
+              "stale_revision",
+              error.message,
+              this.requireWorkspace(parsedInput).workspace.getStatus().revision,
+            );
           case "edit_batch_id_reused":
             return createErrorResponse("request_id_reused", error.message);
           case "state_mismatch":
@@ -1244,6 +1301,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     }, (proposal) => this.validateExternalProposal(prepared, proposal));
     const offset = input.offset ?? 0;
     if (result.kind === "invalid") {
+      const issues = result.issues.map(normalizeWorkspaceIssue);
       const createResponse = (page: readonly ProposalWorkspaceIssue[], nextOffset: number | undefined): unknown => ({
         operation: "proposals.validate",
         workspace_id: input.workspace_id,
@@ -1252,12 +1310,12 @@ export class ExternalAgentService implements IpcExternalAgentPort {
         review: {
           kind: "issues",
           offset,
-          issue_count: result.issues.length,
+          issue_count: issues.length,
           issues: page,
           ...(nextOffset == null ? {} : { next_offset: nextOffset }),
         },
       });
-      const page = paginateWorkspaceEntries(result.issues, offset, createResponse);
+      const page = paginateWorkspaceEntries(issues, offset, createResponse);
       return externalAgentProposalValidateResponseSchema.parse(
         createResponse(page.page, page.next_offset),
       );
@@ -1265,21 +1323,44 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     const basicById = new Map(result.value.basic.operations.map((operation) => [operation.operation_id, operation]));
     const graphById = new Map(result.value.graph.operations.map((operation) => [operation.operation_id, operation]));
     const eligible = new Set(eligibleOperationIds(result.proposal, result.value.graph));
-    const reviews = result.proposal.groups.flatMap((group) => group.operations.map((operation) => {
+    const operationCount = result.proposal.groups.reduce((count, group) => count + group.operations.length, 0);
+    const entries = result.proposal.groups.flatMap((group) => group.operations.flatMap((operation) => {
       const basic = basicById.get(operation.operation_id);
       const graph = graphById.get(operation.operation_id);
       if (basic == null || graph == null) {
         throw new Error("操作の検証結果が不足しています。");
       }
-      return {
+      const summary = {
+        kind: "operation",
         group_id: group.group_id,
         operation_id: operation.operation_id,
-        basic: basic.kind === "valid" ? { kind: "valid" } : { kind: "invalid", errors: basic.errors },
-        graph: graph.kind === "valid" ? { kind: "valid" } : { kind: "invalid", errors: graph.errors },
+        basic: { kind: basic.kind },
+        graph: { kind: graph.kind },
         eligible: eligible.has(operation.operation_id),
       };
+      const basicDiagnostics = basic.kind === "invalid"
+        ? basic.errors.map((error) => ({
+            kind: "diagnostic",
+            group_id: group.group_id,
+            operation_id: operation.operation_id,
+            phase: "basic",
+            code: error.code,
+            ...normalizeDiagnosticMessage(error.message),
+          }))
+        : [];
+      const graphDiagnostics = graph.kind === "invalid"
+        ? graph.errors.map((error) => ({
+            kind: "diagnostic",
+            group_id: group.group_id,
+            operation_id: operation.operation_id,
+            phase: "graph",
+            code: error.code,
+            ...normalizeDiagnosticMessage(error.message),
+          }))
+        : [];
+      return [summary, ...basicDiagnostics, ...graphDiagnostics];
     }));
-    const createResponse = (page: readonly (typeof reviews)[number][], nextOffset: number | undefined): unknown => ({
+    const createResponse = (page: readonly (typeof entries)[number][], nextOffset: number | undefined): unknown => ({
       operation: "proposals.validate",
       workspace_id: input.workspace_id,
       revision: result.revision,
@@ -1287,12 +1368,13 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       review: {
         kind: "operations",
         offset,
-        operation_count: reviews.length,
-        operation_reviews: page,
+        operation_count: operationCount,
+        entry_count: entries.length,
+        entries: page,
         ...(nextOffset == null ? {} : { next_offset: nextOffset }),
       },
     });
-    const page = paginateWorkspaceEntries(reviews, offset, createResponse);
+    const page = paginateWorkspaceEntries(entries, offset, createResponse);
     return externalAgentProposalValidateResponseSchema.parse(
       createResponse(page.page, page.next_offset),
     );
@@ -1568,7 +1650,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
         operation_ids: parsedOperationIds,
         result: externalAgentProposalStatusResultSchema.parse({
           kind: "current",
-          proposal: createProposalResult(current),
+          proposal: createProposalStatusSummary(current),
         }),
       });
     }

@@ -31,6 +31,7 @@ export {
   externalAgentProposalValidateResponseSchema,
   externalAgentProtocolVersion,
   maximumWorkspaceCliResponseBytes,
+  maximumExternalAgentMessageBytes,
   externalAgentRequestInputSchema,
   externalAgentResponseSchema,
   externalAgentReviewOpenInputSchema,

@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 import {
+  externalAgentErrorResponseSchema,
   externalAgentProposalApplyEditsInputSchema,
   externalAgentProposalDiffResponseSchema,
   externalAgentProposalPrepareResponseSchema,
   externalAgentProposalReadResponseSchema,
+  externalAgentProposalStatusResponseSchema,
   externalAgentProposalSubmitInputSchema,
   externalAgentProposalSubmitResponseSchema,
   externalAgentProposalValidateResponseSchema,
@@ -146,7 +148,9 @@ void test("検証応答は提出可否と操作ごとのレビューを分けて
       kind: "operations",
       offset: 0,
       operation_count: 2,
-      operation_reviews: [{
+      entry_count: 3,
+      entries: [{
+        kind: "operation",
         group_id: "group-1",
         operation_id: "operation-1",
         basic: { kind: "valid" },
@@ -162,6 +166,10 @@ void test("検証応答は提出可否と操作ごとのレビューを分けて
     ...reviewed,
     review: { ...reviewed.review, next_offset: 2 },
   }).success, false);
+  assert.equal(externalAgentProposalValidateResponseSchema.safeParse({
+    ...reviewed,
+    review: { ...reviewed.review, entries: [], next_offset: 0 },
+  }).success, false);
   const incomplete = {
     operation: "proposals.validate",
     workspace_id: "workspace-1",
@@ -171,7 +179,7 @@ void test("検証応答は提出可否と操作ごとのレビューを分けて
       kind: "issues",
       offset: 0,
       issue_count: 1,
-      issues: [{ code: "proposal_schema_invalid", json_pointer: "/title", message: "タイトルが必要です。" }],
+      issues: [{ code: "proposal_schema_invalid", json_pointer: "/title", message: "タイトルが必要です。", message_truncated: false }],
     },
   };
   assert.equal(externalAgentProposalValidateResponseSchema.safeParse(incomplete).success, true);
@@ -204,4 +212,91 @@ void test("提出応答は受付結果だけを返し、完全な変更案を含
     ...submitted,
     result: { kind: "invalid" },
   }).success, true);
+});
+
+void test("提案状態は表示用の変更案を含まず、操作IDと適用状態を返す", () => {
+  const current = {
+    operation: "proposals.status",
+    proposal_id: "proposal-1",
+    operation_ids: ["operation-1"],
+    result: {
+      kind: "current",
+      proposal: {
+        proposal_id: "proposal-1",
+        request_id: "submit-1",
+        instance_id: "instance-1",
+        context_id: "context-1",
+        proposal_context_id: "proposal-context-1",
+        operation_ids: ["operation-1"],
+        revision: 1,
+        source: "external_tool",
+        state: { kind: "pending_approval" },
+      },
+    },
+  };
+  assert.equal(externalAgentProposalStatusResponseSchema.safeParse(current).success, true);
+  assert.equal(externalAgentProposalStatusResponseSchema.safeParse({
+    ...current,
+    result: {
+      ...current.result,
+      proposal: { ...current.result.proposal, view: { proposal_id: "proposal-1" } },
+    },
+  }).success, false);
+  const finished = externalAgentProposalStatusResponseSchema.parse({
+    ...current,
+    result: {
+      ...current.result,
+      proposal: {
+        ...current.result.proposal,
+        state: {
+          kind: "finished",
+          result: {
+            proposal_id: "proposal-1",
+            application: {
+              outcome: "applied",
+              operations: [{
+                group_id: "group-1",
+                operation_id: "operation-1",
+                outcome: "applied",
+                reason_code: "applied",
+              }],
+              groups: [{
+                group_id: "group-1",
+                atomic: false,
+                outcome: "applied",
+                operation_ids: ["operation-1"],
+              }],
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(finished.result.kind, "current");
+  if (finished.result.kind !== "current") {
+    throw new Error("現在の提案が返りませんでした。");
+  }
+  assert.equal(finished.result.proposal.state.kind, "finished");
+  if (finished.result.proposal.state.kind !== "finished") {
+    throw new Error("適用結果が返りませんでした。");
+  }
+  assert.equal(finished.result.proposal.state.result.application.operations[0]?.outcome, "applied");
+});
+
+void test("版競合だけが現在の改訂番号を返す", () => {
+  const stale = {
+    kind: "error",
+    code: "stale_revision",
+    message: "改訂番号が古くなりました。",
+    current_revision: 3,
+  };
+  assert.equal(externalAgentErrorResponseSchema.safeParse(stale).success, true);
+  assert.equal(externalAgentErrorResponseSchema.safeParse({
+    ...stale,
+    current_revision: undefined,
+  }).success, false);
+  assert.equal(externalAgentErrorResponseSchema.safeParse({
+    ...stale,
+    code: "invalid_request",
+  }).success, false);
 });

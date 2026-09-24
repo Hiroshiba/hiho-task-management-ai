@@ -17,6 +17,7 @@ import {
   type ExternalAgentProposalPrepareResponse,
 } from "../../shared/external-agent";
 import { taskctlSnapshotSchema } from "../codex/taskctl";
+import { externalAgentMaxResponseBytes } from "./transport-schemas";
 import { createBaselineSnapshot } from "../ai/workflow";
 import { ExternalAgentService, type ExternalAgentServiceOptions } from "./service";
 
@@ -191,7 +192,8 @@ void test("固定した基準の案を編集し、GUIへ部分採用として公
   if (reviewed.review.kind !== "operations") {
     throw new Error("操作別検証が返りませんでした。");
   }
-  assert.deepEqual(reviewed.review.operation_reviews.map((entry) => entry.eligible), [true, false]);
+  assert.deepEqual(reviewed.review.entries.filter((entry) => entry.kind === "operation")
+    .map((entry) => entry.eligible), [true, false]);
   const submitted = externalAgentProposalSubmitResponseSchema.parse(await service.handleRequest({
     operation: "proposals.submit",
     ...binding,
@@ -267,6 +269,14 @@ void test("不正編集を原子的に拒否し、版違いと文脈違いを区
     edits: [{ kind: "set_title", title: "別案" }],
   }, signal));
   assert.equal(stale.code, "stale_revision");
+  assert.equal(stale.current_revision, 1);
+  const resynced = externalAgentProposalReadResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.read",
+    ...binding,
+    revision: stale.current_revision,
+    target: { kind: "summary" },
+  }, signal));
+  assert.equal(resynced.revision, 1);
   const replay = externalAgentProposalApplyEditsResponseSchema.parse(await service.handleRequest({
     operation: "proposals.apply-edits",
     ...binding,
@@ -377,7 +387,7 @@ void test("原文根拠不足を修正して提出し、検証結果を50件単�
   if (first.review.kind !== "operations") {
     throw new Error("操作別検証が返りませんでした。");
   }
-  assert.equal(first.review.operation_reviews.length, 50);
+  assert.equal(first.review.entries.length, 50);
   assert.equal(first.review.next_offset, 50);
   const second = externalAgentProposalValidateResponseSchema.parse(await service.handleRequest({
     operation: "proposals.validate",
@@ -389,7 +399,7 @@ void test("原文根拠不足を修正して提出し、検証結果を50件単�
   if (second.review.kind !== "operations") {
     throw new Error("操作別検証が返りませんでした。");
   }
-  assert.equal(second.review.operation_reviews.length, 5);
+  assert.equal(second.review.entries.length, 5);
   const submitted = externalAgentProposalSubmitResponseSchema.parse(await service.handleRequest({
     operation: "proposals.submit",
     ...binding,
@@ -559,4 +569,189 @@ void test("大きな変更案と差分を応答上限内で読み切る", async 
   }
   assert.ok(pageCount > 1);
   assert.equal(Array.isArray(JSON.parse(content)), true);
+});
+
+void test("大きな提出済み案も操作IDと適用状態を照会できる", async () => {
+  const { service } = createService([]);
+  const { prepared, binding } = await prepare(service);
+  const signal = new AbortController().signal;
+  externalAgentProposalApplyEditsResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.apply-edits",
+    ...binding,
+    edit_batch_id: "batch-initialize",
+    expected_revision: 0,
+    edits: [
+      { kind: "set_title", title: "大きな変更案" },
+      { kind: "insert_group", group_id: "group-1", atomic: false },
+    ],
+  }, signal));
+  for (let index = 0; index < 40; index += 1) {
+    const operation = createOperation(prepared, `operation-${index}`, "追加する", `タスク${index}`);
+    if (operation.operation !== "create_task") {
+      throw new Error("作成操作が返りませんでした。");
+    }
+    const edited = externalAgentProposalApplyEditsResponseSchema.parse(await service.handleRequest({
+      operation: "proposals.apply-edits",
+      ...binding,
+      edit_batch_id: `batch-${index}`,
+      expected_revision: index + 1,
+      edits: [{
+        kind: "insert_operation",
+        group_id: "group-1",
+        operation: proposalOperationSchema.parse({
+          ...operation,
+          after: { ...operation.after, notes: "😀".repeat(16_000) },
+        }),
+      }],
+    }, signal));
+    assert.equal(edited.revision, index + 2);
+  }
+  const submitted = externalAgentProposalSubmitResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.submit",
+    ...binding,
+    request_id: "submit-large",
+    expected_revision: 41,
+  }, signal));
+  if (submitted.result.kind !== "submitted") {
+    throw new Error("提案が提出されませんでした。");
+  }
+  const status = externalAgentProposalStatusResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.status",
+    proposal_id: submitted.result.proposal_id,
+    operation_ids: Array.from({ length: 40 }, (_, index) => `operation-${index}`),
+  }, signal));
+  assert.ok(getUtf8ByteLength(JSON.stringify(status)) < externalAgentMaxResponseBytes);
+  assert.equal(status.result.kind, "current");
+  if (status.result.kind !== "current") {
+    throw new Error("提案状態が返りませんでした。");
+  }
+  assert.equal("view" in status.result.proposal, false);
+  assert.equal(status.result.proposal.state.kind, "pending_approval");
+  assert.equal(status.result.proposal.operation_ids.length, 40);
+});
+
+void test("単一操作の大量診断を必ず前進するページで読み切る", async () => {
+  const { service } = createService([]);
+  const { prepared, binding } = await prepare(service);
+  const signal = new AbortController().signal;
+  const operation = createOperation(prepared, "operation-1", "追加する", "依存先のあるタスク");
+  if (operation.operation !== "create_task") {
+    throw new Error("作成操作が返りませんでした。");
+  }
+  const proposal = proposalSchema.parse({
+    title: "依存先の変更案",
+    groups: [{
+      group_id: "group-1",
+      atomic: false,
+      operations: [proposalOperationSchema.parse({
+        ...operation,
+        after: {
+          ...operation.after,
+          dependencies: Array.from({ length: 64 }, (_, index) => ({
+            target: { kind: "existing", gid: `dependency-${index}-${"x".repeat(1_100)}` },
+            scope: "full",
+            source: "test",
+          })),
+        },
+      })],
+    }],
+  });
+  externalAgentProposalApplyEditsResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.apply-edits",
+    ...binding,
+    edit_batch_id: "batch-1",
+    expected_revision: 0,
+    edits: [{ kind: "replace_all", proposal }],
+  }, signal));
+  let offset = 0;
+  let pageCount = 0;
+  const entries: Array<{ kind: string; code?: string; phase?: string }> = [];
+  while (true) {
+    const page = externalAgentProposalValidateResponseSchema.parse(await service.handleRequest({
+      operation: "proposals.validate",
+      ...binding,
+      expected_revision: 1,
+      offset,
+    }, signal));
+    assert.ok(getUtf8ByteLength(JSON.stringify(page)) <= maximumWorkspaceCliResponseBytes);
+    assert.equal(page.review.kind, "operations");
+    if (page.review.kind !== "operations") {
+      throw new Error("操作別検証が返りませんでした。");
+    }
+    entries.push(...page.review.entries);
+    pageCount += 1;
+    if (page.review.next_offset == null) {
+      assert.equal(page.review.entry_count, entries.length);
+      break;
+    }
+    assert.ok(page.review.next_offset > offset);
+    offset = page.review.next_offset;
+  }
+  assert.ok(pageCount > 1);
+  assert.equal(entries.filter((entry) => entry.kind === "operation").length, 1);
+  assert.equal(entries.filter((entry) => entry.kind === "diagnostic" && entry.code === "dependency_not_managed").length, 128);
+  assert.equal(entries.filter((entry) => entry.kind === "diagnostic" && entry.phase === "basic").length, 64);
+  assert.equal(entries.filter((entry) => entry.kind === "diagnostic" && entry.phase === "graph").length, 64);
+});
+
+void test("長い診断を省略表示してcodeと操作位置を保持する", async () => {
+  const { service } = createService([]);
+  const { prepared, binding } = await prepare(service);
+  const signal = new AbortController().signal;
+  const operation = createOperation(prepared, "operation-1", "追加する", "依存先のあるタスク");
+  if (operation.operation !== "create_task") {
+    throw new Error("作成操作が返りませんでした。");
+  }
+  const proposal = proposalSchema.parse({
+    title: "長い診断の変更案",
+    groups: [{
+      group_id: "group-1",
+      atomic: false,
+      operations: [proposalOperationSchema.parse({
+        ...operation,
+        after: {
+          ...operation.after,
+          dependencies: [{
+            target: { kind: "existing", gid: `dependency-${"x".repeat(5_000)}` },
+            scope: "full",
+            source: "test",
+          }],
+        },
+      })],
+    }],
+  });
+  externalAgentProposalApplyEditsResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.apply-edits",
+    ...binding,
+    edit_batch_id: "batch-1",
+    expected_revision: 0,
+    edits: [{ kind: "replace_all", proposal }],
+  }, signal));
+  const reviewed = externalAgentProposalValidateResponseSchema.parse(await service.handleRequest({
+    operation: "proposals.validate",
+    ...binding,
+    expected_revision: 1,
+  }, signal));
+  assert.equal(reviewed.review.kind, "operations");
+  if (reviewed.review.kind !== "operations") {
+    throw new Error("操作別検証が返りませんでした。");
+  }
+  const decision = reviewed.review.entries.find((entry) => entry.kind === "operation");
+  assert.equal(decision?.kind, "operation");
+  if (decision?.kind !== "operation") {
+    throw new Error("操作の検証判定が返りませんでした。");
+  }
+  assert.equal(decision.basic.kind, "invalid");
+  assert.equal(decision.eligible, false);
+  const diagnostic = reviewed.review.entries.find((entry) =>
+    entry.kind === "diagnostic" && entry.code === "dependency_not_managed");
+  assert.equal(diagnostic?.kind, "diagnostic");
+  if (diagnostic?.kind !== "diagnostic") {
+    throw new Error("依存先の診断が返りませんでした。");
+  }
+  assert.equal(diagnostic.group_id, "group-1");
+  assert.equal(diagnostic.operation_id, "operation-1");
+  assert.equal(diagnostic.message_truncated, true);
+  assert.ok(diagnostic.message.endsWith("…"));
+  assert.ok(getUtf8ByteLength(diagnostic.message) <= 4 * 1_024);
 });
