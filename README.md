@@ -2,15 +2,20 @@
 
 AIが僕のタスクを管理してくれたりする仕組みやGUI
 
-## macOSで起動できない場合
+## インストールと更新
 
-macOSで「TaskHub.appは壊れているため開けません」などと表示されて起動できない場合は、隔離属性の解除で起動できることがあります。信頼できる配布元から入手したTaskHub.appをアプリケーションフォルダーへ移動し、ターミナルで次のコマンドを実行してください。
+署名版の配布先は[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)です。中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名して公開します。TaskHubの署名公開と実機での導入・更新は未確認です。
 
-```sh
-xattr -dr com.apple.quarantine "/Applications/TaskHub.app"
-```
+初回は中央の[端末の初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/device-setup.md)に従い、公開証明書のfingerprintを別の信頼できる経路で照合してから、OSに応じた証明書の登録を行ってください。その後、ブラウザーでReleaseから次の署名済みファイルを取得します。
 
-実行後にTaskHubを再度起動してください。
+| OS          | 配布形式           | 導入方法                                                                                                                   |
+| ----------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| macOS x64   | ZIP                | 隔離属性を保持したまま展開し、TaskHub.appをアプリケーションフォルダーへ移す                                                |
+| Windows x64 | 通常NSIS、NSIS Web | ダウンロード元の情報を保持し、デジタル署名を確認してインストーラーを実行する。NSIS Webは追加のパッケージをダウンロードする |
+
+macOS arm64ネイティブ版、DMG、Windows ZIPは生成しません。自己署名のため、証明書の登録後もmacOSのGatekeeperやWindowsのSmartScreenの警告が残る場合があります。macOSでは配布元と署名を確認して個別アプリの許可操作を行います。詳しい操作は端末の初期設定を参照し、隔離属性の削除やOSの保護設定全体の無効化は行わないでください。Smart App Controlが強制されているWindows端末は対象外です。
+
+アプリ内自動更新は未実装です。旧未署名版からの初回移行も、その後の更新も、新しい署名版を手動で導入してください。設定・データの保存先は変えませんが、異なる配布形式からの上書き導入は実機で未検証です。
 
 ## 開発
 
@@ -56,6 +61,31 @@ pnpm run build
 pnpm run package:dir
 pnpm run package
 ```
+
+## 署名版の公開
+
+公開には中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)を満たす必要があります。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
+
+1. ルートの`package.json`の`version`を公開ごとに単調増加させます。prereleaseの先頭識別子は`edge`を維持します。たとえば`0.1.1-edge.0`の次は`0.1.1-edge.1`です。検証を済ませ、公開するソースを`main`へ反映します。
+2. `edge`タグを公開するコミットへ向けます。同じタグの[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)を用意し、prereleaseで、assetを追加・置換できる状態であることを確認します。Immutable Releaseは使えません。
+3. 中央の[sign-release](https://github.com/Hiroshiba/oreore-codesigner/actions/workflows/sign-release.yml)を既定ブランチから手動実行し、`repository`に`Hiroshiba/hiho-task-management-ai`、`tag`に`edge`を指定します。署名・公開中は`edge`タグとReleaseを変更しないでください。
+4. 両OSの署名と公開が完了したら、同じコミットSHAを使ったことと、更新メタデータを含む8件のassetを確認します。メタデータの参照先・サイズ・hash・versionが公開ファイルと一致することを確認し、中央の[検証項目](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md)に沿って導入と手動更新を実機で確認します。
+
+手順3はGitHub CLIでも実行できます。
+
+```sh
+gh workflow run sign-release.yml --repo Hiroshiba/oreore-codesigner --ref main -f repository=Hiroshiba/hiho-task-management-ai -f tag=edge
+```
+
+中央は同名assetを置換しますが、異なる名前の既存assetは削除しません。初回の署名公開が成功して整合を確認した後、旧未署名版の次の5件だけをReleaseから削除してください。後続版の署名済みblockmapは、中央の更新用成果物として保持してください。
+
+- `TaskHub-0.1.0-arm64-mac.zip`
+- `TaskHub-0.1.0-arm64.dmg`
+- `TaskHub-0.1.0-win.zip`
+- `taskhub-0.1.0-x64.nsis.7z`
+- `TaskHub-Setup-0.1.0.exe`
+
+公開途中で失敗すると、新旧のファイルが混在する場合があります。中央の[公開と再実行](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/operations.md)に従い、タグと公開先を維持して原因を解消し、同じActions実行の`Re-run failed jobs`で再実行してください。成功後にReleaseのファイルと更新メタデータの整合を再確認します。
 
 ## エラーログ
 
