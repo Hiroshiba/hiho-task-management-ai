@@ -26,8 +26,8 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 通常版同士の手動更新では、更新前の版と設定を下記の方法で記録してから、次の操作を行います。
 
-- macOS x64では、通常版Releaseから次版の署名済みZIPを取得します。TaskHubを終了し、隔離属性を保持したままZIPを展開して、`/Applications/TaskHub.app`を置き換えます。置き換えたアプリを起動します。
-- Windows x64では、通常版Releaseから次版の署名済み通常NSISを取得します。ダウンロード元の情報を保持してデジタル署名を確認し、TaskHubを終了して通常NSISを再実行します。インストール先のTaskHubを起動します。
+- macOS x64では、通常版Releaseから次版の署名済みZIPを取得します。配布元を確認し、TaskHubを終了して、隔離属性を保持したままZIPを展開します。展開したアプリの署名を確認してから、`/Applications/TaskHub.app`を置き換えて起動します。
+- Windows x64では、通常版Releaseから次版の署名済み通常NSISを取得します。ダウンロード元の情報を保持し、配布元とデジタル署名を確認してから、TaskHubを終了して通常NSISを再実行します。インストール先のTaskHubを起動します。
 
 ### 未署名のedge
 
@@ -98,11 +98,13 @@ pnpm run package
 
 ## 通常版の公開
 
-公開には中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)を満たす必要があります。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
+通常版は手動更新方式で公開します。中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)の共通要件・手動更新方式の公開条件を満たしてください。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
+
+中央のworkflowを実行する前に、TaskHubの過去の配布履歴から自動更新クライアントの配布有無を確認して記録します。配布していた場合は旧版の更新経路を調べ、新しいReleaseの更新メタデータを取得することによる既存利用者への影響と、手動更新への移行手順を確認して記録してください。
 
 配布版の正本は、公開するタグが指すコミットのルートの`package.json`の`version`です。担当者が版を更新してコミットし、中央のworkflowを手動実行します。
 
-1. main上の公開対象コミットの検証を済ませ、中央のソースの要件を満たすことを確認します。そのコミットを基点に、通常版の公開専用ブランチを作成します。以下は`0.1.1`を公開する例です。TaskHubの作業ディレクトリで`MAIN_COMMIT_SHA`を検証済みのコミットSHAに置き換えて実行します。
+1. main上の公開対象コミットの検証を済ませ、中央のビルド要件を満たすことを確認します。そのコミットを基点に、通常版の公開専用ブランチを作成します。以下は`0.1.1`を公開する例です。TaskHubの作業ディレクトリで`MAIN_COMMIT_SHA`を検証済みのコミットSHAに置き換えて実行します。
 
    ```sh
    git switch -c release/v0.1.1 MAIN_COMMIT_SHA
@@ -125,8 +127,8 @@ pnpm run package
    ```
 
 6. 両OSの署名とアップロードが成功したら、両OSが手順2の版更新コミットSHAを使ったことを確認します。draft Releaseに、macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の合計8件が揃っていることを確認します。更新メタデータの`version`がタグ先の`package.json`の`version`とタグの版に一致し、`path`と`files.url`が実ファイル名と大文字小文字を含めて一致し、サイズ・Base64のSHA-512・blockmapが実ファイルと一致することを確認します。
-7. draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、実機で[インストールと更新](#インストールと更新)に沿って署名・起動・版・設定保持を確認します。更新の検証では、前の通常版から今回の通常版へ手動更新します。初回公開などで確認できない項目は未検証として記録します。
-8. 成果物の整合と実機での確認結果を確かめたら、draftを解除してReleaseを公開し、prereleaseを外した状態でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。NSIS Webは公開後に追加パッケージを取得して初回導入できることを確認します。確認結果とOSの警告・許可操作は、中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残してください。
+7. draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、両OSの実機で[インストールと更新](#インストールと更新)に沿って配布元と署名を人手で確認し、導入・起動・主要機能を検証します。前の通常版から今回の通常版へ手動で再導入し、版・起動・設定と利用者データの保持を確認します。初回署名版で旧版がない場合は、その理由と更新未確認を記録し、導入・起動の成功を更新成功とは扱いません。
+8. 成果物の整合と手動更新方式の公開条件を満たしたら、更新方式と確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。draftを解除してReleaseを公開し、prereleaseを外した状態でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。NSIS Webは公開後に追加パッケージを取得して初回導入できることを確認し、その結果も記録します。
 
 中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。通常版の`0.1.1`は`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
 
