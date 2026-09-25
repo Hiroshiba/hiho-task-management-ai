@@ -8,7 +8,7 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 通常版を公開する場合は、中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名します。過去に公開した未署名の開発版は固定の[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)から取得できます。edgeの更新は停止しており、mainへのpushで新たな配布物は公開しません。
 
-アプリ内の自動更新・差分更新は未実装で、更新は手動で行います。TaskHubの署名済み通常版の公開、macOSとWindowsの実機での導入・更新は未確認です。
+アプリ内の自動更新・差分更新は未実装で、更新は手動で行います。
 
 ### 署名済み通常版
 
@@ -113,10 +113,11 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
    ```
 
 2. ルートの`package.json`の`version`を、先頭に`v`を付けず、prerelease識別子を含まないSemVerへ更新します。既に配布した版より大きい値を選び、この例では`0.1.2`にします。中央は既存版との大小を検証しません。`pnpm install --lockfile-only`でロックファイルを同期し、`pnpm run lint`、`pnpm run typecheck`、`pnpm run build`を実行します。`package.json`をコミットし、`pnpm-lock.yaml`に差分が出た場合は併せてコミットします。
-3. 版更新コミットをmainへマージします。PRを使う場合は通常のmerge commitで取り込み、squash mergeは使いません。mainの履歴に版更新コミットが含まれ、main先端の`package.json`とロックファイルが版更新後の内容であること、mainへのpushで起動するCIが成功したことを確認します。mainへのpushで実行するworkflowはCIのみで、Releaseは自動公開しません。
-4. main先端のコミットに`v<version>`のタグを付け、対象リポジトリへpushします。タグの版は、そのコミットの`package.json`の`version`と一致させます。`RELEASE_COMMIT_SHA`をGitHub上のmain先端のコミットSHAに置き換えて実行し、最後に表示されるタグ先SHAと一致することを確認します。
+3. 版更新のPRをmainへsquash mergeします。マージ後のmain先端の`package.json`とロックファイルが版更新後の内容であること、mainへのpushで起動するCIが成功したことを確認します。mainへのpushで実行するworkflowはCIのみで、Releaseは自動公開しません。
+4. マージ後のmain先端のコミットに`v<version>`のタグを付け、対象リポジトリへpushします。タグの版は、そのコミットの`package.json`の`version`と一致させます。対象リポジトリのmainを取得してから、`RELEASE_COMMIT_SHA`をGitHub上のmain先端のコミットSHAに置き換えて実行し、最後に表示されるタグ先SHAと一致することを確認します。
 
    ```sh
+   git fetch https://github.com/Hiroshiba/hiho-task-management-ai.git main
    gh api repos/Hiroshiba/hiho-task-management-ai/git/ref/heads/main --jq '.object.sha'
    git tag v0.1.2 RELEASE_COMMIT_SHA
    git push https://github.com/Hiroshiba/hiho-task-management-ai.git refs/tags/v0.1.2
@@ -135,8 +136,6 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
 9. 成果物の整合と中央の公開前の確認項目を満たしたら、更新方式と公開前の確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。`gh release edit v0.1.2 --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
 10. GitHub認証なしで、最終タグのReleaseから手順7の全8件の配布ファイル・更新メタデータ・blockmapを取得できることを確認します。GitHub認証なしのWindows実機で、取得したNSIS Webのinstallerを実行し、同じReleaseの追加packageの取得・導入・起動・主要機能を確認します。すべての結果を記録し、いずれかに失敗した場合はLatest指定と利用案内を止め、原因の解消と修復、再確認を済ませるまで再開しないでください。
 11. 全8件の匿名取得とNSIS Webの確認が成功したら、利用者へ案内してから`gh release edit v0.1.2 --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。
-
-既存の`v0.1.1`は、版更新コミットにタグを付けてdraft Releaseを作成済みです。この版ではタグとdraftを作り直さず、未完了の署名・実機確認・公開手順を進めます。全8件の匿名取得とNSIS Webの実機確認、Latest指定まで完了してから版更新コミットをmainへ取り込みます。タグは動かさず、取り込み後のmainの祖先にします。mainへpushする前にGitHub上の旧edge workflowを無効化し、進行中のrunが完了するまで待ちます。mainへの反映には非forceのfast-forward pushを使い、PRのsquash mergeは使いません。
 
 中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。通常版の`0.1.2`は`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
 
