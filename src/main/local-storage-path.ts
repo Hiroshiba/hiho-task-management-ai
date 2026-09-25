@@ -193,7 +193,9 @@ function assertSameIdentity(
 ): void {
   assertUsableIdentity(expected, label);
   assertUsableIdentity(actual, label);
-  if (expected.dev !== actual.dev || expected.ino !== actual.ino) {
+  const deviceMatches = expected.dev === actual.dev
+    || (process.platform === "win32" && (expected.dev === 0n || actual.dev === 0n));
+  if (!deviceMatches || expected.ino !== actual.ino) {
     throw new Error(`${label}の実体が検証中に変化しました。`);
   }
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   createUtf8ByteLimitedStringSchema,
+  getUtf8ByteLength,
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
@@ -12,24 +13,31 @@ import {
   aiWorkflowSelectionSchema,
   aiWorkflowTurnContextSchema,
 } from "../ai-workflow";
-import { proposalSchema } from "../ai";
+import {
+  maximumProposalOperations,
+  maximumProposalWorkspaceResponseBytes,
+  proposalWorkspaceEditSchema,
+  proposalWorkspaceReadTargetSchema,
+} from "../ai";
 import { applicationJournalReadableSchema } from "../storage";
 import {
   taskctlResponseSchema,
   taskctlSearchQuerySchema,
 } from "../taskctl";
 
-const maximumMessageBytes = 4 * 1_024;
+export const maximumExternalAgentMessageBytes = 4 * 1_024;
 const maximumRegistrationBytes = 4 * 1_024;
 const maximumCapabilities = 16;
 const maximumProposals = 100;
-const maximumProposalOperations = 256;
+export const maximumWorkspaceCliResponseBytes = maximumProposalWorkspaceResponseBytes - 1_024;
+const workspaceRevisionSchema = z.number().int().nonnegative().safe();
+const workspaceOffsetSchema = z.number().int().nonnegative().safe();
 
 /** 外部連携プロトコルの版を表す定数です。 */
-export const externalAgentProtocolVersion = 2;
+export const externalAgentProtocolVersion = 3;
 
 const nonBlankMessageSchema = createUtf8ByteLimitedStringSchema(
-  maximumMessageBytes,
+  maximumExternalAgentMessageBytes,
 ).refine((value) => value.trim().length > 0, {
   message: "メッセージを空白だけにできません。",
 });
@@ -65,7 +73,11 @@ const externalAgentCapabilitySchema = z.enum([
   "tasks.areas",
   "tasks.search-local",
   "proposals.prepare",
-  "proposals.create",
+  "proposals.read",
+  "proposals.apply-edits",
+  "proposals.diff",
+  "proposals.validate",
+  "proposals.submit",
   "proposals.status",
   "review.open",
 ]);
@@ -143,15 +155,50 @@ export const externalAgentProposalPrepareInputSchema = z.object({
   source_text: nonBlankMessageSchema,
 }).strict();
 
-/** 外部連携から完全な変更案を提出する要求を検証するスキーマです。 */
-export const externalAgentCreateProposalInputSchema = z.object({
-  operation: z.literal("proposals.create"),
+const workspaceBindingSchema = z.object({
   instance_id: identifierSchema,
   context_id: identifierSchema,
   project_gid: gidSchema,
-  request_id: identifierSchema,
   proposal_context_id: identifierSchema,
-  proposal: proposalSchema,
+  workspace_id: identifierSchema,
+}).strict();
+
+/** 外部連携から変更案ワークスペースを部分読み取りする要求を検証するスキーマです。 */
+export const externalAgentProposalReadInputSchema = workspaceBindingSchema.safeExtend({
+  operation: z.literal("proposals.read"),
+  revision: workspaceRevisionSchema,
+  target: proposalWorkspaceReadTargetSchema,
+  offset: workspaceOffsetSchema.optional(),
+}).strict();
+
+/** 外部連携から変更案ワークスペースを編集する要求を検証するスキーマです。 */
+export const externalAgentProposalApplyEditsInputSchema = workspaceBindingSchema.safeExtend({
+  operation: z.literal("proposals.apply-edits"),
+  edit_batch_id: identifierSchema,
+  expected_revision: workspaceRevisionSchema,
+  edits: z.array(proposalWorkspaceEditSchema).min(1).max(maximumProposalOperations),
+}).strict();
+
+/** 外部連携から変更案ワークスペースの差分を読む要求を検証するスキーマです。 */
+export const externalAgentProposalDiffInputSchema = workspaceBindingSchema.safeExtend({
+  operation: z.literal("proposals.diff"),
+  from_revision: workspaceRevisionSchema,
+  revision: workspaceRevisionSchema,
+  offset: workspaceOffsetSchema.optional(),
+}).strict();
+
+/** 外部連携から変更案ワークスペースを検証する要求を検証するスキーマです。 */
+export const externalAgentProposalValidateInputSchema = workspaceBindingSchema.safeExtend({
+  operation: z.literal("proposals.validate"),
+  expected_revision: workspaceRevisionSchema,
+  offset: workspaceOffsetSchema.optional(),
+}).strict();
+
+/** 外部連携から変更案ワークスペースを提出する要求を検証するスキーマです。 */
+export const externalAgentProposalSubmitInputSchema = workspaceBindingSchema.safeExtend({
+  operation: z.literal("proposals.submit"),
+  request_id: identifierSchema,
+  expected_revision: workspaceRevisionSchema,
 }).strict();
 
 const uniqueOperationIdsSchema = z.array(identifierSchema).min(1).max(maximumProposalOperations)
@@ -189,7 +236,11 @@ export const externalAgentRequestInputSchema = z.discriminatedUnion("operation",
   externalAgentTaskAreasInputSchema,
   externalAgentTaskSearchLocalInputSchema,
   externalAgentProposalPrepareInputSchema,
-  externalAgentCreateProposalInputSchema,
+  externalAgentProposalReadInputSchema,
+  externalAgentProposalApplyEditsInputSchema,
+  externalAgentProposalDiffInputSchema,
+  externalAgentProposalValidateInputSchema,
+  externalAgentProposalSubmitInputSchema,
   externalAgentProposalStatusInputSchema,
   externalAgentReviewOpenInputSchema,
 ]);
@@ -342,7 +393,7 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
   z
     .object({
       kind: z.literal("current"),
-      proposal: externalAgentProposalSchema,
+      proposal: externalAgentProposalMetadataSchema,
     })
     .strict(),
   z
@@ -397,17 +448,177 @@ export const externalAgentProposalPrepareResponseSchema = z.object({
   operation: z.literal("proposals.prepare"),
   request_id: identifierSchema,
   proposal_context_id: identifierSchema,
+  workspace_id: identifierSchema,
+  revision: z.literal(0),
   turn_context: aiWorkflowTurnContextSchema,
   evidence_locator_prefix: nonBlankMessageSchema,
 }).strict();
 
-/** 外部連携の提案受付応答を検証するスキーマです。 */
-export const externalAgentProposalCreateResponseSchema = z
-  .object({
-    operation: z.literal("proposals.create"),
-    proposal: externalAgentProposalSchema,
-  })
-  .strict();
+function assertWorkspaceCliResponseSize(value: unknown, context: z.RefinementCtx): void {
+  const serialized = JSON.stringify(value);
+  if (serialized == null || getUtf8ByteLength(serialized) > maximumWorkspaceCliResponseBytes) {
+    context.addIssue({
+      code: "custom",
+      message: "変更案ワークスペースの応答がサイズ上限を超えています。",
+    });
+  }
+}
+
+const workspaceChunkSchema = z.object({
+  workspace_id: identifierSchema,
+  revision: workspaceRevisionSchema,
+  offset: workspaceOffsetSchema,
+  content: createUtf8ByteLimitedStringSchema(maximumWorkspaceCliResponseBytes),
+  next_offset: workspaceOffsetSchema.optional(),
+}).strict();
+
+/** 外部連携の変更案ワークスペース部分読み取り応答を検証するスキーマです。 */
+export const externalAgentProposalReadResponseSchema = workspaceChunkSchema.safeExtend({
+  operation: z.literal("proposals.read"),
+  target: proposalWorkspaceReadTargetSchema,
+}).strict().superRefine((response, context) => {
+  if (response.next_offset != null && response.next_offset !== response.offset + response.content.length) {
+    context.addIssue({ code: "custom", path: ["next_offset"], message: "次の読み取り位置が内容の末尾と一致しません。" });
+  }
+  assertWorkspaceCliResponseSize(response, context);
+});
+
+/** 外部連携の変更案ワークスペース編集応答を検証するスキーマです。 */
+export const externalAgentProposalApplyEditsResponseSchema = z.object({
+  operation: z.literal("proposals.apply-edits"),
+  workspace_id: identifierSchema,
+  revision: workspaceRevisionSchema,
+  state: z.literal("draft"),
+  completion: z.enum(["incomplete", "structurally_complete"]),
+  issue_count: z.number().int().nonnegative().safe(),
+}).strict().superRefine(assertWorkspaceCliResponseSize);
+
+/** 外部連携の変更案ワークスペース差分読み取り応答を検証するスキーマです。 */
+export const externalAgentProposalDiffResponseSchema = workspaceChunkSchema.safeExtend({
+  operation: z.literal("proposals.diff"),
+  from_revision: workspaceRevisionSchema,
+}).strict().superRefine((response, context) => {
+  if (response.from_revision > response.revision) {
+    context.addIssue({ code: "custom", path: ["from_revision"], message: "差分の開始改訂番号が現在の改訂番号を超えています。" });
+  }
+  if (response.next_offset != null && response.next_offset !== response.offset + response.content.length) {
+    context.addIssue({ code: "custom", path: ["next_offset"], message: "次の読み取り位置が内容の末尾と一致しません。" });
+  }
+  assertWorkspaceCliResponseSize(response, context);
+});
+
+const workspaceIssueSchema = z.object({
+  code: identifierSchema,
+  json_pointer: z.string(),
+  message: nonBlankMessageSchema,
+  message_truncated: z.boolean(),
+  group_id: identifierSchema.optional(),
+  operation_id: identifierSchema.optional(),
+}).strict();
+
+const workspaceReviewDecisionSchema = z.object({ kind: z.enum(["valid", "invalid"]) }).strict();
+
+const workspaceOperationReviewSchema = z.object({
+  kind: z.literal("operation"),
+  group_id: identifierSchema,
+  operation_id: identifierSchema,
+  basic: workspaceReviewDecisionSchema,
+  graph: workspaceReviewDecisionSchema,
+  eligible: z.boolean(),
+}).strict();
+
+const workspaceDiagnosticSchema = z.object({
+  kind: z.literal("diagnostic"),
+  group_id: identifierSchema,
+  operation_id: identifierSchema,
+  phase: z.enum(["basic", "graph"]),
+  code: identifierSchema,
+  message: nonBlankMessageSchema,
+  message_truncated: z.boolean(),
+}).strict();
+
+const workspaceReviewEntrySchema = z.discriminatedUnion("kind", [
+  workspaceOperationReviewSchema,
+  workspaceDiagnosticSchema,
+]);
+
+const workspaceValidationPageSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("issues"),
+    offset: workspaceOffsetSchema,
+    issue_count: z.number().int().positive().safe(),
+    issues: z.array(workspaceIssueSchema).max(50),
+    next_offset: workspaceOffsetSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("operations"),
+    offset: workspaceOffsetSchema,
+    operation_count: z.number().int().positive().safe(),
+    entry_count: z.number().int().positive().safe(),
+    entries: z.array(workspaceReviewEntrySchema).max(50),
+    next_offset: workspaceOffsetSchema.optional(),
+  }).strict(),
+]);
+
+/** 外部連携の変更案ワークスペース検証応答を検証するスキーマです。 */
+export const externalAgentProposalValidateResponseSchema = z.object({
+  operation: z.literal("proposals.validate"),
+  workspace_id: identifierSchema,
+  revision: workspaceRevisionSchema,
+  can_submit: z.boolean(),
+  review: workspaceValidationPageSchema,
+}).strict().superRefine((response, context) => {
+  if (response.review.kind === "issues" && response.can_submit) {
+    context.addIssue({ code: "custom", path: ["can_submit"], message: "未完成の変更案は提出できません。" });
+  }
+  const count = response.review.kind === "issues"
+    ? response.review.issue_count
+    : response.review.entry_count;
+  const pageLength = response.review.kind === "issues"
+    ? response.review.issues.length
+    : response.review.entries.length;
+  if (response.review.kind === "operations" && response.review.operation_count > response.review.entry_count) {
+    context.addIssue({ code: "custom", path: ["review", "operation_count"], message: "操作数が検証項目数を超えています。" });
+  }
+  if (response.review.offset + pageLength > count) {
+    context.addIssue({ code: "custom", path: ["review", "offset"], message: "検証結果の位置が件数を超えています。" });
+  }
+  if (response.review.next_offset == null && response.review.offset + pageLength !== count) {
+    context.addIssue({ code: "custom", path: ["review", "next_offset"], message: "検証結果に続きの位置がありません。" });
+  }
+  if (pageLength === 0 && response.review.offset < count) {
+    context.addIssue({ code: "custom", path: ["review"], message: "続きがある空の検証ページは返せません。" });
+  }
+  if (
+    response.review.next_offset != null
+    && (
+      response.review.next_offset !== response.review.offset + pageLength
+      || response.review.next_offset >= count
+    )
+  ) {
+    context.addIssue({ code: "custom", path: ["review", "next_offset"], message: "次の検証結果の位置が一致しません。" });
+  }
+  assertWorkspaceCliResponseSize(response, context);
+});
+
+/** 外部連携の変更案ワークスペース提出応答を検証するスキーマです。 */
+export const externalAgentProposalSubmitResponseSchema = z.object({
+  operation: z.literal("proposals.submit"),
+  workspace_id: identifierSchema,
+  revision: workspaceRevisionSchema,
+  result: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("submitted"),
+      proposal_id: identifierSchema,
+      request_id: identifierSchema,
+      operation_count: z.number().int().positive().safe(),
+      state_kind: z.enum([
+        "pending_approval", "approving", "finished", "rejected", "expired", "failed", "unknown",
+      ]),
+    }).strict(),
+    z.object({ kind: z.literal("invalid") }).strict(),
+  ]),
+}).strict().superRefine(assertWorkspaceCliResponseSize);
 
 /** 外部連携の提案状態応答を検証するスキーマです。 */
 export const externalAgentProposalStatusResponseSchema = z
@@ -484,7 +695,11 @@ export const externalAgentReviewOpenResponseSchema = z
 export const externalAgentResponseSchema = z.discriminatedUnion("operation", [
   externalAgentTaskQueryResponseSchema,
   externalAgentProposalPrepareResponseSchema,
-  externalAgentProposalCreateResponseSchema,
+  externalAgentProposalReadResponseSchema,
+  externalAgentProposalApplyEditsResponseSchema,
+  externalAgentProposalDiffResponseSchema,
+  externalAgentProposalValidateResponseSchema,
+  externalAgentProposalSubmitResponseSchema,
   externalAgentProposalStatusResponseSchema,
   externalAgentReviewOpenResponseSchema,
 ]);
@@ -495,8 +710,17 @@ export const externalAgentErrorResponseSchema = z
     kind: z.literal("error"),
     code: externalAgentErrorCodeSchema,
     message: nonBlankMessageSchema,
+    current_revision: workspaceRevisionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((response, context) => {
+    if (response.code === "stale_revision" && response.current_revision == null) {
+      context.addIssue({ code: "custom", path: ["current_revision"], message: "古い改訂番号には現在の改訂番号を返してください。" });
+    }
+    if (response.code !== "stale_revision" && response.current_revision != null) {
+      context.addIssue({ code: "custom", path: ["current_revision"], message: "版競合以外に現在の改訂番号を返せません。" });
+    }
+  });
 
 /** 外部GUIから提案を選択する入力を検証するスキーマです。 */
 export const externalAgentGuiSelectInputSchema = z.object({
@@ -583,9 +807,6 @@ export const externalAgentGuiStateSchema = z
 /** 外部GUIへ通知する状態変更スナップショットを検証するスキーマです。 */
 export const externalAgentGuiChangedStateSchema = externalAgentGuiStateSchema;
 
-export type ExternalAgentCreateProposalInput = z.infer<
-  typeof externalAgentCreateProposalInputSchema
->;
 export type ExternalAgentErrorCode = z.infer<typeof externalAgentErrorCodeSchema>;
 export type ExternalAgentTaskListInput = z.infer<typeof externalAgentTaskListInputSchema>;
 export type ExternalAgentTaskDetailInput = z.infer<
@@ -599,6 +820,21 @@ export type ExternalAgentTaskSearchLocalInput = z.infer<
 >;
 export type ExternalAgentProposalPrepareInput = z.infer<
   typeof externalAgentProposalPrepareInputSchema
+>;
+export type ExternalAgentProposalReadInput = z.infer<
+  typeof externalAgentProposalReadInputSchema
+>;
+export type ExternalAgentProposalApplyEditsInput = z.infer<
+  typeof externalAgentProposalApplyEditsInputSchema
+>;
+export type ExternalAgentProposalDiffInput = z.infer<
+  typeof externalAgentProposalDiffInputSchema
+>;
+export type ExternalAgentProposalValidateInput = z.infer<
+  typeof externalAgentProposalValidateInputSchema
+>;
+export type ExternalAgentProposalSubmitInput = z.infer<
+  typeof externalAgentProposalSubmitInputSchema
 >;
 export type ExternalAgentProposalStatusInput = z.infer<
   typeof externalAgentProposalStatusInputSchema
@@ -622,8 +858,20 @@ export type ExternalAgentTaskQueryResponse = z.infer<
 export type ExternalAgentProposalPrepareResponse = z.infer<
   typeof externalAgentProposalPrepareResponseSchema
 >;
-export type ExternalAgentProposalCreateResponse = z.infer<
-  typeof externalAgentProposalCreateResponseSchema
+export type ExternalAgentProposalReadResponse = z.infer<
+  typeof externalAgentProposalReadResponseSchema
+>;
+export type ExternalAgentProposalApplyEditsResponse = z.infer<
+  typeof externalAgentProposalApplyEditsResponseSchema
+>;
+export type ExternalAgentProposalDiffResponse = z.infer<
+  typeof externalAgentProposalDiffResponseSchema
+>;
+export type ExternalAgentProposalValidateResponse = z.infer<
+  typeof externalAgentProposalValidateResponseSchema
+>;
+export type ExternalAgentProposalSubmitResponse = z.infer<
+  typeof externalAgentProposalSubmitResponseSchema
 >;
 export type ExternalAgentProposalStatusResponse = z.infer<
   typeof externalAgentProposalStatusResponseSchema
