@@ -55,7 +55,10 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           set -euo pipefail
-          pnpm run package
+          pnpm run build
+          pnpm exec electron-builder --publish never \
+            --config.publish.provider=generic \
+            --config.publish.url="https://github.com/${GITHUB_REPOSITORY}/releases/download/edge"
       - name: nsis-web の生成物を公開用ディレクトリへ移動
         if: runner.os == 'Windows'
         shell: bash
@@ -137,7 +140,8 @@ jobs:
                 --target "$GITHUB_SHA" \
                 --title edge \
                 --notes "$release_notes" \
-                --latest
+                --prerelease \
+                --latest=false
               ;;
             1)
               gh release edit edge \
@@ -145,8 +149,8 @@ jobs:
                 --title edge \
                 --notes "$release_notes" \
                 --draft=false \
-                --prerelease=false \
-                --latest
+                --prerelease=true \
+                --latest=false
               gh release upload edge "${assets[@]}" \
                 --repo "$GITHUB_REPOSITORY" \
                 --clobber
@@ -185,21 +189,13 @@ jobs:
           for asset_id in "${stale_asset_ids[@]}"; do
             gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
           done
-      - name: edge タグを最新コミットへ移動
+      - name: edge タグを公開したコミットへ移動
         if: steps.publication.outputs.should_publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          current_sha="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-              | jq -er '.object.sha | select(type == "string" and length > 0)'
-          )"
-          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
-            echo "公開処理中に main ブランチへ新しいコミットが追加されたため、edge タグは移動しません。後続の実行に更新を任せます。"
-            exit 0
-          fi
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/edge" \
             -f sha="$GITHUB_SHA" \
             -F force=true \
