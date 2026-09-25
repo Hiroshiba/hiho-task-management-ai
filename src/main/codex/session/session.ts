@@ -65,8 +65,21 @@ import {
 import {
   codexGeneratedResponseSchema,
   maximumCodexResponseJsonBytes,
+  maximumProposalWorkspaceArgumentBytes,
+  maximumProposalWorkspaceResponseBytes,
+  proposalSchema,
+  proposalWorkspaceBatchSchema,
+  proposalWorkspaceDiffSchema,
+  proposalWorkspaceReadSchema,
+  proposalWorkspaceSubmitSchema,
   type CodexGeneratedResponse,
 } from "../../../shared/ai";
+import {
+  ProposalWorkspace,
+  type ProposalWorkspaceIssue,
+  type ProposalWorkspaceStatus,
+  type ProposalWorkspaceValidation,
+} from "../../ai/proposal-workspace";
 import {
   CodexSessionAbortedError,
   CodexSessionAuthenticationError,
@@ -181,6 +194,93 @@ const obsidianDynamicToolSpec = {
   description: "登録済みObsidian Vaultを読み取るdynamic toolです。",
   inputSchema: z.toJSONSchema(codexObsidianQuerySchema, { target: "draft-07" }),
 } satisfies Record<string, unknown>;
+
+const proposalWorkspaceToolName = "proposal_workspace";
+const proposalWorkspaceToolInputSchema = z.discriminatedUnion("action", [
+  proposalWorkspaceReadSchema.safeExtend({ action: z.literal("read") }),
+  proposalWorkspaceDiffSchema.safeExtend({ action: z.literal("diff") }),
+  proposalWorkspaceBatchSchema.safeExtend({ action: z.literal("edit") }),
+  proposalWorkspaceSubmitSchema.safeExtend({
+    action: z.literal("validate"),
+    offset: z.number().int().nonnegative().safe().optional(),
+  }),
+  proposalWorkspaceSubmitSchema.safeExtend({ action: z.literal("submit") }),
+]);
+const proposalWorkspaceToolSpec = {
+  type: "function",
+  name: proposalWorkspaceToolName,
+  description: "今回のAI変更案を部分読み取り、意味編集、検証、提出するdynamic toolです。",
+  inputSchema: z.toJSONSchema(proposalWorkspaceToolInputSchema, { target: "draft-07" }),
+} satisfies Record<string, unknown>;
+
+type ActiveProposalWorkspace = {
+  readonly workspace: ProposalWorkspace;
+  readonly validate: (proposal: z.infer<typeof proposalSchema>) => ProposalWorkspaceValidation<null>;
+};
+
+type ProposalWorkspaceIssuesResult =
+  | Omit<ProposalWorkspaceStatus, "issues">
+  | { readonly workspace_id: string; readonly revision: number; readonly valid: false }
+  | { readonly kind: "invalid"; readonly workspace_id: string; readonly revision: number };
+
+function serializeProposalWorkspaceToolResponse(
+  value: unknown,
+  success: boolean,
+): DynamicToolCallResponse {
+  const serialized = JSON.stringify(value);
+  if (serialized == null) {
+    throw new CodexSessionError("AI変更案ワークスペースの応答をJSONへ変換できません。");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > maximumProposalWorkspaceResponseBytes) {
+    return serializeProposalWorkspaceToolResponse({
+      ok: false,
+      error: { code: "response_too_large", message: "診断結果が大きすぎます。部分読み取りを使用してください。" },
+    }, false);
+  }
+  return { contentItems: [{ type: "inputText", text: serialized }], success };
+}
+
+function serializeProposalWorkspaceIssuesResponse(
+  result: ProposalWorkspaceIssuesResult,
+  issues: readonly ProposalWorkspaceIssue[],
+  offset: number,
+  success: boolean,
+): DynamicToolCallResponse {
+  const start = Math.min(offset, issues.length);
+  let end = Math.min(start + 50, issues.length);
+  while (end >= start) {
+    const page = {
+      ...result,
+      issues: issues.slice(start, end),
+      issue_count: issues.length,
+      ...(end < issues.length ? { next_offset: end } : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(page), "utf8") <= maximumProposalWorkspaceResponseBytes) {
+      return serializeProposalWorkspaceToolResponse(page, success);
+    }
+    end -= 1;
+  }
+  throw new CodexSessionError("AI変更案ワークスペースの診断結果を分割できません。");
+}
+
+function readProposalWorkspaceDraft(workspace: ProposalWorkspace): z.infer<typeof proposalSchema> {
+  const status = workspace.getStatus();
+  let offset = 0;
+  let content = "";
+  while (true) {
+    const chunk = workspace.read({
+      workspace_id: status.workspace_id,
+      revision: status.revision,
+      target: { kind: "proposal" },
+      offset,
+    });
+    content += chunk.content;
+    if (chunk.next_offset == null) {
+      return proposalSchema.parse(JSON.parse(content));
+    }
+    offset = chunk.next_offset;
+  }
+}
 
 function createDynamicToolResponseTooLarge(): TaskctlResponse {
   return taskctlResponseSchema.parse({
@@ -1001,6 +1101,7 @@ export class CodexSessionService {
   private removeDynamicToolListener: (() => void) | undefined;
   private taskctlStartResult: TaskctlBrokerStartResult | undefined;
   private frozenTaskctlSnapshot: TaskctlSnapshot | undefined;
+  private activeProposalWorkspace: ActiveProposalWorkspace | undefined;
   private threadId: string | undefined;
   private selectedModel: string | undefined;
   private threadSettingsNotification: ThreadSettingsNotification | undefined;
@@ -1034,6 +1135,20 @@ export class CodexSessionService {
     });
     this.structuredOutputSchema = structuredOutputEnvelopeJsonSchema;
     this.modelFormatInstruction = createModelFormatInstruction();
+  }
+
+  /** 同期後に発行したAI変更案ワークスペースを現在のターンへ設定します。 */
+  public activateProposalWorkspace(
+    workspace: ProposalWorkspace,
+    validate: ActiveProposalWorkspace["validate"],
+  ): void {
+    if (this.activeTurn?.phase !== "starting" || this.activeProposalWorkspace != null) {
+      throw new CodexSessionStateError();
+    }
+    if (!(workspace instanceof ProposalWorkspace) || typeof validate !== "function") {
+      throw new CodexSessionError("AI変更案ワークスペースの設定が不正です。");
+    }
+    this.activeProposalWorkspace = { workspace, validate };
   }
 
   /** Codexが読み取り専用で参照できるVaultを更新します。 */
@@ -2101,7 +2216,7 @@ export class CodexSessionService {
       approvalPolicy: "never",
       ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
       config,
-      dynamicTools: [taskctlDynamicToolSpec, obsidianDynamicToolSpec],
+      dynamicTools: [taskctlDynamicToolSpec, obsidianDynamicToolSpec, proposalWorkspaceToolSpec],
     };
     const validatedParams = threadStartParamsSchema.parse(params);
     this.threadSettingsNotification = undefined;
@@ -2149,7 +2264,135 @@ export class CodexSessionService {
     if (params.tool === obsidianDynamicToolName) {
       return this.handleObsidianDynamicTool(params, signal);
     }
+    if (params.tool === proposalWorkspaceToolName) {
+      return this.handleProposalWorkspaceTool(params, signal);
+    }
     throw new CodexSessionError("dynamic toolの名前が不正です。");
+  }
+
+  private handleProposalWorkspaceTool(
+    params: DynamicToolCallParams,
+    signal: AbortSignal,
+  ): DynamicToolCallResponse {
+    validateAbortSignal(signal);
+    if (params.namespace != null || params.tool !== proposalWorkspaceToolName) {
+      throw new CodexSessionError("AI変更案ワークスペースのdynamic tool名が不正です。");
+    }
+    const activeTurn = this.activeTurn;
+    const activeWorkspace = this.activeProposalWorkspace;
+    if (activeTurn == null || activeTurn.phase !== "running" || activeWorkspace == null) {
+      throw new CodexSessionStateError();
+    }
+    if (
+      params.threadId !== activeTurn.threadId
+      || params.turnId !== activeTurn.turnId
+      || params.threadId !== this.threadId
+    ) {
+      throw new CodexSessionError("AI変更案ワークスペースのターンが不正です。");
+    }
+    if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
+      throw new TaskctlAbortError();
+    }
+    const serializedArguments = JSON.stringify(params.arguments);
+    if (
+      serializedArguments == null
+      || Buffer.byteLength(serializedArguments, "utf8") > maximumProposalWorkspaceArgumentBytes
+    ) {
+      return serializeProposalWorkspaceToolResponse({
+        ok: false,
+        error: { code: "argument_too_large", message: "引数が128 KiBの上限を超えています。" },
+      }, false);
+    }
+    const parsed = proposalWorkspaceToolInputSchema.safeParse(params.arguments);
+    if (!parsed.success) {
+      return serializeProposalWorkspaceToolResponse({
+        ok: false,
+        error: { code: "invalid_request", message: "AI変更案ワークスペースの引数が不正です。" },
+      }, false);
+    }
+    if (parsed.data.workspace_id !== activeWorkspace.workspace.workspaceId) {
+      throw new CodexSessionError("今回のターン以外のAI変更案ワークスペースは操作できません。");
+    }
+    const { workspace, validate } = activeWorkspace;
+    let response: DynamicToolCallResponse;
+    switch (parsed.data.action) {
+      case "read":
+        response = serializeProposalWorkspaceToolResponse(workspace.read({
+          workspace_id: parsed.data.workspace_id,
+          revision: parsed.data.revision,
+          target: parsed.data.target,
+          ...(parsed.data.offset == null ? {} : { offset: parsed.data.offset }),
+        }), true);
+        break;
+      case "diff":
+        response = serializeProposalWorkspaceToolResponse(workspace.diff({
+          workspace_id: parsed.data.workspace_id,
+          from_revision: parsed.data.from_revision,
+          revision: parsed.data.revision,
+          ...(parsed.data.offset == null ? {} : { offset: parsed.data.offset }),
+        }), true);
+        break;
+      case "edit": {
+        const status = workspace.applyBatch({
+          workspace_id: parsed.data.workspace_id,
+          edit_batch_id: parsed.data.edit_batch_id,
+          expected_revision: parsed.data.expected_revision,
+          edits: parsed.data.edits,
+        });
+        response = serializeProposalWorkspaceIssuesResponse({
+          workspace_id: status.workspace_id,
+          baseline_snapshot_hash: status.baseline_snapshot_hash,
+          revision: status.revision,
+          state: status.state,
+          completion: status.completion,
+        }, status.issues, 0, true);
+        break;
+      }
+      case "validate": {
+        const status = workspace.getStatus();
+        if (status.revision !== parsed.data.expected_revision) {
+          throw new CodexSessionError("AI変更案ワークスペースの改訂番号が一致しません。");
+        }
+        const validation = status.completion === "structurally_complete"
+          ? validate(readProposalWorkspaceDraft(workspace))
+          : { kind: "invalid" as const, issues: status.issues };
+        const offset = parsed.data.offset ?? 0;
+        response = validation.kind === "valid"
+          ? serializeProposalWorkspaceToolResponse({
+            workspace_id: status.workspace_id,
+            revision: status.revision,
+            valid: true,
+          }, true)
+          : serializeProposalWorkspaceIssuesResponse({
+            workspace_id: status.workspace_id,
+            revision: status.revision,
+            valid: false,
+          }, validation.issues, offset, false);
+        break;
+      }
+      case "submit": {
+        const submitted = workspace.submit({
+          workspace_id: parsed.data.workspace_id,
+          expected_revision: parsed.data.expected_revision,
+        }, validate);
+        response = submitted.kind === "submitted"
+          ? serializeProposalWorkspaceToolResponse({
+            kind: "submitted",
+            workspace_id: workspace.workspaceId,
+            revision: submitted.revision,
+          }, true)
+          : serializeProposalWorkspaceIssuesResponse({
+            kind: "invalid",
+            workspace_id: workspace.workspaceId,
+            revision: submitted.revision,
+          }, submitted.issues, 0, false);
+        break;
+      }
+    }
+    if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
+      throw new TaskctlAbortError();
+    }
+    return response;
   }
 
   private async handleTaskctlDynamicTool(
@@ -2859,6 +3102,7 @@ export class CodexSessionService {
       return;
     }
     this.activeTurn = undefined;
+    this.activeProposalWorkspace = undefined;
     active.signal.removeEventListener("abort", active.abortListener);
     if (this.state === "turning") {
       this.state = "ready";

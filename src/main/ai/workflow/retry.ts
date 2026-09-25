@@ -41,7 +41,7 @@ export const aiWorkflowValidationDetailCodeSchema = z.union([
 
 export const aiWorkflowRetryPhaseSchema = z.enum([
   "structured_output",
-  "proposal_file",
+  "proposal_workspace",
   "evidence_binding",
   "basic_validation",
   "graph_validation",
@@ -50,29 +50,13 @@ export const aiWorkflowRetryPhaseSchema = z.enum([
 
 export const aiWorkflowRetryCodeSchema = z.enum([
   "structured_output_invalid",
-  "proposal_file_read_failed",
-  "proposal_file_id_mismatch",
-  "proposal_file_boundary_violation",
-  "proposal_file_too_large",
-  "proposal_file_invalid_utf8",
-  "proposal_file_invalid_json",
-  "proposal_file_schema_invalid",
-  "validation_errors_write_failed",
+  "proposal_workspace_not_submitted",
+  "proposal_workspace_reference_mismatch",
+  "proposal_workspace_response_mismatch",
   "evidence_binding_invalid",
   "proposal_basic_validation_failed",
   "proposal_graph_validation_failed",
   "proposal_group_not_applicable",
-]);
-
-export const aiWorkflowProposalFileErrorCodeSchema = z.enum([
-  "proposal_file_read_failed",
-  "proposal_file_id_mismatch",
-  "proposal_file_boundary_violation",
-  "proposal_file_too_large",
-  "proposal_file_invalid_utf8",
-  "proposal_file_invalid_json",
-  "proposal_file_schema_invalid",
-  "validation_errors_write_failed",
 ]);
 
 export const aiWorkflowCandidateDigestSchema = z.discriminatedUnion("kind", [
@@ -127,7 +111,6 @@ export type AiWorkflowSafeErrorCause =
 export const aiWorkflowSafeErrorDescriptionSchema = z.enum([
   "AI変更案の検証に失敗しました。",
   "Codexの構造化出力を検証できませんでした。",
-  "AI変更案ファイルを安全に処理できませんでした。",
   "複数の処理に失敗しました。",
   "構造化データの検証に失敗しました。",
   "処理に失敗しました。",
@@ -209,9 +192,6 @@ export const aiWorkflowRetryLogEventSchema = z
 
 export type AiWorkflowRetryPhase = z.infer<typeof aiWorkflowRetryPhaseSchema>;
 export type AiWorkflowRetryCode = z.infer<typeof aiWorkflowRetryCodeSchema>;
-export type AiWorkflowProposalFileErrorCode = z.infer<
-  typeof aiWorkflowProposalFileErrorCodeSchema
->;
 export type AiWorkflowCandidateDigest = z.infer<
   typeof aiWorkflowCandidateDigestSchema
 >;

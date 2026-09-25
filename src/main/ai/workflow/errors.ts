@@ -62,14 +62,6 @@ export class AiWorkflowStateError extends AiWorkflowError {
   }
 }
 
-/** AI変更案ファイルを安全に読み込めないことを表すエラーです。 */
-export class AiWorkflowProposalFileError extends AiWorkflowError {
-  public constructor(message: string, cause?: unknown) {
-    super(message, cause);
-    this.name = "AiWorkflowProposalFileError";
-  }
-}
-
 /** AI変更案を修正可能な検証エラーとして分類します。 */
 export class AiWorkflowRetryableFailureError extends AiWorkflowError {
   public readonly issues: readonly AiWorkflowValidationIssue[];

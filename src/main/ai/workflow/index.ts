@@ -8,7 +8,6 @@ export {
   type ApprovalPreparationInput,
   type AiWorkflowOnlineStateProvider,
   type AiWorkflowOptions,
-  type AiWorkflowProposalFilePort,
   type AiWorkflowSessionPort,
   type AiWorkflowSnapshotProvider,
   type AiWorkflowExternalStatusEvidenceCollector,
@@ -16,11 +15,6 @@ export {
   type TrustedExternalStatusEvidence,
   type WorkflowProposalViewInput,
 } from "./service";
-export {
-  AiWorkflowProposalFileStore,
-  aiWorkflowProposalFileLeaseSchema,
-  type AiWorkflowProposalFileLease,
-} from "./proposal-file";
 export {
   assertSelectedProposalGraphIsSafe,
   eligibleOperationIds,
@@ -31,7 +25,6 @@ export {
   AiWorkflowEditError,
   AiWorkflowError,
   AiWorkflowOfflineError,
-  AiWorkflowProposalFileError,
   AiWorkflowProposalNotFoundError,
   AiWorkflowSelectionError,
   AiWorkflowStateError,
