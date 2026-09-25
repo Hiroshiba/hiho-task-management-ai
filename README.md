@@ -4,7 +4,9 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 ## インストールと更新
 
-配布先は、署名済みの[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)と、未署名の開発版を置く[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)です。通常版は中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名します。edgeはmainへのpushで自動公開し、prereleaseとして扱います。通常版を公開するまでは、最新の通常版Releaseのリンクが利用できない場合があります。開発版は固定のedgeリンクから取得してください。
+署名済み通常版を導入する前に、[Release一覧](https://github.com/Hiroshiba/hiho-task-management-ai/releases)からタグが`v<version>`の公開済みReleaseを選びます。macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の8件が揃い、両方の更新メタデータの`version`がタグの版と一致し、`path`と`files.url`が配布ファイルを指すことを確認してください。条件に合うReleaseがない場合、通常版の導入は進めないでください。
+
+通常版は中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名します。未署名の開発版は固定の[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)から取得してください。edgeはmainへのpushで自動公開し、prereleaseとして扱います。
 
 アプリ内の自動更新・差分更新は未実装で、更新は手動で行います。TaskHubの署名済み通常版の公開、macOSとWindowsの実機での導入・更新は未確認です。
 
