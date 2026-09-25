@@ -1,6 +1,6 @@
 {
   "name": "taskhub",
-  "version": "0.1.1-edge.0",
+  "version": "0.1.1",
   "description": "Asanaを唯一のタスク源流とする個人用AIタスク管理デスクトップアプリ",
   "main": "./out/main/index.js",
   "type": "module",
