@@ -98,7 +98,7 @@ pnpm run package
 
 ## 通常版の公開
 
-中央の[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)は、現在`electron-updater`によるアプリ内更新と差分・全量更新の検証を求めています。TaskHubはアプリ内の自動更新・差分更新が未実装のため、手動更新方式の公開条件が中央のmainに反映されるまで、以下の公開手順を開始しないでください。
+TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)に沿って手動更新方式で公開します。
 
 公開時は中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と、その時点で適用される公開条件を満たしてください。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
 
@@ -130,8 +130,9 @@ pnpm run package
 
 6. 両OSの署名とアップロードが成功したら、両OSが手順2の版更新コミットSHAを使ったことを確認します。draft Releaseに、macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の合計8件が揃っていることを確認します。更新メタデータの`version`がタグ先の`package.json`の`version`とタグの版に一致し、`path`と`files.url`が実ファイル名と大文字小文字を含めて一致し、サイズ・Base64のSHA-512・blockmapが実ファイルと一致することを確認します。
 7. draft ReleaseでNSIS Webのinstallerと`.nsis.7z` packageの存在と名前、installerの署名、最終タグのRelease URLから取得する設計を確認します。draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、両OSの実機で[インストールと更新](#インストールと更新)に沿って配布元と署名を人手で確認し、導入・起動・主要機能を検証します。前の通常版から今回の通常版へ手動で再導入し、版・起動・設定と利用者データの保持を確認します。初回署名版で旧版がない場合は、その理由と更新未確認を記録し、導入・起動の成功を更新成功とは扱いません。
-8. 成果物の整合と中央の適用される公開条件を満たしたら、更新方式と公開前の確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。`gh release edit v0.1.1 --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
-9. GitHub認証なしの実機で、最終タグのNSIS Webから追加packageを取得し、導入・起動・主要機能を確認して結果を記録します。失敗した場合はLatest指定と利用案内を止め、対応が定まるまで再開しないでください。確認が成功したら結果を記録し、利用者へ案内してから`gh release edit v0.1.1 --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。
+8. 成果物の整合と中央の公開前の確認項目を満たしたら、更新方式と公開前の確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。`gh release edit v0.1.1 --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
+9. GitHub認証なしで、最終タグのReleaseから手順6の全8件の配布ファイル・更新メタデータ・blockmapを取得できることを確認します。GitHub認証なしのWindows実機で、取得したNSIS Webのinstallerを実行し、同じReleaseの追加packageの取得・導入・起動・主要機能を確認します。すべての結果を記録し、いずれかに失敗した場合はLatest指定と利用案内を止め、原因の解消と修復、再確認を済ませるまで再開しないでください。
+10. 全8件の匿名取得とNSIS Webの確認が成功したら、利用者へ案内してから`gh release edit v0.1.1 --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。
 
 中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。通常版の`0.1.1`は`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
 
