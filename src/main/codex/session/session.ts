@@ -240,6 +240,36 @@ function serializeProposalWorkspaceToolResponse(
   return { contentItems: [{ type: "inputText", text: serialized }], success };
 }
 
+function serializeProposalWorkspaceInvalidRequest(error: z.ZodError): DynamicToolCallResponse {
+  const issueCount = error.issues.length;
+  const issues = error.issues.slice(0, 50).map((issue) => ({
+    code: issue.code,
+    json_pointer: issue.path
+      .map((part) => `/${String(part).replaceAll("~", "~0").replaceAll("/", "~1")}`)
+      .join(""),
+    expected_type: issue.code === "invalid_type" ? issue.expected : null,
+  }));
+  while (true) {
+    const result = {
+      ok: false,
+      error: {
+        code: "invalid_request",
+        message: "AI変更案ワークスペースの引数が不正です。",
+        issue_count: issueCount,
+        issues_truncated: issues.length < issueCount,
+        issues,
+      },
+    };
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") <= maximumProposalWorkspaceResponseBytes) {
+      return serializeProposalWorkspaceToolResponse(result, false);
+    }
+    if (issues.length === 0) {
+      throw new CodexSessionError("AI変更案ワークスペースの入力診断を分割できません。");
+    }
+    issues.pop();
+  }
+}
+
 function serializeProposalWorkspaceIssuesResponse(
   result: ProposalWorkspaceIssuesResult,
   issues: readonly ProposalWorkspaceIssue[],
@@ -2305,10 +2335,7 @@ export class CodexSessionService {
     }
     const parsed = proposalWorkspaceToolInputSchema.safeParse(params.arguments);
     if (!parsed.success) {
-      return serializeProposalWorkspaceToolResponse({
-        ok: false,
-        error: { code: "invalid_request", message: "AI変更案ワークスペースの引数が不正です。" },
-      }, false);
+      return serializeProposalWorkspaceInvalidRequest(parsed.error);
     }
     if (parsed.data.workspace_id !== activeWorkspace.workspace.workspaceId) {
       throw new CodexSessionError("今回のターン以外のAI変更案ワークスペースは操作できません。");

@@ -1042,6 +1042,8 @@ TaskHub内部のCodexは、メインプロセスがメモリに保持する `Pro
 
 ツールは実行中のスレッドID、ターンID、`workspace_id` を照合し、当該ターンのワークスペースだけを操作する。入力をZodで厳格に検証し、引数はUTF-8で128 KiB、各応答は64 KiBを上限とする。
 
+入力の構造が不正なら、編集を適用せず `invalid_request` を返す。応答にはZodの不備の総件数 `issue_count`、省略の有無 `issues_truncated`、件数と応答サイズを制限した `issues` を含める。各不備は `code`、`json_pointer`、`expected_type` を持ち、Zodが期待型を示さない場合の `expected_type` は `null` とする。入力本文と余分なキー名は返さず、拒否時の `revision` は変更しない。Codexは不備の位置と型に従って同じワークスペースを再編集する。
+
 | 操作 | 役割 |
 |---|---|
 | `read` | 現在の改訂番号を指定し、概要、変更案全体、グループ、操作を読む。 |
