@@ -1,3 +1,7 @@
+import { AsanaRequestAbortedError } from "../../infrastructure/asana/request-aborted-error";
+
+export { AsanaRequestAbortedError } from "../../infrastructure/asana/request-aborted-error";
+
 const maximumReadConcurrency = 5;
 const maximumWriteConcurrency = 1;
 const maximumAttempts = 120;
@@ -57,14 +61,6 @@ function validateAbortSignal(signal: AbortSignal): void {
     || typeof signal.removeEventListener !== "function"
   ) {
     throw new TypeError("AbortSignalが必要です。");
-  }
-}
-
-/** Asanaリクエストが実行開始前に中断されたことを表します。 */
-export class AsanaRequestAbortedError extends Error {
-  public constructor() {
-    super("Asanaリクエストが実行開始前に中断されました。");
-    this.name = "AsanaRequestAbortedError";
   }
 }
 

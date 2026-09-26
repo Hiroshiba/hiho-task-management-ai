@@ -21,31 +21,40 @@ import {
   AsanaSyncInProgressError,
   asanaSyncCoordinatorInputSchema,
   asanaSyncCoordinatorResultSchema,
-  type AsanaSyncCoordinatorResult,
 } from "../sync";
 import { StorageDatabase } from "../../storage";
 import { isoDateTimeSchema } from "../../../shared/domain";
 import { syncStateSchema } from "../../../shared/storage";
 import { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 import {
+  createCombinedSignal,
+  createDeferred,
+  mergeRequestedModes,
+  validateAbortSignal,
+  waitForCaller,
+  type Deferred,
+} from "../../infrastructure/asana/synchronization-run";
+import {
   asanaSyncRuntimeConfigurationSchema,
-  asanaSyncRuntimeResultSchema,
   asanaSyncRuntimeStateSchema,
+  createAbortResult,
+  createAuthenticationRequiredRuntimeState,
+  createErrorRuntimeState,
+  createFailedResult,
+  createOfflineRuntimeState,
+  createOnlineRuntimeState,
+  createRejectedResult,
+  createSynchronizedResult,
+  createSyncingRuntimeState,
   type AsanaSyncRuntimeConfiguration,
   type AsanaSyncRuntimeErrorCode,
-  type AsanaSyncRuntimeResult,
+  type AsanaSyncRuntimeInternalResult,
   type AsanaSyncRuntimeState,
   type AsanaSyncRuntimeSynchronizationMode,
 } from "./schemas";
 
 const fullSyncIntervalMilliseconds = 24 * 60 * 60 * 1000;
 const onlineSyncIntervalMilliseconds = 60 * 1000;
-
-export type AsanaSyncRuntimeInternalResult =
-  | Exclude<AsanaSyncRuntimeResult, { kind: "failed" }>
-  | (Extract<AsanaSyncRuntimeResult, { kind: "failed" }> & {
-      readonly cause: unknown;
-    });
 
 type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
 type StorageDatabasePort = Pick<StorageDatabase, "getSyncState">;
@@ -62,11 +71,6 @@ type RuntimeConnectionState =
   | { readonly kind: "offline" }
   | { readonly kind: "recovery_pending" }
   | { readonly kind: "online" };
-type Deferred<T> = {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-};
 type SyncRunIntent = "automatic" | "full";
 type SyncRunBase = {
   readonly generation: number;
@@ -94,23 +98,6 @@ type SyncRunState =
   | PreflightingSyncRun
   | RunningSyncRun;
 
-function createDeferred<T>(): Deferred<T> {
-  let resolveValue: ((value: T) => void) | undefined;
-  let rejectValue: ((reason: unknown) => void) | undefined;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolveValue = resolve;
-    rejectValue = reject;
-  });
-  if (resolveValue == null || rejectValue == null) {
-    throw new Error("同期結果の待機状態を初期化できません。");
-  }
-  return {
-    promise,
-    resolve: resolveValue,
-    reject: rejectValue,
-  };
-}
-
 /** 予期しない同期エラーを通知する関数です。 */
 export type AsanaSyncRuntimeUnexpectedErrorNotifier = (
   error: unknown,
@@ -127,34 +114,10 @@ export type AsanaSyncRuntimeStateListener = (
   cause?: unknown,
 ) => void;
 
-function validateAbortSignal(signal: AbortSignal): void {
-  if (
-    signal == null
-    || typeof signal.aborted !== "boolean"
-    || typeof signal.addEventListener !== "function"
-    || typeof signal.removeEventListener !== "function"
-  ) {
-    throw new TypeError("AbortSignalが必要です。");
-  }
-}
-
 function validateFunction(value: unknown, message: string): void {
   if (typeof value !== "function") {
     throw new TypeError(message);
   }
-}
-
-function mergeRequestedModes(
-  first: AsanaSyncRuntimeSynchronizationMode | undefined,
-  second: AsanaSyncRuntimeSynchronizationMode | undefined,
-): AsanaSyncRuntimeSynchronizationMode | undefined {
-  if (first === "full" || second === "full") {
-    return "full";
-  }
-  if (first === "delta" || second === "delta") {
-    return "delta";
-  }
-  return undefined;
 }
 
 function classifyKnownError(error: unknown): AsanaSyncRuntimeErrorCode | undefined {
@@ -186,72 +149,6 @@ function classifyKnownError(error: unknown): AsanaSyncRuntimeErrorCode | undefin
     return "sync_in_progress";
   }
   return undefined;
-}
-
-function createAbortResult(): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
-    kind: "aborted",
-    reason: "aborted",
-  });
-  if (result.kind !== "aborted") {
-    throw new Error("同期中断結果の種別が不正です。");
-  }
-  return result;
-}
-
-function createRejectedResult(
-  reason: "offline" | "stopped",
-): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
-    kind: "rejected",
-    reason,
-  });
-  if (result.kind !== "rejected") {
-    throw new Error("同期拒否結果の種別が不正です。");
-  }
-  return result;
-}
-
-function createFailedResult(
-  errorCode: AsanaSyncRuntimeErrorCode,
-  cause: unknown,
-): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
-    kind: "failed",
-    error_code: errorCode,
-  });
-  if (result.kind !== "failed") {
-    throw new Error("同期失敗結果の種別が不正です。");
-  }
-  return { ...result, cause };
-}
-
-function toError(error: unknown): Error {
-  if (error instanceof Error) {
-    return error;
-  }
-  return new Error("同期中にエラーが発生しました。", { cause: error });
-}
-
-function createSynchronizedResult(
-  requestedMode: AsanaSyncRuntimeSynchronizationMode,
-  result: AsanaSyncCoordinatorResult,
-): AsanaSyncRuntimeInternalResult {
-  const synchronized = asanaSyncRuntimeResultSchema.parse({
-    kind: "synchronized",
-    requested_mode: requestedMode,
-    performed_mode: result.performed_mode,
-    synced_at: result.synced_at,
-    result,
-  });
-  if (synchronized.kind !== "synchronized") {
-    throw new Error("同期成功結果の種別が不正です。");
-  }
-  return synchronized;
-}
-
-function createCombinedSignal(signals: AbortSignal[]): AbortSignal {
-  return AbortSignal.any(signals);
 }
 
 /** Asana同期の起動契機とライフサイクルを調整します。 */
@@ -319,8 +216,15 @@ export class AsanaSyncRuntime {
     this.stopped = lifecycleSignal.aborted;
     this.state = asanaSyncRuntimeStateSchema.parse(
       this.connectionState.kind === "online"
-        ? this.createOnlineState(undefined)
-        : this.createOfflineState(),
+        ? createOnlineRuntimeState(
+            this.lastSuccessfulSyncAt,
+            this.lastErrorCode,
+            undefined,
+          )
+        : createOfflineRuntimeState(
+            this.lastSuccessfulSyncAt,
+            this.lastErrorCode,
+          ),
     );
     lifecycleSignal.addEventListener("abort", this.lifecycleAbortListener, {
       once: true,
@@ -394,7 +298,7 @@ export class AsanaSyncRuntime {
       this.activeRunController?.abort();
       this.operationQueue.abortActive();
       this.operationQueue.invalidatePendingMutations("offline");
-      this.publishState(this.createOfflineState());
+      this.publishState(createOfflineRuntimeState(this.lastSuccessfulSyncAt, this.lastErrorCode));
       return;
     }
     if (this.connectionState.kind === "offline") {
@@ -416,7 +320,7 @@ export class AsanaSyncRuntime {
     this.activeRunController?.abort();
     this.operationQueue.abortActive();
     this.operationQueue.invalidatePendingMutations("offline");
-    this.publishState(this.createOfflineState());
+    this.publishState(createOfflineRuntimeState(this.lastSuccessfulSyncAt, this.lastErrorCode));
     this.armTimer();
   }
 
@@ -456,7 +360,7 @@ export class AsanaSyncRuntime {
       this.stopController.abort();
       this.scheduledRun?.cycleController.abort();
       this.activeRunController?.abort();
-      this.publishState(this.createOfflineState());
+      this.publishState(createOfflineRuntimeState(this.lastSuccessfulSyncAt, this.lastErrorCode));
       this.lifecycleSignal.removeEventListener(
         "abort",
         this.lifecycleAbortListener,
@@ -570,7 +474,11 @@ export class AsanaSyncRuntime {
     if (currentConnectionState.kind === "recovery_pending") {
       this.connectionState = { kind: "online" };
       this.lastErrorCode = undefined;
-      this.publishState(this.createOnlineState(undefined));
+      this.publishState(createOnlineRuntimeState(
+        this.lastSuccessfulSyncAt,
+        this.lastErrorCode,
+        undefined,
+      ));
     }
     return { kind: "ready" };
   }
@@ -681,7 +589,7 @@ export class AsanaSyncRuntime {
       if (ownershipTransferred) {
         scheduledRun.deferred.resolve(createAbortResult());
       }
-      return this.waitForCaller(updatedRun.promise, signal);
+      return waitForCaller(updatedRun.promise, signal, createAbortResult);
     }
     return this.scheduleRun(mode, intent, signal, priority);
   }
@@ -724,7 +632,7 @@ export class AsanaSyncRuntime {
       (result) => this.completeRun(scheduledRun, result),
       (error: unknown) => this.rejectRun(scheduledRun, error),
     );
-    return this.waitForCaller(deferred.promise, signal);
+    return waitForCaller(deferred.promise, signal, createAbortResult);
   }
 
   private completeRun(
@@ -768,53 +676,6 @@ export class AsanaSyncRuntime {
     if (rearmTimer) {
       this.armTimer();
     }
-  }
-
-  private waitForCaller(
-    running: Promise<AsanaSyncRuntimeInternalResult>,
-    signal: AbortSignal,
-  ): Promise<AsanaSyncRuntimeInternalResult> {
-    validateAbortSignal(signal);
-    if (signal.aborted) {
-      return Promise.resolve(createAbortResult());
-    }
-    return new Promise<AsanaSyncRuntimeInternalResult>((resolve, reject) => {
-      let settled = false;
-      const removeAbortListener = (): void => {
-        signal.removeEventListener("abort", onAbort);
-      };
-      const onAbort = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        removeAbortListener();
-        resolve(createAbortResult());
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      running.then(
-        (result) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          removeAbortListener();
-          resolve(result);
-        },
-        (error: unknown) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          removeAbortListener();
-          reject(toError(error));
-        },
-      );
-    });
   }
 
   private async drain(
@@ -953,7 +814,11 @@ export class AsanaSyncRuntime {
       return createRejectedResult("offline");
     }
     try {
-      this.publishState(this.createSyncingState(mode));
+      this.publishState(createSyncingRuntimeState(
+        this.lastSuccessfulSyncAt,
+        this.lastErrorCode,
+        mode,
+      ));
       const input = asanaSyncCoordinatorInputSchema.parse({
         mode,
         project_gid: this.configuration.project_gid,
@@ -972,7 +837,11 @@ export class AsanaSyncRuntime {
       this.lastSuccessfulSyncAt = result.synced_at;
       this.lastErrorCode = undefined;
       this.publishState(
-        this.createOnlineState(result.normalization_notifications),
+        createOnlineRuntimeState(
+          this.lastSuccessfulSyncAt,
+          this.lastErrorCode,
+          result.normalization_notifications,
+        ),
       );
       return createSynchronizedResult(mode, result);
     } catch (error: unknown) {
@@ -985,14 +854,23 @@ export class AsanaSyncRuntime {
       const knownCode = classifyKnownError(error);
       if (knownCode == null) {
         this.lastErrorCode = "unexpected_error";
-        this.publishState(this.createErrorState("unexpected_error"));
+        this.publishState(createErrorRuntimeState(
+          this.lastSuccessfulSyncAt,
+          "unexpected_error",
+        ));
         throw error;
       }
       this.lastErrorCode = knownCode;
       if (knownCode === "authentication_required") {
-        this.publishState(this.createAuthenticationRequiredState(), error);
+        this.publishState(
+          createAuthenticationRequiredRuntimeState(this.lastSuccessfulSyncAt),
+          error,
+        );
       } else {
-        this.publishState(this.createErrorState(knownCode), error);
+        this.publishState(
+          createErrorRuntimeState(this.lastSuccessfulSyncAt, knownCode),
+          error,
+        );
       }
       return createFailedResult(knownCode, error);
     }
@@ -1001,77 +879,13 @@ export class AsanaSyncRuntime {
   private recordAbortState(): void {
     this.lastErrorCode = "request_aborted";
     if (this.connectionState.kind === "online" && !this.stopped) {
-      this.publishState(this.createErrorState("request_aborted"));
+      this.publishState(createErrorRuntimeState(
+        this.lastSuccessfulSyncAt,
+        "request_aborted",
+      ));
       return;
     }
-    this.publishState(this.createOfflineState());
-  }
-
-  private createOnlineState(
-    normalizationNotifications:
-      AsanaSyncCoordinatorResult["normalization_notifications"] | undefined,
-  ): AsanaSyncRuntimeState {
-    return asanaSyncRuntimeStateSchema.parse({
-      kind: "online",
-      ...(normalizationNotifications == null
-        ? {}
-        : { normalization_notifications: normalizationNotifications }),
-      ...(this.lastSuccessfulSyncAt == null
-        ? {}
-        : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
-      ...(this.lastErrorCode == null
-        ? {}
-        : { last_error_code: this.lastErrorCode }),
-    });
-  }
-
-  private createOfflineState(): AsanaSyncRuntimeState {
-    return asanaSyncRuntimeStateSchema.parse({
-      kind: "offline",
-      ...(this.lastSuccessfulSyncAt == null
-        ? {}
-        : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
-      ...(this.lastErrorCode == null
-        ? {}
-        : { last_error_code: this.lastErrorCode }),
-    });
-  }
-
-  private createSyncingState(
-    mode: AsanaSyncRuntimeSynchronizationMode,
-  ): AsanaSyncRuntimeState {
-    return asanaSyncRuntimeStateSchema.parse({
-      kind: "syncing",
-      requested_mode: mode,
-      ...(this.lastSuccessfulSyncAt == null
-        ? {}
-        : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
-      ...(this.lastErrorCode == null
-        ? {}
-        : { last_error_code: this.lastErrorCode }),
-    });
-  }
-
-  private createAuthenticationRequiredState(): AsanaSyncRuntimeState {
-    return asanaSyncRuntimeStateSchema.parse({
-      kind: "authentication_required",
-      error_code: "authentication_required",
-      ...(this.lastSuccessfulSyncAt == null
-        ? {}
-        : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
-    });
-  }
-
-  private createErrorState(
-    errorCode: AsanaSyncRuntimeErrorCode,
-  ): AsanaSyncRuntimeState {
-    return asanaSyncRuntimeStateSchema.parse({
-      kind: "error",
-      error_code: errorCode,
-      ...(this.lastSuccessfulSyncAt == null
-        ? {}
-        : { last_successful_sync_at: this.lastSuccessfulSyncAt }),
-    });
+    this.publishState(createOfflineRuntimeState(this.lastSuccessfulSyncAt, this.lastErrorCode));
   }
 
   private publishState(state: AsanaSyncRuntimeState, cause?: unknown): void {
@@ -1176,6 +990,6 @@ export class AsanaSyncRuntime {
     this.activeRunController?.abort();
     this.operationQueue.abortActive();
     this.operationQueue.invalidatePendingMutations("offline");
-    this.publishState(this.createOfflineState());
+    this.publishState(createOfflineRuntimeState(this.lastSuccessfulSyncAt, this.lastErrorCode));
   }
 }

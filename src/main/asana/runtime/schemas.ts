@@ -4,6 +4,7 @@ import { gidSchema, identifierSchema, isoDateTimeSchema } from "../../../shared/
 import {
   asanaSyncCoordinatorResultSchema,
   asanaSyncNormalizationNotificationsSchema,
+  type AsanaSyncCoordinatorResult,
 } from "../sync";
 
 const synchronizationModeSchema = z.enum(["full", "delta"]);
@@ -120,6 +121,11 @@ export type AsanaSyncRuntimeRejectionReason = z.infer<
 export type AsanaSyncRuntimeSynchronizationMode = z.infer<
   typeof synchronizationModeSchema
 >;
+export type AsanaSyncRuntimeInternalResult =
+  | Exclude<AsanaSyncRuntimeResult, { kind: "failed" }>
+  | (Extract<AsanaSyncRuntimeResult, { kind: "failed" }> & {
+      readonly cause: unknown;
+    });
 
 /** Asana同期ランタイムの設定を検証するスキーマです。 */
 export const asanaSyncRuntimeConfigurationSchema = runtimeConfigurationSchema;
@@ -132,3 +138,144 @@ export const asanaSyncRuntimeResultSchema = runtimeResultSchema;
 
 /** Asana同期ランタイムのエラーコードを検証するスキーマです。 */
 export const asanaSyncRuntimeErrorCodeSchema = runtimeErrorCodeSchema;
+
+/** 同期中断結果を検証して作成します。 */
+export function createAbortResult(): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
+    kind: "aborted",
+    reason: "aborted",
+  });
+  if (result.kind !== "aborted") {
+    throw new Error("同期中断結果の種別が不正です。");
+  }
+  return result;
+}
+
+/** 同期拒否結果を検証して作成します。 */
+export function createRejectedResult(
+  reason: "offline" | "stopped",
+): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
+    kind: "rejected",
+    reason,
+  });
+  if (result.kind !== "rejected") {
+    throw new Error("同期拒否結果の種別が不正です。");
+  }
+  return result;
+}
+
+/** 同期失敗結果を検証して作成します。 */
+export function createFailedResult(
+  errorCode: AsanaSyncRuntimeErrorCode,
+  cause: unknown,
+): AsanaSyncRuntimeInternalResult {
+  const result = asanaSyncRuntimeResultSchema.parse({
+    kind: "failed",
+    error_code: errorCode,
+  });
+  if (result.kind !== "failed") {
+    throw new Error("同期失敗結果の種別が不正です。");
+  }
+  return { ...result, cause };
+}
+
+/** 同期成功結果を検証して作成します。 */
+export function createSynchronizedResult(
+  requestedMode: AsanaSyncRuntimeSynchronizationMode,
+  result: AsanaSyncCoordinatorResult,
+): AsanaSyncRuntimeInternalResult {
+  const synchronized = asanaSyncRuntimeResultSchema.parse({
+    kind: "synchronized",
+    requested_mode: requestedMode,
+    performed_mode: result.performed_mode,
+    synced_at: result.synced_at,
+    result,
+  });
+  if (synchronized.kind !== "synchronized") {
+    throw new Error("同期成功結果の種別が不正です。");
+  }
+  return synchronized;
+}
+
+/** オンライン状態を検証して作成します。 */
+export function createOnlineRuntimeState(
+  lastSuccessfulSyncAt: string | undefined,
+  lastErrorCode: AsanaSyncRuntimeErrorCode | undefined,
+  normalizationNotifications:
+    AsanaSyncCoordinatorResult["normalization_notifications"] | undefined,
+): AsanaSyncRuntimeState {
+  return asanaSyncRuntimeStateSchema.parse({
+    kind: "online",
+    ...(normalizationNotifications == null
+      ? {}
+      : { normalization_notifications: normalizationNotifications }),
+    ...(lastSuccessfulSyncAt == null
+      ? {}
+      : { last_successful_sync_at: lastSuccessfulSyncAt }),
+    ...(lastErrorCode == null
+      ? {}
+      : { last_error_code: lastErrorCode }),
+  });
+}
+
+/** オフライン状態を検証して作成します。 */
+export function createOfflineRuntimeState(
+  lastSuccessfulSyncAt: string | undefined,
+  lastErrorCode: AsanaSyncRuntimeErrorCode | undefined,
+): AsanaSyncRuntimeState {
+  return asanaSyncRuntimeStateSchema.parse({
+    kind: "offline",
+    ...(lastSuccessfulSyncAt == null
+      ? {}
+      : { last_successful_sync_at: lastSuccessfulSyncAt }),
+    ...(lastErrorCode == null
+      ? {}
+      : { last_error_code: lastErrorCode }),
+  });
+}
+
+/** 同期中状態を検証して作成します。 */
+export function createSyncingRuntimeState(
+  lastSuccessfulSyncAt: string | undefined,
+  lastErrorCode: AsanaSyncRuntimeErrorCode | undefined,
+  mode: AsanaSyncRuntimeSynchronizationMode,
+): AsanaSyncRuntimeState {
+  return asanaSyncRuntimeStateSchema.parse({
+    kind: "syncing",
+    requested_mode: mode,
+    ...(lastSuccessfulSyncAt == null
+      ? {}
+      : { last_successful_sync_at: lastSuccessfulSyncAt }),
+    ...(lastErrorCode == null
+      ? {}
+      : { last_error_code: lastErrorCode }),
+  });
+}
+
+/** 認証要求状態を検証して作成します。 */
+export function createAuthenticationRequiredRuntimeState(
+  lastSuccessfulSyncAt: string | undefined,
+): AsanaSyncRuntimeState {
+  return asanaSyncRuntimeStateSchema.parse({
+    kind: "authentication_required",
+    error_code: "authentication_required",
+    ...(lastSuccessfulSyncAt == null
+      ? {}
+      : { last_successful_sync_at: lastSuccessfulSyncAt }),
+  });
+}
+
+/** エラー状態を検証して作成します。 */
+export function createErrorRuntimeState(
+  lastSuccessfulSyncAt: string | undefined,
+  errorCode: AsanaSyncRuntimeErrorCode,
+): AsanaSyncRuntimeState {
+  return asanaSyncRuntimeStateSchema.parse({
+    kind: "error",
+    error_code: errorCode,
+    ...(lastSuccessfulSyncAt == null
+      ? {}
+      : { last_successful_sync_at: lastSuccessfulSyncAt }),
+  });
+}

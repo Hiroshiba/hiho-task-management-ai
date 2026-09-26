@@ -1,6 +1,5 @@
 export {
   AsanaSyncRuntime,
-  type AsanaSyncRuntimeInternalResult,
   type AsanaSyncRuntimeUnhandledErrorForwarder,
   type AsanaSyncRuntimeStateListener,
   type AsanaSyncRuntimeUnexpectedErrorNotifier,
@@ -13,6 +12,7 @@ export {
   asanaSyncRuntimeStateSchema,
   type AsanaSyncRuntimeConfiguration,
   type AsanaSyncRuntimeErrorCode,
+  type AsanaSyncRuntimeInternalResult,
   type AsanaSyncRuntimeResult,
   type AsanaSyncRuntimeRejectionReason,
   type AsanaSyncRuntimeState,
