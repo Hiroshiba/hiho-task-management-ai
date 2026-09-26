@@ -12,6 +12,7 @@
       "electron"
     ],
     "patchedDependencies": {
+      "builder-util-runtime@9.7.0": "patches/builder-util-runtime@9.7.0.patch",
       "electron-updater@6.8.9": "patches/electron-updater@6.8.9.patch"
     }
   },

@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  builder-util-runtime@9.7.0:
+    hash: 1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49
+    path: patches/builder-util-runtime@9.7.0.patch
   electron-updater@6.8.9:
     hash: 05dd1d0c242ecc2b650a19bcf2134b7ed7eecaf41219af7695ed830c3574e67e
     path: patches/electron-updater@6.8.9.patch
@@ -3768,7 +3771,7 @@ snapshots:
       asn1js: 3.0.10
       async-exit-hook: 2.0.1
       builder-util: 26.16.0
-      builder-util-runtime: 9.7.0
+      builder-util-runtime: 9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49)
       chromium-pickle-js: 0.2.0
       ci-info: 4.3.1
       debug: 4.4.3
@@ -3865,7 +3868,7 @@ snapshots:
 
   buffer-from@1.1.2: {}
 
-  builder-util-runtime@9.7.0:
+  builder-util-runtime@9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49):
     dependencies:
       debug: 4.4.3
       sax: 1.6.1
@@ -3875,7 +3878,7 @@ snapshots:
   builder-util@26.16.0:
     dependencies:
       '@types/debug': 4.1.13
-      builder-util-runtime: 9.7.0
+      builder-util-runtime: 9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49)
       chalk: 4.1.2
       cross-spawn: 7.0.6
       debug: 4.4.3
@@ -4058,7 +4061,7 @@ snapshots:
     dependencies:
       app-builder-lib: 26.16.1(dmg-builder@26.16.1)(electron-builder-squirrel-windows@26.16.1)
       builder-util: 26.16.0
-      builder-util-runtime: 9.7.0
+      builder-util-runtime: 9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49)
       chalk: 4.1.2
       ci-info: 4.4.0
       dmg-builder: 26.16.1(electron-builder-squirrel-windows@26.16.1)
@@ -4075,7 +4078,7 @@ snapshots:
       '@types/fs-extra': 9.0.13
       aws4: 1.13.2
       builder-util: 26.16.0
-      builder-util-runtime: 9.7.0
+      builder-util-runtime: 9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49)
       chalk: 4.1.2
       form-data: 4.0.6
       fs-extra: 10.1.0
@@ -4088,7 +4091,7 @@ snapshots:
 
   electron-updater@6.8.9(patch_hash=05dd1d0c242ecc2b650a19bcf2134b7ed7eecaf41219af7695ed830c3574e67e):
     dependencies:
-      builder-util-runtime: 9.7.0
+      builder-util-runtime: 9.7.0(patch_hash=1a3a80253718453c35687b7586f86f97ca8a324b6569838acf510e6efdc49d49)
       fs-extra: 10.1.0
       js-yaml: 4.3.1
       lazy-val: 1.0.5
