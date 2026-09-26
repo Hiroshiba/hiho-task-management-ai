@@ -58,7 +58,7 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
-} from "./schemas";
+} from "../../infrastructure/ai/codex-app-server";
 import {
   CodexConnectionStateError,
   CodexConnectionStoppedError,

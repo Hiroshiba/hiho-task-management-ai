@@ -2835,11 +2835,6 @@
     {
       "path": "src/main/codex/app-server/connection.ts",
       "rule": "old-import",
-      "symbol": "src/main/codex/app-server/schemas.ts"
-    },
-    {
-      "path": "src/main/codex/app-server/connection.ts",
-      "rule": "old-import",
       "symbol": "src/main/codex/app-server/version.ts"
     },
     {
@@ -2865,22 +2860,12 @@
     {
       "path": "src/main/codex/app-server/index.ts",
       "rule": "old-import",
-      "symbol": "src/main/codex/app-server/schemas.ts"
-    },
-    {
-      "path": "src/main/codex/app-server/index.ts",
-      "rule": "old-import",
       "symbol": "src/main/codex/app-server/version.ts"
     },
     {
       "path": "src/main/codex/app-server/index.ts",
       "rule": "old-path",
       "symbol": "src/main/codex/app-server/index.ts"
-    },
-    {
-      "path": "src/main/codex/app-server/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/main/codex/app-server/schemas.ts"
     },
     {
       "path": "src/main/codex/app-server/version.ts",
@@ -3021,11 +3006,6 @@
       "path": "src/main/codex/session/session.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/app-server/index.ts"
-    },
-    {
-      "path": "src/main/codex/session/session.ts",
-      "rule": "old-import",
-      "symbol": "src/main/codex/app-server/schemas.ts"
     },
     {
       "path": "src/main/codex/session/session.ts",

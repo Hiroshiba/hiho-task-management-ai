@@ -36,7 +36,7 @@ import {
 import {
   createTaskHubConnectionFeatureOverrides,
   createTaskHubConnectionOverridesFromVerifiedPaths,
-} from "../app-server/schemas";
+} from "../../infrastructure/ai/codex-app-server";
 import {
   TaskctlBroker,
   TaskctlAbortError,

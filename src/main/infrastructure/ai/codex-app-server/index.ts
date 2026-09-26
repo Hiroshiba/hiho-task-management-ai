@@ -1,30 +1,4 @@
 export {
-  CodexAppServerConnection,
-  type CodexDynamicToolHandler,
-  type CodexDiagnosticListener,
-  type CodexNotificationListener,
-} from "./connection";
-export {
-  CodexConnectionStateError,
-  CodexConnectionStoppedError,
-  CodexExecutableNotFoundError,
-  CodexPendingRequestLimitError,
-  CodexProcessError,
-  CodexProcessExitError,
-  CodexProtocolError,
-  CodexRequestAbortedError,
-  CodexRequestIdExhaustedError,
-  CodexRequestTimeoutError,
-  CodexResponseValidationError,
-  CodexRpcError,
-  CodexStopTimeoutError,
-  CodexStdioError,
-  CodexUnknownResponseIdError,
-  CodexVersionCommandError,
-  CodexWriteError,
-  type CodexProtocolFailureCode,
-} from "./errors";
-export {
   accountReadParamsSchema,
   accountReadResultSchema,
   chatGptLoginStartParamsSchema,
@@ -85,9 +59,10 @@ export {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
-} from "../../infrastructure/ai/codex-app-server";
+} from "./rpc-schemas";
 export {
-  createSafeCodexEnvironment,
-  resolveCodexHomePath,
-  resolveCodexExecutable,
-} from "./version";
+  createTaskHubConnectionFeatureOverrides,
+  createTaskHubConnectionOverridesFromVerifiedPaths,
+  type CodexConfigOverrideValue,
+  type TaskHubVerifiedPermissionProfilePaths,
+} from "./connection-overrides";
