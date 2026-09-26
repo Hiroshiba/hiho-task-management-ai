@@ -17,6 +17,7 @@ import {
   ipcAiEditInputSchema,
   ipcAiSelectionInputSchema,
   ipcAiTurnInputSchema,
+  ipcAppUpdateStateSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -28,6 +29,7 @@ import {
   ipcSyncStateEventSchema,
   ipcSyncResultSchema,
   type IpcAiStatus,
+  type IpcAppUpdateState,
   type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcGuiEditResult,
@@ -270,6 +272,7 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
   sync: { kind: "waiting" },
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
+const appUpdateState = ref<IpcAppUpdateState>(ipcAppUpdateStateSchema.parse({ kind: "idle" }));
 const aiSessions = ref<AiSessionRecord[]>([]);
 const aiDialogVisible = ref(false);
 const aiDialogComponent = shallowRef<typeof AiSessionDialog>();
@@ -298,6 +301,7 @@ const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
 const guiEditStates = ref(new Map<string, GuiEditRequestState>());
 const taskEditMarkers = ref(new Map<string, RendererTaskEditMarker>());
 let removeSyncSubscription: (() => void) | undefined;
+let removeAppUpdateSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
@@ -3374,6 +3378,27 @@ async function loadInitialCodexStatus(): Promise<void> {
   }
 }
 
+async function initializeAppUpdateState(): Promise<void> {
+  let eventReceived = false;
+  try {
+    removeAppUpdateSubscription = taskHub.appUpdate.onState((state) => {
+      eventReceived = true;
+      appUpdateState.value = ipcAppUpdateStateSchema.parse(state);
+    });
+    const result = await taskHub.appUpdate.getState();
+    if (!isMounted || eventReceived) {
+      return;
+    }
+    appUpdateState.value = isFailure(result)
+      ? ipcAppUpdateStateSchema.parse({ kind: "failed", phase: "check" })
+      : ipcAppUpdateStateSchema.parse(result.value);
+  } catch {
+    if (isMounted && !eventReceived) {
+      appUpdateState.value = ipcAppUpdateStateSchema.parse({ kind: "failed", phase: "check" });
+    }
+  }
+}
+
 async function initialize(): Promise<void> {
   try {
     removeSyncSubscription = taskHub.sync.onState((value) => {
@@ -3466,6 +3491,7 @@ async function waitForStartupAndInitialize(): Promise<void> {
 
 onMounted(() => {
   isMounted = true;
+  void initializeAppUpdateState();
   clockTimer = window.setInterval(() => {
     currentAsOf.value = new Date().toISOString();
   }, 60_000);
@@ -3486,6 +3512,9 @@ onUnmounted(() => {
   }
   if (removeSyncSubscription != null) {
     removeSyncSubscription();
+  }
+  if (removeAppUpdateSubscription != null) {
+    removeAppUpdateSubscription();
   }
   if (removeAiSubscription != null) {
     removeAiSubscription();
@@ -3513,6 +3542,7 @@ onUnmounted(() => {
         :ai-waiting-count="aiWaitingCount"
         :ai-running-count="aiRunningCount"
         :codex-state="codexState"
+        :app-update-state="appUpdateState"
         :codex-authentication-busy="setupBusy"
         :asana-authentication-busy="asanaAuthenticationBusy"
         :asana-authentication-state-loaded="asanaAuthenticationStateLoaded"

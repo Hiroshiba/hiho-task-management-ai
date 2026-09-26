@@ -1,0 +1,14 @@
+diff --git a/out/providers/Provider.js b/out/providers/Provider.js
+index 5530ddaa8519240768992f1acf1af59e394f7fc8..8ed0af1d1be0f7977371cf6ec6e58929d87e751d 100644
+--- a/out/providers/Provider.js
++++ b/out/providers/Provider.js
+@@ -21,7 +21,8 @@ class Provider {
+     // But some providers may have a different blockmap file, so we need to override this method
+     getBlockMapFiles(baseUrl, oldVersion, newVersion, oldBlockMapFileBaseUrl = null) {
+         const newBlockMapUrl = (0, util_1.newUrlFromBase)(`${baseUrl.pathname}.blockmap`, baseUrl);
+-        const oldBlockMapUrl = (0, util_1.newUrlFromBase)(`${baseUrl.pathname.replace(new RegExp(escapeRegExp(newVersion), "g"), oldVersion)}.blockmap`, oldBlockMapFileBaseUrl ? new url_1.URL(oldBlockMapFileBaseUrl) : baseUrl);
++        const oldBlockMapPath = `${baseUrl.pathname.replace(new RegExp(escapeRegExp(newVersion), "g"), oldVersion)}.blockmap`;
++        const oldBlockMapUrl = (0, util_1.newUrlFromBase)(oldBlockMapFileBaseUrl ? oldBlockMapPath.slice(oldBlockMapPath.lastIndexOf("/") + 1) : oldBlockMapPath, oldBlockMapFileBaseUrl ? new url_1.URL(oldBlockMapFileBaseUrl) : baseUrl);
+         return [oldBlockMapUrl, newBlockMapUrl];
+     }
+     get isUseMultipleRangeRequest() {

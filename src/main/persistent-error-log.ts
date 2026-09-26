@@ -67,6 +67,7 @@ const persistentErrorLogContextSchema = z.enum([
   "registry_dispose",
   "background_operation",
   "application_stop",
+  "application_update",
   "main_window",
   "application_quit",
   "bootstrap",

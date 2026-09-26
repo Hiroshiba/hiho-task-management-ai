@@ -58,6 +58,8 @@ import {
   ipcAiTurnResponseSchema,
   ipcAsanaAuthenticationStateResponseSchema,
   ipcAppStartupResponseSchema,
+  ipcAppUpdateStateSchema,
+  ipcAppUpdateGetStateResponseSchema,
   ipcAsanaGetAuthenticationStateInputSchema,
   ipcAsanaBeginReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -119,6 +121,7 @@ import {
   ipcSyncResponseSchema,
   ipcSyncStateEventSchema,
   type IpcAiApprovalInput,
+  type IpcAppUpdateState,
   type IpcAiApprovalResult,
   type IpcAiCloseSessionInput,
   type IpcAiEditInput,
@@ -287,6 +290,7 @@ export interface IpcObsidianPort {
 
 /** IPCの依存ポートをまとめた設定です。 */
 export interface IpcServicePorts {
+  readonly appUpdate?: IpcAppUpdatePort;
   readonly asana?: IpcAsanaPort;
   readonly readModel?: IpcReadModelPort;
   readonly sync?: IpcSyncPort;
@@ -295,6 +299,12 @@ export interface IpcServicePorts {
   readonly externalAgent?: IpcExternalAgentPort;
   readonly ai?: IpcAiPort;
   readonly obsidian?: IpcObsidianPort;
+}
+
+/** アプリ本体の更新状態をIPCへ提供するポートです。 */
+export interface IpcAppUpdatePort {
+  getState(): IpcAppUpdateState;
+  onState(listener: (state: IpcAppUpdateState) => void): () => void;
 }
 
 /** IPCハンドラー登録の設定です。 */
@@ -500,6 +510,7 @@ export class IpcHandlerRegistry {
   private readonly options: IpcHandlerRegistryOptions;
   private readonly cleanup: HandlerRemover[] = [];
   private readonly syncSubscribers = new Set<WebContents>();
+  private readonly appUpdateSubscribers = new Set<WebContents>();
   private readonly aiSubscribers = new Set<WebContents>();
   private readonly aiStatusSubscribers = new Set<WebContents>();
   private readonly externalAgentSubscribers = new Set<WebContents>();
@@ -539,6 +550,7 @@ export class IpcHandlerRegistry {
       remove();
     }
     this.syncSubscribers.clear();
+    this.appUpdateSubscribers.clear();
     this.aiSubscribers.clear();
     this.aiStatusSubscribers.clear();
     this.externalAgentSubscribers.clear();
@@ -554,6 +566,19 @@ export class IpcHandlerRegistry {
       async (_input, signal) => {
         await this.options.startupGate.waitForStartup(signal);
         return createCompletedValue();
+      },
+    );
+    this.registerHandleBeforeStartup(
+      ipcMain,
+      "app-update:get-state",
+      ipcEmptyRequestSchema,
+      ipcAppUpdateGetStateResponseSchema,
+      () => {
+        const port = this.options.ports.appUpdate;
+        if (port == null) {
+          throw new IpcCapabilityUnavailableError();
+        }
+        return port.getState();
       },
     );
     this.registerHandle(
@@ -1334,6 +1359,16 @@ export class IpcHandlerRegistry {
   private registerEventHandlers(ipcMain: IpcMain): void {
     this.registerSubscription(
       ipcMain,
+      "app-update:state:subscribe",
+      this.appUpdateSubscribers,
+    );
+    this.registerSubscription(
+      ipcMain,
+      "app-update:state:unsubscribe",
+      this.appUpdateSubscribers,
+    );
+    this.registerSubscription(
+      ipcMain,
       "sync:state:subscribe",
       this.syncSubscribers,
     );
@@ -1404,6 +1439,18 @@ export class IpcHandlerRegistry {
   }
 
   private registerServiceEvents(): void {
+    const appUpdate = this.options.ports.appUpdate;
+    if (appUpdate != null) {
+      const remove = appUpdate.onState((state) => {
+        this.sendServiceEvent(
+          ipcAppUpdateStateSchema,
+          state,
+          this.appUpdateSubscribers,
+          "app-update:state",
+        );
+      });
+      this.cleanup.push(remove);
+    }
     const sync = this.options.ports.sync;
     if (sync?.onState != null) {
       const remove = sync.onState((state) => {

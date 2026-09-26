@@ -8,7 +8,9 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 通常版を公開する場合は、中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名します。過去に公開した未署名の開発版は固定の[edge Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/tag/edge)から取得できます。edgeの更新は停止しており、mainへのpushで新たな配布物は公開しません。
 
-アプリ内の自動更新・差分更新は未実装で、更新は手動で行います。
+署名済み通常版のmacOS x64とWindows x64では、起動後に最新の通常版を確認し、見つかった更新を自動で取得します。ヘッダーに確認中、取得中、終了時に適用する準備ができた状態、失敗を表示します。取得できた更新はTaskHubを通常終了した時に適用されます。終了時の適用後も版が更新されていなければ、次回起動時に失敗を表示し、ログに記録します。失敗表示は次の更新の確認中も残し、更新版の準備が完了すると切り替わります。更新に失敗してもタスクの閲覧や編集は続けられます。失敗後の確認は次の起動時に行います。
+
+自動更新に初めて対応する版は、それ以前の版から自動取得できません。現在公開済みの`0.1.1`には更新機能がないため、初回対応版は下記の手動更新手順で導入してください。
 
 ### 署名済み通常版
 
@@ -24,7 +26,7 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 自己署名のため、証明書の登録後もmacOSのGatekeeperやWindowsのSmartScreenの警告が残る場合があります。macOSでは配布元と署名を確認して個別アプリの許可操作を行います。詳しい操作は端末の初期設定を参照し、隔離属性の削除やOSの保護設定全体の無効化は行わないでください。Smart App Controlが強制されているWindows端末は対象外です。
 
-通常版同士の手動更新では、更新前の版と設定を下記の方法で記録してから、次の操作を行います。
+自動更新に対応しない版から移るときや、自動更新が失敗したときは、更新前の版と設定を下記の方法で記録してから手動で導入します。
 
 - macOS x64では、通常版Releaseから次版の署名済みZIPを取得します。配布元を確認し、TaskHubを終了して、隔離属性を保持したままZIPを展開します。展開したアプリの署名を確認してから、`/Applications/TaskHub.app`を置き換えて起動します。
 - Windows x64では、通常版Releaseから次版の署名済み通常NSISを取得します。ダウンロード元の情報を保持し、配布元とデジタル署名を確認してから、TaskHubを終了して通常NSISを再実行します。インストール先のTaskHubを起動します。
@@ -47,7 +49,7 @@ edgeの新たな配布物は作りません。既存のedge配布物を使う場
 
 初回導入後と更新前後に、実際に起動するアプリの版表記を記録します。macOSでは`/Applications/TaskHub.app/Contents/Info.plist`の`CFBundleShortVersionString`、Windowsではインストール先の`TaskHub.exe`のプロパティの「詳細」にあるファイルバージョンを確認します。prereleaseを含む版表記は実成果物で未確認です。配布版と実際の成果物の版表記の対応を確かめてから照合し、表記から次版を識別できない場合は版の確認を未完了として記録してください。
 
-設定保持の検証では、初回導入後にObsidianのVaultを登録し、ヘッダーの「設定」に表示されるVault IDと絶対パスを更新前後で比較します。更新後に初回設定をやり直さず起動でき、登録値が保持されることを確認してください。Asanaのタスクが表示されることだけでは、ローカルデータの保持を確認したことにはなりません。設定・データの保存先は配布形式によって変えませんが、更新・移行時の保持は実機で未検証です。
+設定保持の検証では、初回導入後にObsidianのVaultを登録し、ヘッダーの「設定」に表示されるVault IDと絶対パスを更新前後で比較します。更新後に初回設定をやり直さず起動でき、登録値が保持されることを確認してください。Asanaのタスクが表示されることだけでは、ローカルデータの保持を確認したことにはなりません。設定・データの保存先は配布形式によって変えませんが、自動更新時の保持は2版間の実機で未検証です。
 
 ## 開発
 
@@ -56,7 +58,7 @@ pnpm install
 pnpm run dev
 ```
 
-WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。対応する機能名は`app`、`asana`、`readModel`、`sync`、`setup`、`gui`、`externalAgent`、`ai`、`obsidian`です。
+WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。対応する機能名は`app`、`appUpdate`、`asana`、`readModel`、`sync`、`setup`、`gui`、`externalAgent`、`ai`、`obsidian`です。
 
 WebフロントはViteだけを起動します。
 
@@ -98,11 +100,11 @@ pnpm run package
 
 ## 通常版の公開
 
-TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)に沿って手動更新方式で公開します。
+TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)に沿ってアプリ内更新に対応した通常版を公開します。
 
 公開時は中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と、その時点で適用される公開条件を満たしてください。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
 
-中央のworkflowを実行する前に、TaskHubの過去の配布履歴から自動更新クライアントの配布有無を確認して記録します。配布していた場合は旧版の更新経路を調べ、新しいReleaseの更新メタデータを取得することによる既存利用者への影響と、手動更新への移行手順を確認して記録してください。
+中央のworkflowを実行する前に、既存の自動更新対応版から新しいReleaseへ更新できる経路を確認してください。`0.1.1`から初回対応版への導入は手動で行います。
 
 配布版の正本は、公開するタグが指すコミットのルートの`package.json`の`version`です。担当者が版を更新してコミットし、中央のworkflowを手動実行します。
 
@@ -132,12 +134,16 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
    ```
 
 7. 両OSの署名とアップロードが成功したら、両OSが手順4のタグ先コミットSHAを使ったことを確認します。draft Releaseに、macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の合計8件が揃っていることを確認します。更新メタデータの`version`がタグ先の`package.json`の`version`とタグの版に一致し、`path`と`files.url`が実ファイル名と大文字小文字を含めて一致し、サイズ・Base64のSHA-512・blockmapが実ファイルと一致することを確認します。
-8. draft ReleaseでNSIS Webのinstallerと`.nsis.7z` packageの存在と名前、installerの署名、最終タグのRelease URLから取得する設計を確認します。draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、両OSの実機で[インストールと更新](#インストールと更新)に沿って配布元と署名を人手で確認し、導入・起動・主要機能を検証します。前の通常版から今回の通常版へ手動で再導入し、版・起動・設定と利用者データの保持を確認します。初回署名版で旧版がない場合は、その理由と更新未確認を記録し、導入・起動の成功を更新成功とは扱いません。
+8. draft ReleaseでNSIS Webのinstallerと`.nsis.7z` packageの存在と名前、installerの署名、最終タグのRelease URLから取得する設計を確認します。draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、両OSの実機で[インストールと更新](#インストールと更新)に沿って配布元と署名を人手で確認し、導入・起動・主要機能を検証します。初回対応版を公開するときは`0.1.1`から手動導入し、自動更新の未確認範囲を記録します。
 9. 成果物の整合と中央の公開前の確認項目を満たしたら、更新方式と公開前の確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。`gh release edit v0.1.2 --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
 10. GitHub認証なしで、最終タグのReleaseから手順7の全8件の配布ファイル・更新メタデータ・blockmapを取得できることを確認します。GitHub認証なしのWindows実機で、取得したNSIS Webのinstallerを実行し、同じReleaseの追加packageの取得・導入・起動・主要機能を確認します。すべての結果を記録し、いずれかに失敗した場合はLatest指定と利用案内を止め、原因の解消と修復、再確認を済ませるまで再開しないでください。
 11. 全8件の匿名取得とNSIS Webの確認が成功したら、利用者へ案内してから`gh release edit v0.1.2 --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認します。
 
-中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。通常版の`0.1.2`は`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。更新メタデータを公開しても、TaskHubの更新方法は手動更新です。
+Latest指定後、自動更新に対応した旧版を両OSで起動し、自動確認、全量取得、通常終了時の適用、版・設定・利用者データの保持を検証して記録します。差分取得の成功は前回の更新ファイルがキャッシュにある端末で次版への更新を行い、差分取得に失敗した場合の全量取得も別途確認します。初回対応版では自動更新が可能な旧版がないため、この検証は次版以降に行います。
+
+中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。通常版の`0.1.2`は`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。アプリはLatest Releaseの更新メタデータと配布ファイルを参照し、旧版のblockmapは現在版のタグから取得します。
+
+Windowsの自動更新には、署名済み成果物の`app-update.yml`に実際の証明書の署名者名と一致する`publisherName`が必要です。欠落するとアプリは更新を開始せず、ヘッダーに設定不備を表示します。公開前に署名済み成果物で署名者名を確かめ、同梱された`app-update.yml`と更新版の署名が一致することを確認してください。署名者名が未確認の間はWindowsの自動更新を検証済みとして扱わないでください。
 
 公開途中で失敗すると、新旧のファイルが混在する場合があります。中央の[公開と再実行](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/operations.md)に従い、タグと公開先を維持して原因を解消し、同じActions実行の`Re-run failed jobs`で再実行してください。成功後にReleaseのファイルと更新メタデータの整合を再確認します。
 

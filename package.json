@@ -10,7 +10,10 @@
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "electron"
-    ]
+    ],
+    "patchedDependencies": {
+      "electron-updater@6.8.9": "patches/electron-updater@6.8.9.patch"
+    }
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -27,8 +30,10 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "electron-updater": "6.8.9",
     "reka-ui": "^2.10.4",
     "vue": "^3.5.18",
+    "yaml": "2.8.2",
     "zod": "^4.0.17"
   },
   "devDependencies": {

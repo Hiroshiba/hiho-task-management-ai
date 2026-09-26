@@ -6,6 +6,7 @@ export const taskHubApiInjectionKey: InjectionKey<TaskHubApi> = Symbol("taskHubA
 
 const mockFeatureNameSchema = z.enum([
   "app",
+  "appUpdate",
   "asana",
   "readModel",
   "sync",
@@ -99,6 +100,9 @@ export async function createTaskHubApi(search: string, nativeApi: TaskHubApi | u
   return {
     get app() {
       return selectTaskHubNamespace("app", mockSelection, nativeApi);
+    },
+    get appUpdate() {
+      return selectTaskHubNamespace("appUpdate", mockSelection, nativeApi);
     },
     get asana() {
       return selectTaskHubNamespace("asana", mockSelection, nativeApi);

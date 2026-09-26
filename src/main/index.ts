@@ -12,7 +12,9 @@ import {
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import { autoUpdater } from "electron-updater";
 import type { DiagnosticRecord } from "./application/diagnostics";
+import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
 import { TaskHubApplication } from "./application/service";
 import {
   DiagnosticFailureDispositionError,
@@ -72,6 +74,7 @@ let mainWindow: BrowserWindow | undefined;
 let mainWindowRegistry: IpcHandlerRegistry | undefined;
 let mainWindowStateController: WindowStateController | undefined;
 let taskHubApplication: TaskHubApplication | undefined;
+let applicationUpdateService: ApplicationUpdateService | undefined;
 let lifecycleController: AbortController | undefined;
 let windowCreationPromise: Promise<void> | undefined;
 let applicationStartPromise: Promise<void> | undefined;
@@ -932,10 +935,14 @@ async function createMainWindow(
     },
     savedWindowState,
   );
+  const updateService = applicationUpdateService;
+  if (updateService == null) {
+    throw new Error("アプリ本体の更新サービスが初期化されていません。");
+  }
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,
-    ports: application.getIpcPorts(),
+    ports: { ...application.getIpcPorts(), appUpdate: updateService },
     startupGate: gate,
     diagnostic: {
       record: (error) => {
@@ -1130,6 +1137,24 @@ async function bootstrap(): Promise<void> {
   lifecycleController = controller;
   const application = createTaskHubApplication(controller);
   taskHubApplication = application;
+  const updateService = new ApplicationUpdateService(
+    autoUpdater,
+    app.getVersion(),
+    isApplicationUpdateCandidate(
+      app.isPackaged,
+      process.platform,
+      process.arch,
+      app.getVersion(),
+      process.resourcesPath,
+    ),
+    process.platform,
+    process.resourcesPath,
+    app.getPath("userData"),
+    (error) => {
+      recordPersistentError("main", "app.error", "application_update", "error", error);
+    },
+  );
+  applicationUpdateService = updateService;
   registerVersionIpcHandler(rendererUrl);
   app.on("activate", () => {
     if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
@@ -1157,6 +1182,7 @@ async function bootstrap(): Promise<void> {
   if (controller.signal.aborted || shutdownState.kind !== "running") {
     return;
   }
+  updateService.start();
   applicationStartPromise = startApplication(application, controller.signal);
   await applicationStartPromise;
 }
@@ -1179,6 +1205,10 @@ app.on("before-quit", (event) => {
   shutdownState = { kind: "stopping" };
   void stopApplication().then(() => {
     shutdownState = { kind: "stopped" };
+    const updateService = applicationUpdateService;
+    if (updateService != null && updateService.installOnQuit(() => app.quit())) {
+      return;
+    }
     app.quit();
   }).catch((error) => {
     recordPersistentError("main", "app.error", "application_quit", "error", error);
