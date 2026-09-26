@@ -208,3 +208,100 @@ export function rememberSuccessfulTurnEvidence<TStatus extends string>(
   completedEvidenceSources.set(source.source_id, source);
   completedEvidenceSources.set(confirmationSource.source_id, confirmationSource);
 }
+
+type CompletionTask = {
+  readonly gid: string;
+  readonly status: string;
+  readonly parent_work_mode: string;
+  readonly child_gids: readonly string[];
+};
+
+function allChildrenAreCompleted(
+  task: CompletionTask,
+  tasksByGid: ReadonlyMap<string, CompletionTask>,
+): boolean {
+  if (task.parent_work_mode !== "children_only" || task.child_gids.length === 0) {
+    return false;
+  }
+  return task.child_gids.every((childGid) => {
+    const child = tasksByGid.get(childGid);
+    return child != null && child.status === "completed";
+  });
+}
+
+function compareGids(left: CompletionTask, right: CompletionTask): number {
+  if (left.gid < right.gid) return -1;
+  if (left.gid > right.gid) return 1;
+  return 0;
+}
+
+/** 子タスク完了と外部確認に基づく信頼済み状態根拠を作ります。 */
+export function createTrustedStatusEvidence<TReference>(
+  snapshot: { readonly tasks: readonly CompletionTask[] },
+  externalEvidence: readonly TReference[],
+  dependencies: {
+    readonly createChildrenOnlyEvidenceLocator: (gid: string) => string;
+    readonly parseReferences: (value: unknown) => readonly TReference[];
+    readonly maximumPromptReferences: number;
+  },
+): readonly TReference[] {
+  const tasksByGid = new Map(snapshot.tasks.map((task) => [task.gid, task]));
+  const promptReferences: unknown[] = [];
+  const sortedTasks = [...snapshot.tasks].sort(compareGids);
+  for (const task of sortedTasks) {
+    if (allChildrenAreCompleted(task, tasksByGid)) {
+      promptReferences.push({
+        kind: "task",
+        locator: dependencies.createChildrenOnlyEvidenceLocator(task.gid),
+        target_task_gid: task.gid,
+        allowed_operation: "complete",
+        validation_kind: "children_only_all_completed",
+      });
+    }
+  }
+  const references = [
+    ...promptReferences.slice(0, dependencies.maximumPromptReferences),
+    ...externalEvidence,
+  ];
+  return dependencies.parseReferences(references);
+}
+
+/** 会話原文と操作根拠の参照位置を作る関数を組み立てます。 */
+export function createEvidenceLocators(dependencies: {
+  readonly validateIdentifier: (value: string) => string;
+  readonly validateGid: (value: string) => string;
+}): {
+  readonly createUserMessageSourceId: (turnId: string) => string;
+  readonly createTaskNotesSourceId: (turnId: string, taskGid: string) => string;
+  readonly createWithdrawConfirmationSourceId: (turnId: string) => string;
+  readonly createStatusEvidenceLocator: (sourceId: string, operation: "complete" | "withdraw", taskGid: string) => string;
+  readonly createSplitInstructionLocator: (sourceId: string, parent: { readonly kind: "existing"; readonly gid: string } | { readonly kind: "temporary"; readonly ref: string }) => string;
+} {
+  return {
+    createUserMessageSourceId: (turnId) =>
+      `user-message:${dependencies.validateIdentifier(turnId)}`,
+    createTaskNotesSourceId: (turnId, taskGid) =>
+      `task-notes:${dependencies.validateIdentifier(turnId)}:${dependencies.validateGid(taskGid)}`,
+    createWithdrawConfirmationSourceId: (turnId) =>
+      `withdraw-confirmation:${dependencies.validateIdentifier(turnId)}`,
+    createStatusEvidenceLocator: (sourceId, operation, taskGid) =>
+      `${sourceId}#${operation}:${dependencies.validateGid(taskGid)}`,
+    createSplitInstructionLocator: (sourceId, parent) => {
+      const parentKey = parent.kind === "existing"
+        ? `gid:${dependencies.validateGid(parent.gid)}`
+        : `ref:${dependencies.validateIdentifier(parent.ref)}`;
+      return `${sourceId}#split-parent:${parentKey}`;
+    },
+  };
+}
+
+/** 原文に含まれる引用だけを根拠として返します。 */
+export function verifiedSourceExcerpt(
+  source: { readonly text: string },
+  excerpt: string | undefined,
+): string | undefined {
+  if (excerpt == null || excerpt.trim().length === 0 || !source.text.includes(excerpt)) {
+    return undefined;
+  }
+  return excerpt;
+}

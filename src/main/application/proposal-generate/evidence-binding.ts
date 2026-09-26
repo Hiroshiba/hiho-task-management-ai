@@ -244,6 +244,78 @@ export function bindStatusEvidence<TStatus extends string>(
   return invalid;
 }
 
+type BindableOperation =
+  | { readonly operation: "create_task"; readonly creation: { readonly kind: "single_task" } | SplitTaskCreation }
+  | StatusOperation
+  | { readonly operation:
+      | "update_title" | "update_notes" | "set_status" | "set_importance" | "set_due"
+      | "clear_due" | "set_duration" | "clear_duration" | "set_area" | "set_dependencies"
+      | "set_parent" | "set_parent_work_mode" | "link_obsidian" | "unlink_obsidian" };
+
+/** 単一操作の根拠を現在の会話と状態根拠へ結び付けます。 */
+export function bindProposalOperationEvidence<
+  TStatus extends string,
+  TOperation extends BindableOperation,
+>(
+  operation: TOperation,
+  prepared: EvidencePrepared<TStatus>,
+  dependencies: BindingDependencies<TStatus> & {
+    readonly resolveSplit: (operation: TOperation) => TOperation;
+    readonly resolveStatus: (operation: TOperation) => TOperation;
+    readonly parseOperation: (value: unknown) => TOperation;
+  },
+): {
+  readonly operation: TOperation;
+  readonly split_reference: { readonly parent: ProposalTarget; readonly locator: string; readonly excerpt: string } | undefined;
+  readonly trusted_reference: TrustedReference | undefined;
+} {
+  if (operation.operation === "create_task") {
+    const resolved = dependencies.resolveSplit(operation);
+    if (resolved.operation !== "create_task") {
+      throw new Error("根拠継承後の操作種別が変わりました。");
+    }
+    if (resolved.creation.kind !== "split_child") {
+      return {
+        operation,
+        split_reference: undefined,
+        trusted_reference: undefined,
+      };
+    }
+    const bound = bindSplitInstructionReference(resolved.creation, prepared, dependencies);
+    return {
+      operation: dependencies.parseOperation({
+        ...resolved,
+        creation: {
+          ...resolved.creation,
+          instruction_reference: bound.reference,
+        },
+      }),
+      split_reference: bound.split_reference,
+      trusted_reference: undefined,
+    };
+  }
+  if (operation.operation !== "complete" && operation.operation !== "withdraw") {
+    return {
+      operation,
+      split_reference: undefined,
+      trusted_reference: undefined,
+    };
+  }
+  const resolved = dependencies.resolveStatus(operation);
+  if (resolved.operation !== "complete" && resolved.operation !== "withdraw") {
+    throw new Error("根拠継承後の操作種別が変わりました。");
+  }
+  const bound = bindStatusEvidence(resolved, prepared, dependencies);
+  return {
+    operation: dependencies.parseOperation({
+      ...resolved,
+      status_evidence: bound.evidence,
+    }),
+    split_reference: undefined,
+    trusted_reference: bound.trusted_reference,
+  };
+}
+
 /** 分割依頼の引用を現在の原文へ結び付けます。 */
 export function bindSplitInstructionReference<TStatus extends string>(
   creation: SplitTaskCreation,

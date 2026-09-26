@@ -243,3 +243,16 @@ export function previousDigestFromCandidate<TDigest extends CandidateDigest>(
     ? { kind: "available", sha256: digest.sha256 }
     : { kind: "unavailable", reason: "candidate_unavailable" };
 }
+
+/** 診断イベントの記録失敗を再試行判定へ渡せる結果にします。 */
+export function safelyLogRetryEvent<TEvent>(
+  logRetryEvent: (event: TEvent) => void,
+  event: TEvent,
+): { readonly kind: "succeeded" } | { readonly kind: "failed"; readonly error: unknown } {
+  try {
+    logRetryEvent(event);
+    return { kind: "succeeded" };
+  } catch (error: unknown) {
+    return { kind: "failed", error };
+  }
+}

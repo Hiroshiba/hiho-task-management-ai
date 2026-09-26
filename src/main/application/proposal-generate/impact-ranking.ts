@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { projectedTemporaryGid, projectedTargetGid } from "./task-projection";
 
 type RankResult = {
   readonly ranked_tasks: readonly { readonly gid: string; readonly rank: number }[];
@@ -229,4 +230,69 @@ export function normalizeTasksForRanking<
       completion_confirmation: state.completion_confirmation,
     };
   });
+}
+
+type ImpactTarget =
+  | { readonly kind: "existing"; readonly gid: string }
+  | { readonly kind: "temporary"; readonly ref: string };
+
+type ImpactOperation =
+  | { readonly operation: "create_task"; readonly operation_id: string; readonly temporary_ref: string }
+  | { readonly operation:
+      | "update_title" | "update_notes" | "set_status" | "set_importance" | "set_due"
+      | "clear_due" | "set_duration" | "clear_duration" | "set_area" | "set_dependencies"
+      | "set_parent" | "set_parent_work_mode" | "link_obsidian" | "unlink_obsidian"
+      | "complete" | "withdraw"; readonly operation_id: string; readonly target: ImpactTarget };
+
+/** 順位影響に使う操作索引、タスク投影、直接変更対象をまとめます。 */
+export function createImpactSupport<
+  TTask,
+  TRankingTask,
+  TSnapshot extends { readonly tasks: readonly TTask[] },
+  TProposal extends { readonly groups: readonly { readonly operations: readonly ImpactOperation[] }[] },
+>(
+  dependencies: {
+    readonly normalizeTasks: (tasks: readonly TTask[]) => TRankingTask[];
+    readonly projectTaskValues: (snapshot: TSnapshot, proposal: TProposal, selected: ReadonlySet<string>) => readonly TTask[];
+    readonly WorkflowError: new (message: string) => Error;
+  },
+): {
+  readonly operationMap: (proposal: TProposal) => ReadonlyMap<string, ImpactOperation>;
+  readonly normalizeTasksForRanking: (tasks: TSnapshot["tasks"]) => TRankingTask[];
+  readonly projectTasks: (snapshot: TSnapshot, proposal: TProposal, selected: ReadonlySet<string>) => TRankingTask[];
+  readonly collectDirectTargetGids: (proposal: TProposal, selected: ReadonlySet<string>) => ReadonlySet<string>;
+} {
+  return {
+    operationMap: (proposal) => {
+      const operations = new Map<string, ImpactOperation>();
+      for (const group of proposal.groups) {
+        for (const operation of group.operations) {
+          if (operations.has(operation.operation_id)) {
+            throw new dependencies.WorkflowError("変更案のoperation_idが重複しています。");
+          }
+          operations.set(operation.operation_id, operation);
+        }
+      }
+      return operations;
+    },
+    normalizeTasksForRanking: (tasks) => dependencies.normalizeTasks(tasks),
+    projectTasks: (snapshot, proposal, selected) =>
+      dependencies.normalizeTasks(dependencies.projectTaskValues(snapshot, proposal, selected)),
+    collectDirectTargetGids: (proposal, selected) => {
+      const gids = new Set<string>();
+      for (const group of proposal.groups) {
+        for (const operation of group.operations) {
+          if (!selected.has(operation.operation_id)) {
+            continue;
+          }
+          if (operation.operation === "create_task") {
+            gids.add(projectedTemporaryGid(operation.temporary_ref));
+          } else {
+            gids.add(projectedTargetGid(operation.target));
+          }
+        }
+      }
+      return gids;
+    },
+  };
 }

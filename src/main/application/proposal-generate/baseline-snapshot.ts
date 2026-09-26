@@ -65,3 +65,64 @@ export function createBaselineTaskSnapshots(tasks: readonly SnapshotTask[]): Sna
     .sort((left, right) => compareStrings(left.gid, right.gid));
 }
 
+/** 同期済みタスクをキー順の基準スナップショットへ変換します。 */
+export function createBaselineSnapshot<
+  TSnapshot extends {
+    readonly app_version: string; readonly project_gid: string;
+    readonly as_of: string; readonly tasks: readonly SnapshotTask[];
+  },
+  TBaseline,
+>(
+  snapshot: TSnapshot,
+  dependencies: {
+    readonly parseSnapshot: (value: TSnapshot) => TSnapshot;
+    readonly parseBaseline: (value: unknown) => TBaseline;
+  },
+): TBaseline {
+  const validated = dependencies.parseSnapshot(snapshot);
+  return dependencies.parseBaseline({
+    app_version: validated.app_version,
+    project_gid: validated.project_gid,
+    as_of: validated.as_of,
+    tasks: createBaselineTaskSnapshots(validated.tasks),
+  });
+}
+
+/** taskctlの固定状態が基準スナップショットと一致するか確認します。 */
+export function assertTaskctlSnapshotMatchesBaseline(
+  snapshot: {
+    readonly app_version: string;
+    readonly project_gid: string;
+    readonly as_of: string;
+    readonly synced_at: string;
+  },
+  baseline: { readonly tasks: unknown },
+  taskctlSnapshot: {
+    readonly sync: { readonly kind: string; readonly synced_at?: string };
+    readonly tasks: readonly SnapshotTask[];
+  },
+  dependencies: {
+    readonly parseBaselineSnapshot: (value: unknown) => { readonly tasks: unknown };
+    readonly canonicalizeJson: (value: unknown) => string;
+    readonly SyncError: new (cause: unknown) => Error;
+  },
+): void {
+  if (
+    taskctlSnapshot.sync.kind !== "synced"
+    || taskctlSnapshot.sync.synced_at !== snapshot.synced_at
+  ) {
+    throw new dependencies.SyncError(new Error("taskctlの同期時点が基準スナップショットと一致しません。"));
+  }
+  const taskctlBaseline = dependencies.parseBaselineSnapshot({
+    app_version: snapshot.app_version,
+    project_gid: snapshot.project_gid,
+    as_of: snapshot.as_of,
+    tasks: createBaselineTaskSnapshots(taskctlSnapshot.tasks),
+  });
+  if (
+    dependencies.canonicalizeJson(taskctlBaseline.tasks)
+    !== dependencies.canonicalizeJson(baseline.tasks)
+  ) {
+    throw new dependencies.SyncError(new Error("taskctlのタスク状態が基準スナップショットと一致しません。"));
+  }
+}

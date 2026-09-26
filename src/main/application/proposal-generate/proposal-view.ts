@@ -128,3 +128,40 @@ export function sanitizeProposalForRenderer<TOperation extends RendererOperation
   });
 }
 
+/** 保持中の提案と検証結果をRenderer向け表示値へ変換します。 */
+export function createWorkflowProposalView<
+  TOperation extends RendererOperation,
+  TProposal extends { readonly groups: readonly { readonly operations: readonly TOperation[] }[] },
+  TSnapshot,
+  TView,
+>(
+  input: {
+    readonly proposal_id: string;
+    readonly proposal: TProposal;
+    readonly snapshot: TSnapshot;
+    readonly baseline_snapshot_hash: string;
+    readonly basic_validation: ValidationResult;
+    readonly graph_validation: ValidationResult;
+    readonly selected_operation_ids: readonly string[];
+  },
+  dependencies: {
+    readonly parseIdentifier: (value: string) => string;
+    readonly parseProposal: (value: unknown) => TProposal;
+    readonly parseOperation: (value: unknown) => TOperation;
+    readonly calculateImpact: (snapshot: TSnapshot, proposal: TProposal, selected: readonly string[]) => unknown;
+    readonly parseView: (value: unknown) => TView;
+  },
+): TView {
+  const selected = [...input.selected_operation_ids];
+  return dependencies.parseView({
+    proposal_id: dependencies.parseIdentifier(input.proposal_id),
+    baseline_snapshot_hash: input.baseline_snapshot_hash,
+    proposal: sanitizeProposalForRenderer(
+      input.proposal, dependencies.parseProposal, dependencies.parseOperation,
+    ),
+    basic_validation: toWorkflowValidation(input.basic_validation),
+    graph_validation: toWorkflowValidation(input.graph_validation),
+    selected_operation_ids: selected,
+    impact: dependencies.calculateImpact(input.snapshot, input.proposal, selected),
+  });
+}

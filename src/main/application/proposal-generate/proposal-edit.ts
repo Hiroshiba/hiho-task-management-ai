@@ -3,6 +3,23 @@ type Proposal<TOperation extends Operation> = {
   readonly groups: readonly { readonly operations: readonly TOperation[] }[];
 };
 
+/** 変更案の操作IDを重複なく索引化します。 */
+export function operationMap<TOperation extends Operation>(
+  proposal: Proposal<TOperation>,
+  WorkflowError: new (message: string) => Error,
+): Map<string, TOperation> {
+  const operations = new Map<string, TOperation>();
+  for (const group of proposal.groups) {
+    for (const operation of group.operations) {
+      if (operations.has(operation.operation_id)) {
+        throw new WorkflowError("変更案のoperation_idが重複しています。");
+      }
+      operations.set(operation.operation_id, operation);
+    }
+  }
+  return operations;
+}
+
 /** 編集された操作の後値を検証し、選択状態を保って変更案を再検証します。 */
 export function editStoredProposal<
   TOperation extends Operation,

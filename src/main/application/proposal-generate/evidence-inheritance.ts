@@ -58,9 +58,175 @@ export type InheritedSplitInstructionAlias = {
   readonly parent: ProposalTarget;
 };
 
-export type EligibleEvidenceOperation =
+type EligibleEvidenceOperation =
   | { readonly kind: "status"; readonly operation: StatusOperation }
   | { readonly kind: "split"; readonly creation: SplitCreation };
+
+/** 前案の利用者明示状態根拠に対応する現ターンの原文を探します。 */
+function findInheritedStatusEvidenceAlias(
+  operation: {
+    readonly operation: "complete" | "withdraw";
+    readonly target: ProposalTarget;
+    readonly status_evidence: {
+      readonly kind: string;
+      readonly reference: { readonly kind: string; readonly locator: string; readonly excerpt?: string | undefined };
+    };
+  },
+  aliases: readonly InheritedStatusEvidenceAlias[],
+): InheritedStatusEvidenceAlias | undefined {
+  const evidence = operation.status_evidence;
+  if (evidence.kind !== "user_explicit" || evidence.reference.kind !== "user_message") {
+    return undefined;
+  }
+  if (operation.target.kind !== "existing") {
+    return undefined;
+  }
+  const targetTaskGid = operation.target.gid;
+  return aliases.find((candidate) => candidate.locator === evidence.reference.locator
+    && candidate.excerpt === evidence.reference.excerpt
+    && candidate.target_task_gid === targetTaskGid
+    && candidate.allowed_operation === operation.operation);
+}
+
+/** 継承できる利用者明示状態根拠を現ターンの引用位置へ更新します。 */
+export function resolveInheritedStatusEvidenceAlias<TOperation extends {
+  readonly operation: "complete" | "withdraw";
+  readonly target: ProposalTarget;
+  readonly status_evidence: {
+    readonly kind: string;
+    readonly reference: { readonly kind: string; readonly locator: string; readonly excerpt?: string | undefined };
+  };
+}>(operation: TOperation, aliases: readonly InheritedStatusEvidenceAlias[]): TOperation {
+  const evidence = operation.status_evidence;
+  if (evidence.kind !== "user_explicit" || evidence.reference.kind !== "user_message") {
+    return operation;
+  }
+  const alias = findInheritedStatusEvidenceAlias(operation, aliases);
+  if (alias == null) return operation;
+  return {
+    ...operation,
+    status_evidence: {
+      ...evidence,
+      reference: { ...evidence.reference, locator: alias.source_id, excerpt: alias.excerpt },
+    },
+  };
+}
+
+/** 前案の分割指示根拠に対応する現ターンの原文を探します。 */
+function findInheritedSplitInstructionAlias(
+  operation: {
+    readonly creation:
+      | { readonly kind: "single_task" }
+      | {
+          readonly kind: "split_child";
+          readonly parent: ProposalTarget;
+          readonly instruction_reference: { readonly locator: string; readonly excerpt?: string | undefined };
+        };
+  },
+  aliases: readonly InheritedSplitInstructionAlias[],
+  canonicalizeJson: (value: unknown) => string,
+): InheritedSplitInstructionAlias | undefined {
+  if (operation.creation.kind !== "split_child") {
+    return undefined;
+  }
+  const parent = operation.creation.parent;
+  const reference = operation.creation.instruction_reference;
+  return aliases.find((candidate) => candidate.locator === reference.locator
+    && candidate.excerpt === reference.excerpt
+    && canonicalizeJson(candidate.parent) === canonicalizeJson(parent));
+}
+
+/** 継承できる分割指示根拠を現ターンの引用位置へ更新します。 */
+export function resolveInheritedSplitInstructionAlias<TOperation extends {
+  readonly creation:
+    | { readonly kind: "single_task" }
+    | {
+        readonly kind: "split_child";
+        readonly parent: ProposalTarget;
+        readonly instruction_reference: { readonly locator: string; readonly excerpt?: string | undefined };
+      };
+}>(
+  operation: TOperation,
+  aliases: readonly InheritedSplitInstructionAlias[],
+  canonicalizeJson: (value: unknown) => string,
+): TOperation {
+  const alias = findInheritedSplitInstructionAlias(operation, aliases, canonicalizeJson);
+  if (alias == null || operation.creation.kind !== "split_child") return operation;
+  return {
+    ...operation,
+    creation: {
+      ...operation.creation,
+      instruction_reference: {
+        ...operation.creation.instruction_reference,
+        locator: alias.source_id,
+        excerpt: alias.excerpt,
+      },
+    },
+  };
+}
+
+type CandidateOperation = {
+  readonly operation_id: string;
+  readonly operation: string;
+  readonly target?: ProposalTarget;
+  readonly status_evidence?: {
+    readonly kind: string;
+    readonly reference: { readonly kind: string; readonly locator: string; readonly excerpt?: string | undefined };
+  };
+  readonly creation?:
+    | { readonly kind: "single_task" }
+    | {
+        readonly kind: "split_child";
+        readonly parent: ProposalTarget;
+        readonly instruction_reference: { readonly kind: string; readonly locator: string; readonly excerpt?: string | undefined };
+      };
+};
+
+/** 前案で選択可能だった操作から継承可能な根拠だけを抽出します。 */
+export function selectEligibleEvidenceOperations(
+  proposal: { readonly groups: readonly { readonly operations: readonly CandidateOperation[] }[] },
+  eligibleIds: ReadonlySet<string>,
+): EligibleEvidenceOperation[] {
+  const eligibleOperations: EligibleEvidenceOperation[] = [];
+  for (const group of proposal.groups) {
+    for (const operation of group.operations) {
+      if (!eligibleIds.has(operation.operation_id)) continue;
+      if ((operation.operation === "complete" || operation.operation === "withdraw")
+        && operation.status_evidence?.kind === "user_explicit"
+        && operation.status_evidence.reference.kind === "user_message"
+        && operation.target?.kind === "existing") {
+        eligibleOperations.push({ kind: "status", operation: {
+          operation: operation.operation,
+          target: operation.target,
+          status_evidence: {
+            kind: "user_explicit",
+            reference: {
+              kind: "user_message",
+              locator: operation.status_evidence.reference.locator,
+              ...(operation.status_evidence.reference.excerpt == null
+                ? {} : { excerpt: operation.status_evidence.reference.excerpt }),
+            },
+          },
+        } });
+      }
+      if (operation.operation === "create_task"
+        && operation.creation?.kind === "split_child"
+        && operation.creation.instruction_reference.kind === "user_message") {
+        eligibleOperations.push({ kind: "split", creation: {
+          kind: "split_child",
+          parent: operation.creation.parent,
+          instruction_reference: {
+            kind: "user_message",
+            locator: operation.creation.instruction_reference.locator,
+            ...(operation.creation.instruction_reference.excerpt == null
+              ? {} : { excerpt: operation.creation.instruction_reference.excerpt }),
+          },
+        } });
+      }
+    }
+  }
+  return eligibleOperations;
+}
 
 type InheritanceDependencies<TStatus extends string> = {
   readonly canonicalizeJson: (value: unknown) => string;
@@ -216,13 +382,17 @@ function findInheritedSplitSource<TStatus extends string>(
 }
 
 /** 前案の根拠を現在の会話へ引き継げる場合の別名を求めます。 */
-export function createInheritedEvidenceAliases<TStatus extends string>(
-  baseProposal: BaseProposal<TStatus> | undefined,
+export function createInheritedEvidenceAliases<
+  TStatus extends string,
+  TBase extends BaseProposal<TStatus>,
+>(
+  baseProposal: TBase | undefined,
   sourceMap: ReadonlyMap<string, EvidenceSource<TStatus>>,
   snapshot: Snapshot<TStatus>,
   baseline: Baseline<TStatus>,
-  eligibleOperations: readonly EligibleEvidenceOperation[],
-  dependencies: InheritanceDependencies<TStatus>,
+  dependencies: InheritanceDependencies<TStatus> & {
+    readonly eligibleOperations: (baseProposal: TBase) => readonly EligibleEvidenceOperation[];
+  },
 ): {
   readonly status: readonly InheritedStatusEvidenceAlias[];
   readonly split: readonly InheritedSplitInstructionAlias[];
@@ -230,6 +400,7 @@ export function createInheritedEvidenceAliases<TStatus extends string>(
   if (baseProposal == null) {
     return { status: [], split: [] };
   }
+  const eligibleOperations = dependencies.eligibleOperations(baseProposal);
   const trustedByLocator = new Map<string, TrustedReference>();
   for (const reference of baseProposal.trusted_status_evidence) {
     const key = `${reference.kind}\u0000${reference.locator}`;

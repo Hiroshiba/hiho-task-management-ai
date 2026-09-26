@@ -4,6 +4,25 @@ type RetryInput<TProposal> = {
   readonly retryProposal: TProposal | undefined;
 };
 
+/** AbortSignalを検証して中断を通知する関数を組み立てます。 */
+export function createAbortGuard(
+  WorkflowError: new (message: string) => Error,
+): (signal: AbortSignal) => void {
+  return (signal) => {
+    if (
+      signal == null
+      || typeof signal.aborted !== "boolean"
+      || typeof signal.addEventListener !== "function"
+      || typeof signal.removeEventListener !== "function"
+    ) {
+      throw new TypeError("AbortSignalが必要です。");
+    }
+    if (signal.aborted) {
+      throw new WorkflowError("AIワークフローが中断されました。");
+    }
+  };
+}
+
 type RetryPromptContext<TValidationErrors> =
   | { readonly kind: "initial" }
   | { readonly kind: "correction"; readonly validationErrors: TValidationErrors; readonly failedAttempt: number };
