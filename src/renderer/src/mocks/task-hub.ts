@@ -22,6 +22,8 @@ import {
   ipcAiTurnResponseSchema,
   ipcAppStartupResponseSchema,
   ipcAppVersionSchema,
+  ipcAppUpdateStateSchema,
+  ipcAppUpdateGetStateResponseSchema,
   ipcAsanaAuthenticationStateResponseSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaBeginReauthenticationInputSchema,
@@ -91,6 +93,7 @@ import {
   type IpcAiRejectInput,
   type IpcAiSelectionInput,
   type IpcAiStatus,
+  type IpcAppUpdateState,
   type IpcAiTurnInput,
   type IpcAsanaAuthenticationState,
   type IpcAsanaReauthenticationCancelInput,
@@ -1352,6 +1355,8 @@ export function createMockTaskHubApi(): TaskHubApi {
     kind: "online",
     last_successful_sync_at: SYNC_AT,
   });
+  const appUpdateState: IpcAppUpdateState = ipcAppUpdateStateSchema.parse({ kind: "current" });
+  const appUpdateListeners = new Set<(value: IpcAppUpdateState) => void>();
   let nextAiSessionNumber = 1;
   let operationQueue: Promise<void> = Promise.resolve();
   let obsidianVaultMappings: IpcObsidianVaultMappings = [MOCK_VAULT_MAPPING];
@@ -1577,6 +1582,16 @@ export function createMockTaskHubApi(): TaskHubApi {
       getVersion: () => Promise.resolve().then(() => ipcAppVersionSchema.parse("0.1.0-mock")),
       waitForStartup: () => Promise.resolve().then(() =>
         ipcAppStartupResponseSchema.parse(ok({ completed: true }))),
+    },
+    appUpdate: {
+      getState: () => Promise.resolve().then(() =>
+        ipcAppUpdateGetStateResponseSchema.parse(ok(appUpdateState))),
+      onState: (listener) => {
+        appUpdateListeners.add(listener);
+        return () => {
+          appUpdateListeners.delete(listener);
+        };
+      },
     },
     asana: {
       getAuthenticationState: () => Promise.resolve().then(() => {

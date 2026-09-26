@@ -29,6 +29,8 @@ import {
   ipcAsanaCancelReauthenticationResponseSchema,
   ipcAppStartupResponseSchema,
   ipcAppVersionSchema,
+  ipcAppUpdateStateSchema,
+  ipcAppUpdateGetStateResponseSchema,
   ipcEmptyRequestSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResponseSchema,
@@ -121,6 +123,19 @@ const api: TaskHubApi = {
     waitForStartup: () => invokeEmpty(
       "app:wait-for-startup",
       ipcAppStartupResponseSchema,
+    ),
+  },
+  appUpdate: {
+    getState: () => invokeEmpty(
+      "app-update:get-state",
+      ipcAppUpdateGetStateResponseSchema,
+    ),
+    onState: (listener) => subscribe(
+      "app-update:state",
+      "app-update:state:subscribe",
+      "app-update:state:unsubscribe",
+      ipcAppUpdateStateSchema,
+      listener,
     ),
   },
   asana: {

@@ -546,9 +546,30 @@ const aiStatusSchema = z.discriminatedUnion("kind", [
 
 export const ipcFailureSchema = failureSchema;
 export const ipcAppVersionSchema = appVersionSchema;
+export const ipcAppUpdateStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unavailable") }).strict(),
+  z.object({ kind: z.literal("idle") }).strict(),
+  z.object({ kind: z.literal("checking") }).strict(),
+  z.object({ kind: z.literal("current") }).strict(),
+  z.object({
+    kind: z.literal("downloading"),
+    version: appVersionSchema,
+    percent: z.number().min(0).max(100),
+  }).strict(),
+  z.object({ kind: z.literal("ready"), version: appVersionSchema }).strict(),
+  z.object({
+    kind: z.literal("failed"),
+    phase: z.enum(["release_source", "publisher_name", "check", "download", "install"]),
+  }).strict(),
+]);
+export const ipcAppUpdateGetStateResponseSchema = responseSchema(ipcAppUpdateStateSchema);
 export const ipcChannelSchema = z.enum([
   "app:get-version",
   "app:wait-for-startup",
+  "app-update:get-state",
+  "app-update:state:subscribe",
+  "app-update:state:unsubscribe",
+  "app-update:state",
   "asana:get-authentication-state",
   "asana:begin-reauthentication",
   "asana:complete-reauthentication",
@@ -761,6 +782,7 @@ export type IpcSyncStateEvent = z.infer<typeof syncStateEventSchema>;
 export type IpcAiStatus = z.infer<typeof aiStatusSchema>;
 export type IpcEmptyRequest = undefined;
 export type IpcAppVersion = string;
+export type IpcAppUpdateState = z.infer<typeof ipcAppUpdateStateSchema>;
 export type IpcAppStartupResponse = z.infer<typeof completedResultSchema>;
 export type IpcReadModelOverview = ViewModelOverview;
 export type IpcReadModelTaskDetail = ViewModelTaskDetail;

@@ -1,0 +1,12 @@
+diff --git a/out/httpExecutor.js b/out/httpExecutor.js
+--- a/out/httpExecutor.js
++++ b/out/httpExecutor.js
+@@ -242,7 +242,7 @@ class HttpExecutor {
+     doDownload(requestOptions, options, redirectCount) {
+         const request = this.createRequest(requestOptions, (response) => {
+             if (response.statusCode >= 400) {
+-                options.callback(new Error(`Cannot download "${requestOptions.protocol || "https:"}//${requestOptions.hostname}${requestOptions.path}", status ${response.statusCode}: ${response.statusMessage}`));
++                options.callback(new HttpError(response.statusCode, `Cannot download "${requestOptions.protocol || "https:"}//${requestOptions.hostname}${requestOptions.path}", status ${response.statusCode}: ${response.statusMessage}`));
+                 return;
+             }
+             // It is possible for the response stream to fail, e.g. when a network is lost while
