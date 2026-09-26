@@ -4,14 +4,11 @@ import {
   baselineSnapshotSchema,
   canonicalizeJson,
   dependenciesSchema,
-  type Duration,
   gidSchema,
   identifierSchema,
   obsidianLinksSchema,
   taskSchema,
   type BaselineSnapshot,
-  type Dependency,
-  type ObsidianLink,
   type Task,
   type TaskSnapshot,
 } from "../../../shared/domain";
@@ -106,12 +103,9 @@ import {
   aiWorkflowValidationDetailCodeSchema,
   aiWorkflowZodIssueCodeSchema,
   aiWorkflowMaximumRetryAttempts,
-  type AiWorkflowSafeErrorCause,
   type AiWorkflowCandidateDigest,
   type AiWorkflowPreviousDigest,
   type AiWorkflowRetryLogEvent,
-  type AiWorkflowSafeErrorDescription,
-  type AiWorkflowSafeErrorProjection,
   type AiWorkflowValidationErrors,
   type AiWorkflowValidationIssue,
 } from "./retry";
@@ -125,47 +119,28 @@ import {
   DiagnosticFailureDispositionError,
 } from "../../diagnostic-failure";
 import { redactSensitiveText } from "../../redact-sensitive-text";
+import { createSafeErrorProjection } from "../../application/proposal-generate/retry-error-projection";
+import { createTaskProjector, projectedTemporaryGid, projectedTargetGid } from "../../application/proposal-generate/task-projection";
+import {
+  createTurnPrompt,
+  createPendingWithdrawConfirmation,
+  createRendererQuestions,
+} from "../../application/proposal-generate/turn-prompt";
+import {
+  createEvidenceSourceMap,
+  isPendingWithdrawConfirmationValid,
+  isWithdrawConfirmationSourceCurrent,
+  type EvidenceSource as WorkflowEvidenceSource,
+  type PendingWithdrawConfirmation as WorkflowPendingWithdrawConfirmation,
+  type UserMessageSourceSummary as WorkflowUserMessageSourceSummary,
+} from "../../application/proposal-generate/evidence-sources";
 
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
 
-type EvidenceSource =
-  | {
-      readonly kind: "user_message";
-      readonly source_id: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: "task_notes";
-      readonly source_id: string;
-      readonly task_gid: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: "withdraw_confirmation";
-      readonly source_id: string;
-      readonly text: string;
-      readonly target_task_gid: string;
-      readonly baseline_status: TaskSnapshot["status"];
-      readonly baseline_completed: boolean;
-    };
-
+type EvidenceSource = WorkflowEvidenceSource<TaskSnapshot["status"]>;
 type EvidenceSourceMap = ReadonlyMap<string, EvidenceSource>;
-
-type UserMessageSourceSummary =
-  | {
-      readonly kind: "user_message";
-      readonly source_id: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: "withdraw_confirmation";
-      readonly source_id: string;
-      readonly text: string;
-      readonly target_task_gid: string;
-      readonly baseline_status: TaskSnapshot["status"];
-      readonly baseline_completed: boolean;
-    };
+type UserMessageSourceSummary = WorkflowUserMessageSourceSummary<TaskSnapshot["status"]>;
 
 type BoundProposalEvidence = {
   readonly proposal: Proposal;
@@ -173,13 +148,7 @@ type BoundProposalEvidence = {
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
 
-type PendingWithdrawConfirmation = {
-  readonly target_task_gid: string;
-  readonly baseline_status: TaskSnapshot["status"];
-  readonly baseline_completed: boolean;
-};
-
-type CodexQuestion = CodexResponse["questions"][number];
+type PendingWithdrawConfirmation = WorkflowPendingWithdrawConfirmation<TaskSnapshot["status"]>;
 
 type NoProposalResponse = Extract<CodexResponse, { readonly kind: "no_proposal" }>;
 
@@ -619,32 +588,6 @@ function findBaselineTaskByGid(
   return baseline.tasks.find((task) => task.gid === taskGid);
 }
 
-function isPendingWithdrawConfirmationValid(
-  snapshot: AiWorkflowSnapshot,
-  pending: PendingWithdrawConfirmation,
-): boolean {
-  return isWithdrawConfirmationTargetCurrent(
-    snapshot,
-    pending.target_task_gid,
-    pending.baseline_status,
-    pending.baseline_completed,
-  );
-}
-
-function isWithdrawConfirmationTargetCurrent(
-  snapshot: AiWorkflowSnapshot,
-  targetTaskGid: string,
-  baselineStatus: TaskSnapshot["status"],
-  baselineCompleted: boolean,
-): boolean {
-  const task = findTaskByGid(snapshot, targetTaskGid);
-  return task != null
-    && task.status === baselineStatus
-    && task.completed === baselineCompleted
-    && (task.status === "not_started" || task.status === "in_progress")
-    && task.completed === false;
-}
-
 function allChildrenAreCompleted(
   task: Task,
   tasksByGid: ReadonlyMap<string, Task>,
@@ -670,106 +613,6 @@ function createWithdrawConfirmationSourceId(turnId: string): string {
   return `withdraw-confirmation:${identifierSchema.parse(turnId)}`;
 }
 
-function isWithdrawConfirmationSourceCurrent(
-  source: Extract<EvidenceSource, { readonly kind: "withdraw_confirmation" }>,
-  snapshot: AiWorkflowSnapshot,
-): boolean {
-  return isWithdrawConfirmationTargetCurrent(
-    snapshot,
-    source.target_task_gid,
-    source.baseline_status,
-    source.baseline_completed,
-  );
-}
-
-function createEvidenceSourceMap(
-  turnId: string,
-  message: string,
-  snapshot: AiWorkflowSnapshot,
-  completedEvidenceSources: ReadonlyMap<string, EvidenceSource>,
-  pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined,
-): {
-  readonly user_message_source_id: string;
-  readonly user_message_sources: readonly UserMessageSourceSummary[];
-  readonly withdraw_confirmation_source_id: string | undefined;
-  readonly source_map: EvidenceSourceMap;
-} {
-  const userMessageSourceId = createUserMessageSourceId(turnId);
-  const sources = new Map<string, EvidenceSource>();
-  const userMessageSources: UserMessageSourceSummary[] = [];
-  for (const source of completedEvidenceSources.values()) {
-    if (source.kind === "user_message") {
-      sources.set(source.source_id, source);
-      userMessageSources.push({
-        kind: "user_message",
-        source_id: source.source_id,
-        text: source.text,
-      });
-      continue;
-    }
-    if (
-      source.kind === "withdraw_confirmation"
-      && isWithdrawConfirmationSourceCurrent(source, snapshot)
-    ) {
-      sources.set(source.source_id, source);
-      userMessageSources.push({
-        kind: "withdraw_confirmation",
-        source_id: source.source_id,
-        text: source.text,
-        target_task_gid: source.target_task_gid,
-        baseline_status: source.baseline_status,
-        baseline_completed: source.baseline_completed,
-      });
-    }
-  }
-  sources.set(userMessageSourceId, {
-    kind: "user_message",
-    source_id: userMessageSourceId,
-    text: message,
-  });
-  userMessageSources.push({
-    kind: "user_message",
-    source_id: userMessageSourceId,
-    text: message,
-  });
-  const withdrawConfirmationSourceId = pendingWithdrawConfirmation == null
-    ? undefined
-    : createWithdrawConfirmationSourceId(turnId);
-  if (withdrawConfirmationSourceId != null && pendingWithdrawConfirmation != null) {
-    sources.set(withdrawConfirmationSourceId, {
-      kind: "withdraw_confirmation",
-      source_id: withdrawConfirmationSourceId,
-      text: message,
-      target_task_gid: pendingWithdrawConfirmation.target_task_gid,
-      baseline_status: pendingWithdrawConfirmation.baseline_status,
-      baseline_completed: pendingWithdrawConfirmation.baseline_completed,
-    });
-    userMessageSources.push({
-      kind: "withdraw_confirmation",
-      source_id: withdrawConfirmationSourceId,
-      text: message,
-      target_task_gid: pendingWithdrawConfirmation.target_task_gid,
-      baseline_status: pendingWithdrawConfirmation.baseline_status,
-      baseline_completed: pendingWithdrawConfirmation.baseline_completed,
-    });
-  }
-  for (const task of snapshot.tasks) {
-    const sourceId = createTaskNotesSourceId(turnId, task.gid);
-    sources.set(sourceId, {
-      kind: "task_notes",
-      source_id: sourceId,
-      task_gid: task.gid,
-      text: task.notes,
-    });
-  }
-  return {
-    user_message_source_id: userMessageSourceId,
-    user_message_sources: userMessageSources,
-    withdraw_confirmation_source_id: withdrawConfirmationSourceId,
-    source_map: sources,
-  };
-}
-
 function createStatusEvidenceLocator(
   sourceId: string,
   operation: "complete" | "withdraw",
@@ -777,6 +620,11 @@ function createStatusEvidenceLocator(
 ): string {
   return `${sourceId}#${operation}:${gidSchema.parse(taskGid)}`;
 }
+
+type ProposalTarget = Extract<
+  ProposalOperation,
+  { readonly operation: "update_title" }
+>["target"];
 
 function createSplitInstructionLocator(
   sourceId: string,
@@ -1753,136 +1601,6 @@ function validateWorkspaceProposal(
     : { kind: "invalid", issues: workspaceValidationIssues(issues) };
 }
 
-function createTurnPrompt(
-  request: AiWorkflowTurnRequest,
-  prepared: PreparedTurn,
-  workspace: ProposalWorkspace,
-  retryContext: TurnRetryPromptContext,
-): string {
-  const context = aiWorkflowTurnContextSchema.parse({
-    baseline_snapshot_hash: prepared.baseline_snapshot_hash,
-    app_version: prepared.snapshot.app_version,
-    project_gid: prepared.snapshot.project_gid,
-    synced_at: prepared.snapshot.synced_at,
-    as_of: prepared.snapshot.as_of,
-  });
-  const targetTask = request.target_task_gid == null
-    ? undefined
-    : findTaskByGid(prepared.snapshot, request.target_task_gid);
-  if (request.target_task_gid != null && targetTask == null) {
-    throw new AiWorkflowError("指定された対象タスクが基準スナップショットにありません。");
-  }
-  const targetTaskContext = targetTask == null
-    ? null
-    : { gid: targetTask.gid, title: targetTask.title };
-  const withdrawConfirmationSources = prepared.user_message_sources.filter(
-    (source) => source.kind === "withdraw_confirmation",
-  );
-  const taskNotesSourceIdPattern =
-    `task-notes:${prepared.user_message_source_id.slice("user-message:".length)}:<対象タスクGID>`;
-  const correctionInstructions = retryContext.kind === "initial"
-    ? []
-    : [
-        "前回の検証エラーを修正してください。記載されたJSON Pointerと型付きcodeに従ってワークスペースを編集してください。",
-        "検証エラーには会話本文や根拠本文を含めていません。ワークスペースの候補と今回のコンテキストを照合してください。",
-        "<validation_errors>",
-        canonicalizeJson({
-          attempt: retryContext.failedAttempt,
-          max_attempts: aiWorkflowMaximumRetryAttempts,
-          errors: retryContext.validationErrors.errors.slice(0, 12),
-        }),
-        "</validation_errors>",
-      ];
-  return [
-    "TaskHubの構造化変更案だけを検討してください。",
-    "変更案は今回のproposal_workspace dynamic toolで読み取り、意味編集、検証、提出してください。",
-    "editはreplace_allで全体を置換できます。大きな案はset_title、insert_group、insert_operationなどの分割編集で構築できます。",
-    "各編集でedit_batch_idに新しいID、expected_revisionに現在の改訂番号を指定してください。read、diff、validateはoffsetで続きを読めます。",
-    "提出が成功した場合だけ、response_jsonへ今回のworkspace_idと提出したrevision、短いmessageとquestionsを指定してください。完全なproposalは最終応答へ含めないでください。",
-    ...correctionInstructions,
-    "<baseline_context>",
-    canonicalizeJson(context),
-    "</baseline_context>",
-    "<proposal_workspace>",
-    canonicalizeJson({
-      workspace_id: workspace.workspaceId,
-      revision: workspace.getStatus().revision,
-      baseline_snapshot_hash: workspace.baselineSnapshotHash,
-    }),
-    "</proposal_workspace>",
-    "<target_task_context>",
-    canonicalizeJson(targetTaskContext),
-    "</target_task_context>",
-    "<user_message_sources>",
-    canonicalizeJson(prepared.user_message_sources),
-    "</user_message_sources>",
-    "<withdraw_confirmation_sources>",
-    canonicalizeJson(withdrawConfirmationSources),
-    "</withdraw_confirmation_sources>",
-    "<task_notes_source_id_pattern>",
-    canonicalizeJson({ pattern: taskNotesSourceIdPattern }),
-    "</task_notes_source_id_pattern>",
-    "<pending_withdraw_confirmation>",
-    canonicalizeJson(prepared.pending_withdraw_confirmation ?? null),
-    "</pending_withdraw_confirmation>",
-    "<inherited_status_evidence_aliases>",
-    canonicalizeJson(prepared.inherited_status_evidence_aliases),
-    "</inherited_status_evidence_aliases>",
-    "<inherited_split_instruction_aliases>",
-    canonicalizeJson(prepared.inherited_split_instruction_aliases),
-    "</inherited_split_instruction_aliases>",
-    "<trusted_status_evidence>",
-    canonicalizeJson(prepared.trusted_status_evidence),
-    "</trusted_status_evidence>",
-    "<current_request>",
-    canonicalizeJson({
-      message: request.message,
-      user_message_source_id: prepared.user_message_source_id,
-    }),
-    "</current_request>",
-  ].join("\n");
-}
-
-function createPendingWithdrawConfirmation(
-  response: NoProposalResponse,
-  prepared: PreparedTurn,
-): PendingWithdrawConfirmation | undefined {
-  if (response.questions.length !== 1) {
-    return undefined;
-  }
-  const question = response.questions[0];
-  if (question == null) {
-    throw new AiWorkflowError("取り下げ確認の質問を取得できません。");
-  }
-  const confirmation = question.withdraw_confirmation;
-  if (confirmation == null) {
-    return undefined;
-  }
-  const task = findTaskByGid(prepared.snapshot, confirmation.target_task_gid);
-  const baselineTask = findBaselineTaskByGid(
-    prepared.baseline,
-    confirmation.target_task_gid,
-  );
-  if (
-    task == null
-    || baselineTask == null
-    || (
-      task.status !== "not_started"
-      && task.status !== "in_progress"
-    )
-    || task.completed !== false
-    || baselineTask.status !== task.status
-    || baselineTask.completed !== task.completed
-  ) {
-    return undefined;
-  }
-  return {
-    target_task_gid: task.gid,
-    baseline_status: baselineTask.status,
-    baseline_completed: baselineTask.completed,
-  };
-}
-
 function createPendingWithdrawConfirmationCommit(
   pending: PendingWithdrawConfirmation | undefined,
 ): PendingWithdrawConfirmationCommit {
@@ -1890,41 +1608,6 @@ function createPendingWithdrawConfirmationCommit(
     return { kind: "clear" };
   }
   return { kind: "set", value: pending };
-}
-
-function createRendererQuestions(
-  questions: readonly CodexQuestion[],
-  pending: PendingWithdrawConfirmation | undefined,
-  snapshot: AiWorkflowSnapshot,
-): readonly {
-  readonly question_id: string;
-  readonly text: string;
-  readonly options?: readonly string[];
-}[] {
-  return questions.map((question) => {
-    if (
-      pending != null
-      && question.withdraw_confirmation?.target_task_gid === pending.target_task_gid
-    ) {
-      const task = findTaskByGid(snapshot, pending.target_task_gid);
-      if (task == null) {
-        throw new AiWorkflowError("取り下げ確認の対象タスクが基準スナップショットにありません。");
-      }
-      return {
-        question_id: question.question_id,
-        text: `タスク「${task.title}」GID ${task.gid}を取り下げますか。`,
-        options: ["はい、それでいいです", "いいえ"],
-      };
-    }
-    const base = {
-      question_id: question.question_id,
-      text: question.text,
-    };
-    if (question.options == null) {
-      return base;
-    }
-    return { ...base, options: [...question.options] };
-  });
 }
 
 function assertTaskctlSnapshotMatchesBaseline(
@@ -2057,309 +1740,18 @@ function sameStringArray(left: readonly string[], right: readonly string[]): boo
   return left.every((value, index) => value === right[index]);
 }
 
-type ProposalTarget = Extract<
-  ProposalOperation,
-  { readonly operation: "update_title" }
->["target"];
-
-type ProposalParentValue = Extract<
-  ProposalOperation,
-  { readonly operation: "set_parent" }
->["after"];
-
-type ProposalDueValue = Extract<
-  ProposalOperation,
-  { readonly operation: "set_due" }
->["after"];
-
-function projectedTemporaryGid(ref: string): string {
-  return `temporary:${ref}`;
-}
-
-function projectedTargetGid(target: ProposalTarget): string {
-  if (target.kind === "existing") {
-    return target.gid;
-  }
-  return projectedTemporaryGid(target.ref);
-}
-
-function projectedParentGid(value: ProposalParentValue): string | undefined {
-  if (value.kind === "absent") {
-    return undefined;
-  }
-  return projectedTargetGid(value);
-}
-
-function withoutTaskFields(
-  task: Task,
-  fields: readonly string[],
-): Record<string, unknown> {
-  const value: Record<string, unknown> = { ...task };
-  for (const field of fields) {
-    delete value[field];
-  }
-  return value;
-}
-
-function replaceProjectedTask(
-  tasks: Map<string, Task>,
-  gid: string,
-  update: (task: Task) => Task,
-): void {
-  const current = tasks.get(gid);
-  if (current == null) {
-    throw new AiWorkflowError(`投影対象タスク ${gid} が存在しません。`);
-  }
-  tasks.set(gid, taskSchema.parse(update(current)));
-}
-
-function createProjectedDependency(
-  dependency: Extract<ProposalOperation, { readonly operation: "set_dependencies" }>["after"][number],
-): Dependency {
-  return {
-    task_gid: projectedTargetGid(dependency.target),
-    scope: dependency.scope,
-    source: dependency.source,
-  };
-}
-
-function createProjectedTask(
-  operation: Extract<ProposalOperation, { readonly operation: "create_task" }>,
-  snapshot: AiWorkflowSnapshot,
-): Task {
-  const after = operation.after;
-  const base = {
-    gid: projectedTemporaryGid(operation.temporary_ref),
-    title: after.title,
-    notes: after.notes ?? "",
-    status: after.status ?? "not_started",
-    importance: after.importance ?? 3,
-    area: after.area ?? "未分類",
-    block_state: "none",
-    parent_work_mode: after.parent_work_mode ?? "unknown",
-    section_gid: "temporary-section",
-    completed: false,
-    tags: [],
-    child_gids: [],
-    dependencies: (after.dependencies ?? []).map((dependency) => createProjectedDependency(dependency)),
-    obsidian_links: after.obsidian_links ?? [],
-    activity_anchor_on: snapshot.as_of.slice(0, 10),
-  };
-  const withDue = after.due == null
-    ? base
-    : after.due.kind === "due_on"
-      ? { ...base, due_on: after.due.due_on }
-      : { ...base, due_at: after.due.due_at };
-  const withDuration = after.duration == null
-    ? withDue
-    : { ...withDue, duration: after.duration };
-  const withParent = after.parent == null
-    ? withDuration
-    : { ...withDuration, parent_gid: projectedTargetGid(after.parent) };
-  return taskSchema.parse(withParent);
-}
-
-function appendChild(tasks: Map<string, Task>, parentGid: string, childGid: string): void {
-  replaceProjectedTask(tasks, parentGid, (parent) => {
-    if (parent.child_gids.includes(childGid)) {
-      return parent;
-    }
-    return { ...parent, child_gids: [...parent.child_gids, childGid] };
-  });
-}
-
-function removeChild(tasks: Map<string, Task>, parentGid: string, childGid: string): void {
-  replaceProjectedTask(tasks, parentGid, (parent) => ({
-    ...parent,
-    child_gids: parent.child_gids.filter((gid) => gid !== childGid),
-  }));
-}
-
-function applyCreateRelations(
-  tasks: Map<string, Task>,
-  operation: Extract<ProposalOperation, { readonly operation: "create_task" }>,
-): void {
-  const childGid = projectedTemporaryGid(operation.temporary_ref);
-  if (operation.after.parent != null) {
-    appendChild(tasks, projectedTargetGid(operation.after.parent), childGid);
-  }
-}
-
-function setProjectedDue(task: Task, due: ProposalDueValue): Task {
-  const withoutDue = withoutTaskFields(task, ["due_on", "due_at"]);
-  if (due.kind === "due_on") {
-    return taskSchema.parse({ ...withoutDue, due_on: due.due_on });
-  }
-  return taskSchema.parse({ ...withoutDue, due_at: due.due_at });
-}
-
-function clearProjectedDue(task: Task): Task {
-  return taskSchema.parse(withoutTaskFields(task, ["due_on", "due_at"]));
-}
-
-function setProjectedDuration(task: Task, duration: Duration): Task {
-  return taskSchema.parse({ ...task, duration });
-}
-
-function clearProjectedDuration(task: Task): Task {
-  return taskSchema.parse(withoutTaskFields(task, ["duration"]));
-}
-
-function sameObsidianLink(left: ObsidianLink, right: ObsidianLink): boolean {
-  return left.vault_id === right.vault_id
-    && left.path === right.path
-    && left.title === right.title
-    && left.confidence === right.confidence;
-}
-
-function applyProjectedOperation(
-  tasks: Map<string, Task>,
-  operation: Exclude<ProposalOperation, { readonly operation: "create_task" }>,
-): void {
-  const targetGid = projectedTargetGid(operation.target);
-  switch (operation.operation) {
-    case "update_title":
-      replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, title: operation.after }));
-      return;
-    case "update_notes":
-      replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, notes: operation.after }));
-      return;
-    case "set_status":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        status: operation.after,
-        completed: false,
-      }));
-      return;
-    case "set_importance":
-      replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, importance: operation.after }));
-      return;
-    case "set_due":
-      replaceProjectedTask(tasks, targetGid, (task) => setProjectedDue(task, operation.after));
-      return;
-    case "clear_due":
-      replaceProjectedTask(tasks, targetGid, clearProjectedDue);
-      return;
-    case "set_duration":
-      replaceProjectedTask(tasks, targetGid, (task) =>
-        setProjectedDuration(task, operation.after));
-      return;
-    case "clear_duration":
-      replaceProjectedTask(tasks, targetGid, clearProjectedDuration);
-      return;
-    case "set_area":
-      replaceProjectedTask(tasks, targetGid, (task) => ({ ...task, area: operation.after }));
-      return;
-    case "set_dependencies":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        dependencies: dependenciesSchema.parse(
-          operation.after.map((dependency) => createProjectedDependency(dependency)),
-        ),
-      }));
-      return;
-    case "set_parent": {
-      const current = tasks.get(targetGid);
-      if (current == null) {
-        throw new AiWorkflowError(`投影対象タスク ${targetGid} が存在しません。`);
-      }
-      if (current.parent_gid != null) {
-        if (tasks.has(current.parent_gid)) {
-          removeChild(tasks, current.parent_gid, targetGid);
-        }
-      }
-      const newParentGid = projectedParentGid(operation.after);
-      replaceProjectedTask(tasks, targetGid, (task) => {
-        if (newParentGid == null) {
-          return taskSchema.parse(withoutTaskFields(task, ["parent_gid"]));
-        }
-        return { ...task, parent_gid: newParentGid };
-      });
-      if (newParentGid != null) {
-        appendChild(tasks, newParentGid, targetGid);
-      }
-      return;
-    }
-    case "set_parent_work_mode":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        parent_work_mode: operation.after,
-      }));
-      return;
-    case "link_obsidian":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        obsidian_links: obsidianLinksSchema.parse([...task.obsidian_links, operation.after]),
-      }));
-      return;
-    case "unlink_obsidian":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        obsidian_links: task.obsidian_links.filter(
-          (link) => !sameObsidianLink(link, operation.before),
-        ),
-      }));
-      return;
-    case "complete":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        status: "completed",
-        completed: true,
-      }));
-      return;
-    case "withdraw":
-      replaceProjectedTask(tasks, targetGid, (task) => ({
-        ...task,
-        status: "withdrawn",
-        completed: true,
-      }));
-      return;
-  }
-}
-
 function projectTasks(
   snapshot: AiWorkflowSnapshot,
   proposal: Proposal,
   selectedOperationIds: ReadonlySet<string>,
 ): RankingTask[] {
-  const tasks = new Map<string, Task>();
-  for (const task of snapshot.tasks) {
-    if (tasks.has(task.gid)) {
-      throw new AiWorkflowError(`投影元タスク ${task.gid} が重複しています。`);
-    }
-    tasks.set(task.gid, task);
-  }
-
-  const selectedCreates = proposal.groups.flatMap((group) =>
-    group.operations.filter(
-      (operation): operation is Extract<ProposalOperation, { readonly operation: "create_task" }> =>
-        operation.operation === "create_task"
-        && selectedOperationIds.has(operation.operation_id),
-    ));
-  for (const operation of selectedCreates) {
-    const gid = projectedTemporaryGid(operation.temporary_ref);
-    if (tasks.has(gid)) {
-      throw new AiWorkflowError(`投影先GID ${gid} が重複しています。`);
-    }
-    tasks.set(gid, createProjectedTask(operation, snapshot));
-  }
-  for (const operation of selectedCreates) {
-    applyCreateRelations(tasks, operation);
-  }
-
-  for (const group of proposal.groups) {
-    for (const operation of group.operations) {
-      if (
-        operation.operation !== "create_task"
-        && selectedOperationIds.has(operation.operation_id)
-      ) {
-        applyProjectedOperation(tasks, operation);
-      }
-    }
-  }
-  return normalizeTasksForRanking(
-    [...tasks.values()].sort((left, right) => compareStrings(left.gid, right.gid)),
-  );
+  const projectTaskValues = createTaskProjector({
+    parseTask: (value) => taskSchema.parse(value),
+    parseDependencies: (value) => dependenciesSchema.parse(value),
+    parseObsidianLinks: (value) => obsidianLinksSchema.parse(value),
+    WorkflowError: AiWorkflowError,
+  });
+  return normalizeTasksForRanking(projectTaskValues(snapshot, proposal, selectedOperationIds));
 }
 
 function normalizeTasksForRanking(tasks: readonly Task[]): RankingTask[] {
@@ -2794,112 +2186,6 @@ function createValidationErrorsDocument(
   });
 }
 
-function safeErrorDescription(error: unknown): AiWorkflowSafeErrorDescription {
-  if (error instanceof AiWorkflowRetryableFailureError) {
-    return "AI変更案の検証に失敗しました。";
-  }
-  if (error instanceof CodexSessionOutputValidationError) {
-    return "Codexの構造化出力を検証できませんでした。";
-  }
-  if (error instanceof AggregateError) {
-    return "複数の処理に失敗しました。";
-  }
-  if (error instanceof z.ZodError) {
-    return "構造化データの検証に失敗しました。";
-  }
-  if (error instanceof Error) {
-    return "処理に失敗しました。";
-  }
-  return "Error以外の値が例外として送出されました。";
-}
-
-function safeNonErrorName(error: unknown): string {
-  if (error == null) {
-    return "Nullish";
-  }
-  if (typeof error === "object") {
-    return "Object";
-  }
-  if (typeof error === "function") {
-    return "Function";
-  }
-  return typeof error;
-}
-
-const safeErrorConstructorNameSchema = z
-  .string()
-  .regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/u);
-
-function safeErrorName(error: Error): string {
-  const prototype: unknown = Object.getPrototypeOf(error);
-  if (typeof prototype !== "object" || prototype == null) {
-    return "Error";
-  }
-  const constructor: unknown = Reflect.get(prototype, "constructor");
-  if (typeof constructor !== "function") {
-    return "Error";
-  }
-  const parsedName = safeErrorConstructorNameSchema.safeParse(
-    Reflect.get(constructor, "name"),
-  );
-  return parsedName.success ? parsedName.data : "Error";
-}
-
-function safeStackFrames(error: Error): string[] {
-  if (typeof error.stack !== "string") {
-    return [];
-  }
-  return error.stack
-    .split(/\r?\n/u)
-    .filter((frame) => /^\s+at\s/u.test(frame))
-    .map((frame) => redactSensitiveText(frame));
-}
-
-function createSafeErrorProjection(error: unknown): AiWorkflowSafeErrorProjection {
-  const nodeIds = new WeakMap<object, string>();
-  let nextNodeNumber = 1;
-  function project(value: unknown): AiWorkflowSafeErrorProjection {
-    if ((typeof value === "object" && value != null) || typeof value === "function") {
-      if (nodeIds.has(value)) {
-        const existingNodeId = nodeIds.get(value);
-        if (existingNodeId == null) {
-          throw new Error("再試行ログの原因参照を取得できません。");
-        }
-        return { kind: "reference", node_id: existingNodeId };
-      }
-      const nodeId = `error-${nextNodeNumber}`;
-      nextNodeNumber += 1;
-      nodeIds.set(value, nodeId);
-      return projectDetail(value, nodeId);
-    }
-    const nodeId = `error-${nextNodeNumber}`;
-    nextNodeNumber += 1;
-    return projectDetail(value, nodeId);
-  }
-  function projectDetail(
-    value: unknown,
-    nodeId: string,
-  ): AiWorkflowSafeErrorProjection {
-    const isError = value instanceof Error;
-    const cause: AiWorkflowSafeErrorCause = isError && Object.hasOwn(value, "cause")
-      ? { kind: "present", value: project(value.cause) }
-      : { kind: "absent" };
-    const aggregateErrors = value instanceof AggregateError
-      ? Array.from(value.errors, (nestedError) => project(nestedError))
-      : [];
-    return {
-      kind: "error",
-      node_id: nodeId,
-      error_name: isError ? safeErrorName(value) : safeNonErrorName(value),
-      description: safeErrorDescription(value),
-      stack_frames: isError ? safeStackFrames(value) : [],
-      cause,
-      aggregate_errors: aggregateErrors,
-    };
-  }
-  return aiWorkflowSafeErrorProjectionSchema.parse(project(error));
-}
-
 function createRetryLogEvent(
   severity: "warning" | "error",
   sessionId: string,
@@ -2932,7 +2218,12 @@ function createRetryLogEvent(
       .digest("hex"),
     json_pointers: failure.issues.map((issue) => issue.json_pointer),
     retry_decision: retryDecision,
-    cause: createSafeErrorProjection(failure),
+    cause: createSafeErrorProjection(failure, {
+      projectionSchema: aiWorkflowSafeErrorProjectionSchema,
+      isRetryableFailure: (error) => error instanceof AiWorkflowRetryableFailureError,
+      isOutputValidationFailure: (error) => error instanceof CodexSessionOutputValidationError,
+      redactSensitiveText,
+    }),
   });
 }
 
@@ -3368,6 +2659,9 @@ export class AiWorkflowService {
             snapshot,
             this.completedEvidenceSources,
             pendingForTurn,
+            createUserMessageSourceId,
+            createTaskNotesSourceId,
+            createWithdrawConfirmationSourceId,
           );
           const inheritedAliases = createInheritedEvidenceAliases(
             baseProposal,
@@ -3423,6 +2717,12 @@ export class AiWorkflowService {
               prepared,
               workspace,
               retryPromptContext,
+              {
+                parseContext: (value) => aiWorkflowTurnContextSchema.parse(value),
+                canonicalizeJson,
+                maximumRetryAttempts: aiWorkflowMaximumRetryAttempts,
+                WorkflowError: AiWorkflowError,
+              },
             ),
           }];
         } catch (error: unknown) {
@@ -3510,7 +2810,7 @@ export class AiWorkflowService {
     }
     if (validatedResponse.kind === "no_proposal") {
       const response = validatedResponse.response;
-      const pending = createPendingWithdrawConfirmation(response, turnPrepared);
+      const pending = createPendingWithdrawConfirmation(response, turnPrepared, AiWorkflowError);
       const result = aiWorkflowTurnResultSchema.parse({
         kind: "no_proposal",
         message: response.message,
@@ -3518,6 +2818,7 @@ export class AiWorkflowService {
           response.questions,
           pending,
           turnPrepared.snapshot,
+          AiWorkflowError,
         ),
         pending_proposal_action: response.pending_proposal_action,
         retry_count: attempt - 1,
@@ -3555,6 +2856,7 @@ export class AiWorkflowService {
         response.questions,
         undefined,
         turnPrepared.snapshot,
+        AiWorkflowError,
       ),
       proposal: view,
       retry_count: attempt - 1,
