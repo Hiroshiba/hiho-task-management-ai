@@ -3504,11 +3504,6 @@
     },
     {
       "path": "src/main/external-tools/broker.ts",
-      "rule": "module-mutable",
-      "symbol": "forbiddenInvocationVerbParts"
-    },
-    {
-      "path": "src/main/external-tools/broker.ts",
       "rule": "old-import",
       "symbol": "src/main/external-tools/discord.ts"
     },

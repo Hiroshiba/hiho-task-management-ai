@@ -1,26 +1,15 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  chmodSync,
-  lstatSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-  type Stats,
-} from "node:fs";
-import {
-  isAbsolute,
-  join,
-  parse,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { timingSafeEqual } from "node:crypto";
+import { join } from "node:path";
 import {
   createServer,
   type Server,
   type Socket,
 } from "node:net";
+import { createExternalToolConnectionFiles, errorCode } from "../infrastructure/ai/external-tools/connection-files";
+import { createExternalToolInvocationPolicy } from "../infrastructure/ai/external-tools/invocation-policy";
+import { jsonDepth } from "../infrastructure/ai/external-tools/json-depth";
+import { createExternalToolRunWithRetries } from "../infrastructure/ai/external-tools/run-with-retries";
+import { listenExternalToolServer } from "../infrastructure/ai/external-tools/server-listener";
 import {
   externalToolBrokerOptionsSchema,
   externalToolBrokerStartResultSchema,
@@ -55,76 +44,8 @@ import {
 import { ExternalToolError } from "./errors";
 import { executeDiscordReadInvocation } from "./discord";
 
-const directoryMode = 0o700;
-const connectionInfoMode = 0o600;
-const unixSocketMode = 0o600;
 const maximumRequestMilliseconds = 35_000;
 const externalToolRetryDelayMilliseconds = 1_000;
-const forbiddenArgumentNamePrefixes = [
-  "auth",
-  "base",
-  "config",
-  "cwd",
-  "data",
-  "domain",
-  "endpoint",
-  "exec",
-  "file",
-  "header",
-  "host",
-  "input",
-  "module",
-  "out",
-  "plugin",
-  "proxy",
-  "request",
-  "secret",
-  "server",
-  "token",
-  "url",
-  "uri",
-];
-const forbiddenInvocationVerbParts = new Set([
-  "add",
-  "archive",
-  "ban",
-  "cancel",
-  "clear",
-  "close",
-  "complete",
-  "create",
-  "delete",
-  "destroy",
-  "dispatch",
-  "drop",
-  "edit",
-  "enable",
-  "execute",
-  "install",
-  "invite",
-  "merge",
-  "modify",
-  "move",
-  "patch",
-  "post",
-  "publish",
-  "put",
-  "react",
-  "remove",
-  "rename",
-  "reply",
-  "run",
-  "save",
-  "send",
-  "set",
-  "subscribe",
-  "truncate",
-  "unsubscribe",
-  "update",
-  "upload",
-  "upsert",
-  "write",
-]);
 
 type BrokerState =
   | "created"
@@ -154,14 +75,6 @@ type InternalDiagnostic = {
   readonly cause: unknown;
 };
 
-type FileSaveResult =
-  | { readonly kind: "succeeded" }
-  | { readonly kind: "failed"; readonly error: unknown };
-
-type FileCleanupResult =
-  | { readonly kind: "succeeded" }
-  | { readonly kind: "failed"; readonly error: unknown };
-
 type CleanupResult =
   | { readonly kind: "succeeded" }
   | { readonly kind: "failed"; readonly error: AggregateError };
@@ -171,30 +84,12 @@ type ActiveRun = {
   readonly completion: Promise<ExternalToolExecutionResult>;
 };
 
-function isCurrentUser(stats: Stats): boolean {
-  if (process.platform === "win32") {
-    return false;
-  }
-  if (typeof process.getuid !== "function") {
-    return false;
-  }
-  return stats.uid === process.getuid();
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) {
-    return undefined;
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(error, "code");
-  if (descriptor == null || !("value" in descriptor)) {
-    return undefined;
-  }
-  return typeof descriptor.value === "string" ? descriptor.value : undefined;
-}
-
-function isNoEntryError(error: unknown): boolean {
-  return errorCode(error) === "ENOENT";
-}
+type ExternalToolRunner = (
+  tool: ExternalToolDefinition,
+  invocation: ExternalToolInvocation,
+  credentialProvider: ExternalToolBrokerOptions["discord_credential_provider"],
+  signal: AbortSignal,
+) => Promise<ExternalToolOutput>;
 
 function validateAbortSignal(signal: AbortSignal): void {
   if (
@@ -225,604 +120,6 @@ function createAbortError(signal: AbortSignal): ExternalToolError {
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     throw createAbortError(signal);
-  }
-}
-
-function isJsonContainer(value: unknown): value is object {
-  return typeof value === "object" && value != null;
-}
-
-function jsonDepth(value: unknown, depth: number, maximumDepth: number): number {
-  type Frame = {
-    readonly value: unknown;
-    readonly depth: number;
-  };
-  const stack: Frame[] = [{ value, depth }];
-  let deepest = depth;
-  while (stack.length > 0) {
-    const frame = stack.pop();
-    if (frame == null) {
-      throw new Error("JSON深度検証のスタックが不正です。");
-    }
-    deepest = Math.max(deepest, frame.depth);
-    if (frame.depth > maximumDepth) {
-      return deepest;
-    }
-    if (!isJsonContainer(frame.value)) {
-      continue;
-    }
-    if (Array.isArray(frame.value)) {
-      for (const item of frame.value) {
-        stack.push({ value: item, depth: frame.depth + 1 });
-      }
-      continue;
-    }
-    for (const item of Object.values(frame.value)) {
-      stack.push({ value: item, depth: frame.depth + 1 });
-    }
-  }
-  return deepest;
-}
-
-function createCapability(): string {
-  return randomBytes(32).toString("hex");
-}
-
-function createEndpoint(tmpDirectoryPath: string): string {
-  const suffix = randomBytes(12).toString("hex");
-  return join(tmpDirectoryPath, `contextctl-${suffix}.sock`);
-}
-
-function lstatWithoutSymlink(directoryPath: string): Stats {
-  const normalizedPath = resolve(directoryPath);
-  const rootPath = parse(normalizedPath).root;
-  let currentPath = rootPath;
-  let currentStats = lstatSync(rootPath);
-  const parts = relative(rootPath, normalizedPath)
-    .split(sep)
-    .filter((part) => part.length > 0);
-  for (const part of parts) {
-    currentPath = join(currentPath, part);
-    currentStats = lstatSync(currentPath);
-    if (currentStats.isSymbolicLink()) {
-      throw new ExternalToolError(
-        "ipc_unavailable",
-        "外部ツールIPC用ディレクトリにシンボリックリンクを指定できません。",
-        false,
-      );
-    }
-  }
-  return currentStats;
-}
-
-function ensureIpcDirectory(directoryPath: string): void {
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(directoryPath);
-  } catch (error) {
-    if (error instanceof ExternalToolError) {
-      throw error;
-    }
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツールIPC用ディレクトリを確認できません。",
-      false,
-      error,
-    );
-  }
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツールIPC用ディレクトリが不正です。",
-      false,
-    );
-  }
-  if (!isCurrentUser(stats)) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツールIPC用ディレクトリの所有者が不正です。",
-      false,
-    );
-  }
-  try {
-    chmodSync(directoryPath, directoryMode);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツールIPC用ディレクトリの権限を設定できません。",
-      false,
-      error,
-    );
-  }
-  if (process.platform !== "win32") {
-    const securedStats = lstatSync(directoryPath);
-    if ((securedStats.mode & 0o777) !== directoryMode || !isCurrentUser(securedStats)) {
-      throw new ExternalToolError(
-        "permission_denied",
-        "外部ツールIPC用ディレクトリの権限を固定できません。",
-        false,
-      );
-    }
-  }
-}
-
-function ensureConnectionInfoAbsent(connectionInfoPath: string): void {
-  try {
-    const stats = lstatSync(connectionInfoPath);
-    if (stats.isSymbolicLink() || !stats.isFile()) {
-      throw new ExternalToolError(
-        "ipc_unavailable",
-        "外部ツール接続情報が想定外のファイルです。",
-        false,
-      );
-    }
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報が既に存在します。",
-      false,
-    );
-  } catch (error) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
-  }
-}
-
-function secureUnixSocket(endpoint: string): void {
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(endpoint);
-  } catch (error) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツールIPCソケットを確認できません。",
-      false,
-      error,
-    );
-  }
-  if (!stats.isSocket() || !isCurrentUser(stats)) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツールIPC接続先が想定外のファイルです。",
-      false,
-    );
-  }
-  try {
-    chmodSync(endpoint, unixSocketMode);
-  } catch (error) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツールIPCソケットの権限を設定できません。",
-      false,
-      error,
-    );
-  }
-  const securedStats = lstatSync(endpoint);
-  if (
-    !securedStats.isSocket()
-    || (securedStats.mode & 0o777) !== unixSocketMode
-    || !isCurrentUser(securedStats)
-  ) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツールIPCソケットの権限を固定できません。",
-      false,
-    );
-  }
-}
-
-function writeConnectionInfoAtomically(
-  connectionInfoPath: string,
-  connectionInfo: ConnectionInfo,
-): void {
-  const temporaryPath = `${connectionInfoPath}.${randomUUID()}.tmp`;
-  const serialized = JSON.stringify(
-    externalToolConnectionInfoSchema.parse(connectionInfo),
-  );
-  if (serialized == null) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報をJSON化できません。",
-      false,
-    );
-  }
-  let writeResult: FileSaveResult = { kind: "succeeded" };
-  try {
-    writeFileSync(temporaryPath, serialized, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: connectionInfoMode,
-    });
-    renameSync(temporaryPath, connectionInfoPath);
-    const stats = lstatWithoutSymlink(connectionInfoPath);
-    if (
-      stats.isSymbolicLink()
-      || !stats.isFile()
-      || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
-      || !isCurrentUser(stats)
-    ) {
-      throw new ExternalToolError(
-        "permission_denied",
-        "外部ツール接続情報の権限を検証できません。",
-        false,
-      );
-    }
-  } catch (error) {
-    writeResult = { kind: "failed", error };
-  }
-  if (writeResult.kind === "failed") {
-    let cleanupResult: FileCleanupResult = { kind: "succeeded" };
-    try {
-      unlinkSync(temporaryPath);
-    } catch (error) {
-      if (!isNoEntryError(error)) {
-        cleanupResult = { kind: "failed", error };
-      }
-    }
-    if (cleanupResult.kind === "failed") {
-      throw new ExternalToolError(
-        "ipc_unavailable",
-        "外部ツール接続情報の保存と後処理に失敗しました。",
-        false,
-        new AggregateError([writeResult.error, cleanupResult.error], "外部ツール接続情報の保存に失敗しました。", {
-          cause: writeResult.error,
-        }),
-      );
-    }
-    throw writeResult.error;
-  }
-}
-
-function readConnectionInfo(connectionInfoPath: string): ConnectionInfo {
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(connectionInfoPath);
-  } catch (error) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報を確認できません。",
-      false,
-      error,
-    );
-  }
-  if (
-    stats.isSymbolicLink()
-    || !stats.isFile()
-    || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
-    || !isCurrentUser(stats)
-  ) {
-    throw new ExternalToolError(
-      "permission_denied",
-      "外部ツール接続情報の権限を確認できません。",
-      false,
-    );
-  }
-  let raw: string;
-  try {
-    raw = readFileSync(connectionInfoPath, "utf8");
-  } catch (error) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報を読み取れません。",
-      false,
-      error,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報のJSONが不正です。",
-      false,
-      error,
-    );
-  }
-  return externalToolConnectionInfoSchema.parse(parsed);
-}
-
-function removeConnectionInfo(
-  connectionInfoPath: string,
-  expected: ConnectionInfo,
-): void {
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(connectionInfoPath);
-  } catch (error) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
-  }
-  if (
-    stats.isSymbolicLink()
-    || !stats.isFile()
-    || (process.platform !== "win32" && (stats.mode & 0o777) !== connectionInfoMode)
-    || !isCurrentUser(stats)
-  ) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報が想定外のファイルです。",
-      false,
-    );
-  }
-  if (stats.size > externalToolMaxRequestBytes) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報がサイズ上限を超えています。",
-      false,
-    );
-  }
-  const current = readConnectionInfo(connectionInfoPath);
-  if (
-    current.endpoint !== expected.endpoint
-    || current.capability !== expected.capability
-  ) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツール接続情報の所有権を確認できません。",
-      false,
-    );
-  }
-  unlinkSync(connectionInfoPath);
-}
-
-function removeUnixSocket(endpoint: string | undefined): void {
-  if (endpoint == null) {
-    return;
-  }
-  let stats: Stats;
-  try {
-    stats = lstatWithoutSymlink(endpoint);
-  } catch (error) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
-  }
-  if (!stats.isSocket() || !isCurrentUser(stats)) {
-    throw new ExternalToolError(
-      "ipc_unavailable",
-      "外部ツールIPC接続先が想定外のファイルです。",
-      false,
-    );
-  }
-  unlinkSync(endpoint);
-}
-
-function isWindowsAbsolutePath(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\/u.test(value);
-}
-
-function hasParentPathSegment(value: string): boolean {
-  return value.split(/[\\/]/u).some((part) => part === "..");
-}
-
-function isFileUrl(value: string): boolean {
-  return /\bfile:/iu.test(value);
-}
-
-function extractHttpUrls(value: string): readonly string[] {
-  const startIndexes: number[] = [];
-  for (const match of value.matchAll(/https?:\/\//giu)) {
-    if (match.index == null) {
-      throw new Error("外部URLの位置を取得できません。");
-    }
-    startIndexes.push(match.index);
-  }
-  const urls: string[] = [];
-  for (const [index, start] of startIndexes.entries()) {
-    const nextStart = startIndexes[index + 1];
-    const end = nextStart == null ? value.length : nextStart;
-    const candidate = value.slice(start, end).split(/[\s"'<>]/u)[0];
-    if (candidate == null || candidate.length === 0) {
-      throw new Error("外部URLを取得できません。");
-    }
-    urls.push(candidate);
-  }
-  return urls;
-}
-
-function isArgumentFlag(value: string): boolean {
-  return value.startsWith("-");
-}
-
-function argumentFlagName(value: string): string | undefined {
-  if (!value.startsWith("--")) {
-    return undefined;
-  }
-  const separatorIndex = value.indexOf("=");
-  if (separatorIndex < 0) {
-    return value;
-  }
-  return value.slice(0, separatorIndex);
-}
-
-function containsDangerousArgumentPart(value: string): boolean {
-  const normalized = value.toLowerCase();
-  if (
-    normalized !== "--method"
-    && normalized !== "--http-method"
-    && normalized.slice(2).split("-").some((part) => {
-      if (forbiddenInvocationVerbParts.has(part)) {
-        return true;
-      }
-      return [...forbiddenInvocationVerbParts].some((verb) =>
-        part.startsWith(verb) || part.endsWith(verb),
-      );
-    })
-  ) {
-    return true;
-  }
-  if (
-    normalized !== "--method"
-    && normalized !== "--http-method"
-    && normalized.slice(2).split(/[-_=]/u).some((part) => part.startsWith("method"))
-  ) {
-    return true;
-  }
-  const parts = normalized.slice(2).split(/[-_=]/u);
-  return parts.some((part) => forbiddenArgumentNamePrefixes.some((prefix) =>
-    part === prefix || part.startsWith(prefix),
-  ));
-}
-
-function readHttpMethod(args: readonly string[], index: number): string | undefined {
-  const argument = args[index];
-  if (argument == null) {
-    throw new Error("外部ツール引数の位置が不正です。");
-  }
-  const normalized = argument.toLowerCase();
-  let methodFlag: "--method=" | "--http-method=" | undefined;
-  if (normalized.startsWith("--method=")) {
-    methodFlag = "--method=";
-  } else if (normalized.startsWith("--http-method=")) {
-    methodFlag = "--http-method=";
-  }
-  if (methodFlag != null) {
-    const method = argument.slice(methodFlag.length).toUpperCase();
-    if (method.length === 0) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "HTTPメソッドが空です。",
-        false,
-      );
-    }
-    return method;
-  }
-  if (normalized === "--method" || normalized === "--http-method") {
-    const method = args[index + 1];
-    if (method == null || method.length === 0) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "HTTPメソッドが必要です。",
-        false,
-      );
-    }
-    return method.toUpperCase();
-  }
-  return undefined;
-}
-
-function isFlagValue(args: readonly string[], index: number): boolean {
-  const previous = args[index - 1];
-  return previous != null && isArgumentFlag(previous) && !previous.includes("=");
-}
-
-function isIndependentWriteVerb(value: string): boolean {
-  if (!/^[a-z][a-z0-9._:-]*$/iu.test(value)) {
-    return false;
-  }
-  return value.toLowerCase().split(/[._:-]/u).some((part) => {
-    if (forbiddenInvocationVerbParts.has(part)) {
-      return true;
-    }
-    return [...forbiddenInvocationVerbParts].some((verb) =>
-      part.startsWith(verb) || part.endsWith(verb),
-    );
-  });
-}
-
-function isReadOnlyHttpMethod(value: string): value is "GET" | "HEAD" | "OPTIONS" {
-  return value === "GET" || value === "HEAD" || value === "OPTIONS";
-}
-
-function validateInvocationArguments(
-  tool: ExternalToolDefinition,
-  args: readonly string[],
-): void {
-  let totalArgumentBytes = 0;
-  const allowedArgumentNames = new Set<string>(tool.allowed_argument_names);
-  const allowedHttpMethods: readonly string[] = tool.allowed_http_methods;
-  const allowedDomains: readonly string[] = tool.allowed_domains;
-  for (const [index, argument] of args.entries()) {
-    totalArgumentBytes += new TextEncoder().encode(argument).byteLength;
-    if (totalArgumentBytes > externalToolMaxRequestBytes) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "外部ツール要求がサイズ上限を超えました。",
-        false,
-      );
-    }
-    if (
-      argument.startsWith("@")
-      || isAbsolute(argument)
-      || isWindowsAbsolutePath(argument)
-      || isFileUrl(argument)
-      || hasParentPathSegment(argument)
-    ) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "外部ツール引数が不正です。",
-        false,
-      );
-    }
-    const flagName = argumentFlagName(argument);
-    if (isArgumentFlag(argument) && (flagName == null || !allowedArgumentNames.has(flagName))) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "登録されていない外部ツール引数です。",
-        false,
-      );
-    }
-    if (flagName != null && containsDangerousArgumentPart(flagName)) {
-      throw new ExternalToolError(
-        "invalid_request",
-        "危険な外部ツール引数です。",
-        false,
-      );
-    }
-    const method = readHttpMethod(args, index);
-    if (method != null && (
-      !isReadOnlyHttpMethod(method)
-      || !allowedHttpMethods.includes(method)
-    )) {
-      throw new ExternalToolError(
-        "forbidden_write_operation",
-        "許可されていないHTTPメソッドです。",
-        false,
-      );
-    }
-    if (
-      !isArgumentFlag(argument)
-      && !isFlagValue(args, index)
-      && isIndependentWriteVerb(argument)
-    ) {
-      throw new ExternalToolError(
-        "forbidden_write_operation",
-        "書き込み操作に見える外部ツール引数は許可されていません。",
-        false,
-      );
-    }
-    for (const urlValue of extractHttpUrls(argument)) {
-      let parsed: URL;
-      try {
-        parsed = new URL(urlValue);
-      } catch (error) {
-        throw new ExternalToolError(
-          "forbidden_network",
-          "許可されていない外部URLです。",
-          false,
-          error,
-        );
-      }
-      if (parsed.username.length > 0 || parsed.password.length > 0) {
-        throw new ExternalToolError(
-          "forbidden_network",
-          "URLへ認証情報を指定できません。",
-          false,
-        );
-      }
-      if (!allowedDomains.includes(parsed.hostname.toLowerCase())) {
-        throw new ExternalToolError(
-          "forbidden_network",
-          "許可されていない外部URLです。",
-          false,
-        );
-      }
-    }
   }
 }
 
@@ -894,55 +191,6 @@ function serializeResponse(response: ExternalToolResponse): string {
   return `${serialized}\n`;
 }
 
-function isRetryableExternalToolError(error: unknown): error is ExternalToolError {
-  return error instanceof ExternalToolError && error.retryable;
-}
-
-function waitForRetry(retryCount: number, signal: AbortSignal): Promise<void> {
-  throwIfAborted(signal);
-  return new Promise<void>((resolvePromise, rejectPromise) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolvePromise();
-    }, externalToolRetryDelayMilliseconds * retryCount);
-    const onAbort = (): void => {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", onAbort);
-      rejectPromise(createAbortError(signal));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-    }
-  });
-}
-
-async function runWithRetries(
-  tool: ExternalToolDefinition,
-  invocation: ExternalToolInvocation,
-  credentialProvider: ExternalToolBrokerOptions["discord_credential_provider"],
-  signal: AbortSignal,
-): Promise<ExternalToolOutput> {
-  let retryCount = 0;
-  while (true) {
-    throwIfAborted(signal);
-    try {
-      return await executeDiscordReadInvocation(
-        tool,
-        invocation,
-        credentialProvider,
-        signal,
-      );
-    } catch (error) {
-      if (!isRetryableExternalToolError(error) || retryCount >= externalToolMaximumRetries) {
-        throw error;
-      }
-      retryCount += 1;
-      await waitForRetry(retryCount, signal);
-    }
-  }
-}
-
 function isCapabilityFailure(error: unknown): boolean {
   if (error instanceof ExternalToolError) {
     return error.code === "ipc_unavailable" || error.code === "permission_denied";
@@ -981,6 +229,9 @@ function isBrokerSupportedPlatform(): boolean {
 
 /** 読み取り専用外部ツールを実行するメインプロセス内ブローカーです。 */
 export class ExternalToolBroker {
+  private readonly connectionFiles: ReturnType<typeof createExternalToolConnectionFiles>;
+  private readonly invocationPolicy: ReturnType<typeof createExternalToolInvocationPolicy>;
+  private readonly runWithRetries: ExternalToolRunner;
   private readonly tmpDirectoryPath: string;
   private readonly registry: ExternalToolBrokerOptions["registry"];
   private readonly discordCredentialProvider: ExternalToolBrokerOptions["discord_credential_provider"];
@@ -1003,6 +254,23 @@ export class ExternalToolBroker {
 
   public constructor(options: ExternalToolBrokerOptions) {
     const validatedOptions = externalToolBrokerOptionsSchema.parse(options);
+    this.runWithRetries = createExternalToolRunWithRetries(
+      ExternalToolError,
+      executeDiscordReadInvocation,
+      throwIfAborted,
+      createAbortError,
+      externalToolMaximumRetries,
+      externalToolRetryDelayMilliseconds,
+    );
+    this.invocationPolicy = createExternalToolInvocationPolicy(
+      ExternalToolError,
+      externalToolMaxRequestBytes,
+    );
+    this.connectionFiles = createExternalToolConnectionFiles(
+      ExternalToolError,
+      (value) => externalToolConnectionInfoSchema.parse(value),
+      externalToolMaxRequestBytes,
+    );
     this.tmpDirectoryPath = validatedOptions.tmp_directory_path;
     this.registry = validatedOptions.registry;
     this.discordCredentialProvider = validatedOptions.discord_credential_provider;
@@ -1039,10 +307,10 @@ export class ExternalToolBroker {
     this.startAbortSignal = signal;
     this.startAbortListener = onAbort;
     try {
-      ensureIpcDirectory(this.tmpDirectoryPath);
-      ensureConnectionInfoAbsent(this.connectionInfoPath);
+      this.connectionFiles.ensureIpcDirectory(this.tmpDirectoryPath);
+      this.connectionFiles.ensureConnectionInfoAbsent(this.connectionInfoPath);
       const endpoint = externalToolConnectionInfoSchema.shape.endpoint.parse(
-        createEndpoint(this.tmpDirectoryPath),
+        this.connectionFiles.createEndpoint(this.tmpDirectoryPath),
       );
       if (Buffer.byteLength(endpoint, "utf8") >= 108) {
         throw new ExternalToolError(
@@ -1054,7 +322,7 @@ export class ExternalToolBroker {
       const connectionInfo = externalToolConnectionInfoSchema.parse({
         version: externalToolProtocolVersion,
         endpoint,
-        capability: createCapability(),
+        capability: this.connectionFiles.createCapability(),
       });
       const server = createServer({ allowHalfOpen: true }, (socket) => {
         this.handleConnection(socket);
@@ -1065,7 +333,13 @@ export class ExternalToolBroker {
       server.on("error", (error: Error) => {
         this.handleServerError(error);
       });
-      const listenPromise = this.listen(server, endpoint, startController.signal);
+      const listenPromise = listenExternalToolServer(
+        server,
+        endpoint,
+        startController.signal,
+        createBrokerStoppedError,
+        errorCode,
+      );
       this.startListenPromise = listenPromise;
       await listenPromise;
       this.startListenPromise = undefined;
@@ -1073,11 +347,11 @@ export class ExternalToolBroker {
       if (this.stopRequested) {
         throw createBrokerStoppedError();
       }
-      secureUnixSocket(endpoint);
+      this.connectionFiles.secureUnixSocket(endpoint);
       if (this.stopRequested) {
         throw createBrokerStoppedError();
       }
-      writeConnectionInfoAtomically(this.connectionInfoPath, connectionInfo);
+      this.connectionFiles.writeConnectionInfoAtomically(this.connectionInfoPath, connectionInfo);
       if (this.stopRequested) {
         throw createBrokerStoppedError();
       }
@@ -1322,7 +596,7 @@ export class ExternalToolBroker {
         false,
       );
     }
-    validateInvocationArguments(tool, validatedInvocation.args);
+    this.invocationPolicy.validateInvocationArguments(tool, validatedInvocation.args);
     const statusEvidenceAttempt = externalToolStatusEvidenceAttemptSchema.parse(
       this.statusEvidenceCollector.captureAttempt(),
     );
@@ -1361,7 +635,7 @@ export class ExternalToolBroker {
       let output: ExternalToolOutput;
       try {
         output = externalToolOutputSchema.parse(
-          await runWithRetries(
+          await this.runWithRetries(
             tool,
             validatedInvocation,
             this.discordCredentialProvider,
@@ -1429,109 +703,6 @@ export class ExternalToolBroker {
     });
   }
 
-  private listen(
-    server: Server,
-    endpoint: string,
-    stopSignal: AbortSignal,
-  ): Promise<void> {
-    return new Promise<void>((resolvePromise, rejectPromise) => {
-      let settled = false;
-      const removeListeners = (): void => {
-        server.removeListener("error", onError);
-        server.removeListener("listening", onListening);
-        stopSignal.removeEventListener("abort", onAbort);
-      };
-      const rejectStopped = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        removeListeners();
-        rejectPromise(createBrokerStoppedError());
-      };
-      const onError = (error: Error): void => {
-        if (stopSignal.aborted) {
-          rejectStopped();
-          return;
-        }
-        if (settled) {
-          return;
-        }
-        settled = true;
-        removeListeners();
-        rejectPromise(error);
-      };
-      const onListening = (): void => {
-        if (stopSignal.aborted) {
-          onAbort();
-          return;
-        }
-        if (settled) {
-          return;
-        }
-        settled = true;
-        removeListeners();
-        resolvePromise();
-      };
-      const onAbort = (): void => {
-        if (settled) {
-          return;
-        }
-        const onClosed = (error?: Error): void => {
-          if (error != null && errorCode(error) !== "ERR_SERVER_NOT_RUNNING") {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            removeListeners();
-            rejectPromise(error);
-            return;
-          }
-          rejectStopped();
-        };
-        try {
-          server.close(onClosed);
-        } catch (error) {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          removeListeners();
-          rejectPromise(error instanceof Error
-            ? error
-            : new Error("外部ツールIPCサーバーの停止に失敗しました。", { cause: error }));
-        }
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-      stopSignal.addEventListener("abort", onAbort, { once: true });
-      try {
-        server.listen({
-          path: endpoint,
-          readableAll: false,
-          writableAll: false,
-        });
-      } catch (error) {
-        if (stopSignal.aborted) {
-          rejectStopped();
-          return;
-        }
-        if (settled) {
-          return;
-        }
-        settled = true;
-        removeListeners();
-        rejectPromise(error instanceof Error
-          ? error
-          : new Error("外部ツールIPCサーバーの起動に失敗しました。", { cause: error }));
-        return;
-      }
-      if (stopSignal.aborted) {
-        onAbort();
-      }
-    });
-  }
-
   private async cleanupResources(): Promise<CleanupResult> {
     const errors: unknown[] = [];
     const server = this.server;
@@ -1553,13 +724,13 @@ export class ExternalToolBroker {
     const connectionInfo = this.connectionInfo;
     if (connectionInfo != null) {
       try {
-        removeConnectionInfo(this.connectionInfoPath, connectionInfo);
+        this.connectionFiles.removeConnectionInfo(this.connectionInfoPath, connectionInfo);
       } catch (error) {
         errors.push(error);
       }
     }
     try {
-      removeUnixSocket(this.endpoint);
+      this.connectionFiles.removeUnixSocket(this.endpoint);
     } catch (error) {
       errors.push(error);
     }
