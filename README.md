@@ -53,6 +53,8 @@ edgeの新たな配布物は作りません。既存のedge配布物を使う場
 
 ## 開発
 
+実装時の責務と依存方向は[アーキテクチャ](docs/architecture/architecture.md)を参照してください。
+
 ```sh
 pnpm install
 pnpm run dev
