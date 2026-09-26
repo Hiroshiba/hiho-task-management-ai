@@ -42,6 +42,39 @@ const applicationUpdateAttemptSchema = z.object({
 
 type ApplicationUpdateAttempt = z.infer<typeof applicationUpdateAttemptSchema>;
 
+function shouldRetryUpdateOperation(error: unknown, operation: "check" | "download"): boolean {
+  if (!(error instanceof Error)) {
+    return true;
+  }
+  if ("statusCode" in error && typeof error.statusCode === "number") {
+    return error.statusCode < 400 || error.statusCode >= 500;
+  }
+  if ("code" in error && typeof error.code === "string") {
+    if (operation === "check" && error.code === "ECONNREFUSED") {
+      return false;
+    }
+    switch (error.code) {
+      case "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND":
+      case "ERR_UPDATER_INVALID_UPDATE_INFO":
+      case "ERR_UPDATER_INVALID_VERSION":
+      case "ERR_UPDATER_NO_FILES_PROVIDED":
+      case "ERR_UPDATER_NO_CHECKSUM":
+      case "ERR_UPDATER_INVALID_PROVIDER_CONFIGURATION":
+      case "ERR_UPDATER_UNSUPPORTED_PROVIDER":
+      case "ERR_UPDATER_INVALID_CHANNEL":
+      case "ERR_UPDATER_WEB_INSTALLER_DISABLED":
+      case "ERR_UPDATER_INVALID_SIGNATURE":
+      case "ERR_UPDATER_ZIP_FILE_NOT_FOUND":
+      case "EACCES":
+      case "EPERM":
+      case "ENOSPC":
+      case "EROFS":
+        return false;
+    }
+  }
+  return true;
+}
+
 function hasReachedVersion(currentVersion: string, targetVersion: string): boolean {
   const current = stableVersionPartsSchema.parse(stableVersionSchema.parse(currentVersion).split("."));
   const target = stableVersionPartsSchema.parse(stableVersionSchema.parse(targetVersion).split("."));
@@ -101,6 +134,7 @@ type ApplicationUpdater = Pick<
   | "previousBlockmapBaseUrlOverride"
   | "setFeedURL"
   | "checkForUpdates"
+  | "downloadUpdate"
   | "quitAndInstall"
 > & {
   on<Event extends keyof AppUpdaterEvents>(
@@ -168,6 +202,7 @@ export class ApplicationUpdateService {
   private readonly listeners = new Set<(state: IpcAppUpdateState) => void>();
   private started = false;
   private installing = false;
+  private activeOperation: "check" | "download" | undefined;
   private attemptedVersion: string | undefined;
   private quitAfterUpdateFailure: (() => void) | undefined;
 
@@ -213,7 +248,7 @@ export class ApplicationUpdateService {
       this.attemptedVersion = this.state.version;
       this.updater.quitAndInstall(true, false);
     } catch (error) {
-      this.fail(error);
+      this.fail(error, "install");
     }
     return true;
   }
@@ -242,21 +277,12 @@ export class ApplicationUpdateService {
       return;
     }
     try {
-      this.updater.autoDownload = true;
+      this.updater.autoDownload = false;
       this.updater.autoInstallOnAppQuit = false;
       this.updater.autoRunAppAfterInstall = false;
       this.updater.disableWebInstaller = true;
       this.updater.previousBlockmapBaseUrlOverride =
         `${taggedReleaseAssetsUrl}v${this.currentVersion}/`;
-      this.updater.on("checking-for-update", () => {
-        this.publish({ kind: "checking" });
-      });
-      this.updater.on("update-not-available", () => {
-        this.publish({ kind: "current" });
-      });
-      this.updater.on("update-available", (info) => {
-        this.publish({ kind: "downloading", version: info.version, percent: 0 });
-      });
       this.updater.on("download-progress", (progress) => {
         const current = this.state;
         if (current.kind !== "downloading") {
@@ -269,29 +295,66 @@ export class ApplicationUpdateService {
         });
       });
       this.updater.on("error", (error) => {
-        this.fail(error);
+        if (this.activeOperation != null) {
+          return;
+        }
+        if (this.installing) {
+          this.fail(error, "install");
+        } else if (this.state.kind === "downloading" || this.state.kind === "ready") {
+          this.fail(error, "download");
+        } else {
+          this.fail(error, "check");
+        }
       });
       this.updater.setFeedURL(latestReleaseAssetsUrl);
+      this.publish({ kind: "checking" });
       void this.checkForUpdates();
     } catch (error) {
-      this.fail(error);
+      this.fail(error, "check");
     }
   }
 
   private async checkForUpdates(): Promise<void> {
+    let phase: "check" | "download" = "check";
     try {
-      const result = await this.updater.checkForUpdates();
+      const result = await this.retryUpdateOperation("check", () => this.updater.checkForUpdates());
       if (result == null) {
         throw new Error("更新対象版で更新機能が無効です。");
       }
-      if (result.downloadPromise != null) {
-        await result.downloadPromise;
-        if (this.state.kind !== "failed") {
-          this.publish({ kind: "ready", version: result.updateInfo.version });
+      if (!result.isUpdateAvailable) {
+        this.publish({ kind: "current" });
+        return;
+      }
+      phase = "download";
+      this.publish({ kind: "downloading", version: result.updateInfo.version, percent: 0 });
+      await this.retryUpdateOperation("download", () => this.updater.downloadUpdate());
+      this.publish({ kind: "ready", version: result.updateInfo.version });
+    } catch (error) {
+      this.fail(error, phase);
+    }
+  }
+
+  private async retryUpdateOperation<Result>(
+    operation: "check" | "download",
+    task: () => Promise<Result>,
+  ): Promise<Result> {
+    const maxAttempts = 3;
+    this.activeOperation = operation;
+    try {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await task();
+        } catch (error) {
+          if (attempt === maxAttempts || !shouldRetryUpdateOperation(error, operation)) {
+            throw error;
+          }
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 500 * 2 ** (attempt - 1));
+          });
         }
       }
-    } catch (error) {
-      this.fail(error);
+    } finally {
+      this.activeOperation = undefined;
     }
   }
 
@@ -324,15 +387,9 @@ export class ApplicationUpdateService {
     }
   }
 
-  private fail(error: unknown): void {
+  private fail(error: unknown, phase: "install" | "download" | "check"): void {
     if (this.state.kind === "failed") {
       return;
-    }
-    let phase: "install" | "download" | "check" = "check";
-    if (this.installing) {
-      phase = "install";
-    } else if (this.state.kind === "downloading" || this.state.kind === "ready") {
-      phase = "download";
     }
     this.publish({ kind: "failed", phase });
     this.reportError(error);
