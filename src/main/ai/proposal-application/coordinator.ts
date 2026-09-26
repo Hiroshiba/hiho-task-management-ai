@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { compareOperationContexts, orderApplicableContexts, sortedUniqueTaskGids } from "../../application/proposal-apply/operation-order";
+import { advanceJournal, effectCertaintyForJournalStage, journalStages, recordJournalResultBeforeRanking } from "../../application/proposal-apply/journal-progress";
+import { finalizePendingJournals } from "../../application/proposal-apply/post-apply-completion";
+import { addTemporaryMapping, approvalGroupMap, approvalOperationMap, collectApplicableOperationIds, flattenProposal, mappingArray, operationMap, temporaryMappingMap } from "../../application/proposal-apply/application-plan";
 import {
   applicationJournalOperationSchema,
   asanaTaskResponseSchema,
@@ -13,7 +17,6 @@ import {
 import {
   proposalApprovalResultSchema,
   classifyProposalConflicts,
-  type ProposalApprovalResult,
 } from "../proposal-approval";
 import { validateSelectedProposalGraph } from "../proposal-validation";
 import {
@@ -69,15 +72,12 @@ import {
   type ApplicationJournalDiagnostic,
   type AsanaProposalOperationWriterInput,
   type AsanaProposalOperationWriterResult,
-  type AsanaProposalWriterTemporaryRefMapping,
   type PostWriteSynchronizationResult,
 } from "./schemas";
 
 type ApplicationOperationResult =
   AsanaProposalApplicationResult["operations"][number];
 type ApplicationGroupResult = AsanaProposalApplicationResult["groups"][number];
-type ApprovalOperationResult = ProposalApprovalResult["operations"][number];
-type ApprovalGroupResult = ProposalApprovalResult["groups"][number];
 type ApplicationReasonCode = ApplicationOperationResult["reason_code"];
 type RecoveryReasonCode =
   AsanaProposalRecoveryResult["unresolved_journals"][number]["reason_code"];
@@ -282,29 +282,6 @@ function hasApplicationJournalPlan(
   return journal.plan != null;
 }
 
-const journalStages: readonly ApplicationJournalStage[] = [
-  "prepared",
-  "write_started",
-  "task_created",
-  "attributes_applied",
-  "relations_applied",
-  "read_back",
-  "metadata_verified",
-  "ranking_recalculated",
-];
-
-function effectCertaintyForJournalStage(
-  stage: ApplicationJournalStage,
-): OperationDiagnosticFields["effect_certainty"] {
-  if (stage === "prepared") {
-    return "none";
-  }
-  if (journalStages.indexOf(stage) >= journalStages.indexOf("read_back")) {
-    return "confirmed";
-  }
-  return "possible";
-}
-
 function validateAbortSignal(signal: AbortSignal): void {
   if (
     signal == null
@@ -384,124 +361,6 @@ function normalizeJournalPort(journal: JournalPort): ApplicationJournalStorePort
       journal.getApplicationJournalsByProposal(proposalId),
     getIncomplete: () => journal.getIncompleteApplicationJournals(),
   };
-}
-
-function flattenProposal(proposal: Proposal): readonly OperationContext[] {
-  return proposal.groups.flatMap((group) =>
-    group.operations.map((operation) => ({ group, operation })));
-}
-
-function operationMap(
-  contexts: readonly OperationContext[],
-): ReadonlyMap<string, OperationContext> {
-  const result = new Map<string, OperationContext>();
-  for (const context of contexts) {
-    if (result.has(context.operation.operation_id)) {
-      throw new Error("proposalのoperation_idが重複しています。");
-    }
-    result.set(context.operation.operation_id, context);
-  }
-  return result;
-}
-
-function approvalOperationMap(
-  approval: ProposalApprovalResult,
-): ReadonlyMap<string, ProposalApprovalResult["operations"][number]> {
-  const result = new Map<string, ProposalApprovalResult["operations"][number]>();
-  for (const operation of approval.operations) {
-    if (result.has(operation.operation_id)) {
-      throw new Error("承認競合結果のoperation_idが重複しています。");
-    }
-    result.set(operation.operation_id, operation);
-  }
-  return result;
-}
-
-function approvalGroupMap(
-  approval: ProposalApprovalResult,
-): ReadonlyMap<string, ProposalApprovalResult["groups"][number]> {
-  const result = new Map<string, ProposalApprovalResult["groups"][number]>();
-  for (const group of approval.groups) {
-    if (result.has(group.group_id)) {
-      throw new Error("承認競合結果のgroup_idが重複しています。");
-    }
-    result.set(group.group_id, group);
-  }
-  return result;
-}
-
-function collectApplicableOperationIds(
-  contexts: readonly OperationContext[],
-  selectedOperationIds: ReadonlySet<string>,
-  approvalOperations: ReadonlyMap<string, ApprovalOperationResult>,
-  approvalGroups: ReadonlyMap<string, ApprovalGroupResult>,
-): readonly string[] {
-  const operationIds: string[] = [];
-  for (const context of contexts) {
-    if (!selectedOperationIds.has(context.operation.operation_id)) {
-      continue;
-    }
-    const classification = approvalOperations.get(context.operation.operation_id);
-    if (classification == null) {
-      throw new Error("承認競合結果の操作がありません。");
-    }
-    const group = approvalGroups.get(context.group.group_id);
-    if (group == null) {
-      throw new Error("承認競合結果のグループがありません。");
-    }
-    if (classification.kind === "applicable" && group.applicable) {
-      operationIds.push(context.operation.operation_id);
-    }
-  }
-  return operationIds;
-}
-
-function temporaryMappingMap(
-  mappings: readonly AsanaProposalWriterTemporaryRefMapping[],
-): Map<string, string> {
-  const result = new Map<string, string>();
-  const gids = new Set<string>();
-  for (const mapping of mappings) {
-    if (result.has(mapping.temporary_ref) || gids.has(mapping.task_gid)) {
-      throw new Error("temporary_ref対応が重複しています。");
-    }
-    result.set(mapping.temporary_ref, mapping.task_gid);
-    gids.add(mapping.task_gid);
-  }
-  return result;
-}
-
-function mappingArray(
-  mappings: ReadonlyMap<string, string>,
-): AsanaProposalWriterTemporaryRefMapping[] {
-  return [...mappings.entries()]
-    .sort((left, right) => {
-      if (left[0] < right[0]) {
-        return -1;
-      }
-      if (left[0] > right[0]) {
-        return 1;
-      }
-      return 0;
-    })
-    .map(([temporary_ref, task_gid]) => ({ temporary_ref, task_gid }));
-}
-
-function addTemporaryMapping(
-  mappings: Map<string, string>,
-  temporaryRef: string,
-  taskGid: string,
-): void {
-  const current = mappings.get(temporaryRef);
-  if (current != null && current !== taskGid) {
-    throw new Error("temporary_refの対応先が変化しました。");
-  }
-  for (const [ref, gid] of mappings) {
-    if (ref !== temporaryRef && gid === taskGid) {
-      throw new Error("同じタスクGIDへ複数のtemporary_refを対応できません。");
-    }
-  }
-  mappings.set(temporaryRef, taskGid);
 }
 
 function targetGid(
@@ -989,181 +848,6 @@ function writerResultToApplicationResult(
   }
 }
 
-function recordJournalResultBeforeRanking(
-  journal: ApplicationJournalStorePort,
-  entry: PlannedApplicationJournal,
-  result: WriterResult,
-  onStagePersisted: (stage: ApplicationJournalStage) => void,
-): PlannedApplicationJournal | undefined {
-  if (result.outcome === "conflict") {
-    if (result.side_effect === "possible") {
-      return undefined;
-    }
-    journal.complete(entry.proposal_id, entry.operation_id, "not_applied");
-    return undefined;
-  }
-  let stage = entry.stage;
-  for (const targetStage of ["read_back", "metadata_verified"] as const) {
-    if (journalStages.indexOf(targetStage) <= journalStages.indexOf(stage)) {
-      continue;
-    }
-    journal.updateStage(entry.proposal_id, entry.operation_id, targetStage);
-    stage = targetStage;
-    onStagePersisted(stage);
-  }
-  return { ...entry, stage };
-}
-
-async function finalizePendingJournals(
-  pending: readonly PendingJournal[],
-  journal: ApplicationJournalStorePort,
-  postApply: ProposalApplicationPostApply,
-  reportDiagnostic: (
-    error: unknown,
-    fields: JournalDiagnosticFields,
-  ) => DiagnosticFailureDispositionError,
-  signal: AbortSignal,
-): Promise<void> {
-  if (pending.length === 0) {
-    return;
-  }
-  const requiredTaskGids = sortedUniqueTaskGids(
-    pending.map((item) => item.task_gid),
-  );
-  let synchronization: PostWriteSynchronizationResultWithCause;
-  try {
-    synchronization = parsePostWriteSynchronizationResult(
-      await postApply(requiredTaskGids, signal),
-    );
-  } catch (error: unknown) {
-    const receipt = reportSharedPostApplyCause(
-      error,
-      {
-        severity: "error",
-        api_action: "post_apply",
-        effect_certainty: "confirmed",
-        reason_code: "local_resync_required",
-        recovery_decision: "local_sync_pending",
-        attempt: 1,
-        phase: "post_apply",
-      },
-      reportDiagnostic,
-    );
-    for (const item of pending) {
-      reportDiagnostic(new Error("外部状態は確定しましたが、ローカル同期を完了できませんでした。"), {
-        severity: "error",
-        proposal_id: item.entry.proposal_id,
-        operation_id: item.entry.operation_id,
-        operation_kind: item.context.operation.operation,
-        api_action: "post_apply",
-        journal_stage: item.entry.stage,
-        effect_certainty: "confirmed",
-        task_gid: item.task_gid,
-        reason_code: "local_resync_required",
-        recovery_decision: "local_sync_pending",
-        attempt: 1,
-        phase: "post_apply",
-      });
-    }
-    throw receipt;
-  }
-  if (synchronization.kind === "recovery_required") {
-    if (synchronization.cause != null) {
-      reportSharedPostApplyCause(
-        synchronization.cause,
-        {
-          severity: "error",
-          api_action: "post_apply",
-          effect_certainty: "confirmed",
-          reason_code: "local_resync_required",
-          recovery_decision: "local_sync_pending",
-          attempt: 1,
-          phase: "post_apply",
-        },
-        reportDiagnostic,
-      );
-    }
-    for (const item of pending) {
-      reportDiagnostic(
-        new Error("外部状態は確定しましたが、ローカル同期を完了できませんでした。"),
-        {
-          severity: "warning",
-          proposal_id: item.entry.proposal_id,
-          operation_id: item.entry.operation_id,
-          operation_kind: item.context.operation.operation,
-          api_action: "post_apply",
-          journal_stage: item.entry.stage,
-          effect_certainty: "confirmed",
-          task_gid: item.task_gid,
-          reason_code: "local_resync_required",
-          recovery_decision: "local_sync_pending",
-          attempt: 1,
-          phase: "post_apply",
-        },
-      );
-      item.operationResults.set(
-        item.context.operation.operation_id,
-        unknownOperationResult(item.context, "local_resync_required", item.task_gid),
-      );
-    }
-    return;
-  }
-  for (const item of pending) {
-    let journalStage: ApplicationJournalStage = item.entry.stage;
-    try {
-      advanceJournal(
-        journal,
-        item.entry,
-        "ranking_recalculated",
-        (stage) => {
-          journalStage = stage;
-        },
-      );
-      journal.complete(item.entry.proposal_id, item.entry.operation_id, "applied");
-    } catch (error: unknown) {
-      const receipt = reportDiagnostic(error, {
-        severity: "error",
-        proposal_id: item.entry.proposal_id,
-        operation_id: item.entry.operation_id,
-        operation_kind: item.context.operation.operation,
-        api_action: "post_apply",
-        journal_stage: journalStage,
-        effect_certainty: "confirmed",
-        task_gid: item.task_gid,
-        reason_code: "recovery_required",
-        recovery_decision: "unresolved",
-        attempt: 1,
-        phase: "journal",
-      });
-      throw receipt;
-    }
-  }
-}
-
-function advanceJournal(
-  journal: ApplicationJournalStorePort,
-  entry: ApplicationJournal,
-  targetStage: ApplicationJournalStage,
-  onStagePersisted: (stage: ApplicationJournalStage) => void,
-): void {
-  const currentIndex = journalStages.indexOf(entry.stage);
-  const targetIndex = journalStages.indexOf(targetStage);
-  if (currentIndex < 0 || targetIndex < 0) {
-    throw new Error("適用ジャーナルの段階が不正です。");
-  }
-  if (targetIndex < currentIndex) {
-    throw new Error("適用ジャーナルの段階を後退させられません。");
-  }
-  for (let index = currentIndex + 1; index <= targetIndex; index += 1) {
-    const stage = journalStages[index];
-    if (stage == null) {
-      throw new Error("適用ジャーナルの段階が見つかりません。");
-    }
-    journal.updateStage(entry.proposal_id, entry.operation_id, stage);
-    onStagePersisted(stage);
-  }
-}
-
 function applicationGroupOutcome(
   operations: readonly ApplicationOperationResult[],
 ): ApplicationGroupOutcome {
@@ -1283,47 +967,6 @@ function validateAtomicSelection(
   }
 }
 
-function operationPhase(operation: ProposalOperation): number {
-  if (operation.operation === "create_task") {
-    return 0;
-  }
-  switch (operation.operation) {
-    case "set_dependencies":
-    case "set_parent":
-    case "set_parent_work_mode":
-    case "link_obsidian":
-    case "unlink_obsidian":
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-function compareOperationContexts(
-  left: OperationContext,
-  right: OperationContext,
-): number {
-  if (left.operation.operation_id < right.operation.operation_id) {
-    return -1;
-  }
-  if (left.operation.operation_id > right.operation.operation_id) {
-    return 1;
-  }
-  return 0;
-}
-
-function sortedUniqueTaskGids(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((left, right) => {
-    if (left < right) {
-      return -1;
-    }
-    if (left > right) {
-      return 1;
-    }
-    return 0;
-  });
-}
-
 function createTaskTemporaryReferences(
   operation: ProposalOperation,
 ): readonly string[] {
@@ -1340,113 +983,6 @@ function createTaskTemporaryReferences(
     }
   }
   return [...references].sort();
-}
-
-function orderCreateTaskContexts(
-  contexts: readonly OperationContext[],
-  mappings: ReadonlyMap<string, string>,
-): readonly OperationContext[] {
-  const contextByTemporaryRef = new Map<string, OperationContext>();
-  const contextByOperationId = new Map<string, OperationContext>();
-  const dependentOperationIds = new Map<string, Set<string>>();
-  const dependencyCounts = new Map<string, number>();
-  for (const context of contexts) {
-    if (context.operation.operation !== "create_task") {
-      throw new Error("create_task以外を作成順に含められません。");
-    }
-    if (contextByTemporaryRef.has(context.operation.temporary_ref)) {
-      throw new Error("create_taskのtemporary_refが重複しています。");
-    }
-    if (contextByOperationId.has(context.operation.operation_id)) {
-      throw new Error("create_taskのoperation_idが重複しています。");
-    }
-    contextByTemporaryRef.set(context.operation.temporary_ref, context);
-    contextByOperationId.set(context.operation.operation_id, context);
-    dependentOperationIds.set(context.operation.operation_id, new Set());
-    dependencyCounts.set(context.operation.operation_id, 0);
-  }
-
-  for (const context of contexts) {
-    for (const temporaryRef of createTaskTemporaryReferences(context.operation)) {
-      const dependency = contextByTemporaryRef.get(temporaryRef);
-      if (dependency == null) {
-        if (mappings.has(temporaryRef)) {
-          continue;
-        }
-        throw new Error("create_taskが参照するtemporary_refを解決できません。");
-      }
-      const dependents = dependentOperationIds.get(
-        dependency.operation.operation_id,
-      );
-      const dependencyCount = dependencyCounts.get(
-        context.operation.operation_id,
-      );
-      if (dependents == null || dependencyCount == null) {
-        throw new Error("create_taskの一時参照グラフが不正です。");
-      }
-      if (dependents.has(context.operation.operation_id)) {
-        continue;
-      }
-      dependents.add(context.operation.operation_id);
-      dependencyCounts.set(context.operation.operation_id, dependencyCount + 1);
-    }
-  }
-
-  const ready = contexts
-    .filter((context) => dependencyCounts.get(context.operation.operation_id) === 0)
-    .sort(compareOperationContexts);
-  const ordered: OperationContext[] = [];
-  while (ready.length > 0) {
-    const context = ready.shift();
-    if (context == null) {
-      throw new Error("create_taskの作成順を取得できません。");
-    }
-    ordered.push(context);
-    const dependents = dependentOperationIds.get(context.operation.operation_id);
-    if (dependents == null) {
-      throw new Error("create_taskの一時参照グラフが不正です。");
-    }
-    for (const dependentOperationId of [...dependents].sort()) {
-      const dependent = contextByOperationId.get(dependentOperationId);
-      const dependencyCount = dependencyCounts.get(dependentOperationId);
-      if (dependent == null || dependencyCount == null || dependencyCount < 1) {
-        throw new Error("create_taskの一時参照グラフが不正です。");
-      }
-      const remainingCount = dependencyCount - 1;
-      dependencyCounts.set(dependentOperationId, remainingCount);
-      if (remainingCount === 0) {
-        ready.push(dependent);
-        ready.sort(compareOperationContexts);
-      }
-    }
-  }
-  if (ordered.length !== contexts.length) {
-    throw new Error("create_taskの一時参照関係が循環しています。");
-  }
-  return ordered;
-}
-
-function orderApplicableContexts(
-  contexts: readonly OperationContext[],
-  mappings: ReadonlyMap<string, string>,
-): readonly OperationContext[] {
-  const createContexts = contexts.filter(
-    (context) => context.operation.operation === "create_task",
-  );
-  const remainingContexts = contexts
-    .filter((context) => context.operation.operation !== "create_task")
-    .sort((left, right) => {
-      const phaseDifference = operationPhase(left.operation)
-        - operationPhase(right.operation);
-      if (phaseDifference !== 0) {
-        return phaseDifference;
-      }
-      return compareOperationContexts(left, right);
-    });
-  return [
-    ...orderCreateTaskContexts(createContexts, mappings),
-    ...remainingContexts,
-  ];
 }
 
 function markAtomicGroupBlocked(
@@ -2018,6 +1554,7 @@ export class AsanaProposalApplicationCoordinator {
       contexts.filter((context) =>
         applicable.has(context.operation.operation_id)),
       mappings,
+      createTaskTemporaryReferences,
     );
     const groupOrders = new Map<string, number>();
     validatedInput.approval_input.proposal.groups.forEach((group, index) => {
@@ -2589,7 +2126,7 @@ export class AsanaProposalApplicationCoordinator {
       }
       let metadataEntry: PlannedApplicationJournal | undefined;
       try {
-        metadataEntry = recordJournalResultBeforeRanking(
+        const needsRanking = recordJournalResultBeforeRanking(
           this.journal,
           entryForProgress,
           writerResult,
@@ -2600,6 +2137,9 @@ export class AsanaProposalApplicationCoordinator {
             });
           },
         );
+        if (needsRanking) {
+          metadataEntry = entryForProgress;
+        }
       } catch (error: unknown) {
         const certainty = writerResult.outcome === "conflict"
           ? writerResult.side_effect
@@ -2668,9 +2208,19 @@ export class AsanaProposalApplicationCoordinator {
 
     await finalizePendingJournals(
       pendingJournals,
-      this.journal,
-      this.postApply,
-      (error, fields) => this.reportJournalEvent(error, fields),
+      {
+        journal: this.journal,
+        postApply: this.postApply,
+        parseSynchronization: parsePostWriteSynchronizationResult,
+        reportDiagnostic: (error, fields) => this.reportJournalEvent(error, fields),
+        createLocalSyncPendingResult: (context, taskGid) =>
+          unknownOperationResult(context, "local_resync_required", taskGid),
+        reportSharedCause: (error, fields) => reportSharedPostApplyCause(
+          error,
+          fields,
+          (cause, diagnosticFields) => this.reportJournalEvent(cause, diagnosticFields),
+        ),
+      },
       signal,
     );
     if (contextMap.size === 0) {
@@ -3149,6 +2699,7 @@ export class AsanaProposalApplicationCoordinator {
         const orderedMemoryContexts = orderApplicableContexts(
           memoryContextsForOrder,
           mappings,
+          createTaskTemporaryReferences,
         );
         const orderedPlanOperationIds = [...plannedEntries]
           .sort((left, right) =>
