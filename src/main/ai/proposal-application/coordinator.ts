@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
+  applicationJournalOperationSchema,
   asanaTaskResponseSchema,
   canonicalizeJson,
   externalTaskGidSchema,
   isoDateTimeSchema,
   parseCustomExternalData,
   serializeCustomExternalData,
+  type ApplicationJournalOperation,
   type AsanaTaskResponse,
 } from "../../../shared/domain";
 import {
@@ -21,13 +23,11 @@ import {
   type ProposalOperation,
 } from "../../../shared/ai";
 import {
-  applicationJournalOperationSchema,
   applicationJournalResultSchema,
   applicationJournalPlanSchema,
   applicationJournalWithPlanSchema,
   type ApplicationJournal,
   type ApplicationJournalBaselineSource,
-  type ApplicationJournalOperation,
   type ApplicationJournalPlan,
   type ApplicationJournalResult,
   type ApplicationJournalStage,

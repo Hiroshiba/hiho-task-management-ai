@@ -564,6 +564,307 @@ export const asanaTaskPageResponseSchema = z
   })
   .strip();
 
+const applicationJournalExistingTargetReferenceSchema = z
+  .object({
+    kind: z.literal("existing"),
+    gid: gidSchema,
+  })
+  .strict();
+
+const applicationJournalTemporaryTargetReferenceSchema = z
+  .object({
+    kind: z.literal("temporary"),
+    ref: identifierSchema,
+  })
+  .strict();
+
+const applicationJournalOperationTargetReferenceSchema = z.discriminatedUnion("kind", [
+  applicationJournalExistingTargetReferenceSchema,
+  applicationJournalTemporaryTargetReferenceSchema,
+]);
+
+const applicationJournalCreateTargetSchema = z
+  .object({
+    kind: z.literal("new_task"),
+    uuid: z.uuid(),
+  })
+  .strict();
+
+const applicationJournalAbsentValueSchema = z
+  .object({ kind: z.literal("absent") })
+  .strict();
+
+const applicationJournalDueValueSchema = z.discriminatedUnion("kind", [
+  applicationJournalAbsentValueSchema,
+  z
+    .object({
+      kind: z.literal("due_on"),
+      due_on: dateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("due_at"),
+      due_at: isoDateTimeSchema,
+    })
+    .strict(),
+]);
+
+const applicationJournalPresentDueValueSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("due_on"),
+      due_on: dateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("due_at"),
+      due_at: isoDateTimeSchema,
+    })
+    .strict(),
+]);
+
+const applicationJournalDurationValueSchema = z.union([
+  applicationJournalAbsentValueSchema,
+  durationSchema,
+]);
+
+const applicationJournalDependencySchema = z
+  .object({
+    target: applicationJournalOperationTargetReferenceSchema,
+    scope: dependencyScopeSchema,
+    source: identifierSchema,
+  })
+  .strict();
+
+const applicationJournalDependenciesSchema = z
+  .array(applicationJournalDependencySchema)
+  .max(64)
+  .superRefine((dependencies, context) => {
+    const seen = new Set<string>();
+    dependencies.forEach((dependency, index) => {
+      const targetKey = dependency.target.kind === "existing"
+        ? dependency.target.gid
+        : dependency.target.ref;
+      const key = `${dependency.target.kind}\u0000${targetKey}`;
+      if (seen.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "target"],
+          message: "同じ依存先を復旧計画へ重複して指定できません。",
+        });
+        return;
+      }
+      seen.add(key);
+    });
+  });
+
+const applicationJournalParentValueSchema = z.discriminatedUnion("kind", [
+  applicationJournalAbsentValueSchema,
+  applicationJournalExistingTargetReferenceSchema,
+  applicationJournalTemporaryTargetReferenceSchema,
+]);
+
+const applicationJournalCreateFieldsSchema = z
+  .object({
+    title: z.string().refine((value) => value.trim().length > 0),
+    notes: z.string().optional(),
+    status: z.enum(["not_started", "in_progress"]).optional(),
+    importance: importanceSchema.optional(),
+    area: areaSchema.optional(),
+    due: applicationJournalPresentDueValueSchema.optional(),
+    duration: durationSchema.optional(),
+    parent: applicationJournalOperationTargetReferenceSchema.optional(),
+    parent_work_mode: parentWorkModeSchema.optional(),
+    dependencies: applicationJournalDependenciesSchema.optional(),
+    obsidian_links: obsidianLinksSchema.optional(),
+  })
+  .strict();
+
+const applicationJournalOperationBaseShape = {
+  operation_id: identifierSchema,
+  target: applicationJournalOperationTargetReferenceSchema,
+};
+
+const applicationJournalCreateOperationSchema = z
+  .object({
+    operation: z.literal("create_task"),
+    operation_id: identifierSchema,
+    target: applicationJournalCreateTargetSchema,
+    temporary_ref: identifierSchema,
+    expected_before: applicationJournalAbsentValueSchema,
+    expected_after: applicationJournalCreateFieldsSchema,
+  })
+  .strict();
+
+const applicationJournalUpdateTitleOperationSchema = z
+  .object({
+    operation: z.literal("update_title"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: z.string().refine((value) => value.trim().length > 0),
+    expected_after: z.string().refine((value) => value.trim().length > 0),
+  })
+  .strict();
+
+const applicationJournalUpdateNotesOperationSchema = z
+  .object({
+    operation: z.literal("update_notes"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: z.string(),
+    expected_after: z.string(),
+  })
+  .strict();
+
+const applicationJournalSetStatusOperationSchema = z
+  .object({
+    operation: z.literal("set_status"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: z.enum(["not_started", "in_progress", "completed", "withdrawn"]),
+    expected_after: z.enum(["not_started", "in_progress"]),
+  })
+  .strict();
+
+const applicationJournalSetImportanceOperationSchema = z
+  .object({
+    operation: z.literal("set_importance"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: importanceSchema,
+    expected_after: importanceSchema,
+  })
+  .strict();
+
+const applicationJournalSetDueOperationSchema = z
+  .object({
+    operation: z.literal("set_due"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalDueValueSchema,
+    expected_after: applicationJournalPresentDueValueSchema,
+  })
+  .strict();
+
+const applicationJournalClearDueOperationSchema = z
+  .object({
+    operation: z.literal("clear_due"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalPresentDueValueSchema,
+    expected_after: applicationJournalAbsentValueSchema,
+  })
+  .strict();
+
+const applicationJournalSetDurationOperationSchema = z
+  .object({
+    operation: z.literal("set_duration"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalDurationValueSchema,
+    expected_after: durationSchema,
+  })
+  .strict();
+
+const applicationJournalClearDurationOperationSchema = z
+  .object({
+    operation: z.literal("clear_duration"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: durationSchema,
+    expected_after: applicationJournalAbsentValueSchema,
+  })
+  .strict();
+
+const applicationJournalSetAreaOperationSchema = z
+  .object({
+    operation: z.literal("set_area"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: areaSchema,
+    expected_after: areaSchema,
+  })
+  .strict();
+
+const applicationJournalSetDependenciesOperationSchema = z
+  .object({
+    operation: z.literal("set_dependencies"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalDependenciesSchema,
+    expected_after: applicationJournalDependenciesSchema,
+  })
+  .strict();
+
+const applicationJournalSetParentOperationSchema = z
+  .object({
+    operation: z.literal("set_parent"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalParentValueSchema,
+    expected_after: applicationJournalParentValueSchema,
+  })
+  .strict();
+
+const applicationJournalSetParentWorkModeOperationSchema = z
+  .object({
+    operation: z.literal("set_parent_work_mode"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: parentWorkModeSchema,
+    expected_after: parentWorkModeSchema,
+  })
+  .strict();
+
+const applicationJournalLinkObsidianOperationSchema = z
+  .object({
+    operation: z.literal("link_obsidian"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: applicationJournalAbsentValueSchema,
+    expected_after: obsidianLinkSchema,
+  })
+  .strict();
+
+const applicationJournalUnlinkObsidianOperationSchema = z
+  .object({
+    operation: z.literal("unlink_obsidian"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: obsidianLinkSchema,
+    expected_after: applicationJournalAbsentValueSchema,
+  })
+  .strict();
+
+const applicationJournalCompleteOperationSchema = z
+  .object({
+    operation: z.literal("complete"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: z.enum(["not_started", "in_progress"]),
+    expected_after: z.literal("completed"),
+  })
+  .strict();
+
+const applicationJournalWithdrawOperationSchema = z
+  .object({
+    operation: z.literal("withdraw"),
+    ...applicationJournalOperationBaseShape,
+    expected_before: z.enum(["not_started", "in_progress"]),
+    expected_after: z.literal("withdrawn"),
+  })
+  .strict();
+
+/** 再起動後のwriterに渡す操作本体を検証するスキーマです。 */
+export const applicationJournalOperationSchema = z.discriminatedUnion("operation", [
+  applicationJournalCreateOperationSchema,
+  applicationJournalUpdateTitleOperationSchema,
+  applicationJournalUpdateNotesOperationSchema,
+  applicationJournalSetStatusOperationSchema,
+  applicationJournalSetImportanceOperationSchema,
+  applicationJournalSetDueOperationSchema,
+  applicationJournalClearDueOperationSchema,
+  applicationJournalSetDurationOperationSchema,
+  applicationJournalClearDurationOperationSchema,
+  applicationJournalSetAreaOperationSchema,
+  applicationJournalSetDependenciesOperationSchema,
+  applicationJournalSetParentOperationSchema,
+  applicationJournalSetParentWorkModeOperationSchema,
+  applicationJournalLinkObsidianOperationSchema,
+  applicationJournalUnlinkObsidianOperationSchema,
+  applicationJournalCompleteOperationSchema,
+  applicationJournalWithdrawOperationSchema,
+]);
+
+export type ApplicationJournalOperation = z.infer<typeof applicationJournalOperationSchema>;
+
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type StatusSectionName = z.infer<typeof statusSectionNameSchema>;
 export type StatusSection = z.infer<typeof statusSectionSchema>;

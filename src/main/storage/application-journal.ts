@@ -1,7 +1,10 @@
 import { z } from "zod";
-import { gidSchema, identifierSchema } from "../../shared/domain";
 import {
   applicationJournalOperationSchema,
+  gidSchema,
+  identifierSchema,
+} from "../../shared/domain";
+import {
   applicationJournalPlanSchema,
   applicationJournalRecoveryReasonSchema,
   applicationJournalResultSchema,
