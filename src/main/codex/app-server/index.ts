@@ -1,9 +1,11 @@
 export {
   CodexAppServerConnection,
+} from "./connection";
+export {
   type CodexDynamicToolHandler,
   type CodexDiagnosticListener,
   type CodexNotificationListener,
-} from "./connection";
+} from "../../infrastructure/ai/codex-app-server/rpc-endpoint";
 export {
   CodexConnectionStateError,
   CodexConnectionStoppedError,
