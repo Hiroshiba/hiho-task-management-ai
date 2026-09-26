@@ -14,7 +14,7 @@ type SafeErrorProjection =
     }
   | { readonly kind: "reference"; readonly node_id: string };
 
-type SafeErrorProjectionDependencies = {
+export type SafeErrorProjectionDependencies = {
   readonly projectionSchema: z.ZodType<SafeErrorProjection>;
   readonly isRetryableFailure: (error: unknown) => boolean;
   readonly isOutputValidationFailure: (error: unknown) => boolean;
