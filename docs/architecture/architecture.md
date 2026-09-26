@@ -60,7 +60,7 @@
 
 ## 移行中と最終形の不変条件
 
-移行中は既存データ形式、既存IPC、既存Rendererの動作を維持します。新しい境界違反を追加せず、現行違反だけを`structure-migration-baseline.json`にpath、rule、symbol単位で固定し、解消したentryを同じ変更で削除します。baselineの初期集合はhashで固定し、Gitの全履歴を使って各更新後の集合が直前の集合を超えないことを検査します。新しい違反や解消済みの違反をbaselineへ追加できません。通常適用、復旧、GUI編集の切替前には17操作すべての新handlerと保存済みplanの復旧を揃えます。新旧を操作ごとに選択せず、MainRuntimeの単一の切替点でまとめて切り替えます。外部書き込みの成功が不明なstepを自動再送しません。
+移行中は既存データ形式、既存IPC、既存Rendererの動作を維持します。新しい境界違反を追加せず、現行違反だけを`structure-migration-baseline.json`にpath、rule、symbol単位で固定し、解消したentryを同じ変更で削除します。baselineの初期違反集合はhashで固定し、それ以外のentryは追加できません。完全なGit履歴がない浅いcloneでは検査を失敗させ、baselineを更新した完了タスクの成果系列だけをfirst-parent順に検査します。初期集合が固定値と一致し、各成果後の集合が直前の集合の部分集合であることを確認します。削除済みentryを後続成果へ再追加できず、側枝の未完了途中commitは対象外です。未コミットのbaselineも検査対象とし、作業ツリーの集合がHEAD上の最新集合の部分集合であることを確認します。通常適用、復旧、GUI編集の切替前には17操作すべての新handlerと保存済みplanの復旧を揃えます。新旧を操作ごとに選択せず、MainRuntimeの単一の切替点でまとめて切り替えます。外部書き込みの成功が不明なstepを自動再送しません。
 
 移行中に旧実装と接続するファイルは`src/main/bootstrap/legacy-runtime-port.ts`、`src/main/infrastructure/persistence/legacy-proposal-execution-repository.ts`、`src/main/application/proposal-apply/legacy-format-router.ts`の3つに限定します。これら以外の`legacy-*`、`compat-*`、`adapter-old-*`というファイルとディレクトリは配置先に関係なく禁止します。3ファイルは旧データの読込と切替に必要な期間だけ存在し、最終形では削除します。既存のSQLite v5、初回設定JSON v2、暗号化JSON v1、ウィンドウJSON v1、Asana Custom external data v1を読み書きできる状態を保ち、旧形式の移行は原子的かつ冪等にします。
 
