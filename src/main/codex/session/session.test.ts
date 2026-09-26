@@ -31,15 +31,16 @@ function createSession(): {
   signal: AbortSignal;
 } {
   const signal = new AbortController().signal;
+  const workspacePath = join(tmpdir(), "taskhub-session-test");
   const workspace = new ProposalWorkspace({
     workspace_id: "workspace-1",
     baseline_snapshot_hash: baselineSnapshotHash,
   });
   const service = new CodexSessionService({
     codexExecutablePath: "codex",
-    workspacePath: "/tmp/taskhub-session-test",
-    agentsFilePath: "/tmp/taskhub-session-test/AGENTS.md",
-    tmpDirectoryPath: "/tmp/taskhub-session-test/tmp",
+    workspacePath,
+    agentsFilePath: join(workspacePath, "AGENTS.md"),
+    tmpDirectoryPath: join(workspacePath, "tmp"),
     expectedCodexHomePathProvider: () => "/tmp/taskhub-session-test-home",
     obsidianReader: {
       listVaults: () => { throw new Error("呼び出されません。"); },
