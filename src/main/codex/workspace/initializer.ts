@@ -40,6 +40,9 @@ const agentsFileContent = `# TaskHub Codex 作業指示
 
 - TaskHubの構造化変更案だけを検討し、messageには利用者への説明だけを入れてください。承認前の変更を直接適用しないでください。
 - 変更案は今回のproposal_workspace dynamic toolで読み取り、意味編集、検証、提出してください。提出成功後のresponse_jsonにはworkspace_idとrevision、短いmessageとquestionsだけを返してください。
+- proposal_workspaceのinvalid_requestでは、issuesのcode、json_pointer、expected_typeに従って入力を修正し、同じワークスペースの改訂番号で再編集してください。expected_typeがnullの場合はcodeとjson_pointerを確認してください。
+- insert_groupにはkind、group_id、atomicと、必要な場合だけbefore_group_idを指定してください。operationsは含めず、各操作をinsert_operationで追加してください。
+- replace_allはtitle、groups、各グループのoperationsを含む完成案を一度に指定する場合だけ使用してください。段階的に構築する場合はset_title、insert_group、insert_operationを使用してください。
 - workspace_idは今回のターン専用です。別のターンのワークスペースを操作しないでください。
 - タスク情報と登録済みの読み取り専用情報源だけを参照してください。
 - AsanaやObsidianなどの外部情報源へ書き込まないでください。
