@@ -12,7 +12,7 @@ import {
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
 import { TaskHubApplication } from "./application/service";
@@ -1138,7 +1138,7 @@ async function bootstrap(): Promise<void> {
   const application = createTaskHubApplication(controller);
   taskHubApplication = application;
   const updateService = new ApplicationUpdateService(
-    autoUpdater,
+    electronUpdater.autoUpdater,
     app.getVersion(),
     isApplicationUpdateCandidate(
       app.isPackaged,
