@@ -49,7 +49,6 @@ import {
 import {
   calculateTaskRanking,
   type RankingTask,
-  type RankingResult,
 } from "../../domain/ranking";
 import { hashBaselineSnapshot } from "../../domain/snapshot-hash";
 import {
@@ -120,6 +119,17 @@ import {
 } from "../../diagnostic-failure";
 import { redactSensitiveText } from "../../redact-sensitive-text";
 import { createSafeErrorProjection } from "../../application/proposal-generate/retry-error-projection";
+import {
+  createInheritedEvidenceAliases as collectInheritedEvidenceAliases,
+  type InheritedStatusEvidenceAlias,
+  type InheritedSplitInstructionAlias,
+  type EligibleEvidenceOperation,
+} from "../../application/proposal-generate/evidence-inheritance";
+import {
+  bindStatusEvidence,
+  bindSplitInstructionReference,
+} from "../../application/proposal-generate/evidence-binding";
+import { createImpactCalculator } from "../../application/proposal-generate/impact-ranking";
 import { createTaskProjector, projectedTemporaryGid, projectedTargetGid } from "../../application/proposal-generate/task-projection";
 import {
   createTurnPrompt,
@@ -129,7 +139,6 @@ import {
 import {
   createEvidenceSourceMap,
   isPendingWithdrawConfirmationValid,
-  isWithdrawConfirmationSourceCurrent,
   type EvidenceSource as WorkflowEvidenceSource,
   type PendingWithdrawConfirmation as WorkflowPendingWithdrawConfirmation,
   type UserMessageSourceSummary as WorkflowUserMessageSourceSummary,
@@ -581,13 +590,6 @@ function findTaskByGid(
   return snapshot.tasks.find((task) => task.gid === taskGid);
 }
 
-function findBaselineTaskByGid(
-  baseline: BaselineSnapshot,
-  taskGid: string,
-): TaskSnapshot | undefined {
-  return baseline.tasks.find((task) => task.gid === taskGid);
-}
-
 function allChildrenAreCompleted(
   task: Task,
   tasksByGid: ReadonlyMap<string, Task>,
@@ -677,282 +679,10 @@ type StatusOperation = Extract<
   { readonly operation: "complete" | "withdraw" }
 >;
 
-type UserStatusEvidence = Extract<
-  StatusOperation["status_evidence"],
-  { readonly kind: "user_explicit" }
->;
-
-type TaskNotesStatusEvidence = Extract<
-  StatusOperation["status_evidence"],
-  { readonly kind: "task_or_note_explicit" }
->;
-
 type SplitTaskOperation = Extract<
   ProposalOperation,
   { readonly operation: "create_task" }
 >;
-
-type SplitTaskCreation = Extract<
-  SplitTaskOperation["creation"],
-  { readonly kind: "split_child" }
->;
-
-type InheritedStatusEvidenceAlias = {
-  readonly locator: string;
-  readonly source_id: string;
-  readonly excerpt: string;
-  readonly target_task_gid: string;
-  readonly allowed_operation: "complete" | "withdraw";
-};
-
-type InheritedSplitInstructionAlias = {
-  readonly locator: string;
-  readonly source_id: string;
-  readonly excerpt: string;
-  readonly parent: ProposalTarget;
-};
-
-function stripStatusEvidenceExcerpt(
-  operation: StatusOperation,
-): StatusOperation["status_evidence"] {
-  const evidence = operation.status_evidence;
-  if (evidence.kind === "user_explicit") {
-    return {
-      kind: "user_explicit",
-      reference: {
-        kind: "user_message",
-        locator: evidence.reference.locator,
-      },
-    };
-  }
-  if (evidence.kind === "task_or_note_explicit") {
-    if (evidence.reference.kind === "task") {
-      return {
-        kind: "task_or_note_explicit",
-        reference: {
-          kind: "task",
-          locator: evidence.reference.locator,
-        },
-      };
-    }
-    return {
-      kind: "task_or_note_explicit",
-      reference: {
-        kind: "obsidian",
-        locator: evidence.reference.locator,
-      },
-    };
-  }
-  if (evidence.kind === "external_structured_status") {
-    return {
-      ...evidence,
-      reference: {
-        kind: "external_tool",
-        locator: evidence.reference.locator,
-      },
-    };
-  }
-  if (evidence.kind === "external_review_explicit") {
-    return {
-      kind: "external_review_explicit",
-      reference: {
-        kind: "external_review",
-        locator: evidence.reference.locator,
-      },
-    };
-  }
-  return {
-    kind: "children_only_all_completed",
-    reference: {
-      kind: "task",
-      locator: evidence.reference.locator,
-    },
-  };
-}
-
-function stripSplitInstructionExcerpt(
-  operation: SplitTaskOperation,
-): SplitTaskCreation["instruction_reference"] {
-  if (operation.creation.kind !== "split_child") {
-    throw new Error("分割作成の根拠を通常作成へ適用できません。");
-  }
-  return {
-    kind: operation.creation.instruction_reference.kind,
-    locator: operation.creation.instruction_reference.locator,
-  };
-}
-
-function isWithdrawConfirmationEvidenceValid(
-  operation: StatusOperation,
-  source: Extract<EvidenceSource, { readonly kind: "withdraw_confirmation" }>,
-  snapshot: AiWorkflowSnapshot,
-  baseline: BaselineSnapshot,
-): boolean {
-  if (
-    operation.operation !== "withdraw"
-    || operation.target.kind !== "existing"
-  ) {
-    return false;
-  }
-  const baselineTask = findBaselineTaskByGid(baseline, operation.target.gid);
-  return isWithdrawConfirmationSourceCurrent(source, snapshot)
-    && operation.target.gid === source.target_task_gid
-    && baselineTask != null
-    && baselineTask.status === source.baseline_status
-    && baselineTask.completed === source.baseline_completed;
-}
-
-function bindStatusEvidence(
-  operation: StatusOperation,
-  prepared: PreparedTurn,
-): {
-  readonly evidence: StatusOperation["status_evidence"];
-  readonly trusted_reference: TrustedStatusEvidenceReference | undefined;
-} {
-  const evidence = operation.status_evidence;
-  const invalid = {
-    evidence: stripStatusEvidenceExcerpt(operation),
-    trusted_reference: undefined,
-  };
-  if (evidence.kind === "user_explicit") {
-    if (
-      operation.target.kind !== "existing"
-      || findTaskByGid(prepared.snapshot, operation.target.gid) == null
-    ) {
-      return invalid;
-    }
-    const source = prepared.source_map.get(evidence.reference.locator);
-    if (
-      source == null
-      || (source.kind !== "user_message" && source.kind !== "withdraw_confirmation")
-      || (
-        source.kind === "withdraw_confirmation"
-        && !isWithdrawConfirmationEvidenceValid(
-          operation,
-          source,
-          prepared.snapshot,
-          prepared.baseline,
-        )
-      )
-    ) {
-      return invalid;
-    }
-    const excerpt = verifiedSourceExcerpt(source, evidence.reference.excerpt);
-    if (excerpt == null) {
-      return invalid;
-    }
-    const locator = createStatusEvidenceLocator(
-      source.source_id,
-      operation.operation,
-      operation.target.gid,
-    );
-    const reference: UserStatusEvidence["reference"] = {
-      kind: "user_message",
-      locator,
-      excerpt,
-    };
-    return {
-      evidence: { ...evidence, reference },
-      trusted_reference: {
-        kind: "user_message",
-        locator,
-        target_task_gid: operation.target.gid,
-        allowed_operation: operation.operation,
-        excerpt,
-      },
-    };
-  }
-  if (evidence.kind === "task_or_note_explicit") {
-    if (
-      operation.target.kind !== "existing"
-      || evidence.reference.kind !== "task"
-      || findTaskByGid(prepared.snapshot, operation.target.gid) == null
-    ) {
-      return invalid;
-    }
-    const source = prepared.source_map.get(evidence.reference.locator);
-    if (
-      source == null
-      || source.kind !== "task_notes"
-      || source.task_gid !== operation.target.gid
-    ) {
-      return invalid;
-    }
-    const excerpt = verifiedSourceExcerpt(source, evidence.reference.excerpt);
-    if (excerpt == null) {
-      return invalid;
-    }
-    const locator = createStatusEvidenceLocator(
-      source.source_id,
-      operation.operation,
-      operation.target.gid,
-    );
-    const reference: TaskNotesStatusEvidence["reference"] = {
-      kind: "task",
-      locator,
-      excerpt,
-    };
-    return {
-      evidence: { ...evidence, reference },
-      trusted_reference: {
-        kind: "task",
-        locator,
-        target_task_gid: operation.target.gid,
-        allowed_operation: operation.operation,
-        validation_kind: "explicit_text",
-        excerpt,
-      },
-    };
-  }
-  return invalid;
-}
-
-function bindSplitInstructionReference(
-  operation: SplitTaskOperation,
-  prepared: PreparedTurn,
-): {
-  readonly reference: SplitTaskCreation["instruction_reference"];
-  readonly split_reference: ExplicitSplitRequestReference | undefined;
-} {
-  if (operation.creation.kind !== "split_child") {
-    throw new Error("分割作成の根拠を通常作成へ適用できません。");
-  }
-  const reference = operation.creation.instruction_reference;
-  const invalid = {
-    reference: stripSplitInstructionExcerpt(operation),
-    split_reference: undefined,
-  };
-  if (
-    operation.creation.parent.kind === "existing"
-    && findTaskByGid(prepared.snapshot, operation.creation.parent.gid) == null
-  ) {
-    return invalid;
-  }
-  const source = prepared.source_map.get(reference.locator);
-  if (source == null || source.kind !== "user_message") {
-    return invalid;
-  }
-  const excerpt = verifiedSourceExcerpt(source, reference.excerpt);
-  if (excerpt == null) {
-    return invalid;
-  }
-  const locator = createSplitInstructionLocator(
-    source.source_id,
-    operation.creation.parent,
-  );
-  return {
-    reference: {
-      kind: "user_message",
-      locator,
-      excerpt,
-    },
-    split_reference: {
-      parent: operation.creation.parent,
-      locator,
-      excerpt,
-    },
-  };
-}
 
 function resolveInheritedStatusEvidence(
   operation: StatusOperation,
@@ -1035,7 +765,11 @@ function bindProposalOperationEvidence(
         trusted_reference: undefined,
       };
     }
-    const bound = bindSplitInstructionReference(resolved, prepared);
+    const bound = bindSplitInstructionReference(resolved.creation, prepared, {
+      createStatusEvidenceLocator,
+      createSplitInstructionLocator,
+      verifiedSourceExcerpt,
+    });
     return {
       operation: proposalOperationSchema.parse({
         ...resolved,
@@ -1056,7 +790,11 @@ function bindProposalOperationEvidence(
     };
   }
   const resolved = resolveInheritedStatusEvidence(operation, prepared);
-  const bound = bindStatusEvidence(resolved, prepared);
+  const bound = bindStatusEvidence(resolved, prepared, {
+    createStatusEvidenceLocator,
+    createSplitInstructionLocator,
+    verifiedSourceExcerpt,
+  });
   return {
     operation: proposalOperationSchema.parse({
       ...resolved,
@@ -1142,150 +880,6 @@ function bindProposalEvidence(
   };
 }
 
-function findInheritedStatusSource(
-  baseProposal: StoredProposal,
-  sourceMap: EvidenceSourceMap,
-  snapshot: AiWorkflowSnapshot,
-  baseline: BaselineSnapshot,
-  operation: StatusOperation,
-  reference: TrustedStatusEvidenceReference,
-): InheritedStatusEvidenceAlias | undefined {
-  const operationEvidence = operation.status_evidence;
-  if (
-    reference.kind !== "user_message"
-    || operationEvidence.kind !== "user_explicit"
-    || operationEvidence.reference.kind !== "user_message"
-    || reference.excerpt == null
-    || operationEvidence.reference.excerpt == null
-  ) {
-    throw new AiWorkflowError("前案の利用者明示根拠の対応が壊れています。");
-  }
-  const target = operation.target;
-  if (
-    target.kind !== "existing"
-    || reference.target_task_gid !== target.gid
-    || reference.allowed_operation !== operation.operation
-    || reference.locator !== operationEvidence.reference.locator
-    || reference.excerpt !== operationEvidence.reference.excerpt
-  ) {
-    throw new AiWorkflowError("前案の利用者明示根拠の対応が壊れています。");
-  }
-  const targetTaskGid = target.gid;
-  const candidates = [...baseProposal.source_map.values()].filter(
-    (source): source is Extract<
-      EvidenceSource,
-      { readonly kind: "user_message" | "withdraw_confirmation" }
-    > => source.kind === "user_message" || source.kind === "withdraw_confirmation",
-  );
-  const matches = candidates.filter(
-    (source) => createStatusEvidenceLocator(
-      source.source_id,
-      operation.operation,
-      targetTaskGid,
-    ) === reference.locator,
-  );
-  if (matches.length !== 1) {
-    throw new AiWorkflowError("前案の利用者明示根拠の原文を特定できません。");
-  }
-  const baseSource = matches[0];
-  if (baseSource == null || verifiedSourceExcerpt(baseSource, reference.excerpt) == null) {
-    throw new AiWorkflowError("前案の利用者明示根拠の引用が原文にありません。");
-  }
-  if (
-    baseSource.kind === "withdraw_confirmation"
-    && !isWithdrawConfirmationEvidenceValid(
-      operation,
-      baseSource,
-      baseProposal.snapshot,
-      baseProposal.baseline,
-    )
-  ) {
-    throw new AiWorkflowError("前案の取り下げ確認根拠が基準状態へ対応していません。");
-  }
-  const currentSource = sourceMap.get(baseSource.source_id);
-  if (currentSource == null) {
-    if (baseSource.kind === "withdraw_confirmation") {
-      return undefined;
-    }
-    throw new AiWorkflowError("前案の利用者原文が現在のsource mapにありません。");
-  }
-  if (canonicalizeJson(currentSource) !== canonicalizeJson(baseSource)) {
-    throw new AiWorkflowError("前案の利用者原文が現在のsource mapと一致しません。");
-  }
-  if (
-    currentSource.kind === "withdraw_confirmation"
-    && !isWithdrawConfirmationEvidenceValid(operation, currentSource, snapshot, baseline)
-  ) {
-    return undefined;
-  }
-  if (verifiedSourceExcerpt(currentSource, reference.excerpt) == null) {
-    throw new AiWorkflowError("前案の利用者明示根拠の引用が現在の原文にありません。");
-  }
-  return {
-    locator: reference.locator,
-    source_id: currentSource.source_id,
-    excerpt: reference.excerpt,
-    target_task_gid: targetTaskGid,
-    allowed_operation: operation.operation,
-  };
-}
-
-function findInheritedSplitSource(
-  baseProposal: StoredProposal,
-  sourceMap: EvidenceSourceMap,
-  operation: SplitTaskOperation,
-  reference: ExplicitSplitRequestReference,
-): InheritedSplitInstructionAlias {
-  const creation = operation.creation;
-  if (creation.kind !== "split_child") {
-    throw new AiWorkflowError("前案の分割依頼根拠を通常作成へ適用できません。");
-  }
-  const parent = creation.parent;
-  const operationReference = creation.instruction_reference;
-  if (
-    operationReference.kind !== "user_message"
-    || operationReference.excerpt == null
-    || canonicalizeJson(reference.parent) !== canonicalizeJson(parent)
-    || reference.locator !== operationReference.locator
-    || reference.excerpt !== operationReference.excerpt
-  ) {
-    throw new AiWorkflowError("前案の分割依頼根拠の対応が壊れています。");
-  }
-  const candidates = [...baseProposal.source_map.values()].filter(
-    (source): source is Extract<EvidenceSource, { readonly kind: "user_message" }> =>
-      source.kind === "user_message",
-  );
-  const matches = candidates.filter(
-    (source) => createSplitInstructionLocator(
-      source.source_id,
-      parent,
-    ) === reference.locator,
-  );
-  if (matches.length !== 1) {
-    throw new AiWorkflowError("前案の分割依頼根拠の原文を特定できません。");
-  }
-  const baseSource = matches[0];
-  if (baseSource == null || verifiedSourceExcerpt(baseSource, reference.excerpt) == null) {
-    throw new AiWorkflowError("前案の分割依頼根拠の引用が原文にありません。");
-  }
-  const currentSource = sourceMap.get(baseSource.source_id);
-  if (currentSource == null || currentSource.kind !== "user_message") {
-    throw new AiWorkflowError("前案の分割依頼の利用者原文が現在のsource mapにありません。");
-  }
-  if (canonicalizeJson(currentSource) !== canonicalizeJson(baseSource)) {
-    throw new AiWorkflowError("前案の分割依頼の利用者原文が現在のsource mapと一致しません。");
-  }
-  if (verifiedSourceExcerpt(currentSource, reference.excerpt) == null) {
-    throw new AiWorkflowError("前案の分割依頼根拠の引用が現在の原文にありません。");
-  }
-  return {
-    locator: reference.locator,
-    source_id: currentSource.source_id,
-    excerpt: reference.excerpt,
-    parent,
-  };
-}
-
 function createInheritedEvidenceAliases(
   baseProposal: StoredProposal | undefined,
   sourceMap: EvidenceSourceMap,
@@ -1295,93 +889,44 @@ function createInheritedEvidenceAliases(
   readonly status: readonly InheritedStatusEvidenceAlias[];
   readonly split: readonly InheritedSplitInstructionAlias[];
 } {
-  if (baseProposal == null) {
-    return { status: [], split: [] };
-  }
-  const eligibleIds = new Set(
-    eligibleOperationIds(baseProposal.proposal, baseProposal.graph_validation),
-  );
-  const trustedByLocator = new Map<string, TrustedStatusEvidenceReference>();
-  for (const reference of baseProposal.trusted_status_evidence) {
-    const key = `${reference.kind}\u0000${reference.locator}`;
-    if (trustedByLocator.has(key)) {
-      throw new AiWorkflowError("前案の信頼済み根拠locatorが重複しています。");
-    }
-    trustedByLocator.set(key, reference);
-  }
-  const splitByKey = new Map<string, ExplicitSplitRequestReference>();
-  for (const reference of baseProposal.explicit_split_request_references) {
-    const key = `${canonicalizeJson(reference.parent)}\u0000${reference.locator}\u0000${reference.excerpt}`;
-    if (splitByKey.has(key)) {
-      throw new AiWorkflowError("前案の分割依頼根拠が重複しています。");
-    }
-    splitByKey.set(key, reference);
-  }
-  const statusAliases = new Map<string, InheritedStatusEvidenceAlias>();
-  const splitAliases = new Map<string, InheritedSplitInstructionAlias>();
-  for (const group of baseProposal.proposal.groups) {
-    for (const operation of group.operations) {
-      if (!eligibleIds.has(operation.operation_id)) {
-        continue;
-      }
-      if (
-        (operation.operation === "complete" || operation.operation === "withdraw")
-        && operation.status_evidence.kind === "user_explicit"
-        && operation.status_evidence.reference.kind === "user_message"
-        && operation.target.kind === "existing"
-      ) {
-        const trusted = trustedByLocator.get(
-          `user_message\u0000${operation.status_evidence.reference.locator}`,
-        );
-        if (trusted == null) {
-          throw new AiWorkflowError("前案の利用者明示根拠が信頼済み一覧にありません。");
+  const eligibleIds = baseProposal == null
+    ? new Set<string>()
+    : new Set(eligibleOperationIds(baseProposal.proposal, baseProposal.graph_validation));
+  const eligibleOperations: EligibleEvidenceOperation[] = [];
+  if (baseProposal != null) {
+    for (const group of baseProposal.proposal.groups) {
+      for (const operation of group.operations) {
+        if (!eligibleIds.has(operation.operation_id)) continue;
+        if ((operation.operation === "complete" || operation.operation === "withdraw")
+          && operation.status_evidence.kind === "user_explicit"
+          && operation.status_evidence.reference.kind === "user_message"
+          && operation.target.kind === "existing") {
+          eligibleOperations.push({ kind: "status", operation: {
+            operation: operation.operation,
+            target: operation.target,
+            status_evidence: operation.status_evidence,
+          } });
         }
-        const alias = findInheritedStatusSource(
-          baseProposal,
-          sourceMap,
-          snapshot,
-          baseline,
-          operation,
-          trusted,
-        );
-        if (alias != null) {
-          const key = `${alias.locator}\u0000${alias.source_id}\u0000${alias.excerpt}\u0000${alias.target_task_gid}\u0000${alias.allowed_operation}`;
-          if (!statusAliases.has(key)) {
-            statusAliases.set(key, alias);
-          }
-        }
-      }
-      if (
-        operation.operation === "create_task"
-        && operation.creation.kind === "split_child"
-        && operation.creation.instruction_reference.kind === "user_message"
-      ) {
-        const operationReference = operation.creation.instruction_reference;
-        if (operationReference.excerpt == null) {
-          throw new AiWorkflowError("前案の分割依頼根拠の引用がありません。");
-        }
-        const key = `${canonicalizeJson(operation.creation.parent)}\u0000${operationReference.locator}\u0000${operationReference.excerpt}`;
-        const reference = splitByKey.get(key);
-        if (reference == null) {
-          throw new AiWorkflowError("前案の分割依頼根拠が信頼済み一覧にありません。");
-        }
-        const alias = findInheritedSplitSource(
-          baseProposal,
-          sourceMap,
-          operation,
-          reference,
-        );
-        const aliasKey = `${alias.locator}\u0000${alias.source_id}\u0000${alias.excerpt}\u0000${canonicalizeJson(alias.parent)}`;
-        if (!splitAliases.has(aliasKey)) {
-          splitAliases.set(aliasKey, alias);
+        if (operation.operation === "create_task"
+          && operation.creation.kind === "split_child"
+          && operation.creation.instruction_reference.kind === "user_message") {
+          eligibleOperations.push({ kind: "split", creation: {
+            kind: "split_child",
+            parent: operation.creation.parent,
+            instruction_reference: operation.creation.instruction_reference,
+          } });
         }
       }
     }
   }
-  return {
-    status: [...statusAliases.values()],
-    split: [...splitAliases.values()],
-  };
+  return collectInheritedEvidenceAliases(baseProposal, sourceMap, snapshot, baseline,
+    eligibleOperations, {
+      canonicalizeJson,
+      createStatusEvidenceLocator,
+      createSplitInstructionLocator,
+      verifiedSourceExcerpt,
+      WorkflowError: AiWorkflowError,
+    });
 }
 
 function rebindInitialOperation(
@@ -1785,51 +1330,6 @@ function normalizeTasksForRanking(tasks: readonly Task[]): RankingTask[] {
   });
 }
 
-function createRankMap(result: RankingResult): Map<string, number> {
-  const ranks = new Map<string, number>();
-  for (const task of result.ranked_tasks) {
-    if (ranks.has(task.gid)) {
-      throw new AiWorkflowError(`順位結果のGID ${task.gid} が重複しています。`);
-    }
-    ranks.set(task.gid, task.rank);
-  }
-  return ranks;
-}
-
-type RankPresence = "ranked" | "excluded" | "not_present";
-
-function createRankPresenceMap(result: RankingResult): Map<string, RankPresence> {
-  const states = new Map<string, RankPresence>();
-  for (const task of result.ranked_tasks) {
-    states.set(task.gid, "ranked");
-  }
-  for (const task of result.excluded_tasks) {
-    if (states.has(task.gid)) {
-      throw new AiWorkflowError(`順位結果のGID ${task.gid} が重複しています。`);
-    }
-    states.set(task.gid, "excluded");
-  }
-  return states;
-}
-
-function createRankChange(
-  gid: string,
-  before: number | undefined,
-  after: number | undefined,
-  beforeState: RankPresence,
-  afterState: RankPresence,
-): {
-  readonly task_gid: string;
-  readonly before_state: RankPresence;
-  readonly before_rank?: number;
-  readonly after_state: RankPresence;
-  readonly after_rank?: number;
-} {
-  const base = { task_gid: gid, before_state: beforeState, after_state: afterState };
-  const withBefore = before == null ? base : { ...base, before_rank: before };
-  return after == null ? withBefore : { ...withBefore, after_rank: after };
-}
-
 function collectDirectTargetGids(
   proposal: Proposal,
   selectedOperationIds: ReadonlySet<string>,
@@ -1856,83 +1356,19 @@ export function calculateWorkflowImpact(
   proposal: Proposal,
   selectedOperationIds: readonly string[],
 ): AiWorkflowImpact {
-  const validatedSnapshot = aiWorkflowSnapshotSchema.parse(snapshot);
-  const validatedProposal = proposalSchema.parse(proposal);
-  const validatedSelection = z
-    .array(identifierSchema)
-    .max(256)
-    .superRefine((values, context) => {
-      const seen = new Set<string>();
-      for (const [index, value] of values.entries()) {
-        if (seen.has(value)) {
-          context.addIssue({
-            code: "custom",
-            path: [index],
-            message: "同じ操作を重複指定できません。",
-          });
-        }
-        seen.add(value);
-      }
-    })
-    .parse(selectedOperationIds);
-  const availableOperations = operationMap(validatedProposal);
-  for (const operationId of validatedSelection) {
-    if (!availableOperations.has(operationId)) {
-      throw new AiWorkflowSelectionError(`指定した操作 ${operationId} が存在しません。`);
-    }
-  }
-  const selected = new Set(validatedSelection);
-  const baselineRanking = calculateTaskRanking({
-    app_version: validatedSnapshot.app_version,
-    as_of: validatedSnapshot.as_of,
-    tasks: normalizeTasksForRanking(validatedSnapshot.tasks),
+  const calculate = createImpactCalculator({
+    snapshotSchema: aiWorkflowSnapshotSchema,
+    proposalSchema,
+    identifierSchema,
+    parseImpact: (value) => aiWorkflowImpactSchema.parse(value),
+    operationMap,
+    normalizeTasksForRanking,
+    projectTasks,
+    calculateTaskRanking,
+    collectDirectTargetGids,
+    SelectionError: AiWorkflowSelectionError,
   });
-  const projectedRanking = calculateTaskRanking({
-    app_version: validatedSnapshot.app_version,
-    as_of: validatedSnapshot.as_of,
-    tasks: projectTasks(validatedSnapshot, validatedProposal, selected),
-  });
-  const beforeRanks = createRankMap(baselineRanking);
-  const afterRanks = createRankMap(projectedRanking);
-  const beforeStates = createRankPresenceMap(baselineRanking);
-  const afterStates = createRankPresenceMap(projectedRanking);
-  const directTargetGids = collectDirectTargetGids(validatedProposal, selected);
-  const gids = new Set([
-    ...beforeRanks.keys(),
-    ...afterRanks.keys(),
-    ...beforeStates.keys(),
-    ...afterStates.keys(),
-    ...directTargetGids,
-  ]);
-  const changes = [...gids]
-    .sort(compareStrings)
-    .flatMap((gid) => {
-      const before = beforeRanks.get(gid);
-      const after = afterRanks.get(gid);
-      const beforeState = beforeStates.get(gid) ?? "not_present";
-      const afterState = afterStates.get(gid) ?? "not_present";
-      if (
-        before === after
-        && beforeState === afterState
-        && !directTargetGids.has(gid)
-      ) {
-        return [];
-      }
-      if (
-        before == null
-        && after == null
-        && beforeState === afterState
-        && !directTargetGids.has(gid)
-      ) {
-        return [];
-      }
-      return [createRankChange(gid, before, after, beforeState, afterState)];
-    });
-  return aiWorkflowImpactSchema.parse({
-    impacted_task_count: changes.length,
-    impacted_task_gids: changes.map((change) => change.task_gid),
-    rank_changes: changes,
-  });
+  return calculate(snapshot, proposal, selectedOperationIds);
 }
 
 function revalidateProposal(
