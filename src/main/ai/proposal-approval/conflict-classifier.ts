@@ -22,307 +22,52 @@ import {
   type GraphValidationResult,
 } from "../proposal-validation";
 
-const maximumManagedTasks = 10000;
-const maximumSelectedOperations = 256;
-const maximumJournalMappings = 256;
+import { createApprovalConflictSchemas } from "../../application/proposal-generate/approval-conflict-schemas";
+import { createSelectedOperationContexts, createOperationResults, createGroupResults } from "../../application/proposal-generate/approval-results";
+import {
+  createApprovalComparison,
+  type DueValue,
+  type ParentIdentity,
+  type TargetIdentity,
+  type TemporaryResolution,
+} from "../../application/proposal-generate/approval-comparison";
 
-const conflictReasonCodeSchema = z.enum([
-  "current_task_missing",
-  "field_changed",
-  "external_data_unwritable",
-  "temporary_target_unresolved",
-]);
+const {
+  compareStrings,
+  sortUniqueStrings,
+  targetIdentityFromTask,
+  taskDueValue,
+  sameParentIdentity,
+  sameDueValue,
+  sameDurationValue,
+  sameDependencies,
+  sameObsidianLinks,
+  findObsidianLink,
+  resolveTargetIdentity,
+  resolveParentIdentity,
+  resolveDependencies,
+  classifyObsidianOperation,
+} = createApprovalComparison(canonicalizeJson);
 
-type ConflictReasonCode = z.infer<typeof conflictReasonCodeSchema>;
 
+const approvalSchemas = createApprovalConflictSchemas({
+  gidSchema,
+  identifierSchema,
+  taskSchema,
+  proposalSchema,
+  graphValidationResultSchema,
+});
+
+const approvalInputSchema = approvalSchemas.approvalInputSchema;
+const approvalResultSchema = approvalSchemas.approvalResultSchema;
+type ConflictReasonCode = z.infer<typeof approvalSchemas.conflictReasonCodeSchema>;
 const conflictReasonCodeOrder: readonly ConflictReasonCode[] = [
   "current_task_missing",
   "field_changed",
   "external_data_unwritable",
   "temporary_target_unresolved",
 ];
-
-const normalizedTaskArraySchema = z
-  .array(taskSchema)
-  .max(maximumManagedTasks)
-  .superRefine((tasks, context) => {
-    const seen = new Set<string>();
-    tasks.forEach((task, index) => {
-      if (seen.has(task.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "gid"],
-          message: "正規化済みタスクGIDを重複して指定できません。",
-        });
-      }
-      seen.add(task.gid);
-    });
-  });
-
-const selectedOperationIdsSchema = z
-  .array(identifierSchema)
-  .min(1)
-  .max(maximumSelectedOperations)
-  .superRefine((operationIds, context) => {
-    const seen = new Set<string>();
-    operationIds.forEach((operationId, index) => {
-      if (seen.has(operationId)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "同じoperation_idを重複して選択できません。",
-        });
-      }
-      seen.add(operationId);
-    });
-  });
-
-const writableExternalDataTaskGidsSchema = z
-  .array(gidSchema)
-  .max(maximumManagedTasks)
-  .superRefine((gids, context) => {
-    const seen = new Set<string>();
-    gids.forEach((gid, index) => {
-      if (seen.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "外部データ書き込み可能タスクGIDを重複して指定できません。",
-        });
-      }
-      seen.add(gid);
-    });
-  });
-
-const journalTaskMappingSchema = z
-  .object({
-    temporary_ref: identifierSchema,
-    task_gid: gidSchema,
-  })
-  .strict();
-
-const journalTaskMappingsSchema = z
-  .array(journalTaskMappingSchema)
-  .max(maximumJournalMappings)
-  .superRefine((mappings, context) => {
-    const temporaryRefs = new Set<string>();
-    const taskGids = new Set<string>();
-    mappings.forEach((mapping, index) => {
-      if (temporaryRefs.has(mapping.temporary_ref)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "temporary_ref"],
-          message: "同じtemporary_refをjournal mappingへ重複して指定できません。",
-        });
-      }
-      if (taskGids.has(mapping.task_gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "task_gid"],
-          message: "同じタスクGIDをjournal mappingへ重複して指定できません。",
-        });
-      }
-      temporaryRefs.add(mapping.temporary_ref);
-      taskGids.add(mapping.task_gid);
-    });
-  });
-
-const approvalInputSchema = z
-  .object({
-    proposal: proposalSchema,
-    baseline_tasks: normalizedTaskArraySchema,
-    current_tasks: normalizedTaskArraySchema,
-    graph_validation_result: graphValidationResultSchema,
-    selected_operation_ids: selectedOperationIdsSchema,
-    writable_external_data_task_gids: writableExternalDataTaskGidsSchema,
-    journal_task_mappings: journalTaskMappingsSchema,
-  })
-  .strict();
-
-const affectedTaskGidsSchema = z
-  .array(gidSchema)
-  .max(maximumManagedTasks)
-  .superRefine((gids, context) => {
-    const seen = new Set<string>();
-    let previous: string | undefined;
-    gids.forEach((gid, index) => {
-      if (seen.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "影響タスクGIDを重複して指定できません。",
-        });
-      }
-      if (previous != null && previous >= gid) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "影響タスクGIDはGID順に指定してください。",
-        });
-      }
-      seen.add(gid);
-      previous = gid;
-    });
-  });
-
-const applicableOperationResultSchema = z
-  .object({
-    kind: z.literal("applicable"),
-    group_id: identifierSchema,
-    operation_id: identifierSchema,
-    affected_task_gids: affectedTaskGidsSchema,
-  })
-  .strict();
-
-const alreadyAppliedOperationResultSchema = z
-  .object({
-    kind: z.literal("already_applied"),
-    group_id: identifierSchema,
-    operation_id: identifierSchema,
-    affected_task_gids: affectedTaskGidsSchema,
-  })
-  .strict();
-
-const conflictOperationResultSchema = z
-  .object({
-    kind: z.literal("conflict"),
-    group_id: identifierSchema,
-    operation_id: identifierSchema,
-    reason_codes: z
-      .array(conflictReasonCodeSchema)
-      .min(1)
-      .superRefine((codes, context) => {
-        const seen = new Set<ConflictReasonCode>();
-        codes.forEach((code, index) => {
-          if (seen.has(code)) {
-            context.addIssue({
-              code: "custom",
-              path: [index],
-              message: "同じ競合理由コードを重複して指定できません。",
-            });
-          }
-          seen.add(code);
-        });
-      }),
-    affected_task_gids: affectedTaskGidsSchema,
-  })
-  .strict();
-
-const operationResultSchema = z.discriminatedUnion("kind", [
-  applicableOperationResultSchema,
-  alreadyAppliedOperationResultSchema,
-  conflictOperationResultSchema,
-]);
-
-const groupResultSchema = z
-  .object({
-    group_id: identifierSchema,
-    atomic: z.boolean(),
-    applicable: z.boolean(),
-    operation_ids: z.array(identifierSchema).min(1),
-  })
-  .strict();
-
-const approvalResultSchema = z
-  .object({
-    operations: z.array(operationResultSchema).min(1),
-    groups: z.array(groupResultSchema).min(1),
-  })
-  .strict()
-  .superRefine((result, context) => {
-    const operationGroups = new Map<string, string>();
-    const groupIds = new Set<string>();
-    for (const [index, group] of result.groups.entries()) {
-      if (groupIds.has(group.group_id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["groups", index, "group_id"],
-          message: "同じgroup_idを重複して指定できません。",
-        });
-      }
-      groupIds.add(group.group_id);
-      const groupOperationIds = new Set<string>();
-      let hasApplicableOperation = false;
-      let hasConflict = false;
-      for (const [operationIndex, operationId] of group.operation_ids.entries()) {
-        if (groupOperationIds.has(operationId)) {
-          context.addIssue({
-            code: "custom",
-            path: ["groups", index, "operation_ids", operationIndex],
-            message: "同じoperation_idをグループへ重複して指定できません。",
-          });
-        }
-        groupOperationIds.add(operationId);
-        if (operationGroups.has(operationId)) {
-          context.addIssue({
-            code: "custom",
-            path: ["groups", index, "operation_ids", operationIndex],
-            message: "operation_idを複数のグループへ指定できません。",
-          });
-        }
-        operationGroups.set(operationId, group.group_id);
-        const operation = result.operations.find(
-          (candidate) => candidate.operation_id === operationId,
-        );
-        if (operation == null) {
-          context.addIssue({
-            code: "custom",
-            path: ["groups", index, "operation_ids", operationIndex],
-            message: "グループのoperation_idに対応する結果がありません。",
-          });
-          continue;
-        }
-        if (operation.group_id !== group.group_id) {
-          context.addIssue({
-            code: "custom",
-            path: ["groups", index, "operation_ids", operationIndex],
-            message: "操作結果のgroup_idがグループと一致しません。",
-          });
-        }
-        if (operation.kind === "conflict") {
-          hasConflict = true;
-        } else {
-          hasApplicableOperation = true;
-        }
-      }
-      const expectedApplicable = group.atomic
-        ? hasApplicableOperation && !hasConflict
-        : hasApplicableOperation;
-      if (group.applicable !== expectedApplicable) {
-        context.addIssue({
-          code: "custom",
-          path: ["groups", index, "applicable"],
-          message: "グループのapplicableが操作結果と一致しません。",
-        });
-      }
-    }
-
-    const operationIds = new Set<string>();
-    result.operations.forEach((operation, index) => {
-      if (operationIds.has(operation.operation_id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["operations", index, "operation_id"],
-          message: "同じoperation_idを重複して指定できません。",
-        });
-      }
-      operationIds.add(operation.operation_id);
-      const groupId = operationGroups.get(operation.operation_id);
-      if (groupId == null) {
-        context.addIssue({
-          code: "custom",
-          path: ["operations", index, "operation_id"],
-          message: "操作結果がグループへ所属していません。",
-        });
-      } else if (groupId !== operation.group_id) {
-        context.addIssue({
-          code: "custom",
-          path: ["operations", index, "group_id"],
-          message: "操作結果のgroup_idが対応グループと一致しません。",
-        });
-      }
-    });
-  });
+type JournalTaskMapping = z.infer<typeof approvalSchemas.journalTaskMappingSchema>;
 
 export type ProposalApprovalInput = z.infer<typeof approvalInputSchema>;
 export type ProposalApprovalResult = z.infer<typeof approvalResultSchema>;
@@ -338,19 +83,10 @@ type ProposalTarget = Extract<
   { readonly operation: "update_title" }
 >["target"];
 
-type ProposalParentValue = Extract<
-  ProposalOperation,
-  { readonly operation: "set_parent" }
->["before"];
-
 type ProposalDependency = Extract<
   ProposalOperation,
   { readonly operation: "set_dependencies" }
 >["before"][number];
-
-type ProposalDueValue =
-  | Extract<ProposalOperation, { readonly operation: "set_due" }>["before"]
-  | Extract<ProposalOperation, { readonly operation: "clear_due" }>["after"];
 
 type ProposalCreateTaskOperation = Extract<
   ProposalOperation,
@@ -362,24 +98,11 @@ type NonCreateOperation = Exclude<
   { readonly operation: "create_task" }
 >;
 
-type TargetIdentity =
-  | { readonly kind: "existing"; readonly gid: string }
-  | { readonly kind: "temporary"; readonly ref: string };
-
-type ParentIdentity =
-  | { readonly kind: "absent" }
-  | TargetIdentity;
-
 type ComparableDependency = {
   readonly target: TargetIdentity;
   readonly scope: ProposalDependency["scope"];
   readonly source: string;
 };
-
-type DueValue =
-  | { readonly kind: "absent" }
-  | { readonly kind: "due_on"; readonly due_on: string }
-  | { readonly kind: "due_at"; readonly due_at: string };
 
 type DurationValue = Duration | { readonly kind: "absent" };
 
@@ -396,12 +119,6 @@ type ComparableTask = {
   readonly dependencies: readonly ComparableDependency[];
   readonly obsidian_links: readonly ObsidianLink[];
 };
-
-type JournalTaskMapping = z.infer<typeof journalTaskMappingSchema>;
-
-type TemporaryResolution =
-  | { readonly kind: "journal"; readonly gid: string }
-  | { readonly kind: "selected_create" };
 
 type Classification =
   | {
@@ -422,20 +139,6 @@ type ProposalOperationContext = {
   readonly group: ProposalGroup;
   readonly operation: ProposalOperation;
 };
-
-function compareStrings(left: string, right: string): number {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
-}
-
-function sortUniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values)].sort(compareStrings);
-}
 
 function sortReasonCodes(
   reasonCodes: readonly ConflictReasonCode[],
@@ -461,13 +164,6 @@ function conflictClassification(
   };
 }
 
-function targetIdentityFromTask(task: Task): ParentIdentity {
-  if (task.parent_gid == null) {
-    return { kind: "absent" };
-  }
-  return { kind: "existing", gid: task.parent_gid };
-}
-
 function currentTaskState(task: Task): ComparableTask {
   return {
     title: task.title,
@@ -486,109 +182,6 @@ function currentTaskState(task: Task): ComparableTask {
     })),
     obsidian_links: task.obsidian_links,
   };
-}
-
-function taskDueValue(task: Task): DueValue {
-  if (task.due_on != null) {
-    return { kind: "due_on", due_on: task.due_on };
-  }
-  if (task.due_at != null) {
-    return { kind: "due_at", due_at: task.due_at };
-  }
-  return { kind: "absent" };
-}
-
-function sameTargetIdentity(
-  left: TargetIdentity,
-  right: TargetIdentity,
-): boolean {
-  if (left.kind !== right.kind) {
-    return false;
-  }
-  if (left.kind === "existing" && right.kind === "existing") {
-    return left.gid === right.gid;
-  }
-  if (left.kind === "temporary" && right.kind === "temporary") {
-    return left.ref === right.ref;
-  }
-  return false;
-}
-
-function sameParentIdentity(
-  left: ParentIdentity,
-  right: ParentIdentity,
-): boolean {
-  if (left.kind === "absent" || right.kind === "absent") {
-    return left.kind === right.kind;
-  }
-  return sameTargetIdentity(left, right);
-}
-
-function sameDueValue(left: DueValue, right: ProposalDueValue): boolean {
-  if (left.kind !== right.kind) {
-    return false;
-  }
-  if (left.kind === "absent" && right.kind === "absent") {
-    return true;
-  }
-  if (left.kind === "due_on" && right.kind === "due_on") {
-    return left.due_on === right.due_on;
-  }
-  if (left.kind === "due_at" && right.kind === "due_at") {
-    return left.due_at === right.due_at;
-  }
-  return false;
-}
-
-function sameDurationValue(
-  left: DurationValue,
-  right: DurationValue,
-): boolean {
-  if ("kind" in left || "kind" in right) {
-    return "kind" in left && "kind" in right;
-  }
-  return left.value === right.value && left.unit === right.unit;
-}
-
-function dependencyKey(dependency: ComparableDependency): string {
-  return canonicalizeJson(dependency);
-}
-
-function sameDependencies(
-  left: readonly ComparableDependency[],
-  right: readonly ComparableDependency[],
-): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  const leftKeys = left.map(dependencyKey).sort(compareStrings);
-  const rightKeys = right.map(dependencyKey).sort(compareStrings);
-  return leftKeys.every((key, index) => key === rightKeys[index]);
-}
-
-function obsidianLinkKey(link: ObsidianLink): string {
-  return canonicalizeJson([link.vault_id, link.path]);
-}
-
-function sameObsidianLinks(
-  left: readonly ObsidianLink[],
-  right: readonly ObsidianLink[],
-): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  const leftByKey = new Map(left.map((link) => [obsidianLinkKey(link), link]));
-  const rightByKey = new Map(right.map((link) => [obsidianLinkKey(link), link]));
-  if (leftByKey.size !== rightByKey.size) {
-    return false;
-  }
-  for (const [key, leftLink] of leftByKey) {
-    const rightLink = rightByKey.get(key);
-    if (rightLink == null || canonicalizeJson(leftLink) !== canonicalizeJson(rightLink)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function createTaskMatchesAfter(
@@ -652,55 +245,6 @@ function createTaskMatchesAfter(
     return false;
   }
   return true;
-}
-
-function resolveTargetIdentity(
-  target: ProposalTarget,
-  resolutions: ReadonlyMap<string, TemporaryResolution>,
-): TargetIdentity | undefined {
-  if (target.kind === "existing") {
-    return { kind: "existing", gid: target.gid };
-  }
-  const resolution = resolutions.get(target.ref);
-  if (resolution == null) {
-    return undefined;
-  }
-  if (resolution.kind === "journal") {
-    return { kind: "existing", gid: resolution.gid };
-  }
-  return { kind: "temporary", ref: target.ref };
-}
-
-function requireTargetIdentity(
-  target: ProposalTarget,
-  resolutions: ReadonlyMap<string, TemporaryResolution>,
-): TargetIdentity {
-  const resolved = resolveTargetIdentity(target, resolutions);
-  if (resolved == null) {
-    throw new Error("一時参照先を解決できません。");
-  }
-  return resolved;
-}
-
-function resolveParentIdentity(
-  value: ProposalParentValue,
-  resolutions: ReadonlyMap<string, TemporaryResolution>,
-): ParentIdentity {
-  if (value.kind === "absent") {
-    return { kind: "absent" };
-  }
-  return requireTargetIdentity(value, resolutions);
-}
-
-function resolveDependencies(
-  dependencies: readonly ProposalDependency[],
-  resolutions: ReadonlyMap<string, TemporaryResolution>,
-): readonly ComparableDependency[] {
-  return dependencies.map((dependency) => ({
-    target: requireTargetIdentity(dependency.target, resolutions),
-    scope: dependency.scope,
-    source: dependency.source,
-  }));
 }
 
 function createTaskState(
@@ -1189,38 +733,6 @@ function operationAfterMatches(
   }
 }
 
-function findObsidianLink(
-  links: readonly ObsidianLink[],
-  target: ObsidianLink,
-): ObsidianLink | undefined {
-  const key = obsidianLinkKey(target);
-  return links.find((link) => obsidianLinkKey(link) === key);
-}
-
-function classifyObsidianOperation(
-  operation: Extract<
-    NonCreateOperation,
-    { readonly operation: "link_obsidian" | "unlink_obsidian" }
-  >,
-  task: ComparableTask,
-): "applicable" | "already_applied" | "field_changed" {
-  const target = operation.operation === "link_obsidian"
-    ? operation.after
-    : operation.before;
-  const current = findObsidianLink(task.obsidian_links, target);
-  if (current == null) {
-    return operation.operation === "link_obsidian"
-      ? "applicable"
-      : "already_applied";
-  }
-  if (canonicalizeJson(current) !== canonicalizeJson(target)) {
-    return "field_changed";
-  }
-  return operation.operation === "link_obsidian"
-    ? "already_applied"
-    : "applicable";
-}
-
 function classifyCreateTask(
   operation: ProposalCreateTaskOperation,
   currentTasks: ReadonlyMap<string, Task>,
@@ -1375,87 +887,6 @@ function classifyOperation(
     resolutions,
     createOperations,
   );
-}
-
-function createSelectedOperationContexts(
-  contexts: readonly ProposalOperationContext[],
-  selectedOperationIds: ReadonlySet<string>,
-): readonly ProposalOperationContext[] {
-  return contexts.filter((context) =>
-    selectedOperationIds.has(context.operation.operation_id));
-}
-
-function createOperationResults(
-  contexts: readonly ProposalOperationContext[],
-  classifications: ReadonlyMap<string, Classification>,
-): ProposalApprovalResult["operations"] {
-  return contexts.map((context) => {
-    const classification = classifications.get(context.operation.operation_id);
-    if (classification == null) {
-      throw new Error("操作の競合分類結果がありません。");
-    }
-    switch (classification.kind) {
-      case "applicable":
-        return {
-          group_id: context.group.group_id,
-          operation_id: context.operation.operation_id,
-          kind: classification.kind,
-          affected_task_gids: [...classification.affected_task_gids],
-        };
-      case "already_applied":
-        return {
-          group_id: context.group.group_id,
-          operation_id: context.operation.operation_id,
-          kind: classification.kind,
-          affected_task_gids: [...classification.affected_task_gids],
-        };
-      case "conflict":
-        return {
-          group_id: context.group.group_id,
-          operation_id: context.operation.operation_id,
-          kind: classification.kind,
-          reason_codes: [...classification.reason_codes],
-          affected_task_gids: [...classification.affected_task_gids],
-        };
-    }
-  });
-}
-
-function createGroupResults(
-  proposal: Proposal,
-  selectedOperationIds: ReadonlySet<string>,
-  classifications: ReadonlyMap<string, Classification>,
-): ProposalApprovalResult["groups"] {
-  const groups: ProposalApprovalResult["groups"] = [];
-  for (const group of proposal.groups) {
-    const selectedOperations = group.operations.filter((operation) =>
-      selectedOperationIds.has(operation.operation_id));
-    if (selectedOperations.length === 0) {
-      continue;
-    }
-    const selectedClassifications = selectedOperations.map((operation) => {
-      const classification = classifications.get(operation.operation_id);
-      if (classification == null) {
-        throw new Error("グループの競合分類結果がありません。");
-      }
-      return classification;
-    });
-    const hasApplicableOperation = selectedClassifications.some(
-      (classification) => classification.kind !== "conflict",
-    );
-    const hasConflict = selectedClassifications.some(
-      (classification) => classification.kind === "conflict",
-    );
-    groups.push({
-      group_id: group.group_id,
-      atomic: group.atomic,
-      applicable: group.atomic
-        ? hasApplicableOperation && !hasConflict
-        : hasApplicableOperation,
-      operation_ids: selectedOperations.map((operation) => operation.operation_id),
-    });
-  }
-  return groups;
 }
 
 /** AI変更案を承認直前の現在値とフィールド単位で分類します。 */

@@ -4,6 +4,7 @@ export type TaskDueValue =
   | { readonly kind: "due_at"; readonly due_at: string };
 
 
+/** 変更案と現在タスクの期限値を比較します。 */
 export function sameDueValue(left: TaskDueValue, right: TaskDueValue): boolean {
   if (left.kind !== right.kind) {
     return false;
@@ -20,6 +21,7 @@ export function sameDueValue(left: TaskDueValue, right: TaskDueValue): boolean {
   return false;
 }
 
+/** 変更案と現在タスクの所要時間を比較します。 */
 export function sameDurationValue<T extends { readonly value: number; readonly unit: string }>(
   left: T | { readonly kind: "absent" },
   right: T | { readonly kind: "absent" },
