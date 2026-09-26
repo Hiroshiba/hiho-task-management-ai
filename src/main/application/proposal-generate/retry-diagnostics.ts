@@ -1,5 +1,6 @@
 import { createSafeErrorProjection } from "./retry-error-projection";
 import type { SafeErrorProjectionDependencies } from "./retry-error-projection";
+import { z } from "zod";
 
 type CandidateDigest =
   | { readonly kind: "available"; readonly sha256: string }
@@ -182,3 +183,63 @@ export function proposalValidationIssues<TIssue>(stored: ProposalValidationInput
   return issues;
 }
 
+/** 構造化出力の検証位置を秘匿済みJSONポインタへ変換します。 */
+export function jsonPointer(path: readonly PropertyKey[]): string {
+  const secretLikeFieldName = /(?:password|token|secret|credential|authorization|api[_-]?key)/iu;
+  const segments = path.map((segment) => {
+    if (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0) {
+      return String(segment);
+    }
+    if (
+      typeof segment !== "string"
+      || !/^[A-Za-z0-9_-]{1,64}$/u.test(segment)
+      || secretLikeFieldName.test(segment)
+    ) {
+      return "unknown_field";
+    }
+    return segment.replaceAll("~", "~0").replaceAll("/", "~1");
+  });
+  return segments.length === 0 ? "" : `/${segments.join("/")}`;
+}
+
+/** 構造化出力の検証失敗を訂正再試行に使う失敗へ変換します。 */
+export function createStructuredOutputFailure<TIssue, TDigest, TFailure extends Error>(
+  error: Error & { readonly cause?: unknown },
+  candidateDigest: TDigest,
+  dependencies: {
+    readonly parseIssue: (value: unknown) => TIssue;
+    readonly parseZodIssueCode: (code: string) => string;
+    readonly createFailure: (issues: readonly TIssue[], digest: TDigest, cause: Error) => TFailure;
+  },
+): TFailure {
+  const cause = error.cause;
+  const issues = cause instanceof z.ZodError
+    ? cause.issues.map((issue) => dependencies.parseIssue({
+        phase: "structured_output",
+        code: "structured_output_invalid",
+        json_pointer: jsonPointer(issue.path),
+        validator_code: dependencies.parseZodIssueCode(issue.code),
+      }))
+    : [];
+  return dependencies.createFailure(
+    issues.length === 0
+      ? [dependencies.parseIssue({
+          phase: "structured_output",
+          code: "structured_output_invalid",
+          json_pointer: "",
+        })]
+      : issues,
+    candidateDigest,
+    error,
+  );
+}
+
+/** 候補のダイジェストを次の再試行の前回値へ写します。 */
+export function previousDigestFromCandidate<TDigest extends CandidateDigest>(
+  digest: TDigest,
+): { readonly kind: "available"; readonly sha256: string }
+  | { readonly kind: "unavailable"; readonly reason: "candidate_unavailable" } {
+  return digest.kind === "available"
+    ? { kind: "available", sha256: digest.sha256 }
+    : { kind: "unavailable", reason: "candidate_unavailable" };
+}

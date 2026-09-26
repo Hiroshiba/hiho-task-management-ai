@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { z } from "zod";
 import {
   baselineSnapshotSchema,
   canonicalizeJson,
@@ -22,7 +21,6 @@ import {
 } from "../../../shared/ai";
 import {
   ProposalWorkspace,
-  type ProposalWorkspaceIssue,
   type ProposalWorkspaceValidation,
 } from "../proposal-workspace";
 import {
@@ -53,7 +51,6 @@ import {
 import { hashBaselineSnapshot } from "../../domain/snapshot-hash";
 import {
   normalizeTaskGraph,
-  type NormalizationTask,
 } from "../../domain/normalization";
 import {
   createChildrenOnlyEvidenceLocator,
@@ -69,7 +66,6 @@ import {
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,
   type AsanaProposalApplicationInput,
-  type AsanaProposalApplicationResult,
   type AsanaProposalApplicationCoordinator,
 } from "../proposal-application";
 import {
@@ -122,6 +118,8 @@ import {
   createValidationErrorsDocument as buildValidationErrorsDocument,
   createRetryLogEvent as buildRetryLogEvent,
   proposalValidationIssues as collectProposalValidationIssues,
+  createStructuredOutputFailure as buildStructuredOutputFailure,
+  previousDigestFromCandidate,
 } from "../../application/proposal-generate/retry-diagnostics";
 import {
   createInheritedEvidenceAliases as collectInheritedEvidenceAliases,
@@ -133,8 +131,17 @@ import {
   bindStatusEvidence,
   bindSplitInstructionReference,
 } from "../../application/proposal-generate/evidence-binding";
-import { createImpactCalculator } from "../../application/proposal-generate/impact-ranking";
+import { createImpactCalculator, normalizeTasksForRanking as normalizeRankingTasks } from "../../application/proposal-generate/impact-ranking";
+import { executeTurnWithRetry } from "../../application/proposal-generate/turn-retry";
+import { runTurnAttemptWithResources, type AttemptResourceState } from "../../application/proposal-generate/attempt-resources";
+import { bindProposalEvidence as bindProposalEvidenceSources } from "../../application/proposal-generate/proposal-evidence";
 import { sanitizeProposalForRenderer, toWorkflowValidation } from "../../application/proposal-generate/proposal-view";
+import { createApprovalPreparationInput, assertApprovalInputMatchesStored } from "../../application/proposal-generate/approval-preparation";
+import { editStoredProposal } from "../../application/proposal-generate/proposal-edit";
+import { createStoredProposal as buildStoredProposal, revalidateProposal as validateStoredProposal } from "../../application/proposal-generate/stored-proposal";
+import { readWorkspaceProposal, workspaceValidationIssues } from "../../application/proposal-generate/workspace-validation";
+import { validateGeneratedResponse } from "../../application/proposal-generate/turn-response";
+import { createApplicationSummary } from "../../application/proposal-generate/approval-summary";
 import { createBaselineTaskSnapshots } from "../../application/proposal-generate/baseline-snapshot";
 import { createTrustedExternalStatusEvidenceSchema, parseWorkflowOptions } from "../../application/proposal-generate/workflow-options";
 import { rebindBeforeValue } from "../../application/proposal-generate/rebind-before";
@@ -146,6 +153,7 @@ import {
 } from "../../application/proposal-generate/turn-prompt";
 import {
   createEvidenceSourceMap,
+  rememberSuccessfulTurnEvidence,
   isPendingWithdrawConfirmationValid,
   type EvidenceSource as WorkflowEvidenceSource,
   type PendingWithdrawConfirmation as WorkflowPendingWithdrawConfirmation,
@@ -229,30 +237,6 @@ type TurnExecutionResult =
 type PreparedTurnState =
   | { readonly kind: "pending" }
   | { readonly kind: "ready"; readonly value: PreparedTurn };
-
-type AttemptResourceState =
-  | { readonly kind: "inactive" }
-  | { readonly kind: "collector_active"; readonly attemptId: string }
-  | {
-      readonly kind: "collector_active_snapshot_frozen";
-      readonly attemptId: string;
-    }
-  | { readonly kind: "snapshot_frozen"; readonly attemptId: string };
-
-type AttemptExecution =
-  | { readonly kind: "succeeded"; readonly commit: TurnCommit }
-  | { readonly kind: "failed"; readonly error: unknown };
-
-type TurnRetryState =
-  | { readonly kind: "initial" }
-  | {
-      readonly kind: "pending";
-      readonly failure: AiWorkflowRetryableFailureError;
-      readonly previousDigest: AiWorkflowPreviousDigest;
-      readonly validationErrors: AiWorkflowValidationErrors;
-      readonly retryProposal: Proposal | undefined;
-      readonly failedAttempt: number;
-    };
 
 type PendingWithdrawConfirmationCommit =
   | { readonly kind: "clear" }
@@ -657,74 +641,14 @@ function bindProposalEvidence(
   prepared: PreparedTurn,
   candidateDigest: AiWorkflowCandidateDigest,
 ): BoundProposalEvidence {
-  const splitReferences = new Map<string, ExplicitSplitRequestReference>();
-  const trustedReferences = new Map<string, TrustedStatusEvidenceReference>();
-  const failures: {
-    readonly issue: AiWorkflowValidationIssue;
-    readonly error: unknown;
-  }[] = [];
-  for (const reference of prepared.trusted_status_evidence) {
-    trustedReferences.set(`${reference.kind}\u0000${reference.locator}`, reference);
-  }
-  const groups = proposal.groups.map((group, groupIndex) => ({
-    ...group,
-    operations: group.operations.map((operation, operationIndex) => {
-      let bound: ReturnType<typeof bindProposalOperationEvidence>;
-      try {
-        bound = bindProposalOperationEvidence(operation, prepared);
-      } catch (error: unknown) {
-        failures.push({
-          issue: aiWorkflowValidationIssueSchema.parse({
-            phase: "evidence_binding",
-            code: "evidence_binding_invalid",
-            json_pointer: `/groups/${groupIndex}/operations/${operationIndex}`,
-            group_id: group.group_id,
-            operation_id: operation.operation_id,
-          }),
-          error,
-        });
-        return operation;
-      }
-      if (bound.split_reference != null) {
-        const reference = bound.split_reference;
-        const parent = reference.parent.kind === "existing"
-          ? `existing:${reference.parent.gid}`
-          : `temporary:${reference.parent.ref}`;
-        splitReferences.set(
-          `${parent}\u0000${reference.locator}\u0000${reference.excerpt}`,
-          reference,
-        );
-      }
-      if (bound.trusted_reference != null) {
-        const reference = bound.trusted_reference;
-        trustedReferences.set(`${reference.kind}\u0000${reference.locator}`, reference);
-      }
-      return bound.operation;
-    }),
-  }));
-  if (failures.length > 0) {
-    const firstFailure = failures[0];
-    if (firstFailure == null) {
-      throw new Error("根拠検証エラーを取得できません。");
-    }
-    throw new AiWorkflowRetryableFailureError(
-      failures.map((failure) => failure.issue),
-      candidateDigest,
-      "reuse_lease",
-      new AggregateError(
-        failures.map((failure) => failure.error),
-        "変更案の根拠を現在の会話へ結び付けられません。",
-        { cause: firstFailure.error },
-      ),
-    );
-  }
-  return {
-    proposal: proposalSchema.parse({ ...proposal, groups }),
-    explicit_split_request_references: [...splitReferences.values()],
-    trusted_status_evidence: trustedStatusEvidenceReferencesSchema.parse(
-      [...trustedReferences.values()],
-    ),
-  };
+  return bindProposalEvidenceSources(proposal, prepared, candidateDigest, {
+    bindOperation: bindProposalOperationEvidence,
+    parseIssue: (value) => aiWorkflowValidationIssueSchema.parse(value),
+    parseProposal: (value) => proposalSchema.parse(value),
+    parseTrustedReferences: (value) => trustedStatusEvidenceReferencesSchema.parse(value),
+    createRetryableFailure: (issues, digest, cause) =>
+      new AiWorkflowRetryableFailureError(issues, digest, "reuse_lease", cause),
+  });
 }
 
 function createInheritedEvidenceAliases(
@@ -866,37 +790,6 @@ function workspaceCandidateDigest(proposal: Proposal): AiWorkflowCandidateDigest
   });
 }
 
-function readWorkspaceProposal(workspace: ProposalWorkspace): Proposal {
-  const status = workspace.getStatus();
-  let offset = 0;
-  let content = "";
-  while (true) {
-    const chunk = workspace.read({
-      workspace_id: status.workspace_id,
-      revision: status.revision,
-      target: { kind: "proposal" },
-      offset,
-    });
-    content += chunk.content;
-    if (chunk.next_offset == null) {
-      return proposalSchema.parse(JSON.parse(content));
-    }
-    offset = chunk.next_offset;
-  }
-}
-
-function workspaceValidationIssues(
-  issues: readonly AiWorkflowValidationIssue[],
-): ProposalWorkspaceIssue[] {
-  return issues.map((issue) => ({
-    code: issue.code,
-    json_pointer: issue.json_pointer,
-    message: `変更案の検証に失敗しました。${issue.validator_code ?? issue.code}`,
-    ...(issue.group_id == null ? {} : { group_id: issue.group_id }),
-    ...(issue.operation_id == null ? {} : { operation_id: issue.operation_id }),
-  }));
-}
-
 function validateWorkspaceProposal(
   proposal: Proposal,
   prepared: PreparedTurn,
@@ -978,13 +871,6 @@ function operationMap(proposal: Proposal): Map<string, ProposalOperation> {
   return operations;
 }
 
-function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  return left.every((value, index) => value === right[index]);
-}
-
 function projectTasks(
   snapshot: AiWorkflowSnapshot,
   proposal: Proposal,
@@ -1000,33 +886,9 @@ function projectTasks(
 }
 
 function normalizeTasksForRanking(tasks: readonly Task[]): RankingTask[] {
-  const normalizationTasks: NormalizationTask[] = tasks.map((task) => {
-    const base = {
-      gid: task.gid,
-      status: task.status,
-      dependencies: task.dependencies,
-      child_gids: task.child_gids,
-      parent_work_mode: task.parent_work_mode,
-    };
-    if (task.parent_gid == null) {
-      return base;
-    }
-    return { ...base, parent_gid: task.parent_gid };
-  });
-  const normalized = normalizeTaskGraph({ tasks: normalizationTasks });
-  const normalizedByGid = new Map(normalized.tasks.map((task) => [task.gid, task]));
-  return tasks.map((task) => {
-    const state = normalizedByGid.get(task.gid);
-    if (state == null) {
-      throw new AiWorkflowError(`順位計算用のタスク ${task.gid} を正規化できません。`);
-    }
-    return {
-      ...task,
-      block_state: state.block_state,
-      dependency_cycle: state.dependency_cycle,
-      parent_cycle: state.parent_cycle,
-      completion_confirmation: state.completion_confirmation,
-    };
+  return normalizeRankingTasks<Task, ReturnType<typeof normalizeTaskGraph>["tasks"][number]>(tasks, {
+    normalizeTaskGraph,
+    WorkflowError: AiWorkflowError,
   });
 }
 
@@ -1074,24 +936,11 @@ export function calculateWorkflowImpact(
 function revalidateProposal(
   proposal: Proposal,
   stored: StoredProposal,
-): {
-  readonly basic: ProposalValidationResult;
-  readonly graph: GraphValidationResult;
-} {
-  const basic = validateProposal({
-    proposal,
-    baseline_snapshot_hash: stored.baseline_snapshot_hash,
-    managed_tasks: stored.snapshot.tasks,
-    existing_areas: stored.snapshot.areas,
-    explicit_split_request_references: [...stored.explicit_split_request_references],
-    trusted_status_evidence: [...stored.trusted_status_evidence],
+): { readonly basic: ProposalValidationResult; readonly graph: GraphValidationResult } {
+  return validateStoredProposal(proposal, stored, {
+    validateBasic: validateProposal,
+    validateGraph: validateProposalGraph,
   });
-  const graph = validateProposalGraph({
-    proposal,
-    managed_tasks: stored.snapshot.tasks,
-    basic_validation_result: basic,
-  });
-  return { basic, graph };
 }
 
 function createStoredProposal(
@@ -1099,57 +948,11 @@ function createStoredProposal(
   bound: BoundProposalEvidence,
   prepared: PreparedTurn,
 ): StoredProposal {
-  const basic = validateProposal({
-    proposal: bound.proposal,
-    baseline_snapshot_hash: prepared.baseline_snapshot_hash,
-    managed_tasks: prepared.snapshot.tasks,
-    existing_areas: prepared.snapshot.areas,
-    explicit_split_request_references: [...bound.explicit_split_request_references],
-    trusted_status_evidence: [...bound.trusted_status_evidence],
+  return buildStoredProposal(proposalId, bound, prepared, {
+    validateBasic: validateProposal,
+    validateGraph: validateProposalGraph,
+    eligibleOperationIds,
   });
-  const graph = validateProposalGraph({
-    proposal: bound.proposal,
-    managed_tasks: prepared.snapshot.tasks,
-    basic_validation_result: basic,
-  });
-  return {
-    proposal_id: proposalId,
-    proposal: bound.proposal,
-    snapshot: prepared.snapshot,
-    baseline: prepared.baseline,
-    baseline_snapshot_hash: prepared.baseline_snapshot_hash,
-    baseline_external_data: prepared.baseline_external_data,
-    basic_validation: basic,
-    graph_validation: graph,
-    selected_operation_ids: eligibleOperationIds(bound.proposal, graph),
-    explicit_split_request_references: [...bound.explicit_split_request_references],
-    trusted_status_evidence: [...bound.trusted_status_evidence],
-    source_map: prepared.source_map,
-  };
-}
-
-function rememberSuccessfulTurnEvidence(
-  completedEvidenceSources: Map<string, EvidenceSource>,
-  prepared: PreparedTurn,
-): void {
-  const source = prepared.source_map.get(prepared.user_message_source_id);
-  if (source == null || source.kind !== "user_message") {
-    throw new Error("成功したターンのユーザー原文を取得できません。");
-  }
-  const confirmationSourceId = prepared.withdraw_confirmation_source_id;
-  if (confirmationSourceId == null) {
-    completedEvidenceSources.set(source.source_id, source);
-    return;
-  }
-  const confirmationSource = prepared.source_map.get(confirmationSourceId);
-  if (
-    confirmationSource == null
-    || confirmationSource.kind !== "withdraw_confirmation"
-  ) {
-    throw new Error("成功したターンの確認原文を取得できません。");
-  }
-  completedEvidenceSources.set(source.source_id, source);
-  completedEvidenceSources.set(confirmationSource.source_id, confirmationSource);
 }
 
 export type WorkflowProposalViewInput = {
@@ -1191,58 +994,6 @@ function createProposalView(stored: StoredProposal): AiWorkflowProposalView {
   });
 }
 
-function createApplicationSummary(
-  result: AsanaProposalApplicationResult,
-): AiWorkflowApprovalResult["application"] {
-  const operations = result.operations.map((operation) => {
-    const base = {
-      group_id: operation.group_id,
-      operation_id: operation.operation_id,
-      outcome: operation.outcome,
-      reason_code: operation.reason_code,
-    };
-    if (operation.task_gid == null) {
-      return base;
-    }
-    return { ...base, task_gid: operation.task_gid };
-  });
-  const groups = result.groups.map((group) => ({
-    group_id: group.group_id,
-    atomic: group.atomic,
-    outcome: group.outcome,
-    operation_ids: [...group.operation_ids],
-  }));
-  return {
-    outcome: result.outcome,
-    operations,
-    groups,
-  };
-}
-
-function sameSortedIds(left: readonly string[], right: readonly string[]): boolean {
-  const leftSorted = [...left].sort(compareStrings);
-  const rightSorted = [...right].sort(compareStrings);
-  return sameStringArray(leftSorted, rightSorted);
-}
-
-function jsonPointer(path: readonly PropertyKey[]): string {
-  const secretLikeFieldName = /(?:password|token|secret|credential|authorization|api[_-]?key)/iu;
-  const segments = path.map((segment) => {
-    if (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0) {
-      return String(segment);
-    }
-    if (
-      typeof segment !== "string"
-      || !/^[A-Za-z0-9_-]{1,64}$/u.test(segment)
-      || secretLikeFieldName.test(segment)
-    ) {
-      return "unknown_field";
-    }
-    return segment.replaceAll("~", "~0").replaceAll("/", "~1");
-  });
-  return segments.length === 0 ? "" : `/${segments.join("/")}`;
-}
-
 function zodIssueCode(code: string): string {
   const parsed = aiWorkflowZodIssueCodeSchema.safeParse(code);
   return parsed.success ? parsed.data : "other";
@@ -1252,35 +1003,12 @@ function createStructuredOutputFailure(
   error: CodexSessionOutputValidationError,
   candidateDigest: AiWorkflowCandidateDigest,
 ): AiWorkflowRetryableFailureError {
-  const cause = error.cause;
-  const issues = cause instanceof z.ZodError
-    ? cause.issues.map((issue) => aiWorkflowValidationIssueSchema.parse({
-        phase: "structured_output",
-        code: "structured_output_invalid",
-        json_pointer: jsonPointer(issue.path),
-        validator_code: zodIssueCode(issue.code),
-      }))
-    : [];
-  return new AiWorkflowRetryableFailureError(
-    issues.length === 0
-      ? [aiWorkflowValidationIssueSchema.parse({
-          phase: "structured_output",
-          code: "structured_output_invalid",
-          json_pointer: "",
-        })]
-      : issues,
-    candidateDigest,
-    "reuse_lease",
-    error,
-  );
-}
-
-function previousDigestFromCandidate(
-  digest: AiWorkflowCandidateDigest,
-): AiWorkflowPreviousDigest {
-  return digest.kind === "available"
-    ? { kind: "available", sha256: digest.sha256 }
-    : { kind: "unavailable", reason: "candidate_unavailable" };
+  return buildStructuredOutputFailure(error, candidateDigest, {
+    parseIssue: (value) => aiWorkflowValidationIssueSchema.parse(value),
+    parseZodIssueCode: zodIssueCode,
+    createFailure: (issues, digest, cause) =>
+      new AiWorkflowRetryableFailureError(issues, digest, "reuse_lease", cause),
+  });
 }
 
 function hashValidationIssues(issues: readonly unknown[]): string {
@@ -1429,132 +1157,42 @@ export class AiWorkflowService {
     return this.commitTurn(execution.commit);
   }
 
-  private async executeTurn(
-    input: TurnExecutionInput,
-  ): Promise<TurnExecutionResult> {
-    let retryState: TurnRetryState = { kind: "initial" };
-    try {
-      for (let attempt = 1; attempt <= aiWorkflowMaximumRetryAttempts; attempt += 1) {
-        throwIfAborted(input.signal);
-        if (retryState.kind === "pending") {
-          const logResult = safelyLogRetryEvent(
-            this.options.logRetryEvent,
-            createRetryLogEvent(
-              "warning",
-              this.options.sessionId,
-              input.logicalTurnId,
-              attempt,
-              retryState.failure,
-              retryState.previousDigest,
-              "retry",
-            ),
-          );
-          if (logResult.kind === "failed") {
-            throw new AggregateError(
-              [retryState.failure, logResult.error],
-              "訂正再試行の警告を記録できませんでした。",
-              { cause: retryState.failure },
-            );
-          }
-        }
-        const retryPromptContext: TurnRetryPromptContext = retryState.kind === "initial"
-          ? { kind: "initial" }
-          : {
-              kind: "correction",
-              validationErrors: retryState.validationErrors,
-              failedAttempt: retryState.failedAttempt,
-            };
-        const workspaceState: { value?: ProposalWorkspace } = {};
-        try {
-          const commit = await this.executeTurnAttempt({
-            ...input,
-            retryProposal: retryState.kind === "pending"
-              ? retryState.retryProposal
-              : input.retryProposal,
-            attempt,
-            retryPromptContext,
-            workspaceState,
-          });
-          return { kind: "succeeded", commit };
-        } catch (error: unknown) {
-          const responseError = error instanceof DiagnosticFailureDispositionError
-            ? error.disposition.response_error
-            : error;
-          if (responseError instanceof CodexSessionSyncError) {
-            if (error instanceof DiagnosticFailureDispositionError) {
-              throw error;
-            }
-            throw new AiWorkflowSyncError(error);
-          }
-          const classification = this.classifyRetryFailure(error);
-          if (classification.kind === "not_retryable") {
-            throw error;
-          }
-          const failure = classification.failure;
-          const previousDigest: AiWorkflowPreviousDigest = retryState.kind === "initial"
-            ? aiWorkflowPreviousDigestSchema.parse({
-                kind: "unavailable",
-                reason: "not_available",
-              })
-            : previousDigestFromCandidate(retryState.failure.candidateDigest);
-          const validationErrors = createValidationErrorsDocument(
-            attempt,
-            failure,
-            previousDigest,
-          );
-          if (attempt === aiWorkflowMaximumRetryAttempts) {
-            const logResult = safelyLogRetryEvent(
-              this.options.logRetryEvent,
-              createRetryLogEvent(
-                "error",
-                this.options.sessionId,
-                input.logicalTurnId,
-                attempt,
-                failure,
-                previousDigest,
-                "stop",
-              ),
-            );
-            const finalFailure = new AiWorkflowError(
-              "AI変更案の訂正を3回の試行で完了できませんでした。",
-              failure,
-            );
-            if (logResult.kind === "failed") {
-              throw new AggregateError(
-                [finalFailure, logResult.error],
-                "AI変更案の最終検証失敗を記録できませんでした。",
-                { cause: finalFailure },
-              );
-            }
-            throw new DiagnosticFailureDispositionError({
-              kind: "recorded_only",
-              recorded_error: finalFailure,
-              response_error: finalFailure,
-            });
-          }
-          const workspace = workspaceState.value;
-          let retryProposal: Proposal | undefined;
-          if (workspace != null && workspace.getStatus().completion === "structurally_complete") {
-            retryProposal = readWorkspaceProposal(workspace);
-          } else if (retryState.kind === "pending") {
-            retryProposal = retryState.retryProposal;
-          } else {
-            retryProposal = input.retryProposal;
-          }
-          retryState = {
-            kind: "pending",
-            failure,
-            previousDigest,
-            validationErrors,
-            retryProposal,
-            failedAttempt: attempt,
-          };
-        }
-      }
-      throw new Error("再試行上限を超えてAI変更案の試行が継続しました。");
-    } catch (error: unknown) {
-      return { kind: "failed", error };
-    }
+  private async executeTurn(input: TurnExecutionInput): Promise<TurnExecutionResult> {
+    return executeTurnWithRetry<
+      TurnExecutionInput,
+      TurnCommit,
+      Proposal,
+      ProposalWorkspace,
+      AiWorkflowRetryableFailureError,
+      AiWorkflowCandidateDigest,
+      AiWorkflowPreviousDigest,
+      AiWorkflowValidationErrors
+    >(input, {
+      maximumRetryAttempts: aiWorkflowMaximumRetryAttempts,
+      throwIfAborted,
+      logRetryEvent: (severity, logicalTurnId, attempt, failure, previousDigest, decision) =>
+        safelyLogRetryEvent(this.options.logRetryEvent, createRetryLogEvent(severity,
+          this.options.sessionId, logicalTurnId, attempt, failure, previousDigest, decision)),
+      executeAttempt: (attempt) => this.executeTurnAttempt(attempt),
+      responseError: (error) => error instanceof DiagnosticFailureDispositionError
+        ? error.disposition.response_error : error,
+      isDisposition: (error) => error instanceof DiagnosticFailureDispositionError,
+      isSyncError: (error) => error instanceof CodexSessionSyncError,
+      makeSyncError: (error) => new AiWorkflowSyncError(error),
+      classifyRetryFailure: (error) => this.classifyRetryFailure(error),
+      initialPreviousDigest: () => aiWorkflowPreviousDigestSchema.parse({
+        kind: "unavailable", reason: "not_available",
+      }),
+      previousDigestFromCandidate,
+      createValidationErrorsDocument,
+      makeFinalFailure: (failure) => new AiWorkflowError(
+        "AI変更案の訂正を3回の試行で完了できませんでした。", failure),
+      makeRecordedFailure: (error) => new DiagnosticFailureDispositionError({
+        kind: "recorded_only", recorded_error: error, response_error: error,
+      }),
+      readRetryProposal: (workspace) => workspace.getStatus().completion === "structurally_complete"
+        ? readWorkspaceProposal(workspace, (value) => proposalSchema.parse(value)) : undefined,
+    });
   }
 
   private classifyRetryFailure(
@@ -1580,83 +1218,13 @@ export class AiWorkflowService {
     };
   }
 
-  private async executeTurnAttempt(
-    input: TurnAttemptInput,
-  ): Promise<TurnCommit> {
-    let resources: AttemptResourceState = { kind: "inactive" };
-    let execution: AttemptExecution;
-    try {
-      execution = {
-        kind: "succeeded",
-        commit: await this.performTurnAttempt(input, (nextResources) => {
-          resources = nextResources;
-        }),
-      };
-    } catch (error: unknown) {
-      execution = { kind: "failed", error };
-    }
-    const cleanupErrors = await this.releaseAttemptResources(resources);
-    if (execution.kind === "failed") {
-      if (cleanupErrors.length === 0) {
-        throw execution.error;
-      }
-      throw new AiWorkflowError(
-        "AIターンの失敗後にターン資源を解放できませんでした。",
-        new AggregateError(
-          [execution.error, ...cleanupErrors],
-          "AIターンとターン資源の解放に失敗しました。",
-          { cause: execution.error },
-        ),
-      );
-    }
-    if (cleanupErrors.length === 1) {
-      const cleanupError = cleanupErrors[0];
-      if (cleanupError == null) {
-        throw new Error("ターン資源の解放エラーを取得できません。");
-      }
-      throw new AiWorkflowError("AIターン資源を解放できませんでした。", cleanupError);
-    }
-    if (cleanupErrors.length > 1) {
-      const cleanupError = cleanupErrors[0];
-      if (cleanupError == null) {
-        throw new Error("ターン資源の解放エラーを取得できません。");
-      }
-      throw new AggregateError(
-        cleanupErrors,
-        "ターン資源の解放に失敗しました。",
-        { cause: cleanupError },
-      );
-    }
-    return execution.commit;
-  }
-
-  private async releaseAttemptResources(
-    resources: AttemptResourceState,
-  ): Promise<unknown[]> {
-    const errors: unknown[] = [];
-    if (
-      resources.kind === "collector_active"
-      || resources.kind === "collector_active_snapshot_frozen"
-    ) {
-      try {
-        await this.options.externalStatusEvidenceCollector.cancelTurn(
-          resources.attemptId,
-        );
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-    }
-    if (
-      resources.kind === "snapshot_frozen"
-      || resources.kind === "collector_active_snapshot_frozen"
-    ) {
-      try {
-        this.options.session.releaseTaskctlSnapshot();
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-    }
-    return errors;
+  private async executeTurnAttempt(input: TurnAttemptInput): Promise<TurnCommit> {
+    return runTurnAttemptWithResources(input, {
+      performTurnAttempt: (attempt, updateResources) => this.performTurnAttempt(attempt, updateResources),
+      cancelTurn: (attemptId) => this.options.externalStatusEvidenceCollector.cancelTurn(attemptId),
+      releaseTaskctlSnapshot: () => this.options.session.releaseTaskctlSnapshot(),
+      WorkflowError: AiWorkflowError,
+    });
   }
 
   private async performTurnAttempt(
@@ -1798,60 +1366,29 @@ export class AiWorkflowService {
     if (workspace == null) {
       throw new AiWorkflowStateError("AI変更案ワークスペースが作成されませんでした。");
     }
-    let validatedResponse: ValidatedGeneratedResponse;
-    if (generatedResponse.kind === "proposal") {
-      const status = workspace.getStatus();
-      if (
-        generatedResponse.workspace_id !== status.workspace_id
-        || generatedResponse.revision !== status.revision
-        || status.state !== "submitted"
-      ) {
-        throw new AiWorkflowRetryableFailureError(
-          [aiWorkflowValidationIssueSchema.parse({
-            phase: "proposal_workspace",
-            code: generatedResponse.workspace_id !== status.workspace_id
-              || generatedResponse.revision !== status.revision
-              ? "proposal_workspace_reference_mismatch"
-              : "proposal_workspace_not_submitted",
-            json_pointer: generatedResponse.workspace_id !== status.workspace_id
-              ? "/workspace_id"
-              : "/revision",
-          })],
-          aiWorkflowCandidateDigestSchema.parse({ kind: "unavailable", reason: "not_staged" }),
-          "reuse_lease",
-          new AiWorkflowError("AI変更案ワークスペースの提出と最終応答が一致しません。"),
-        );
-      }
-      const proposal = readWorkspaceProposal(workspace);
-      const response = codexResponseSchema.parse({
-        kind: generatedResponse.kind,
-        message: generatedResponse.message,
-        questions: generatedResponse.questions,
-        proposal,
-      });
-      if (response.kind !== "proposal") {
-        throw new Error("ワークスペース応答が提案応答へ変換されませんでした。");
-      }
-      validatedResponse = { kind: "proposal", response };
-    } else {
-      if (workspace.getStatus().state === "submitted") {
-        throw new AiWorkflowRetryableFailureError(
-          [aiWorkflowValidationIssueSchema.parse({
-            phase: "proposal_workspace",
-            code: "proposal_workspace_response_mismatch",
-            json_pointer: "/kind",
-          })],
-          workspaceCandidateDigest(readWorkspaceProposal(workspace)),
-          "reuse_lease",
-          new AiWorkflowError("提出済みワークスペースに提案なし応答を指定できません。"),
-        );
-      }
-      const response = codexResponseSchema.parse(generatedResponse);
-      if (response.kind !== "no_proposal") {
-        throw new Error("提案なし応答が提案なし応答として検証されませんでした。");
-      }
-      validatedResponse = { kind: "no_proposal", response };
-    }
+    const validatedResponse: ValidatedGeneratedResponse = validateGeneratedResponse<
+      Proposal,
+      Extract<CodexResponse, { readonly kind: "proposal" }>,
+      NoProposalResponse,
+      CodexSessionTurnResult["response"],
+      AiWorkflowValidationIssue,
+      AiWorkflowCandidateDigest
+    >(
+      generatedResponse,
+      workspace,
+      {
+        readProposal: () => readWorkspaceProposal(workspace, (value) => proposalSchema.parse(value)),
+        parseResponse: (value) => codexResponseSchema.parse(value),
+        parseIssue: (value) => aiWorkflowValidationIssueSchema.parse(value),
+        notStagedDigest: () => aiWorkflowCandidateDigestSchema.parse({
+          kind: "unavailable", reason: "not_staged",
+        }),
+        candidateDigest: workspaceCandidateDigest,
+        makeFailure: (issues, digest, cause) =>
+          new AiWorkflowRetryableFailureError(issues, digest, "reuse_lease", cause),
+        WorkflowError: AiWorkflowError,
+      },
+    );
     if (turnGeneration !== this.sessionGeneration) {
       throw new AiWorkflowStateError("AIセッションが切り替わったため、AIターンを破棄しました。");
     }
@@ -1973,61 +1510,16 @@ export class AiWorkflowService {
   public editOperation(input: AiWorkflowOperationEdit): AiWorkflowProposalView {
     const request = aiWorkflowOperationEditSchema.parse(input);
     const stored = this.getStoredProposal(request.proposal_id);
-    const operations = operationMap(stored.proposal);
-    const currentOperation = operations.get(request.operation_id);
-    if (currentOperation == null) {
-      throw new AiWorkflowEditError("指定した操作が変更案にありません。");
-    }
-    const editedEvidence = {
-      kind: "user_message",
-      locator: request.evidence_locator,
-    };
-    const candidateOperation = {
-      ...currentOperation,
-      after: request.after,
-      basis: "explicit",
-      confidence: 1,
-      evidence_refs: [...currentOperation.evidence_refs, editedEvidence],
-    };
-    let validatedOperation: ProposalOperation;
-    try {
-      validatedOperation = proposalOperationSchema.parse(candidateOperation);
-    } catch (error: unknown) {
-      throw new AiWorkflowEditError("操作種別に許可されない編集値です。", error);
-    }
-    const editedProposal = proposalSchema.parse({
-      ...stored.proposal,
-      groups: stored.proposal.groups.map((group) => ({
-        ...group,
-        operations: group.operations.map((operation) =>
-          operation.operation_id === request.operation_id ? validatedOperation : operation),
-      })),
+    const edited = editStoredProposal(request, stored, {
+      operationMap,
+      parseOperation: (value) => proposalOperationSchema.parse(value),
+      parseProposal: (value) => proposalSchema.parse(value),
+      revalidate: revalidateProposal,
+      preserveSelection,
+      assertGraphSafe: assertSelectedProposalGraphIsSafe,
+      EditError: AiWorkflowEditError,
     });
-    const validation = revalidateProposal(editedProposal, stored);
-    const selectedOperationIds = preserveSelection(
-      editedProposal,
-      validation.graph,
-      stored.selected_operation_ids,
-    );
-    try {
-      assertSelectedProposalGraphIsSafe({
-        proposal: editedProposal,
-        snapshot: stored.snapshot,
-        graph_validation: validation.graph,
-      }, selectedOperationIds);
-    } catch (error: unknown) {
-      throw new AiWorkflowEditError(
-        "編集後の選択操作を依存・親子グラフへ投影できません。",
-        error,
-      );
-    }
-    const updated: StoredProposal = {
-      ...stored,
-      proposal: editedProposal,
-      basic_validation: validation.basic,
-      graph_validation: validation.graph,
-      selected_operation_ids: [...selectedOperationIds],
-    };
+    const updated: StoredProposal = { ...stored, ...edited };
     this.proposals.set(updated.proposal_id, updated);
     return createProposalView(updated);
   }
@@ -2054,36 +1546,15 @@ export class AiWorkflowService {
       throw new AiWorkflowOfflineError();
     }
     const approvalInput = await this.options.prepareApprovalInput(
-      {
-        proposal_id: stored.proposal_id,
-        proposal: stored.proposal,
-        baseline_snapshot: stored.baseline,
-        baseline_snapshot_hash: stored.baseline_snapshot_hash,
-        baseline_external_data: stored.baseline_external_data,
-        existing_areas: stored.snapshot.areas,
-        graph_validation_result: stored.graph_validation,
-        selected_operation_ids: selectedOperationIds,
-        explicit_split_request_references: [...stored.explicit_split_request_references],
-        trusted_status_evidence: [...stored.trusted_status_evidence],
-        created_via: "codex",
-      },
+      createApprovalPreparationInput(stored, selectedOperationIds),
       signal,
     );
     const validatedInput = asanaProposalApplicationInputSchema.parse(approvalInput);
-    if (canonicalizeJson(validatedInput.approval_input.proposal)
-      !== canonicalizeJson(stored.proposal)) {
-      throw new AiWorkflowError("承認入力の変更案が保持中の変更案と一致しません。");
-    }
-    if (
-      canonicalizeJson(
-        createBaselineTaskSnapshots(validatedInput.approval_input.baseline_tasks),
-      ) !== canonicalizeJson(stored.baseline.tasks)
-    ) {
-      throw new AiWorkflowError("承認入力の基準タスクが保持中の基準値と一致しません。");
-    }
-    if (!sameSortedIds(validatedInput.approval_input.selected_operation_ids, selectedOperationIds)) {
-      throw new AiWorkflowError("承認入力の選択操作が一致しません。");
-    }
+    assertApprovalInputMatchesStored(validatedInput, stored, selectedOperationIds, {
+      canonicalizeJson,
+      createBaselineTaskSnapshots,
+      WorkflowError: AiWorkflowError,
+    });
     if (this.options.isOnline() !== true) {
       throw new AiWorkflowOfflineError();
     }

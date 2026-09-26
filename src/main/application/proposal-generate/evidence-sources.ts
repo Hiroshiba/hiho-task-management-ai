@@ -179,3 +179,32 @@ export function createEvidenceSourceMap<TStatus extends string>(
     source_map: sources,
   };
 }
+
+/** 成功したターンの会話原文を次のターンへ引き継ぎます。 */
+export function rememberSuccessfulTurnEvidence<TStatus extends string>(
+  completedEvidenceSources: Map<string, EvidenceSource<TStatus>>,
+  prepared: {
+    readonly source_map: ReadonlyMap<string, EvidenceSource<TStatus>>;
+    readonly user_message_source_id: string;
+    readonly withdraw_confirmation_source_id: string | undefined;
+  },
+): void {
+  const source = prepared.source_map.get(prepared.user_message_source_id);
+  if (source == null || source.kind !== "user_message") {
+    throw new Error("成功したターンのユーザー原文を取得できません。");
+  }
+  const confirmationSourceId = prepared.withdraw_confirmation_source_id;
+  if (confirmationSourceId == null) {
+    completedEvidenceSources.set(source.source_id, source);
+    return;
+  }
+  const confirmationSource = prepared.source_map.get(confirmationSourceId);
+  if (
+    confirmationSource == null
+    || confirmationSource.kind !== "withdraw_confirmation"
+  ) {
+    throw new Error("成功したターンの確認原文を取得できません。");
+  }
+  completedEvidenceSources.set(source.source_id, source);
+  completedEvidenceSources.set(confirmationSource.source_id, confirmationSource);
+}
