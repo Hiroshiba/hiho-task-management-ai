@@ -4,7 +4,6 @@ import {
   constants,
   fchmodSync,
   fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -15,37 +14,31 @@ import {
   writeFileSync,
   type BigIntStats,
 } from "node:fs";
-import {
-  dirname,
-  isAbsolute,
-  join,
-  parse,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
+import {
+  assertDirectoryStats,
+  assertFileStats,
+  assertSameIdentity,
+  assertUsableIdentity,
+  errorCode,
+  inspectPathWithoutSymlinks,
+  normalizeDirectoryPath,
+  normalizeSecurePersistentFilePath,
+  secureDirectoryMode,
+  secureFileMode,
+  validateLabel,
+  type PathInspection,
+  type SecureDirectorySnapshot,
+  type SecurePersistentFileIdentity,
+  type SecurePersistentFileSnapshot,
+} from "./infrastructure/persistence/secure-path-guard";
 
-const secureDirectoryMode = 0o700;
-const secureFileMode = 0o600;
-const absolutePathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine(isAbsolute, "永続保存パスは絶対パスで指定してください。")
-  .refine((value) => !value.includes("\0"), "永続保存パスにNUL文字を指定できません。");
-const labelSchema = z.string().min(1).max(200);
-
-type MissingPath = {
-  readonly kind: "missing";
-};
-
-type ExistingPath = {
-  readonly kind: "existing";
-  readonly stats: BigIntStats;
-};
-
-type PathInspection = MissingPath | ExistingPath;
+export {
+  normalizeSecurePersistentFilePath,
+  type SecurePersistentFileIdentity,
+  type SecurePersistentFileSnapshot,
+} from "./infrastructure/persistence/secure-path-guard";
 
 type FileOperationResult<Result> =
   | { readonly kind: "succeeded"; readonly value: Result }
@@ -54,19 +47,6 @@ type FileOperationResult<Result> =
 type CloseResult =
   | { readonly kind: "succeeded" }
   | { readonly kind: "failed"; readonly error: unknown };
-
-export type SecurePersistentFileSnapshot =
-  | MissingPath
-  | {
-      readonly kind: "existing";
-      readonly device: bigint;
-      readonly inode: bigint;
-    };
-
-export type SecurePersistentFileIdentity = Extract<
-  SecurePersistentFileSnapshot,
-  { readonly kind: "existing" }
->;
 
 export type SecurePersistentFileIsolationResult =
   | { readonly kind: "isolated"; readonly isolationPath: string }
@@ -99,11 +79,6 @@ export class SecurePersistentFileSizeLimitError extends Error {
   }
 }
 
-type SecureDirectorySnapshot = {
-  readonly device: bigint;
-  readonly inode: bigint;
-};
-
 type PersistentTextFileReadLimit =
   | { readonly kind: "unbounded" }
   | { readonly kind: "bounded"; readonly maximumBytes: number };
@@ -113,132 +88,6 @@ const persistentTextFileReadLimitSchema = z
   .int()
   .positive()
   .max(Number.MAX_SAFE_INTEGER - 1);
-
-function isNoEntryError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (!(error instanceof Error) || !("code" in error)) {
-    return undefined;
-  }
-  return typeof error.code === "string" ? error.code : undefined;
-}
-
-/** 永続保存ファイルの絶対パスを正規化します。 */
-export function normalizeSecurePersistentFilePath(filePath: string): string {
-  const normalizedPath = resolve(absolutePathSchema.parse(filePath));
-  if (normalizedPath === parse(normalizedPath).root) {
-    throw new TypeError("永続保存ファイルにルートパスを指定できません。");
-  }
-  return normalizedPath;
-}
-
-function normalizeDirectoryPath(directoryPath: string): string {
-  return resolve(absolutePathSchema.parse(directoryPath));
-}
-
-function validateLabel(label: string): string {
-  return labelSchema.parse(label);
-}
-
-function inspectPathWithoutSymlinks(
-  absolutePath: string,
-  label: string,
-): PathInspection {
-  const rootPath = parse(absolutePath).root;
-  let currentPath = rootPath;
-  let stats: BigIntStats;
-  try {
-    stats = lstatSync(rootPath, { bigint: true });
-  } catch (error) {
-    throw new Error(`${label}のルートパスを確認できません。`, { cause: error });
-  }
-  if (stats.isSymbolicLink()) {
-    throw new Error(`${label}のパスにシンボリックリンクを指定できません。`);
-  }
-  const segments = relative(rootPath, absolutePath)
-    .split(sep)
-    .filter((segment) => segment.length > 0);
-  for (const [index, segment] of segments.entries()) {
-    currentPath = join(currentPath, segment);
-    try {
-      stats = lstatSync(currentPath, { bigint: true });
-    } catch (error) {
-      if (isNoEntryError(error)) {
-        return { kind: "missing" };
-      }
-      throw new Error(`${label}のパスを確認できません。`, { cause: error });
-    }
-    if (stats.isSymbolicLink()) {
-      throw new Error(`${label}のパスにシンボリックリンクを指定できません。`);
-    }
-    if (index < segments.length - 1 && !stats.isDirectory()) {
-      throw new Error(`${label}の親パスはディレクトリでなければなりません。`);
-    }
-  }
-  return { kind: "existing", stats };
-}
-
-function assertUsableIdentity(stats: BigIntStats, label: string): void {
-  if (stats.dev < 0n || stats.ino <= 0n) {
-    throw new Error(`${label}のデバイス番号とinodeを確認できません。`);
-  }
-}
-
-function assertSameIdentity(
-  expected: BigIntStats,
-  actual: BigIntStats,
-  label: string,
-): void {
-  assertUsableIdentity(expected, label);
-  assertUsableIdentity(actual, label);
-  const deviceMatches = expected.dev === actual.dev
-    || (process.platform === "win32" && (expected.dev === 0n || actual.dev === 0n));
-  if (!deviceMatches || expected.ino !== actual.ino) {
-    throw new Error(`${label}の実体が検証中に変化しました。`);
-  }
-}
-
-function assertOwnedByCurrentUser(stats: BigIntStats, label: string): void {
-  if (process.platform === "win32") {
-    return;
-  }
-  if (typeof process.getuid !== "function") {
-    throw new Error("現在ユーザーのIDを確認できません。");
-  }
-  if (stats.uid !== BigInt(process.getuid())) {
-    throw new Error(`${label}は現在のユーザーが所有していません。`);
-  }
-}
-
-function assertDirectoryStats(stats: BigIntStats, label: string): void {
-  if (!stats.isDirectory()) {
-    throw new Error(`${label}は通常ディレクトリでなければなりません。`);
-  }
-  assertOwnedByCurrentUser(stats, label);
-  if (
-    process.platform !== "win32"
-    && (stats.mode & 0o7777n) !== BigInt(secureDirectoryMode)
-  ) {
-    throw new Error(`${label}の権限は0700でなければなりません。`);
-  }
-  assertUsableIdentity(stats, label);
-}
-
-function assertFileStats(stats: BigIntStats, label: string): void {
-  if (!stats.isFile()) {
-    throw new Error(`${label}は通常ファイルでなければなりません。`);
-  }
-  assertOwnedByCurrentUser(stats, label);
-  if (
-    process.platform !== "win32"
-    && (stats.mode & 0o7777n) !== BigInt(secureFileMode)
-  ) {
-    throw new Error(`${label}の権限は0600でなければなりません。`);
-  }
-  assertUsableIdentity(stats, label);
-}
 
 function getReadOpenFlags(): number {
   let flags = constants.O_RDONLY;
