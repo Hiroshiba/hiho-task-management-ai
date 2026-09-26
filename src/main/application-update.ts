@@ -47,7 +47,10 @@ function shouldRetryUpdateOperation(error: unknown, operation: "check" | "downlo
     return true;
   }
   if ("statusCode" in error && typeof error.statusCode === "number") {
-    return error.statusCode < 400 || error.statusCode >= 500;
+    return error.statusCode < 400
+      || error.statusCode === 408
+      || error.statusCode === 429
+      || error.statusCode >= 500;
   }
   if ("code" in error && typeof error.code === "string") {
     if (operation === "check" && error.code === "ECONNREFUSED") {
