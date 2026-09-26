@@ -1,42 +1,54 @@
-import { lstatSync, realpathSync, type Stats } from "node:fs";
-import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import {
+  CodexTurnCoordinator,
+  type ActiveTurnStarting as CodexActiveTurnStarting,
+} from "../../infrastructure/ai/codex-session/turn-coordinator";
+import {
+  createModelFormatInstruction,
+  parseStructuredOutput,
+} from "../../infrastructure/ai/codex-session/turn-output";
+import { CodexToolResponseSerializer } from "../../infrastructure/ai/codex-session/tool-response";
+import { CodexDynamicToolHandler, executeCodexObsidianQuery } from "../../infrastructure/ai/codex-session/dynamic-tools";
+import { createCodexSessionConnectionOverrides } from "../../infrastructure/ai/codex-session/connection-configuration";
+import { startCodexSessionThread } from "../../infrastructure/ai/codex-session/thread-start";
+import { CodexSessionStartup } from "../../infrastructure/ai/codex-session/startup";
+import { CodexSessionNotificationRouter } from "../../infrastructure/ai/codex-session/notification-router";
+import { CodexConnectionRecovery } from "../../infrastructure/ai/codex-session/connection-recovery";
+import { connectAndStartCodexSession, createCodexSessionConnectionFactory } from "../../infrastructure/ai/codex-session/connection-start";
+import { createReadyCodexStartResult, createAuthenticationRequiredCodexStartResult } from "../../infrastructure/ai/codex-session/start-result";
+import { validateAbortSignal } from "../../infrastructure/ai/codex-app-server/rpc-endpoint";
+import { disableCodexAi, type AiDisableRequest, type AiDisableResult } from "../../infrastructure/ai/codex-session/disable-ai";
+import { createSafetyViolationError } from "../../infrastructure/ai/codex-session/errors";
+import { handleCodexProposalWorkspaceTool, readProposalWorkspaceDraft } from "../../infrastructure/ai/codex-session/proposal-workspace-tool";
+import {
+  inspectCodexAccount,
+  inspectCodexAccountWithRetry,
+  inspectCodexModel,
+  inspectCodexSkills,
+  inspectCodexPermissionProfile,
+  type AccountInspectionResult,
+} from "../../infrastructure/ai/codex-session/connection-inspector";
+import {
+  canonicalStringArray,
+  validateVerifiedTaskctlLocalIpc,
+  validateAdditionalLocalSocketPaths,
+  isValidThreadSettingsNotification,
+  type ThreadSettingsNotification,
+} from "../../infrastructure/ai/codex-session/capability-policy";
 import {
   CodexAppServerConnection,
   CodexProcessExitError,
-  accountReadParamsSchema,
-  accountReadResultSchema,
   chatGptLoginStartParamsSchema,
   chatGptLoginStartResultSchema,
-  codexConnectionOptionsSchema,
   codexDiagnosticSchema,
   codexNotificationSchema,
   type DynamicToolCallParams,
   type DynamicToolCallResponse,
-  modelListParamsSchema,
-  modelListResultSchema,
-  permissionProfileListParamsSchema,
-  permissionProfileListResultSchema,
-  skillsListParamsSchema,
-  skillsListResultSchema,
-  threadStartParamsSchema,
-  threadStartResultSchema,
-  turnInterruptParamsSchema,
-  turnInterruptResultSchema,
-  turnStartParamsSchema,
-  turnStartResultSchema,
   type CodexConnectionOptions,
   type CodexDiagnostic,
   type CodexNotification,
-  type ModelListResult,
-  type PermissionProfileListResult,
   type ChatGptLoginStartResult,
-  type ThreadStartResult,
 } from "../app-server";
-import {
-  createTaskHubConnectionFeatureOverrides,
-  createTaskHubConnectionOverridesFromVerifiedPaths,
-} from "../../infrastructure/ai/codex-app-server";
 import {
   TaskctlBroker,
   TaskctlAbortError,
@@ -60,7 +72,6 @@ import {
   DiagnosticFailureDispositionError,
   combineDiagnosticFailureDispositions,
   diagnosticFailureDispositionFromError,
-  type DiagnosticFailureDisposition,
 } from "../../diagnostic-failure";
 import {
   codexGeneratedResponseSchema,
@@ -76,23 +87,14 @@ import {
 } from "../../../shared/ai";
 import {
   ProposalWorkspace,
-  type ProposalWorkspaceIssue,
-  type ProposalWorkspaceStatus,
   type ProposalWorkspaceValidation,
 } from "../../ai/proposal-workspace";
 import {
   CodexSessionAbortedError,
-  CodexSessionAuthenticationError,
   CodexSessionCapabilityError,
-  CodexSessionDisabledError,
   CodexSessionError,
-  CodexSessionOutputValidationError,
-  CodexSessionSafetyViolationError,
   CodexSessionStateError,
-  CodexSessionSyncError,
-  CodexSessionTurnError,
   CodexThreadStartCapabilityError,
-  type CodexThreadStartCapabilityFailureCode,
 } from "./errors";
 import {
   codexSessionDeltaSchema,
@@ -116,43 +118,8 @@ import {
   type CodexSessionTurnResult,
 } from "./schemas";
 
-const maximumBufferedNotifications = 128;
 const maximumStoredDiagnostics = 256;
 const maximumFinalMessageBytes = 256 * 1024;
-const maximumModelRecords = 10_000;
-const requiredSkillNames = new Set(["taskctl", "obsidian", "external-tools"]);
-const permissionProfileId = "taskhub";
-const accountReadRetryDelaysMilliseconds: readonly [number, number, number, number] = [
-  250,
-  500,
-  750,
-  1_000,
-];
-type ThreadSettingsNotification = {
-  readonly threadId: string;
-  readonly profileId: string | undefined;
-  readonly profileExtends: string | null | undefined;
-  readonly sandboxValidation: SandboxValidationResult;
-};
-
-type SandboxValidationResult =
-  | { readonly kind: "valid" }
-  | {
-      readonly kind: "invalid";
-      readonly failureCode: Extract<
-        CodexThreadStartCapabilityFailureCode,
-        | "sandbox_invalid"
-        | "sandbox_danger_full_access"
-        | "sandbox_read_only_network_enabled"
-        | "sandbox_external_restricted"
-        | "sandbox_external_enabled"
-      >;
-    };
-
-type AccountInspectionResult =
-  | { readonly kind: "authenticated" }
-  | { readonly kind: "authentication_pending" }
-  | { readonly kind: "wrong_account_type" };
 
 const finalAgentMessageSchema = z
   .object({
@@ -218,247 +185,18 @@ type ActiveProposalWorkspace = {
   readonly validate: (proposal: z.infer<typeof proposalSchema>) => ProposalWorkspaceValidation<null>;
 };
 
-type ProposalWorkspaceIssuesResult =
-  | Omit<ProposalWorkspaceStatus, "issues">
-  | { readonly workspace_id: string; readonly revision: number; readonly valid: false }
-  | { readonly kind: "invalid"; readonly workspace_id: string; readonly revision: number };
-
-function serializeProposalWorkspaceToolResponse(
-  value: unknown,
-  success: boolean,
-): DynamicToolCallResponse {
-  const serialized = JSON.stringify(value);
-  if (serialized == null) {
-    throw new CodexSessionError("AI変更案ワークスペースの応答をJSONへ変換できません。");
-  }
-  if (Buffer.byteLength(serialized, "utf8") > maximumProposalWorkspaceResponseBytes) {
-    return serializeProposalWorkspaceToolResponse({
-      ok: false,
-      error: { code: "response_too_large", message: "診断結果が大きすぎます。部分読み取りを使用してください。" },
-    }, false);
-  }
-  return { contentItems: [{ type: "inputText", text: serialized }], success };
-}
-
-function serializeProposalWorkspaceInvalidRequest(error: z.ZodError): DynamicToolCallResponse {
-  const issueCount = error.issues.length;
-  const issues = error.issues.slice(0, 50).map((issue) => ({
-    code: issue.code,
-    json_pointer: issue.path
-      .map((part) => `/${String(part).replaceAll("~", "~0").replaceAll("/", "~1")}`)
-      .join(""),
-    expected_type: issue.code === "invalid_type" ? issue.expected : null,
-  }));
-  while (true) {
-    const result = {
-      ok: false,
-      error: {
-        code: "invalid_request",
-        message: "AI変更案ワークスペースの引数が不正です。",
-        issue_count: issueCount,
-        issues_truncated: issues.length < issueCount,
-        issues,
-      },
-    };
-    if (Buffer.byteLength(JSON.stringify(result), "utf8") <= maximumProposalWorkspaceResponseBytes) {
-      return serializeProposalWorkspaceToolResponse(result, false);
-    }
-    if (issues.length === 0) {
-      throw new CodexSessionError("AI変更案ワークスペースの入力診断を分割できません。");
-    }
-    issues.pop();
-  }
-}
-
-function serializeProposalWorkspaceIssuesResponse(
-  result: ProposalWorkspaceIssuesResult,
-  issues: readonly ProposalWorkspaceIssue[],
-  offset: number,
-  success: boolean,
-): DynamicToolCallResponse {
-  const start = Math.min(offset, issues.length);
-  let end = Math.min(start + 50, issues.length);
-  while (end >= start) {
-    const page = {
-      ...result,
-      issues: issues.slice(start, end),
-      issue_count: issues.length,
-      ...(end < issues.length ? { next_offset: end } : {}),
-    };
-    if (Buffer.byteLength(JSON.stringify(page), "utf8") <= maximumProposalWorkspaceResponseBytes) {
-      return serializeProposalWorkspaceToolResponse(page, success);
-    }
-    end -= 1;
-  }
-  throw new CodexSessionError("AI変更案ワークスペースの診断結果を分割できません。");
-}
-
-function readProposalWorkspaceDraft(workspace: ProposalWorkspace): z.infer<typeof proposalSchema> {
-  const status = workspace.getStatus();
-  let offset = 0;
-  let content = "";
-  while (true) {
-    const chunk = workspace.read({
-      workspace_id: status.workspace_id,
-      revision: status.revision,
-      target: { kind: "proposal" },
-      offset,
-    });
-    content += chunk.content;
-    if (chunk.next_offset == null) {
-      return proposalSchema.parse(JSON.parse(content));
-    }
-    offset = chunk.next_offset;
-  }
-}
-
-function createDynamicToolResponseTooLarge(): TaskctlResponse {
-  return taskctlResponseSchema.parse({
-    ok: false,
-    error: {
-      code: "response_too_large",
-      message: "taskctl応答が大きすぎます。",
-    },
-    sync: { kind: "unavailable" },
-  });
-}
-
-function serializeDynamicToolResponse(response: TaskctlResponse): DynamicToolCallResponse {
-  const validatedResponse = taskctlResponseSchema.parse(response);
-  const serialized = z.string().parse(JSON.stringify(validatedResponse));
-  if (Buffer.byteLength(serialized, "utf8") <= maximumDynamicToolResponseBytes) {
-    return {
-      contentItems: [{ type: "inputText", text: serialized }],
-      success: validatedResponse.ok,
-    };
-  }
-  const fallback = createDynamicToolResponseTooLarge();
-  const serializedFallback = z.string().parse(JSON.stringify(fallback));
-  if (Buffer.byteLength(serializedFallback, "utf8") > maximumDynamicToolResponseBytes) {
-    throw new CodexSessionError("taskctl応答のサイズ上限を確認できません。");
-  }
-  return {
-    contentItems: [{ type: "inputText", text: serializedFallback }],
-    success: false,
-  };
-}
-
-function createObsidianDynamicToolResponseTooLarge(): CodexObsidianResponse {
-  return codexObsidianResponseSchema.parse({
-    ok: false,
-    error: {
-      code: "response_too_large",
-      message: "Obsidian応答が大きすぎます。",
-    },
-  });
-}
-
-function serializeObsidianDynamicToolResponse(
-  response: CodexObsidianResponse,
-): DynamicToolCallResponse {
-  const validatedResponse = codexObsidianResponseSchema.parse(response);
-  const serialized = z.string().parse(JSON.stringify(validatedResponse));
-  if (Buffer.byteLength(serialized, "utf8") <= maximumDynamicToolResponseBytes) {
-    return {
-      contentItems: [{ type: "inputText", text: serialized }],
-      success: validatedResponse.ok,
-    };
-  }
-  const fallback = createObsidianDynamicToolResponseTooLarge();
-  const serializedFallback = z.string().parse(JSON.stringify(fallback));
-  if (Buffer.byteLength(serializedFallback, "utf8") > maximumDynamicToolResponseBytes) {
-    throw new CodexSessionError("Obsidian応答のサイズ上限を確認できません。");
-  }
-  return {
-    contentItems: [{ type: "inputText", text: serializedFallback }],
-    success: false,
-  };
-}
-
-const codexHomePathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine(isAbsolute, "Codex認証領域のパスは絶対パスでなければなりません。")
-  .refine((value) => !value.includes("\0"), "Codex認証領域のパスが不正です。");
-
 type InternalDiagnostic = {
   readonly code: CodexSessionDiagnostic["code"];
   readonly cause: unknown;
 };
 
-type AiDisableTurnFailure =
-  | { readonly kind: "disabled" }
-  | { readonly kind: "provided"; readonly error: unknown };
-
-type AiDisableDiagnosticDisposition =
-  | { readonly kind: "record" }
-  | { readonly kind: "already_recorded" }
-  | { readonly kind: "propagate_unrecorded" };
-
-type AiDisableRequest = {
-  readonly cause: unknown;
-  readonly turnFailure: AiDisableTurnFailure;
-  readonly diagnosticDisposition: AiDisableDiagnosticDisposition;
-};
-
-type AiDisableResult =
-  | { readonly kind: "completed" }
-  | { readonly kind: "cleanup_failed"; readonly errors: readonly unknown[] };
+type AiDisableDiagnosticDisposition = AiDisableRequest["diagnosticDisposition"];
 
 type SessionStopDisposition =
   | { readonly kind: "record" }
   | { readonly kind: "propagate_unrecorded" };
 
-type TurnFinalItem = {
-  readonly id: string;
-  readonly text: string;
-  readonly phase: "final_answer";
-};
-
-type TurnCompletion = {
-  readonly status: "inProgress" | "completed" | "interrupted" | "failed";
-  readonly error: unknown;
-};
-
-type ActiveTurnStarting = {
-  readonly phase: "starting";
-  readonly threadId: string;
-  readonly resolve: (result: CodexSessionTurnResult) => void;
-  readonly reject: (error: unknown) => void;
-  readonly signal: AbortSignal;
-  readonly abortListener: () => void;
-  readonly bufferedNotifications: CodexNotification[];
-  abortRequested: boolean;
-};
-
-type ActiveTurnRunning = {
-  readonly phase: "running";
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly resolve: (result: CodexSessionTurnResult) => void;
-  readonly reject: (error: unknown) => void;
-  readonly signal: AbortSignal;
-  readonly abortListener: () => void;
-  readonly connection: CodexSessionConnection;
-  abortRequested: boolean;
-  interruptSent: boolean;
-  finalItem: TurnFinalItem | undefined;
-  completion: TurnCompletion | undefined;
-};
-
-type ActiveTurn = ActiveTurnStarting | ActiveTurnRunning;
-
-function validateAbortSignal(signal: AbortSignal): void {
-  if (
-    signal == null
-    || typeof signal.aborted !== "boolean"
-    || typeof signal.addEventListener !== "function"
-    || typeof signal.removeEventListener !== "function"
-  ) {
-    throw new TypeError("AbortSignalが必要です。");
-  }
-}
+type ActiveTurnStarting = CodexActiveTurnStarting<CodexSessionTurnResult>;
 
 function combineSessionFailure(
   responseError: unknown,
@@ -495,390 +233,6 @@ function createUnrecordedSessionFailure(error: unknown): DiagnosticFailureDispos
   });
 }
 
-function createModelFormatInstruction(): string {
-  const generated = z.toJSONSchema(codexGeneratedResponseSchema, { target: "draft-07" });
-  const parsed = z.object({}).passthrough().safeParse(generated);
-  if (!parsed.success) {
-    throw new CodexSessionCapabilityError(
-      "構造化出力スキーマをJSONオブジェクトへ変換できません。",
-      parsed.error,
-    );
-  }
-  const serialized = JSON.stringify(parsed.data);
-  if (serialized == null) {
-    throw new CodexSessionCapabilityError(
-      "構造化出力スキーマをJSON文字列へ変換できません。",
-    );
-  }
-  const instruction = [
-    "最終応答はJSONオブジェクトだけにしてください。",
-    "最上位オブジェクトにはresponse_jsonだけを含めてください。",
-    "response_jsonには、次のJSON Schemaを満たすオブジェクトをJSON文字列化した文字列を指定してください。",
-    "response_jsonの値はJSONとして解析できなければなりません。",
-    "Markdown、コードフェンス、説明、前後の余分な文字は付けないでください。",
-    "response_jsonをJSONとして解析した結果は、次のJSON Schemaを満たす必要があります。",
-    serialized,
-  ].join("\n");
-  const validatedInstruction = codexSessionTurnInputSchema.safeParse([
-    { type: "text", text: instruction },
-  ]);
-  if (!validatedInstruction.success) {
-    throw new CodexSessionCapabilityError(
-      "構造化出力の形式指示が上限を超えています。",
-      validatedInstruction.error,
-    );
-  }
-  const instructionItem = validatedInstruction.data[0];
-  if (instructionItem == null || instructionItem.type !== "text") {
-    throw new CodexSessionCapabilityError(
-      "構造化出力の形式指示を作成できません。",
-    );
-  }
-  return instructionItem.text;
-}
-
-function prependModelFormatInstruction(
-  input: CodexSessionTurnInput,
-  instruction: string,
-): CodexSessionTurnInput {
-  let textFound = false;
-  const prefixedInput = input.map((item) => {
-    if (textFound || item.type !== "text") {
-      return item;
-    }
-    textFound = true;
-    return {
-      ...item,
-      text: `${instruction}\n\n${item.text}`,
-    };
-  });
-  if (!textFound) {
-    throw new CodexSessionError("Codexターン入力にテキスト項目がありません。");
-  }
-  return codexSessionTurnInputSchema.parse(prefixedInput);
-}
-
-function parseStructuredOutput(text: string): CodexGeneratedResponse {
-  let parsedEnvelope: unknown;
-  try {
-    parsedEnvelope = JSON.parse(text);
-  } catch (error: unknown) {
-    throw new CodexSessionOutputValidationError(error);
-  }
-  const envelope = structuredOutputEnvelopeSchema.safeParse(parsedEnvelope);
-  if (!envelope.success) {
-    throw new CodexSessionOutputValidationError(envelope.error);
-  }
-  let parsedResponse: unknown;
-  try {
-    parsedResponse = JSON.parse(envelope.data.response_json);
-  } catch (error: unknown) {
-    throw new CodexSessionOutputValidationError(error);
-  }
-  const response = codexGeneratedResponseSchema.safeParse(parsedResponse);
-  if (!response.success) {
-    throw new CodexSessionOutputValidationError(response.error);
-  }
-  return response.data;
-}
-
-function isTurnNotification(notification: CodexNotification): boolean {
-  return (
-    notification.method === "turn/started"
-    || notification.method === "turn/completed"
-    || notification.method === "item/completed"
-    || notification.method === "item/agentMessage/delta"
-  );
-}
-
-function notificationThreadId(notification: CodexNotification): string | undefined {
-  switch (notification.method) {
-    case "turn/started":
-    case "turn/completed":
-    case "item/completed":
-    case "item/agentMessage/delta":
-      return notification.params.threadId;
-    default:
-      return undefined;
-  }
-}
-
-function notificationTurnId(notification: CodexNotification): string | undefined {
-  switch (notification.method) {
-    case "turn/started":
-    case "turn/completed":
-      return notification.params.turn.id;
-    case "item/completed":
-    case "item/agentMessage/delta":
-      return notification.params.turnId;
-    default:
-      return undefined;
-  }
-}
-
-function compareStrings(left: string, right: string): number {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
-}
-
-function canonicalStringArray(values: readonly string[]): string {
-  return JSON.stringify([...values].sort(compareStrings));
-}
-
-function isSafetyCriticalState(state: CodexSessionState): boolean {
-  return (
-    state === "starting"
-    || state === "authentication_required"
-    || state === "ready"
-    || state === "turning"
-    || state === "restarting"
-  );
-}
-
-function createSafetyViolationError(cause?: unknown): CodexSessionSafetyViolationError {
-  if (cause instanceof CodexSessionSafetyViolationError) {
-    return cause;
-  }
-  return new CodexSessionSafetyViolationError(cause);
-}
-
-function isPathWithin(parentPath: string, candidatePath: string): boolean {
-  const relativePath = relative(resolve(parentPath), resolve(candidatePath));
-  return (
-    relativePath.length === 0
-    || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !relativePath.startsWith(sep))
-  );
-}
-
-function resolveVerifiedReadOnlyDirectory(directoryPath: string): string {
-  const normalizedPath = resolve(directoryPath);
-  const rootPath = parse(normalizedPath).root;
-  let currentPath = rootPath;
-  try {
-    const parts = relative(rootPath, normalizedPath)
-      .split(sep)
-      .filter((part) => part.length > 0);
-    for (const part of parts) {
-      currentPath = join(currentPath, part);
-      const stats = lstatSync(currentPath);
-      if (stats.isSymbolicLink()) {
-        throw new CodexSessionCapabilityError(
-          "Vaultのパスにシンボリックリンクを指定できません。",
-        );
-      }
-    }
-    const stats = lstatSync(normalizedPath);
-    if (!stats.isDirectory()) {
-      throw new CodexSessionCapabilityError(
-        "Vaultのパスはディレクトリでなければなりません。",
-      );
-    }
-    return realpathSync.native(normalizedPath);
-  } catch (error: unknown) {
-    if (error instanceof CodexSessionCapabilityError) {
-      throw error;
-    }
-    throw new CodexSessionCapabilityError(
-      "Vaultの実体パスを安全に検証できません。",
-      error,
-    );
-  }
-}
-
-function resolveExistingDirectory(directoryPath: string, label: string): string {
-  try {
-    const realPath = realpathSync.native(directoryPath);
-    if (!lstatSync(realPath).isDirectory()) {
-      throw new CodexSessionCapabilityError(`${label}はディレクトリでなければなりません。`);
-    }
-    return realPath;
-  } catch (error: unknown) {
-    if (error instanceof CodexSessionCapabilityError) {
-      throw error;
-    }
-    throw new CodexSessionCapabilityError(`${label}の実体パスを確認できません。`, error);
-  }
-}
-
-function isNoEntryError(error: unknown): boolean {
-  return error instanceof Error
-    && "code" in error
-    && error.code === "ENOENT";
-}
-
-function resolveCodexHomeCandidate(directoryPath: string): string {
-  const normalizedPath = resolve(directoryPath);
-  if (normalizedPath !== directoryPath) {
-    throw new CodexSessionCapabilityError(
-      "Codex認証領域のパスが正規化されていません。",
-    );
-  }
-  const rootPath = parse(normalizedPath).root;
-  const parts = relative(rootPath, normalizedPath)
-    .split(sep)
-    .filter((part) => part.length > 0);
-  let currentPath = rootPath;
-  try {
-    for (const [index, part] of parts.entries()) {
-      currentPath = join(currentPath, part);
-      let stats: Stats;
-      try {
-        stats = lstatSync(currentPath);
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) {
-          if (index === parts.length - 1) {
-            return normalizedPath;
-          }
-          throw new CodexSessionCapabilityError(
-            "Codex認証領域の親ディレクトリを確認できません。",
-            error,
-          );
-        }
-        throw error;
-      }
-      if (stats.isSymbolicLink()) {
-        throw new CodexSessionCapabilityError(
-          "Codex認証領域のパスにシンボリックリンクを指定できません。",
-        );
-      }
-      if (!stats.isDirectory()) {
-        throw new CodexSessionCapabilityError(
-          "Codex認証領域のパスはディレクトリでなければなりません。",
-        );
-      }
-      const realPath = realpathSync.native(currentPath);
-      if (realPath !== currentPath) {
-        throw new CodexSessionCapabilityError(
-          "Codex認証領域の設定パスと実体パスが一致しません。",
-        );
-      }
-      if (index === parts.length - 1) {
-        return realPath;
-      }
-    }
-    return normalizedPath;
-  } catch (error: unknown) {
-    if (error instanceof CodexSessionCapabilityError) {
-      throw error;
-    }
-    throw new CodexSessionCapabilityError(
-      "Codex認証領域を安全に検証できません。",
-      error,
-    );
-  }
-}
-
-function resolveVerifiedConfigurationDirectory(
-  directoryPath: string,
-  label: string,
-): string {
-  const normalizedPath = resolve(directoryPath);
-  if (normalizedPath !== directoryPath) {
-    throw new CodexSessionCapabilityError(`${label}のパスが正規化されていません。`);
-  }
-  const rootPath = parse(normalizedPath).root;
-  let currentPath = rootPath;
-  try {
-    const parts = relative(rootPath, normalizedPath)
-      .split(sep)
-      .filter((part) => part.length > 0);
-    for (const part of parts) {
-      currentPath = join(currentPath, part);
-      const stats = lstatSync(currentPath);
-      if (stats.isSymbolicLink()) {
-        throw new CodexSessionCapabilityError(`${label}にシンボリックリンクを指定できません。`);
-      }
-    }
-    const stats = lstatSync(normalizedPath);
-    if (!stats.isDirectory()) {
-      throw new CodexSessionCapabilityError(`${label}はディレクトリでなければなりません。`);
-    }
-    const realPath = realpathSync.native(normalizedPath);
-    if (realPath !== normalizedPath) {
-      throw new CodexSessionCapabilityError(`${label}の設定パスと実体パスが一致しません。`);
-    }
-    return realPath;
-  } catch (error: unknown) {
-    if (error instanceof CodexSessionCapabilityError) {
-      throw error;
-    }
-    throw new CodexSessionCapabilityError(`${label}を安全に検証できません。`, error);
-  }
-}
-
-function validateOwnedUnixSocket(socketPath: string, label: string): void {
-  let stats: Stats;
-  try {
-    stats = lstatSync(socketPath);
-  } catch (error: unknown) {
-    throw new CodexSessionCapabilityError(`${label}を確認できません。`, error);
-  }
-  if (typeof process.getuid !== "function") {
-    throw new CodexSessionCapabilityError(`${label}の所有者を確認できません。`);
-  }
-  if (
-    stats.isSymbolicLink()
-    || !stats.isSocket()
-    || stats.uid !== process.getuid()
-    || (stats.mode & 0o777) !== 0o600
-  ) {
-    throw new CodexSessionCapabilityError(`${label}の実体または権限が不正です。`);
-  }
-}
-
-function validateOwnedUnixSocketDirectory(directoryPath: string, label: string): void {
-  let stats: Stats;
-  try {
-    stats = lstatSync(directoryPath);
-  } catch (error: unknown) {
-    throw new CodexSessionCapabilityError(`${label}を確認できません。`, error);
-  }
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new CodexSessionCapabilityError(`${label}の実体が不正です。`);
-  }
-  if (typeof process.getuid !== "function") {
-    throw new CodexSessionCapabilityError(`${label}の所有者を確認できません。`);
-  }
-  if (stats.uid !== process.getuid() || (stats.mode & 0o777) !== 0o700) {
-    throw new CodexSessionCapabilityError(`${label}の所有者または権限が不正です。`);
-  }
-}
-
-function validateTaskctlConnectionInfoPath(
-  connectionInfoPath: string,
-  tmpDirectoryPath: string,
-): void {
-  const expectedPath = join(tmpDirectoryPath, "taskctl-connection.json");
-  if (resolve(connectionInfoPath) !== expectedPath) {
-    throw new CodexSessionCapabilityError(
-      "taskctl接続情報を専用ワークスペースのtmp直下に限定できません。",
-    );
-  }
-  let stats: Stats;
-  try {
-    stats = lstatSync(connectionInfoPath);
-  } catch (error: unknown) {
-    throw new CodexSessionCapabilityError("taskctl接続情報を確認できません。", error);
-  }
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new CodexSessionCapabilityError("taskctl接続情報の実体が不正です。");
-  }
-  if (process.platform === "win32") {
-    return;
-  }
-  if (typeof process.getuid !== "function") {
-    throw new CodexSessionCapabilityError("taskctl接続情報の所有者を確認できません。");
-  }
-  if (stats.uid !== process.getuid() || (stats.mode & 0o777) !== 0o600) {
-    throw new CodexSessionCapabilityError("taskctl接続情報の所有者または権限が不正です。");
-  }
-}
-
 function validateTaskctlLocalIpc(
   startResult: TaskctlBrokerStartResult,
   tmpDirectoryPath: string,
@@ -890,203 +244,7 @@ function validateTaskctlLocalIpc(
       parsedResult.error,
     );
   }
-  const result = parsedResult.data;
-  validateTaskctlConnectionInfoPath(result.connectionInfoPath, tmpDirectoryPath);
-  if (process.platform === "win32") {
-    if (
-      result.localIpcBoundary.kind !== "windows_named_pipe"
-      || result.localIpcBoundary.access !== "current_user"
-      || !/^\\\\\.\\pipe\\taskhub-taskctl-[0-9a-f]{24}$/u.test(result.socketPath)
-    ) {
-      throw new CodexSessionCapabilityError(
-        "taskctl名前付きパイプを現在の利用者向け境界へ限定できません。",
-      );
-    }
-    return result.socketPath;
-  }
-  if (
-    result.localIpcBoundary.kind !== "unix_socket"
-    || result.localIpcBoundary.access !== "owner_only"
-    || !/^taskctl-[0-9a-f]{24}\.sock$/u.test(parse(result.socketPath).base)
-  ) {
-    throw new CodexSessionCapabilityError(
-      "taskctlソケットの形式を専用境界へ限定できません。",
-    );
-  }
-  const socketDirectoryPath = process.platform === "darwin"
-    ? resolveVerifiedConfigurationDirectory(
-      result.localIpcBoundary.socketDirectoryPath,
-      "taskctlソケット用一時ディレクトリ",
-    )
-    : tmpDirectoryPath;
-  if (
-    result.localIpcBoundary.socketDirectoryPath !== socketDirectoryPath
-    || parse(resolve(result.socketPath)).dir !== socketDirectoryPath
-    || (process.platform === "darwin"
-      && (
-        parse(socketDirectoryPath).dir !== "/private/tmp"
-        || !/^taskhub-taskctl-[A-Za-z0-9]{6}$/u.test(parse(socketDirectoryPath).base)
-      ))
-  ) {
-    throw new CodexSessionCapabilityError(
-      "taskctlソケットを専用一時ディレクトリ直下に限定できません。",
-    );
-  }
-  if (process.platform === "darwin") {
-    validateOwnedUnixSocketDirectory(socketDirectoryPath, "taskctlソケット用一時ディレクトリ");
-  }
-  validateOwnedUnixSocket(result.socketPath, "taskctlソケット");
-  return result.socketPath;
-}
-
-function validateAdditionalLocalSocketPaths(
-  paths: readonly string[],
-  tmpDirectoryPath: string,
-): readonly string[] {
-  const values = z.array(z.string().min(1).max(4_096)).max(32).parse(paths);
-  const seen = new Set<string>();
-  const validated: string[] = [];
-  for (const value of values) {
-    if (value.includes("\0") || value.includes("\n") || value.includes("\r")) {
-      throw new CodexSessionCapabilityError("追加ローカルIPCの接続先が不正です。");
-    }
-    if (process.platform === "win32") {
-      if (!/^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(value)) {
-        throw new CodexSessionCapabilityError("contextctl名前付きパイプの接続先を限定できません。");
-      }
-    } else {
-      if (!isAbsolute(value) || parse(resolve(value)).dir !== resolve(tmpDirectoryPath)) {
-        throw new CodexSessionCapabilityError("contextctlソケットを専用ワークスペースのtmp直下に限定できません。");
-      }
-      if (!/^contextctl-[0-9a-f]{24}\.sock$/u.test(parse(value).base)) {
-        throw new CodexSessionCapabilityError("contextctlソケットの接続先が不正です。");
-      }
-      validateOwnedUnixSocket(value, "contextctlソケット");
-    }
-    const key = process.platform === "win32" ? value : resolve(value);
-    if (seen.has(key)) {
-      throw new CodexSessionCapabilityError("同じ追加ローカルIPCを重複して指定できません。");
-    }
-    seen.add(key);
-    validated.push(value);
-  }
-  return validated;
-}
-
-function validateTurnSkills(
-  input: CodexSessionTurnInput,
-  workspacePath: string,
-): void {
-  for (const item of input) {
-    if (item.type !== "skill") {
-      continue;
-    }
-    if (!requiredSkillNames.has(item.name)) {
-      throw new CodexSessionCapabilityError("Codexターンへ許可されていないスキルを指定できません。");
-    }
-    const expectedPath = join(workspacePath, ".agents", "skills", item.name, "SKILL.md");
-    if (item.path !== expectedPath) {
-      throw new CodexSessionCapabilityError("Codexターンへ専用ワークスペース外のスキルを指定できません。");
-    }
-  }
-}
-
-function validateSandboxPolicy(
-  sandbox: ThreadStartResult["sandbox"],
-  tmpDirectoryPath: string,
-): SandboxValidationResult {
-  switch (sandbox.type) {
-    case "dangerFullAccess":
-      return {
-        kind: "invalid",
-        failureCode: process.platform === "win32"
-          ? "sandbox_danger_full_access"
-          : "sandbox_invalid",
-      };
-    case "readOnly":
-      if (sandbox.networkAccess) {
-        return {
-          kind: "invalid",
-          failureCode: process.platform === "win32"
-            ? "sandbox_read_only_network_enabled"
-            : "sandbox_invalid",
-        };
-      }
-      if (process.platform === "win32") {
-        return { kind: "valid" };
-      }
-      return { kind: "invalid", failureCode: "sandbox_invalid" };
-    case "externalSandbox":
-      if (process.platform === "win32") {
-        return {
-          kind: "invalid",
-          failureCode: sandbox.networkAccess === "restricted"
-            ? "sandbox_external_restricted"
-            : "sandbox_external_enabled",
-        };
-      }
-      return { kind: "invalid", failureCode: "sandbox_invalid" };
-    case "workspaceWrite":
-      if (process.platform === "win32") {
-        return sandbox.networkAccess === false
-          ? { kind: "valid" }
-          : { kind: "invalid", failureCode: "sandbox_invalid" };
-      }
-      {
-        const roots = new Set(sandbox.writableRoots);
-        const isValid =
-          sandbox.writableRoots.length === 1
-          && roots.size === 1
-          && roots.has(tmpDirectoryPath)
-          && sandbox.networkAccess === false
-          && sandbox.excludeTmpdirEnvVar === true
-          && sandbox.excludeSlashTmp === true;
-        return isValid
-          ? { kind: "valid" }
-          : { kind: "invalid", failureCode: "sandbox_invalid" };
-      }
-    default:
-      throw new Error("sandbox種別が想定外です。");
-  }
-}
-
-function isValidThreadSettingsNotification(
-  notification: ThreadSettingsNotification,
-): boolean {
-  if (notification.sandboxValidation.kind !== "valid") {
-    return false;
-  }
-  if (process.platform === "win32") {
-    return true;
-  }
-  return (
-    notification.profileId === permissionProfileId
-    && notification.profileExtends === null
-  );
-}
-
-function isConnectionShape(value: unknown): value is CodexSessionConnection {
-  if (typeof value !== "object" || value == null) {
-    return false;
-  }
-  const functionNames = [
-    "start",
-    "readAccount",
-    "startChatGptLogin",
-    "listModels",
-    "listSkills",
-    "listPermissionProfiles",
-    "getCodexHome",
-    "startThread",
-    "startTurn",
-    "interruptTurn",
-    "onNotification",
-    "onDiagnostic",
-    "onDynamicToolCall",
-    "getDiagnostics",
-    "stop",
-  ];
-  return functionNames.every((name) => typeof Reflect.get(value, name) === "function");
+  return validateVerifiedTaskctlLocalIpc(parsedResult.data, tmpDirectoryPath);
 }
 
 /** Codexセッションで利用する実接続ファクトリを作成します。 */
@@ -1094,24 +252,10 @@ export function createCodexAppServerConnectionFactory(
   options: CodexConnectionOptions,
   onError: CodexSessionOptions["onError"],
 ): CodexSessionConnectionFactory {
-  const validatedOptions = codexConnectionOptionsSchema.parse(options);
-  if (validatedOptions.configOverrides.length !== 0) {
-    throw new CodexSessionCapabilityError(
-      "Codex接続ファクトリの初期設定へ設定上書きを指定できません。",
-    );
-  }
-  if (validatedOptions.capabilities?.experimentalApi !== true) {
-    throw new CodexSessionCapabilityError(
-      "Codexの実験APIが有効でないため権限プロファイルを利用できません。",
-    );
-  }
-  return (configOverrides): CodexSessionConnection => {
-    const connectionOptions = codexConnectionOptionsSchema.parse({
-      ...validatedOptions,
-      configOverrides,
-    });
-    return new CodexAppServerConnection(connectionOptions, onError);
-  };
+  return createCodexSessionConnectionFactory(
+    options,
+    (connectionOptions) => new CodexAppServerConnection(connectionOptions, onError),
+  );
 }
 
 /** Codex app-serverと一時taskctlを一つのAIセッションとして管理します。 */
@@ -1120,9 +264,13 @@ export class CodexSessionService {
   private readonly broker: TaskctlBroker;
   private readonly structuredOutputSchema: Record<string, unknown>;
   private readonly modelFormatInstruction: string;
+  private readonly responseSerializer: CodexToolResponseSerializer<TaskctlResponse, CodexObsidianResponse>;
+  private readonly dynamicToolHandler: CodexDynamicToolHandler<TaskctlResponse, CodexObsidianResponse, CodexObsidianQuery>;
+  private readonly startup: CodexSessionStartup<CodexSessionConnection, TaskctlBrokerStartResult, CodexSessionStartResult>;
+  private readonly notificationRouter: CodexSessionNotificationRouter;
+  private readonly connectionRecovery: CodexConnectionRecovery<CodexSessionTurnResult, CodexSessionConnection>;
   private readOnlyVaultPaths: readonly string[];
   private additionalLocalSocketPaths: readonly string[];
-  private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
   private readonly diagnostics: InternalDiagnostic[] = [];
   private state: CodexSessionState = "created";
   private connection: CodexSessionConnection | undefined;
@@ -1141,9 +289,7 @@ export class CodexSessionService {
   private lifecycleSignal: AbortSignal | undefined;
   private lifecycleAbortListener: (() => void) | undefined;
   private recoveryAbortController: AbortController | undefined;
-  private activeTurn: ActiveTurn | undefined;
-  private restartCount = 0;
-  private restartPromise: Promise<void> | undefined;
+  private readonly turnCoordinator: CodexTurnCoordinator<CodexSessionTurnResult, CodexSessionDelta, CodexGeneratedResponse, CodexSessionConnection, CodexSessionTurnInput>;
   private successfullyStarted = false;
   private structuredOutputVerified = false;
   private safetyViolation = false;
@@ -1164,7 +310,148 @@ export class CodexSessionService {
       },
     });
     this.structuredOutputSchema = structuredOutputEnvelopeJsonSchema;
-    this.modelFormatInstruction = createModelFormatInstruction();
+    this.modelFormatInstruction = createModelFormatInstruction(codexGeneratedResponseSchema, codexSessionTurnInputSchema);
+    this.responseSerializer = new CodexToolResponseSerializer(
+      maximumProposalWorkspaceResponseBytes,
+      maximumDynamicToolResponseBytes,
+      taskctlResponseSchema,
+      codexObsidianResponseSchema,
+    );
+    this.dynamicToolHandler = new CodexDynamicToolHandler({
+      getActiveTurn: () => this.turnCoordinator.activeTurn,
+      getThreadId: () => this.threadId,
+      responseSerializer: this.responseSerializer,
+      executeTaskctlQuery: (query) => this.broker.executeQuery(query),
+      obsidianQuerySchema: codexObsidianQuerySchema,
+      executeObsidianQuery: (query, signal) => this.executeObsidianQuery(query, signal),
+      createInvalidObsidianResponse: () => ({
+        ok: false,
+        error: { code: "invalid_request", message: "Obsidian要求の形式が不正です。" },
+      }),
+      readObsidianErrorResponse: (error) => error instanceof ObsidianReadError
+        ? { ok: false, error: { code: error.code, message: error.message } }
+        : undefined,
+      createTaskctlAbortError: () => new TaskctlAbortError(),
+    });
+    this.startup = new CodexSessionStartup({
+      getState: () => this.state,
+      setState: (state) => { this.state = state; },
+      getConnection: () => this.connection,
+      getTaskctlStartResult: () => this.taskctlStartResult,
+      setTaskctlStartResult: (result) => { this.taskctlStartResult = result; },
+      hasActiveTurn: () => this.turnCoordinator.activeTurn != null,
+      isSafetyViolation: () => this.safetyViolation,
+      isConnectionConfigurationChanged: () => this.connectionConfigurationChanged,
+      installLifecycleAbort: (signal) => this.installLifecycleAbort(signal),
+      startTaskctl: (signal) => this.broker.start(signal),
+      connectWithInitialRetry: (signal) => this.connectWithInitialRetry(signal),
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+      markSuccessfullyStarted: () => { this.successfullyStarted = true; },
+      createStartResult: () => this.createStartResult(),
+      createAuthenticationRequiredResult: () => this.createAuthenticationRequiredResult(),
+      cleanupResources: () => this.cleanupResources(),
+      recordDiagnosticLocally: (code, error) => this.recordDiagnosticLocally(code, error),
+      restartConnectionForConfigurationChange: (signal) => this.restartConnectionForConfigurationChange(signal),
+      inspectAccountWithRetry: (connection, signal) => this.inspectAccountWithRetry(connection, signal),
+      inspectModel: (connection, signal) => this.inspectModel(connection, signal),
+      inspectSkills: (connection, signal) => this.inspectSkills(connection, signal),
+      inspectPermissionProfile: (connection, signal) => this.inspectPermissionProfile(connection, signal),
+      startThreadOnCurrentConnection: (signal) => this.startThreadOnCurrentConnection(signal),
+      disableAi: (request) => this.disableAi(request),
+      combineSessionFailure,
+      createRecordedSessionFailure,
+      createSafetyViolationError,
+    });
+    this.notificationRouter = new CodexSessionNotificationRouter({
+      notificationSchema: codexNotificationSchema,
+      diagnosticSchema: codexDiagnosticSchema,
+      tmpDirectoryPath: this.options.tmpDirectoryPath,
+      getState: () => this.state,
+      getThreadId: () => this.threadId,
+      setThreadSettingsNotification: (notification) => { this.threadSettingsNotification = notification; },
+      recordDiagnosticLocally: (code, error) => this.recordDiagnosticLocally(code, error),
+      recordDiagnosticAndNotify: (code, error) => this.recordDiagnosticAndNotify(code, error),
+      markSafetyViolation: (error, disposition) => this.markSafetyViolation(error, disposition),
+      failActiveTurn: (error, turnError) => {
+        const active = this.turnCoordinator.activeTurn;
+        if (active != null) {
+          this.turnCoordinator.finishTurn(active, createRecordedSessionFailure(error, turnError));
+        }
+      },
+      onProcessExit: (diagnostic) => {
+        const processExitError = new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal);
+        this.handleProcessExit(processExitError);
+      },
+      onSkillsChanged: () => { this.threadConfigurationChanged = true; },
+      onTurnNotification: (notification) => {
+        this.turnCoordinator.handleTurnNotification(notification, (active, error) => {
+          void this.recoverAfterStartingAbort(active, error);
+        });
+      },
+    });
+    this.connectionRecovery = new CodexConnectionRecovery({
+      getActiveTurn: () => this.turnCoordinator.activeTurn,
+      finishTurn: (active, error) => this.turnCoordinator.finishTurn(active, error),
+      getLifecycleSignal: () => this.lifecycleSignal,
+      getRecoveryAbortController: () => this.recoveryAbortController,
+      setRecoveryAbortController: (controller) => { this.recoveryAbortController = controller; },
+      getState: () => this.state,
+      setState: (state) => { this.state = state; },
+      cleanupConnection: () => this.cleanupConnection(),
+      disableAi: (request) => this.disableAi(request),
+      connectAndStartThread: (signal) => this.connectAndStartThread(signal),
+      recordDiagnosticLocally: (code, error) => this.recordDiagnosticLocally(code, error),
+      recordDiagnosticAndNotify: (code, error) => this.recordDiagnosticAndNotify(code, error),
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+      isSafetyViolation: () => this.safetyViolation,
+      getConnection: () => this.connection,
+      isSuccessfullyStarted: () => this.successfullyStarted,
+      isProcessExitError: (error) => error instanceof CodexProcessExitError,
+      createSafetyViolationError,
+      createRecordedSessionFailure,
+    });
+    this.turnCoordinator = new CodexTurnCoordinator({
+      inputSchema: codexSessionTurnInputSchema,
+      inputFactorySchema: codexSessionTurnInputFactorySchema,
+      workspacePath: this.options.workspacePath,
+      modelFormatInstruction: this.modelFormatInstruction,
+      structuredOutputSchema: this.structuredOutputSchema,
+      syncBeforeTurn: this.options.syncBeforeTurn,
+      isThreadConfigurationChanged: () => this.threadConfigurationChanged,
+      getState: () => this.state,
+      setTurning: () => { this.state = "turning"; },
+      getConnection: () => this.connection,
+      getThreadId: () => this.threadId,
+      requireSelectedModel: () => this.requireSelectedModel(),
+      isStructuredOutputVerified: () => this.structuredOutputVerified,
+      recoverAfterStartingAbort: (active, cause) => this.recoverAfterStartingAbort(active, cause),
+      disableAi: (request) => this.disableAi(request),
+      disableAiAfterReportedTurnError: (cause, error) => this.disableAiAfterReportedTurnError(cause, error),
+      finalItemSchema: finalAgentMessageSchema,
+      turnResultSchema: codexSessionTurnResultSchema,
+      deltaSchema: codexSessionDeltaSchema,
+      parseOutput: (text) => parseStructuredOutput(text, structuredOutputEnvelopeSchema, codexGeneratedResponseSchema),
+      createUnrecordedFailure: createUnrecordedSessionFailure,
+      recordDiagnosticLocally: (code, error) => this.recordDiagnosticLocally(code, error),
+      recordDiagnosticAndNotify: (code, error) => this.recordDiagnosticAndNotify(code, error),
+      onOutputVerified: () => { this.structuredOutputVerified = true; },
+      onTurnFinished: () => {
+        this.activeProposalWorkspace = undefined;
+        if (this.state === "turning") {
+          this.state = "ready";
+        }
+      },
+    });
+  }
+
+  private installLifecycleAbort(signal: AbortSignal): void {
+    this.lifecycleSignal = signal;
+    this.lifecycleAbortListener = () => {
+      void this.stop({ kind: "record" }).catch((error: unknown) => {
+        this.recordDiagnosticLocally("connection_stop_error", error);
+      });
+    };
+    signal.addEventListener("abort", this.lifecycleAbortListener, { once: true });
   }
 
   /** 同期後に発行したAI変更案ワークスペースを現在のターンへ設定します。 */
@@ -1172,7 +459,7 @@ export class CodexSessionService {
     workspace: ProposalWorkspace,
     validate: ActiveProposalWorkspace["validate"],
   ): void {
-    if (this.activeTurn?.phase !== "starting" || this.activeProposalWorkspace != null) {
+    if (this.turnCoordinator.activeTurn?.phase !== "starting" || this.activeProposalWorkspace != null) {
       throw new CodexSessionStateError();
     }
     if (!(workspace instanceof ProposalWorkspace) || typeof validate !== "function") {
@@ -1237,190 +524,17 @@ export class CodexSessionService {
 
   /** Codex認証、能力、スキルを検査して新規スレッドを開始します。 */
   public async start(signal: AbortSignal): Promise<CodexSessionStartResult> {
-    validateAbortSignal(signal);
-    if (this.state !== "created") {
-      throw new CodexSessionStateError();
-    }
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    this.state = "starting";
-    this.lifecycleSignal = signal;
-    this.lifecycleAbortListener = () => {
-      void this.stop({ kind: "record" }).catch((error: unknown) => {
-        this.recordDiagnosticLocally("connection_stop_error", error);
-      });
-    };
-    signal.addEventListener("abort", this.lifecycleAbortListener, { once: true });
-
-    try {
-      this.taskctlStartResult = await this.broker.start(signal);
-      await this.connectWithInitialRetry(signal);
-      this.assertSafetyIntact();
-      this.successfullyStarted = true;
-      this.state = "ready";
-      return this.createStartResult();
-    } catch (error: unknown) {
-      if (
-        error instanceof CodexSessionAuthenticationError
-        && this.connection != null
-        && this.taskctlStartResult != null
-        && !this.safetyViolation
-        && !signal.aborted
-      ) {
-        this.successfullyStarted = true;
-        this.state = "authentication_required";
-        return this.createAuthenticationRequiredResult();
-      }
-      const cleanupErrors = await this.cleanupResources();
-      if (cleanupErrors.length > 0) {
-        for (const cleanupError of cleanupErrors) {
-          this.recordDiagnosticLocally("connection_stop_error", cleanupError);
-        }
-      }
-      if (signal.aborted) {
-        this.state = "stopped";
-        if (cleanupErrors.length === 0) {
-          throw error;
-        }
-        throw combineSessionFailure(error, cleanupErrors);
-      }
-      if (this.safetyViolation) {
-        this.state = "disabled";
-        const safetyError = createSafetyViolationError(error);
-        this.recordDiagnosticLocally("startup_error", safetyError);
-        throw combineSessionFailure(
-          createRecordedSessionFailure(error, safetyError),
-          cleanupErrors,
-        );
-      }
-      this.recordDiagnosticLocally("startup_error", error);
-      this.state = "disabled";
-      throw combineSessionFailure(error, cleanupErrors);
-    }
+    return this.startup.start(signal);
   }
 
   /** ChatGPTログイン後に能力検査と新規スレッド開始を再開します。 */
   public async completeAuthentication(signal: AbortSignal): Promise<CodexSessionStartResult> {
-    validateAbortSignal(signal);
-    if (this.state !== "authentication_required" || this.connection == null) {
-      throw new CodexSessionStateError();
-    }
-    this.assertSafetyIntact();
-    const connection = this.connection;
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    this.state = "starting";
-    const shouldRestartConnection = this.connectionConfigurationChanged;
-    try {
-      if (shouldRestartConnection) {
-        await this.restartConnectionForConfigurationChange(signal);
-        this.assertSafetyIntact();
-        this.state = "ready";
-        return this.createStartResult();
-      }
-      const accountInspection = await this.inspectAccountWithRetry(connection, signal);
-      if (accountInspection.kind === "authentication_pending") {
-        this.state = "authentication_required";
-        return this.createAuthenticationRequiredResult();
-      }
-      if (accountInspection.kind === "wrong_account_type") {
-        throw new CodexSessionAuthenticationError();
-      }
-      await this.inspectModel(connection, signal);
-      await this.inspectSkills(connection, signal);
-      if (process.platform !== "win32") {
-        await this.inspectPermissionProfile(connection, signal);
-      }
-      await this.startThreadOnCurrentConnection(signal);
-      this.assertSafetyIntact();
-      this.state = "ready";
-      return this.createStartResult();
-    } catch (error: unknown) {
-      if (
-        shouldRestartConnection
-        && error instanceof CodexSessionAuthenticationError
-        && this.connection != null
-        && !this.safetyViolation
-      ) {
-        this.state = "authentication_required";
-        return this.createAuthenticationRequiredResult();
-      }
-      if (error instanceof CodexSessionAuthenticationError && !this.safetyViolation) {
-        this.state = "authentication_required";
-        throw error;
-      }
-      if (this.safetyViolation) {
-        throw createRecordedSessionFailure(
-          error,
-          createSafetyViolationError(error),
-        );
-      }
-      const disableResult = await this.disableAi({
-        cause: error,
-        turnFailure: { kind: "disabled" },
-        diagnosticDisposition: { kind: "propagate_unrecorded" },
-      });
-      throw combineSessionFailure(
-        error,
-        disableResult.kind === "cleanup_failed" ? disableResult.errors : [],
-      );
-    }
+    return this.startup.completeAuthentication(signal);
   }
 
   /** GUIの新規セッション用に現在接続で新しいスレッドを開始します。 */
   public async startNewSession(signal: AbortSignal): Promise<CodexSessionStartResult> {
-    validateAbortSignal(signal);
-    if (this.state !== "ready" || this.activeTurn != null) {
-      throw new CodexSessionStateError();
-    }
-    this.assertSafetyIntact();
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    const connection = this.connection;
-    if (connection == null) {
-      throw new CodexSessionStateError();
-    }
-    this.state = "starting";
-    const shouldRestartConnection = this.connectionConfigurationChanged;
-    try {
-      if (shouldRestartConnection) {
-        await this.restartConnectionForConfigurationChange(signal);
-        this.assertSafetyIntact();
-        this.state = "ready";
-        return this.createStartResult();
-      }
-      await this.inspectSkills(connection, signal);
-      if (process.platform !== "win32") {
-        await this.inspectPermissionProfile(connection, signal);
-      }
-      await this.inspectModel(connection, signal);
-      await this.startThreadOnCurrentConnection(signal);
-      this.assertSafetyIntact();
-      this.state = "ready";
-      return this.createStartResult();
-    } catch (error: unknown) {
-      if (
-        shouldRestartConnection
-        && error instanceof CodexSessionAuthenticationError
-        && this.connection != null
-        && !this.safetyViolation
-      ) {
-        this.state = "authentication_required";
-        return this.createAuthenticationRequiredResult();
-      }
-      const disableResult = await this.disableAi({
-        cause: error,
-        turnFailure: { kind: "disabled" },
-        diagnosticDisposition: { kind: "propagate_unrecorded" },
-      });
-      throw combineSessionFailure(
-        error,
-        disableResult.kind === "cleanup_failed" ? disableResult.errors : [],
-      );
-    }
+    return this.startup.startNewSession(signal);
   }
 
   /** ChatGPTのブラウザログイン開始要求をCodexへ渡します。 */
@@ -1443,14 +557,8 @@ export class CodexSessionService {
   }
 
   /** 同期後に構造化出力を指定して一つのCodexターンを開始します。 */
-  public async startTurn(
-    input: CodexSessionTurnInput,
-    signal: AbortSignal,
-  ): Promise<CodexSessionTurnResult> {
-    validateAbortSignal(signal);
-    const validatedInput = codexSessionTurnInputSchema.parse(input);
-    validateTurnSkills(validatedInput, this.options.workspacePath);
-    return this.startTurnWithPreparation(() => validatedInput, signal);
+  public async startTurn(input: CodexSessionTurnInput, signal: AbortSignal): Promise<CodexSessionTurnResult> {
+    return this.turnCoordinator.startTurn(input, signal);
   }
 
   /** 同期完了後にターン入力を作成して構造化出力を指定したCodexターンを開始します。 */
@@ -1458,304 +566,21 @@ export class CodexSessionService {
     prepareInput: CodexSessionTurnInputFactory,
     signal: AbortSignal,
   ): Promise<CodexSessionTurnResult> {
-    validateAbortSignal(signal);
-    const validatedPrepareInput = codexSessionTurnInputFactorySchema.parse(prepareInput);
-    if (this.threadConfigurationChanged) {
-      throw new CodexSessionCapabilityError(
-        "Codexスレッド構成が変更されました。新しいセッションを開始してください。",
-      );
-    }
-    if (this.state !== "ready" || this.activeTurn != null) {
-      if (this.state === "disabled") {
-        throw new CodexSessionDisabledError();
-      }
-      throw new CodexSessionStateError();
-    }
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    const connection = this.connection;
-    const currentThreadId = this.threadId;
-    if (connection == null || currentThreadId == null) {
-      throw new CodexSessionStateError();
-    }
-
-    let activeTurn: ActiveTurnStarting | undefined;
-    const turnPromise = new Promise<CodexSessionTurnResult>((resolve, reject) => {
-      const abortListener = (): void => {
-        const current = this.activeTurn;
-        if (current == null || current.threadId !== currentThreadId) {
-          return;
-        }
-        current.abortRequested = true;
-        if (current.phase === "running") {
-          void this.interruptAfterAbort(current);
-        }
-      };
-      activeTurn = {
-        phase: "starting",
-        threadId: currentThreadId,
-        resolve,
-        reject,
-        signal,
-        abortListener,
-        bufferedNotifications: [],
-        abortRequested: false,
-      };
-    });
-    const createdActiveTurn = activeTurn;
-    if (createdActiveTurn == null) {
-      throw new CodexSessionError("Codexターンの初期化に失敗しました。");
-    }
-    this.activeTurn = createdActiveTurn;
-    this.state = "turning";
-    signal.addEventListener("abort", createdActiveTurn.abortListener, { once: true });
-    if (signal.aborted) {
-      createdActiveTurn.abortListener();
-    }
-
-    try {
-      await this.options.syncBeforeTurn(signal);
-    } catch (error: unknown) {
-      if (createdActiveTurn.abortRequested || signal.aborted) {
-        this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
-      } else {
-        this.recordDiagnosticLocally("sync_error", error);
-        const syncError = new CodexSessionSyncError(error);
-        this.finishTurn(
-          createdActiveTurn,
-          createUnrecordedSessionFailure(syncError),
-        );
-      }
-      return turnPromise;
-    }
-    if (createdActiveTurn.abortRequested || signal.aborted) {
-      this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
-      return turnPromise;
-    }
-    if (this.activeTurn !== createdActiveTurn) {
-      return turnPromise;
-    }
-
-    let validatedInput: CodexSessionTurnInput;
-    try {
-      validatedInput = codexSessionTurnInputSchema.parse(
-        await Promise.resolve(validatedPrepareInput(signal)),
-      );
-      validateTurnSkills(validatedInput, this.options.workspacePath);
-      validatedInput = prependModelFormatInstruction(
-        validatedInput,
-        this.modelFormatInstruction,
-      );
-    } catch (error: unknown) {
-      if (createdActiveTurn.abortRequested || signal.aborted) {
-        this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
-      } else {
-        this.recordDiagnosticLocally("turn_error", error);
-        this.finishTurn(
-          createdActiveTurn,
-          createUnrecordedSessionFailure(error),
-        );
-      }
-      return turnPromise;
-    }
-
-    let params: ReturnType<typeof turnStartParamsSchema.parse>;
-    try {
-      params = turnStartParamsSchema.parse({
-        threadId: currentThreadId,
-        input: validatedInput,
-        cwd: this.options.workspacePath,
-        approvalPolicy: "never",
-        model: this.requireSelectedModel(),
-        outputSchema: this.structuredOutputSchema,
-      });
-    } catch (error: unknown) {
-      if (createdActiveTurn.abortRequested || signal.aborted) {
-        this.finishTurn(createdActiveTurn, new CodexSessionAbortedError());
-      } else {
-        this.recordDiagnosticLocally("turn_error", error);
-        this.finishTurn(
-          createdActiveTurn,
-          createUnrecordedSessionFailure(error),
-        );
-      }
-      return turnPromise;
-    }
-
-    let started: Awaited<ReturnType<CodexSessionConnection["startTurn"]>>;
-    try {
-      started = await connection.startTurn(params, signal);
-      started = turnStartResultSchema.parse(started);
-    } catch (error: unknown) {
-      if (this.activeTurn !== createdActiveTurn) {
-        return turnPromise;
-      }
-      if (createdActiveTurn.abortRequested || signal.aborted) {
-        await this.recoverAfterStartingAbort(createdActiveTurn, error);
-      } else if (!this.structuredOutputVerified) {
-        await this.disableAi({
-          cause: error,
-          turnFailure: { kind: "provided", error },
-          diagnosticDisposition: { kind: "propagate_unrecorded" },
-        });
-      } else {
-        this.recordDiagnosticLocally("turn_error", error);
-        this.finishTurn(
-          createdActiveTurn,
-          createUnrecordedSessionFailure(error),
-        );
-      }
-      return turnPromise;
-    }
-    if (this.activeTurn !== createdActiveTurn) {
-      return turnPromise;
-    }
-    if (createdActiveTurn.abortRequested || signal.aborted) {
-      await this.recoverAfterStartingAbort(
-        createdActiveTurn,
-        new CodexSessionAbortedError(),
-      );
-      return turnPromise;
-    }
-    const runningTurn: ActiveTurnRunning = {
-      phase: "running",
-      threadId: currentThreadId,
-      turnId: started.turn.id,
-      resolve: createdActiveTurn.resolve,
-      reject: createdActiveTurn.reject,
-      signal: createdActiveTurn.signal,
-      abortListener: createdActiveTurn.abortListener,
-      connection,
-      abortRequested: createdActiveTurn.abortRequested,
-      interruptSent: false,
-      finalItem: undefined,
-      completion: undefined,
-    };
-    this.activeTurn = runningTurn;
-    if (runningTurn.abortRequested) {
-      void this.interruptAfterAbort(runningTurn);
-    }
-    this.processBufferedNotifications(runningTurn, createdActiveTurn.bufferedNotifications);
-    this.completeTurnIfReady(runningTurn);
-    return turnPromise;
+    return this.turnCoordinator.startTurnWithPreparation(prepareInput, signal);
   }
 
-  private async recoverAfterStartingAbort(
-    active: ActiveTurnStarting,
-    cause: unknown,
-  ): Promise<void> {
-    if (this.activeTurn !== active) {
-      return;
-    }
-    const abortedError = new CodexSessionAbortedError();
-    const lifecycleSignal = this.lifecycleSignal;
-    if (lifecycleSignal == null || lifecycleSignal.aborted) {
-      await this.disableAi({
-        cause,
-        turnFailure: { kind: "provided", error: abortedError },
-        diagnosticDisposition: { kind: "record" },
-      });
-      return;
-    }
-    this.state = "restarting";
-    const cleanupErrors = await this.cleanupConnection();
-    if (cleanupErrors.length > 0) {
-      await this.disableAi(
-        {
-          cause: new CodexSessionError(
-            "Codex接続を安全に停止できませんでした。",
-            new AggregateError(cleanupErrors),
-          ),
-          turnFailure: { kind: "provided", error: abortedError },
-          diagnosticDisposition: { kind: "record" },
-        },
-      );
-      return;
-    }
-    if (this.activeTurn !== active || this.state !== "restarting") {
-      return;
-    }
-    const recoveryController = new AbortController();
-    this.recoveryAbortController = recoveryController;
-    const lifecycleAbortListener = (): void => {
-      recoveryController.abort();
-    };
-    lifecycleSignal.addEventListener("abort", lifecycleAbortListener, { once: true });
-    try {
-      await this.connectAndStartThread(recoveryController.signal);
-      if (recoveryController.signal.aborted) {
-        throw new CodexSessionAbortedError();
-      }
-      this.state = "ready";
-      this.finishTurn(active, abortedError);
-    } catch (error: unknown) {
-      await this.disableAi({
-        cause: error,
-        turnFailure: { kind: "provided", error: abortedError },
-        diagnosticDisposition: { kind: "record" },
-      });
-    } finally {
-      if (this.recoveryAbortController === recoveryController) {
-        this.recoveryAbortController = undefined;
-      }
-      lifecycleSignal.removeEventListener("abort", lifecycleAbortListener);
-    }
-  }
-
-  private async interruptAfterAbort(active: ActiveTurnRunning): Promise<void> {
-    if (this.activeTurn !== active || active.interruptSent) {
-      return;
-    }
-    active.interruptSent = true;
-    const controller = new AbortController();
-    const params = turnInterruptParamsSchema.parse({
-      threadId: active.threadId,
-      turnId: active.turnId,
-    });
-    try {
-      const result = await active.connection.interruptTurn(params, controller.signal);
-      turnInterruptResultSchema.parse(result);
-    } catch (error: unknown) {
-      this.recordDiagnosticAndNotify("turn_error", error);
-      await this.disableAiAfterReportedTurnError(
-        error,
-        new CodexSessionAbortedError(),
-      );
-    }
+  private async recoverAfterStartingAbort(active: ActiveTurnStarting, cause: unknown): Promise<void> {
+    await this.connectionRecovery.recoverAfterStartingAbort(active, cause);
   }
 
   /** 実行中のCodexターンを中断します。 */
   public async interrupt(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    const current = this.activeTurn;
-    if (
-      this.state !== "turning"
-      || current == null
-      || current.phase !== "running"
-    ) {
-      throw new CodexSessionStateError();
-    }
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    const params = turnInterruptParamsSchema.parse({
-      threadId: current.threadId,
-      turnId: current.turnId,
-    });
-    const result = await current.connection.interruptTurn(params, signal);
-    turnInterruptResultSchema.parse(result);
+    await this.turnCoordinator.interrupt(signal);
   }
 
   /** CodexのagentMessage差分を購読します。 */
   public onDelta(listener: CodexSessionDeltaListener): () => void {
-    if (typeof listener !== "function") {
-      throw new TypeError("差分購読関数が必要です。");
-    }
-    this.deltaListeners.add(listener);
-    return () => {
-      this.deltaListeners.delete(listener);
-    };
+    return this.turnCoordinator.onDelta(listener);
   }
 
   /** セッションの状態を取得します。 */
@@ -1765,7 +590,7 @@ export class CodexSessionService {
 
   /** ターン中にtaskctlへ返すスナップショットを固定します。 */
   public freezeTaskctlSnapshot(snapshot: TaskctlSnapshot): void {
-    if (this.activeTurn == null) {
+    if (this.turnCoordinator.activeTurn == null) {
       throw new CodexSessionStateError();
     }
     this.frozenTaskctlSnapshot = taskctlSnapshotSchema.parse(snapshot);
@@ -1807,9 +632,9 @@ export class CodexSessionService {
     this.lifecycleAbortListener = undefined;
     this.recoveryAbortController?.abort();
     this.recoveryAbortController = undefined;
-    const active = this.activeTurn;
+    const active = this.turnCoordinator.activeTurn;
     if (active != null) {
-      this.finishTurn(active, new CodexSessionAbortedError());
+      this.turnCoordinator.finishTurn(active, new CodexSessionAbortedError());
     }
     const errors = await this.cleanupResources();
     if (errors.length > 0) {
@@ -1833,197 +658,66 @@ export class CodexSessionService {
   }
 
   private async connectWithInitialRetry(signal: AbortSignal): Promise<void> {
-    this.assertSafetyIntact();
-    try {
-      await this.connectAndStartThread(signal);
-      this.assertSafetyIntact();
-    } catch (error: unknown) {
-      if (this.safetyViolation) {
-        throw createSafetyViolationError(error);
-      }
-      if (!(error instanceof CodexProcessExitError) || this.restartCount > 0 || signal.aborted) {
-        throw error;
-      }
-      this.restartCount += 1;
-      this.recordDiagnosticLocally("restart_started", error);
-      const cleanupErrors = await this.cleanupConnection();
-      try {
-        await this.connectAndStartThread(signal);
-        this.assertSafetyIntact();
-        for (const cleanupError of cleanupErrors) {
-          this.recordDiagnosticAndNotify("connection_stop_error", cleanupError);
-        }
-        this.recordDiagnosticLocally("restart_completed", error);
-      } catch (retryError: unknown) {
-        if (cleanupErrors.length === 0) {
-          throw retryError;
-        }
-        throw new AggregateError(
-          [retryError, ...cleanupErrors],
-          "Codex接続の再起動と後処理に失敗しました。",
-          { cause: retryError },
-        );
-      }
-    }
+    await this.connectionRecovery.connectWithInitialRetry(signal);
   }
 
   private async connectAndStartThread(signal: AbortSignal): Promise<void> {
-    this.assertSafetyIntact();
-    try {
-      const expectedCodexHomePath = codexHomePathSchema.parse(
-        this.options.expectedCodexHomePathProvider(),
-      );
-      const taskctlStartResult = this.taskctlStartResult;
-      if (taskctlStartResult == null) {
-        throw new CodexSessionStateError();
-      }
-      const configOverrides = this.createConnectionOverrides(
-        expectedCodexHomePath,
-        taskctlStartResult,
-      );
-      const candidate = await Promise.resolve(this.options.connectionFactory(configOverrides));
-      if (!isConnectionShape(candidate)) {
-        throw new CodexSessionCapabilityError("Codex接続ファクトリが不正な接続を返しました。");
-      }
-      this.structuredOutputVerified = false;
-      this.connection = candidate;
-      this.removeNotificationListener = candidate.onNotification((notification) => {
-        this.receiveNotification(notification);
-      });
-      this.removeDiagnosticListener = candidate.onDiagnostic((diagnostic) => {
-        this.receiveDiagnostic(diagnostic);
-      });
-      this.removeDynamicToolListener = candidate.onDynamicToolCall(
-        (params, toolSignal) => this.handleDynamicTool(params, toolSignal),
-      );
-      await candidate.start(signal);
-      this.assertSafetyIntact();
-      const expectedCodexHomeRealPath = resolveVerifiedConfigurationDirectory(
-        expectedCodexHomePath,
-        "期待するCodex認証領域",
-      );
-      const initializedCodexHomePath = resolveExistingDirectory(
-        candidate.getCodexHome(),
-        "Codex認証領域",
-      );
-      if (initializedCodexHomePath !== expectedCodexHomeRealPath) {
-        throw new CodexSessionCapabilityError(
-          "Codex認証領域が期待するパスと一致しません。",
-        );
-      }
-      this.connectionConfigurationChanged = false;
-      const accountInspection = await this.inspectAccount(candidate, signal);
-      if (accountInspection.kind !== "authenticated") {
-        throw new CodexSessionAuthenticationError();
-      }
-      this.assertSafetyIntact();
-      await this.inspectModel(candidate, signal);
-      this.assertSafetyIntact();
-      await this.inspectSkills(candidate, signal);
-      this.assertSafetyIntact();
-      if (process.platform !== "win32") {
-        await this.inspectPermissionProfile(candidate, signal);
-      }
-      this.assertSafetyIntact();
-      await this.startThreadOnCurrentConnection(signal);
-      this.assertSafetyIntact();
-    } catch (error: unknown) {
-      if (error instanceof CodexSessionAuthenticationError && !this.safetyViolation) {
-        this.state = "authentication_required";
-        throw error;
-      }
-      const cleanupErrors = await this.cleanupConnection();
-      if (this.safetyViolation) {
-        throw new AggregateError(
-          [createSafetyViolationError(error), ...cleanupErrors],
-          "Codex接続の安全性検証と後処理に失敗しました。",
-          { cause: error },
-        );
-      }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          "Codex接続の開始と後処理に失敗しました。",
-          { cause: error },
-        );
-      }
-      throw error;
-    }
+    await connectAndStartCodexSession({
+      expectedCodexHomePathProvider: this.options.expectedCodexHomePathProvider,
+      hasTaskctlStartResult: () => this.taskctlStartResult != null,
+      createConnectionOverrides: (expectedCodexHomePath) => {
+        const taskctlStartResult = this.taskctlStartResult;
+        if (taskctlStartResult == null) {
+          throw new CodexSessionStateError();
+        }
+        return createCodexSessionConnectionOverrides(expectedCodexHomePath, {
+          codexExecutablePath: this.options.codexExecutablePath,
+          workspacePath: this.options.workspacePath,
+          tmpDirectoryPath: this.options.tmpDirectoryPath,
+          readOnlyVaultPaths: this.readOnlyVaultPaths,
+          additionalLocalSocketPaths: this.additionalLocalSocketPaths,
+          validateTaskctlLocalIpc: (tmpDirectoryPath) => validateTaskctlLocalIpc(taskctlStartResult, tmpDirectoryPath),
+        });
+      },
+      connectionFactory: this.options.connectionFactory,
+      clearStructuredOutputVerified: () => { this.structuredOutputVerified = false; },
+      setConnection: (connection) => { this.connection = connection; },
+      setRemoveNotificationListener: (remove) => { this.removeNotificationListener = remove; },
+      setRemoveDiagnosticListener: (remove) => { this.removeDiagnosticListener = remove; },
+      setRemoveDynamicToolListener: (remove) => { this.removeDynamicToolListener = remove; },
+      receiveNotification: (notification) => this.receiveNotification(notification),
+      receiveDiagnostic: (diagnostic) => this.receiveDiagnostic(diagnostic),
+      handleDynamicTool: (params, toolSignal) => this.handleDynamicTool(params, toolSignal),
+      clearConnectionConfigurationChanged: () => { this.connectionConfigurationChanged = false; },
+      inspectAccount: (connection, inspectionSignal) => this.inspectAccount(connection, inspectionSignal),
+      inspectModel: (connection, inspectionSignal) => this.inspectModel(connection, inspectionSignal),
+      inspectSkills: (connection, inspectionSignal) => this.inspectSkills(connection, inspectionSignal),
+      inspectPermissionProfile: (connection, inspectionSignal) => this.inspectPermissionProfile(connection, inspectionSignal),
+      startThreadOnCurrentConnection: (threadSignal) => this.startThreadOnCurrentConnection(threadSignal),
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+      isSafetyViolation: () => this.safetyViolation,
+      setAuthenticationRequired: () => { this.state = "authentication_required"; },
+      cleanupConnection: () => this.cleanupConnection(),
+      createSafetyViolationError,
+    }, signal);
   }
 
   private async restartConnectionForConfigurationChange(signal: AbortSignal): Promise<void> {
-    const cleanupErrors = await this.cleanupConnection();
-    if (cleanupErrors.length > 0) {
-      throw new CodexSessionError(
-        "Codex接続を安全に停止できませんでした。",
-        new AggregateError(cleanupErrors),
-      );
-    }
-    await this.connectAndStartThread(signal);
+    await this.connectionRecovery.restartConnectionForConfigurationChange(signal);
   }
 
   private async inspectAccount(
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<AccountInspectionResult> {
-    const params = accountReadParamsSchema.parse({ refreshToken: false });
-    const result = accountReadResultSchema.parse(await connection.readAccount(params, signal));
-    if (result.account != null && result.account.type !== "chatgpt") {
-      return { kind: "wrong_account_type" };
-    }
-    if (result.account == null) {
-      return { kind: "authentication_pending" };
-    }
-    return { kind: "authenticated" };
+    return inspectCodexAccount(connection, signal);
   }
 
   private async inspectAccountWithRetry(
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<AccountInspectionResult> {
-    let inspection = await this.inspectAccount(connection, signal);
-    for (const delayMilliseconds of accountReadRetryDelaysMilliseconds) {
-      if (inspection.kind !== "authentication_pending") {
-        return inspection;
-      }
-      await this.waitForAccountReadRetry(delayMilliseconds, signal);
-      this.assertSafetyIntact();
-      inspection = await this.inspectAccount(connection, signal);
-    }
-    return inspection;
-  }
-
-  private waitForAccountReadRetry(
-    delayMilliseconds: number,
-    signal: AbortSignal,
-  ): Promise<void> {
-    if (signal.aborted) {
-      throw new CodexSessionAbortedError();
-    }
-    return new Promise<void>((resolvePromise, rejectPromise) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolvePromise();
-      }, delayMilliseconds);
-      const onAbort = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", onAbort);
-        rejectPromise(new CodexSessionAbortedError());
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-      }
-    });
+    return inspectCodexAccountWithRetry(connection, signal, () => this.assertSafetyIntact());
   }
 
   private async inspectModel(
@@ -2031,104 +725,14 @@ export class CodexSessionService {
     signal: AbortSignal,
   ): Promise<void> {
     this.selectedModel = undefined;
-    const models: ModelListResult["data"] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
-    for (;;) {
-      const params = modelListParamsSchema.parse(
-        cursor == null
-          ? { limit: 1_000, includeHidden: false }
-          : { limit: 1_000, includeHidden: false, cursor },
-      );
-      const result = modelListResultSchema.parse(
-        await connection.listModels(params, signal),
-      );
-      models.push(...result.data);
-      if (models.length > maximumModelRecords) {
-        throw new CodexSessionCapabilityError("Codexモデル一覧が上限を超えています。");
-      }
-      const nextCursor = result.nextCursor;
-      if (nextCursor == null) {
-        break;
-      }
-      if (seenCursors.has(nextCursor)) {
-        throw new CodexSessionCapabilityError("Codexモデル一覧のページングが進みません。");
-      }
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
-    }
-    const modelIds = new Set<string>();
-    for (const model of models) {
-      if (modelIds.has(model.id)) {
-        throw new CodexSessionCapabilityError("Codexモデル一覧に重複したモデルがあります。");
-      }
-      modelIds.add(model.id);
-    }
-    const defaults = models.filter(
-      (model) => model.hidden !== true && model.isDefault === true,
-    );
-    if (defaults.length !== 1) {
-      throw new CodexSessionCapabilityError("利用可能な既定Codexモデルを一つに確定できません。");
-    }
-    const selected = defaults[0];
-    if (selected == null) {
-      throw new CodexSessionCapabilityError("利用可能な既定Codexモデルを取得できません。");
-    }
-    this.selectedModel = selected.id;
+    this.selectedModel = await inspectCodexModel(connection, signal);
   }
 
   private async inspectSkills(
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<void> {
-    const params = skillsListParamsSchema.parse({
-      cwds: [this.options.workspacePath],
-      forceReload: true,
-    });
-    const result = skillsListResultSchema.parse(await connection.listSkills(params, signal));
-    const workspace = result.data.find((entry) => entry.cwd === this.options.workspacePath);
-    if (workspace == null) {
-      throw new CodexSessionCapabilityError("専用ワークスペースのスキル一覧を取得できません。");
-    }
-
-    const seenNames = new Set<string>();
-    const seenPaths = new Set<string>();
-    const configuration = workspace.skills.map((skill) => {
-      if (seenNames.has(skill.name) || seenPaths.has(skill.path)) {
-        throw new CodexSessionCapabilityError("Codexスキル一覧に重複した項目があります。");
-      }
-      seenNames.add(skill.name);
-      seenPaths.add(skill.path);
-      const required = requiredSkillNames.has(skill.name);
-      const expectedPath = join(
-        this.options.workspacePath,
-        ".agents",
-        "skills",
-        skill.name,
-        "SKILL.md",
-      );
-      const allowed = required && skill.path === expectedPath;
-      if (required && !allowed) {
-        throw new CodexSessionCapabilityError("必要なCodexスキルを利用できません。");
-      }
-      return { path: skill.path, enabled: allowed };
-    });
-    for (const requiredSkillName of requiredSkillNames) {
-      const expectedPath = join(
-        this.options.workspacePath,
-        ".agents",
-        "skills",
-        requiredSkillName,
-        "SKILL.md",
-      );
-      const requiredSkill = workspace.skills.find(
-        (skill) => skill.name === requiredSkillName && skill.path === expectedPath,
-      );
-      if (requiredSkill == null || requiredSkill.enabled !== true) {
-        throw new CodexSessionCapabilityError("必要なCodexスキルを利用できません。");
-      }
-    }
-    this.skillConfiguration = configuration.sort((left, right) => compareStrings(left.path, right.path));
+    this.skillConfiguration = await inspectCodexSkills(connection, signal, this.options.workspacePath);
     this.threadConfigurationChanged = false;
   }
 
@@ -2136,482 +740,54 @@ export class CodexSessionService {
     connection: CodexSessionConnection,
     signal: AbortSignal,
   ): Promise<void> {
-    if (process.platform === "win32") {
-      throw new CodexSessionCapabilityError(
-        "WindowsではTaskHub用権限プロファイルを検査できません。",
-      );
-    }
-    const params = permissionProfileListParamsSchema.parse({
-      cwd: this.options.workspacePath,
-      limit: 1_000,
-    });
-    const result: PermissionProfileListResult = permissionProfileListResultSchema.parse(
-      await connection.listPermissionProfiles(params, signal),
-    );
-    if (result.nextCursor != null) {
-      throw new CodexSessionCapabilityError("権限プロファイル一覧を全件確認できません。");
-    }
-    const selected = result.data.find((profile) => profile.id === permissionProfileId);
-    if (selected == null || selected.allowed !== true) {
-      throw new CodexSessionCapabilityError("TaskHub用権限プロファイルが許可されていません。");
-    }
-  }
-
-  private createConnectionOverrides(
-    expectedCodexHomePath: string,
-    taskctlStartResult: TaskctlBrokerStartResult,
-  ): CodexConnectionOptions["configOverrides"] {
-    const codexHomePath = resolveCodexHomeCandidate(expectedCodexHomePath);
-    const realWorkspacePath = resolveVerifiedConfigurationDirectory(
-      this.options.workspacePath,
-      "Codex専用ワークスペース",
-    );
-    const realTmpDirectoryPath = resolveVerifiedConfigurationDirectory(
-      this.options.tmpDirectoryPath,
-      "Codex専用ワークスペースのtmp",
-    );
-    if (
-      isPathWithin(realWorkspacePath, codexHomePath)
-      || isPathWithin(codexHomePath, realWorkspacePath)
-    ) {
-      throw new CodexSessionCapabilityError("Codex認証領域と専用ワークスペースの範囲が重なっています。");
-    }
-    if (process.platform === "win32") {
-      validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
-      validateAdditionalLocalSocketPaths(
-        this.additionalLocalSocketPaths,
-        realTmpDirectoryPath,
-      );
-      return createTaskHubConnectionFeatureOverrides();
-    }
-    const socketPath = validateTaskctlLocalIpc(taskctlStartResult, realTmpDirectoryPath);
-    const additionalSocketPaths = validateAdditionalLocalSocketPaths(
-      this.additionalLocalSocketPaths,
-      realTmpDirectoryPath,
-    );
-    const unixSocketPaths = [socketPath, ...additionalSocketPaths];
-    if (new Set(unixSocketPaths).size !== unixSocketPaths.length) {
-      throw new CodexSessionCapabilityError("同じローカルIPCを重複して指定できません。");
-    }
-    const verifiedVaultPaths = this.readOnlyVaultPaths.map(resolveVerifiedReadOnlyDirectory);
-    if (new Set(verifiedVaultPaths).size !== verifiedVaultPaths.length) {
-      throw new CodexSessionCapabilityError("同じVaultの実体パスを重複して指定できません。");
-    }
-    for (const vaultPath of verifiedVaultPaths) {
-      if (
-        isPathWithin(vaultPath, codexHomePath)
-        || isPathWithin(codexHomePath, vaultPath)
-      ) {
-        throw new CodexSessionCapabilityError("Codex認証領域とVaultの範囲が重なっています。");
-      }
-      if (
-        isPathWithin(vaultPath, realWorkspacePath)
-        || isPathWithin(realWorkspacePath, vaultPath)
-      ) {
-        throw new CodexSessionCapabilityError("Codex専用ワークスペースとVaultの範囲が重なっています。");
-      }
-    }
-    return createTaskHubConnectionOverridesFromVerifiedPaths({
-      codexExecutablePath: this.options.codexExecutablePath,
-      workspacePath: realWorkspacePath,
-      codexHomePath,
-      readOnlyVaultPaths: verifiedVaultPaths,
-      unixSocketPaths,
-    });
-  }
-
-  private createThreadConfiguration(): Record<string, unknown> {
-    return {
-      ...(process.platform === "win32" ? {} : { default_permissions: permissionProfileId }),
-      features: { apps: false, plugins: false },
-      web_search: "disabled",
-      tools: { web_search: false },
-      skills: { config: this.skillConfiguration },
-    };
+    await inspectCodexPermissionProfile(connection, signal, this.options.workspacePath);
   }
 
   private async startThreadOnCurrentConnection(signal: AbortSignal): Promise<void> {
-    const connection = this.connection;
-    if (connection == null) {
-      throw new CodexSessionStateError();
-    }
-    if (this.threadConfigurationChanged) {
-      throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
-    }
-    const expectedModel = this.requireSelectedModel();
-    const config = this.createThreadConfiguration();
-    const params = {
-      model: expectedModel,
-      cwd: this.options.workspacePath,
-      approvalPolicy: "never",
-      ...(process.platform === "win32" ? { sandbox: "workspace-write" } : {}),
-      config,
+    await startCodexSessionThread({
+      connection: this.connection,
+      requireSelectedModel: () => this.requireSelectedModel(),
+      workspacePath: this.options.workspacePath,
+      agentsFilePath: this.options.agentsFilePath,
+      tmpDirectoryPath: this.options.tmpDirectoryPath,
+      skillConfiguration: this.skillConfiguration,
       dynamicTools: [taskctlDynamicToolSpec, obsidianDynamicToolSpec, proposalWorkspaceToolSpec],
-    };
-    const validatedParams = threadStartParamsSchema.parse(params);
-    this.threadSettingsNotification = undefined;
-    const result = threadStartResultSchema.parse(
-      await connection.startThread(validatedParams, signal),
-    );
-    if (result.model !== expectedModel) {
-      throw new CodexThreadStartCapabilityError("model_mismatch");
-    }
-    if (result.cwd !== this.options.workspacePath) {
-      throw new CodexThreadStartCapabilityError("cwd_mismatch");
-    }
-    if (result.approvalPolicy !== "never") {
-      throw new CodexThreadStartCapabilityError("approval_policy_mismatch");
-    }
-    if (!result.instructionSources.includes(this.options.agentsFilePath)) {
-      throw new CodexThreadStartCapabilityError("instruction_source_missing");
-    }
-    if (result.instructionSources.some((source) => source !== this.options.agentsFilePath)) {
-      throw new CodexThreadStartCapabilityError("instruction_source_unexpected");
-    }
-    const sandboxValidation = validateSandboxPolicy(
-      result.sandbox,
-      this.options.tmpDirectoryPath,
-    );
-    if (sandboxValidation.kind !== "valid") {
-      throw new CodexThreadStartCapabilityError(sandboxValidation.failureCode);
-    }
-    this.threadId = result.thread.id;
-    this.validateStoredThreadSettingsNotification(result.thread.id);
-    this.assertSafetyIntact();
-    if (this.threadConfigurationChanged) {
-      throw new CodexSessionCapabilityError("Codexスレッド構成が変更されたためAIを開始できません。");
-    }
-    this.assertSafetyIntact();
+      isThreadConfigurationChanged: () => this.threadConfigurationChanged,
+      clearThreadSettingsNotification: () => { this.threadSettingsNotification = undefined; },
+      setThreadId: (threadId) => { this.threadId = threadId; },
+      validateStoredThreadSettingsNotification: (threadId) => this.validateStoredThreadSettingsNotification(threadId),
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+    }, signal);
   }
 
   private async handleDynamicTool(
     params: DynamicToolCallParams,
     signal: AbortSignal,
   ): Promise<DynamicToolCallResponse> {
-    if (params.tool === taskctlDynamicToolName) {
-      return this.handleTaskctlDynamicTool(params, signal);
-    }
-    if (params.tool === obsidianDynamicToolName) {
-      return this.handleObsidianDynamicTool(params, signal);
-    }
     if (params.tool === proposalWorkspaceToolName) {
       return this.handleProposalWorkspaceTool(params, signal);
     }
-    throw new CodexSessionError("dynamic toolの名前が不正です。");
+    return this.dynamicToolHandler.handleDynamicTool(params, signal);
   }
 
-  private handleProposalWorkspaceTool(
-    params: DynamicToolCallParams,
-    signal: AbortSignal,
-  ): DynamicToolCallResponse {
-    validateAbortSignal(signal);
-    if (params.namespace != null || params.tool !== proposalWorkspaceToolName) {
-      throw new CodexSessionError("AI変更案ワークスペースのdynamic tool名が不正です。");
-    }
-    const activeTurn = this.activeTurn;
-    const activeWorkspace = this.activeProposalWorkspace;
-    if (activeTurn == null || activeTurn.phase !== "running" || activeWorkspace == null) {
-      throw new CodexSessionStateError();
-    }
-    if (
-      params.threadId !== activeTurn.threadId
-      || params.turnId !== activeTurn.turnId
-      || params.threadId !== this.threadId
-    ) {
-      throw new CodexSessionError("AI変更案ワークスペースのターンが不正です。");
-    }
-    if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
-      throw new TaskctlAbortError();
-    }
-    const serializedArguments = JSON.stringify(params.arguments);
-    if (
-      serializedArguments == null
-      || Buffer.byteLength(serializedArguments, "utf8") > maximumProposalWorkspaceArgumentBytes
-    ) {
-      return serializeProposalWorkspaceToolResponse({
-        ok: false,
-        error: { code: "argument_too_large", message: "引数が128 KiBの上限を超えています。" },
-      }, false);
-    }
-    const parsed = proposalWorkspaceToolInputSchema.safeParse(params.arguments);
-    if (!parsed.success) {
-      return serializeProposalWorkspaceInvalidRequest(parsed.error);
-    }
-    if (parsed.data.workspace_id !== activeWorkspace.workspace.workspaceId) {
-      throw new CodexSessionError("今回のターン以外のAI変更案ワークスペースは操作できません。");
-    }
-    const { workspace, validate } = activeWorkspace;
-    let response: DynamicToolCallResponse;
-    switch (parsed.data.action) {
-      case "read":
-        response = serializeProposalWorkspaceToolResponse(workspace.read({
-          workspace_id: parsed.data.workspace_id,
-          revision: parsed.data.revision,
-          target: parsed.data.target,
-          ...(parsed.data.offset == null ? {} : { offset: parsed.data.offset }),
-        }), true);
-        break;
-      case "diff":
-        response = serializeProposalWorkspaceToolResponse(workspace.diff({
-          workspace_id: parsed.data.workspace_id,
-          from_revision: parsed.data.from_revision,
-          revision: parsed.data.revision,
-          ...(parsed.data.offset == null ? {} : { offset: parsed.data.offset }),
-        }), true);
-        break;
-      case "edit": {
-        const status = workspace.applyBatch({
-          workspace_id: parsed.data.workspace_id,
-          edit_batch_id: parsed.data.edit_batch_id,
-          expected_revision: parsed.data.expected_revision,
-          edits: parsed.data.edits,
-        });
-        response = serializeProposalWorkspaceIssuesResponse({
-          workspace_id: status.workspace_id,
-          baseline_snapshot_hash: status.baseline_snapshot_hash,
-          revision: status.revision,
-          state: status.state,
-          completion: status.completion,
-        }, status.issues, 0, true);
-        break;
-      }
-      case "validate": {
-        const status = workspace.getStatus();
-        if (status.revision !== parsed.data.expected_revision) {
-          throw new CodexSessionError("AI変更案ワークスペースの改訂番号が一致しません。");
-        }
-        const validation = status.completion === "structurally_complete"
-          ? validate(readProposalWorkspaceDraft(workspace))
-          : { kind: "invalid" as const, issues: status.issues };
-        const offset = parsed.data.offset ?? 0;
-        response = validation.kind === "valid"
-          ? serializeProposalWorkspaceToolResponse({
-            workspace_id: status.workspace_id,
-            revision: status.revision,
-            valid: true,
-          }, true)
-          : serializeProposalWorkspaceIssuesResponse({
-            workspace_id: status.workspace_id,
-            revision: status.revision,
-            valid: false,
-          }, validation.issues, offset, false);
-        break;
-      }
-      case "submit": {
-        const submitted = workspace.submit({
-          workspace_id: parsed.data.workspace_id,
-          expected_revision: parsed.data.expected_revision,
-        }, validate);
-        response = submitted.kind === "submitted"
-          ? serializeProposalWorkspaceToolResponse({
-            kind: "submitted",
-            workspace_id: workspace.workspaceId,
-            revision: submitted.revision,
-          }, true)
-          : serializeProposalWorkspaceIssuesResponse({
-            kind: "invalid",
-            workspace_id: workspace.workspaceId,
-            revision: submitted.revision,
-          }, submitted.issues, 0, false);
-        break;
-      }
-    }
-    if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
-      throw new TaskctlAbortError();
-    }
-    return response;
-  }
-
-  private async handleTaskctlDynamicTool(
-    params: DynamicToolCallParams,
-    signal: AbortSignal,
-  ): Promise<DynamicToolCallResponse> {
-    validateAbortSignal(signal);
-    if (signal.aborted) {
-      throw new TaskctlAbortError();
-    }
-    if (params.namespace != null) {
-      throw new CodexSessionError("taskctl dynamic toolのnamespaceが不正です。");
-    }
-    if (params.tool !== taskctlDynamicToolName) {
-      throw new CodexSessionError("taskctl dynamic toolの名前が不正です。");
-    }
-    const activeTurn = this.activeTurn;
-    if (activeTurn == null || activeTurn.phase !== "running") {
-      throw new CodexSessionStateError();
-    }
-    if (params.threadId !== activeTurn.threadId || params.turnId !== activeTurn.turnId) {
-      throw new CodexSessionError("taskctl dynamic toolのターンが不正です。");
-    }
-    const currentThreadId = this.threadId;
-    if (currentThreadId == null || params.threadId !== currentThreadId) {
-      throw new CodexSessionError("taskctl dynamic toolのスレッドが不正です。");
-    }
-    const assertNotAborted = (): void => {
-      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
-        throw new TaskctlAbortError();
-      }
-    };
-    assertNotAborted();
-    const response = await this.broker.executeQuery(params.arguments);
-    assertNotAborted();
-    return serializeDynamicToolResponse(response);
-  }
-
-  private async handleObsidianDynamicTool(
-    params: DynamicToolCallParams,
-    signal: AbortSignal,
-  ): Promise<DynamicToolCallResponse> {
-    validateAbortSignal(signal);
-    if (signal.aborted) {
-      throw new TaskctlAbortError();
-    }
-    if (params.namespace != null) {
-      throw new CodexSessionError("obsidian dynamic toolのnamespaceが不正です。");
-    }
-    if (params.tool !== obsidianDynamicToolName) {
-      throw new CodexSessionError("obsidian dynamic toolの名前が不正です。");
-    }
-    const activeTurn = this.activeTurn;
-    if (activeTurn == null || activeTurn.phase !== "running") {
-      throw new CodexSessionStateError();
-    }
-    if (params.threadId !== activeTurn.threadId || params.turnId !== activeTurn.turnId) {
-      throw new CodexSessionError("obsidian dynamic toolのターンが不正です。");
-    }
-    const currentThreadId = this.threadId;
-    if (currentThreadId == null || params.threadId !== currentThreadId) {
-      throw new CodexSessionError("obsidian dynamic toolのスレッドが不正です。");
-    }
-    const assertNotAborted = (): void => {
-      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
-        throw new TaskctlAbortError();
-      }
-    };
-    assertNotAborted();
-    const parsed = codexObsidianQuerySchema.safeParse(params.arguments);
-    if (!parsed.success) {
-      assertNotAborted();
-      return serializeObsidianDynamicToolResponse({
-        ok: false,
-        error: {
-          code: "invalid_request",
-          message: "Obsidian要求の形式が不正です。",
-        },
-      });
-    }
-    const operationController = new AbortController();
-    const abortOperation = (source: AbortSignal): void => {
-      operationController.abort(source.reason);
-    };
-    const onToolAbort = (): void => {
-      abortOperation(signal);
-    };
-    const onTurnAbort = (): void => {
-      abortOperation(activeTurn.signal);
-    };
-    signal.addEventListener("abort", onToolAbort, { once: true });
-    activeTurn.signal.addEventListener("abort", onTurnAbort, { once: true });
-    if (signal.aborted) {
-      onToolAbort();
-    }
-    if (activeTurn.signal.aborted || activeTurn.abortRequested) {
-      onTurnAbort();
-    }
-    try {
-      const response = await this.executeObsidianQuery(
-        parsed.data,
-        operationController.signal,
-      );
-      assertNotAborted();
-      return serializeObsidianDynamicToolResponse(response);
-    } catch (error: unknown) {
-      if (signal.aborted || activeTurn.signal.aborted || activeTurn.abortRequested) {
-        assertNotAborted();
-      }
-      if (!(error instanceof ObsidianReadError)) {
-        throw error;
-      }
-      assertNotAborted();
-      return serializeObsidianDynamicToolResponse({
-        ok: false,
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      });
-    } finally {
-      signal.removeEventListener("abort", onToolAbort);
-      activeTurn.signal.removeEventListener("abort", onTurnAbort);
-    }
+  private handleProposalWorkspaceTool(params: DynamicToolCallParams, signal: AbortSignal): DynamicToolCallResponse {
+    return handleCodexProposalWorkspaceTool(params, signal, {
+      inputSchema: proposalWorkspaceToolInputSchema,
+      getActiveTurn: () => this.turnCoordinator.activeTurn,
+      getActiveWorkspace: () => this.activeProposalWorkspace,
+      getThreadId: () => this.threadId,
+      responseSerializer: this.responseSerializer,
+      maximumArgumentBytes: maximumProposalWorkspaceArgumentBytes,
+      readDraft: (workspace) => readProposalWorkspaceDraft(workspace, proposalSchema),
+      createAbortError: () => new TaskctlAbortError(),
+    });
   }
 
   private async executeObsidianQuery(
     query: CodexObsidianQuery,
     signal: AbortSignal,
   ): Promise<CodexObsidianResponse> {
-    switch (query.command) {
-      case "vaults": {
-        const vaultIds = await this.options.obsidianReader.listVaults(signal);
-        return {
-          ok: true,
-          command: "vaults",
-          data: { vault_ids: [...vaultIds] },
-        };
-      }
-      case "list": {
-        const notes = await this.options.obsidianReader.listNotes(query.vault_id, signal);
-        return {
-          ok: true,
-          command: "list",
-          data: { vault_id: query.vault_id, notes: [...notes] },
-        };
-      }
-      case "search": {
-        const notes = await this.options.obsidianReader.searchNotes(
-          query.vault_id,
-          query.query,
-          signal,
-        );
-        return {
-          ok: true,
-          command: "search",
-          data: {
-            vault_id: query.vault_id,
-            query: query.query,
-            notes: [...notes],
-          },
-        };
-      }
-      case "read": {
-        const note = await this.options.obsidianReader.readNote(
-          query.vault_id,
-          query.relative_path,
-          signal,
-        );
-        return {
-          ok: true,
-          command: "read",
-          data: { vault_id: query.vault_id, note },
-        };
-      }
-      case "recent": {
-        const notes = await this.options.obsidianReader.recentNotes(
-          query.vault_id,
-          query.limit,
-          signal,
-        );
-        return {
-          ok: true,
-          command: "recent",
-          data: {
-            vault_id: query.vault_id,
-            limit: query.limit,
-            notes: [...notes],
-          },
-        };
-      }
-    }
+    return executeCodexObsidianQuery(query, signal, this.options.obsidianReader);
   }
 
   private validateStoredThreadSettingsNotification(threadId: string): void {
@@ -2635,25 +811,15 @@ export class CodexSessionService {
   }
 
   private createStartResult(): CodexSessionStartResult {
-    this.assertSafetyIntact();
-    const threadId = this.threadId;
-    const taskctlStartResult = this.taskctlStartResult;
-    if (threadId == null || taskctlStartResult == null) {
-      throw new CodexSessionStateError();
-    }
-    return codexSessionStartResultSchema.parse({
-      state: "ready",
-      threadId,
-      model: this.requireSelectedModel(),
+    return createReadyCodexStartResult({
+      resultSchema: codexSessionStartResultSchema,
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+      taskctlStartResult: this.taskctlStartResult,
       workspacePath: this.options.workspacePath,
       agentsFilePath: this.options.agentsFilePath,
-      taskctlConnectionInfoPath: taskctlStartResult.connectionInfoPath,
-      capabilities: {
-        authentication: "chatgpt",
-        structuredOutput: this.structuredOutputVerified ? "verified" : "unverified",
-        instructionSources: true,
-        skills: true,
-      },
+      threadId: this.threadId,
+      requireSelectedModel: () => this.requireSelectedModel(),
+      structuredOutputVerified: this.structuredOutputVerified,
     });
   }
 
@@ -2666,174 +832,25 @@ export class CodexSessionService {
   }
 
   private createAuthenticationRequiredResult(): CodexSessionStartResult {
-    this.assertSafetyIntact();
-    const taskctlStartResult = this.taskctlStartResult;
-    if (taskctlStartResult == null) {
-      throw new CodexSessionStateError();
-    }
-    return codexSessionStartResultSchema.parse({
-      state: "authentication_required",
+    return createAuthenticationRequiredCodexStartResult({
+      resultSchema: codexSessionStartResultSchema,
+      assertSafetyIntact: () => this.assertSafetyIntact(),
+      taskctlStartResult: this.taskctlStartResult,
       workspacePath: this.options.workspacePath,
       agentsFilePath: this.options.agentsFilePath,
-      taskctlConnectionInfoPath: taskctlStartResult.connectionInfoPath,
-      capabilities: {
-        authentication: "required",
-        structuredOutput: "unverified",
-        instructionSources: false,
-        skills: false,
-      },
     });
   }
 
   private receiveNotification(notification: CodexNotification): void {
-    const parsed = codexNotificationSchema.safeParse(notification);
-    if (!parsed.success) {
-      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
-      if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(parsed.error, { kind: "already_recorded" });
-      } else {
-        const active = this.activeTurn;
-        if (active != null) {
-          const turnError = new CodexSessionTurnError(parsed.error);
-          this.finishTurn(
-            active,
-            createRecordedSessionFailure(parsed.error, turnError),
-          );
-        }
-      }
-      return;
-    }
-    try {
-      this.handleNotification(parsed.data);
-    } catch (error: unknown) {
-      this.recordDiagnosticAndNotify("connection_protocol_error", error);
-      if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(error, { kind: "already_recorded" });
-      } else {
-        const active = this.activeTurn;
-        if (active != null) {
-          const turnError = new CodexSessionTurnError(error);
-          this.finishTurn(active, createRecordedSessionFailure(error, turnError));
-        }
-      }
-    }
+    this.notificationRouter.receiveNotification(notification);
   }
 
   private receiveDiagnostic(diagnostic: CodexDiagnostic): void {
-    const parsed = codexDiagnosticSchema.safeParse(diagnostic);
-    if (!parsed.success) {
-      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
-      if (isSafetyCriticalState(this.state)) {
-        this.markSafetyViolation(parsed.error, { kind: "already_recorded" });
-      }
-      return;
-    }
-    this.handleConnectionDiagnostic(parsed.data);
+    this.notificationRouter.receiveDiagnostic(diagnostic);
   }
 
-  private handleConnectionDiagnostic(diagnostic: CodexDiagnostic): void {
-    switch (diagnostic.kind) {
-      case "unknown_notification":
-        this.recordDiagnosticLocally("connection_unknown_notification", undefined);
-        break;
-      case "server_request_rejected":
-        this.recordDiagnosticLocally("connection_server_request_rejected", undefined);
-        break;
-      case "protocol_error":
-        this.recordDiagnosticAndNotify("connection_protocol_error", diagnostic.error);
-        if (isSafetyCriticalState(this.state)) {
-          this.markSafetyViolation(diagnostic.error, { kind: "already_recorded" });
-        }
-        break;
-      case "stderr":
-        this.recordDiagnosticAndNotify("connection_stderr", new Error(diagnostic.line));
-        break;
-      case "listener_error":
-        this.recordDiagnosticAndNotify("connection_listener_error", diagnostic.error);
-        break;
-      case "stop_error":
-        this.recordDiagnosticAndNotify("connection_stop_error", diagnostic.error);
-        break;
-      case "process_exit": {
-        const processExitError = new CodexProcessExitError(diagnostic.exitCode, diagnostic.signal);
-        this.handleProcessExit(processExitError);
-        break;
-      }
-    }
-  }
-
-  private handleProcessExit(
-    processExitError: CodexProcessExitError,
-  ): void {
-    if (
-      !this.successfullyStarted
-      || (
-        this.state !== "ready"
-        && this.state !== "turning"
-        && this.state !== "authentication_required"
-      )
-    ) {
-      return;
-    }
-    this.recordDiagnosticAndNotify("connection_process_exit", processExitError);
-    const active = this.activeTurn;
-    if (active != null) {
-      this.finishTurn(active, createRecordedSessionFailure(processExitError, processExitError));
-    }
-    if (this.restartPromise != null) {
-      return;
-    }
-    if (this.restartCount > 0) {
-      void this.disableAi({
-        cause: processExitError,
-        turnFailure: { kind: "disabled" },
-        diagnosticDisposition: { kind: "already_recorded" },
-      });
-      return;
-    }
-    const signal = this.lifecycleSignal;
-    if (signal == null || signal.aborted) {
-      void this.disableAi({
-        cause: processExitError,
-        turnFailure: { kind: "disabled" },
-        diagnosticDisposition: { kind: "already_recorded" },
-      });
-      return;
-    }
-    this.restartCount += 1;
-    this.restartPromise = this.restartConnection(signal).finally(() => {
-      this.restartPromise = undefined;
-    });
-  }
-
-  private async restartConnection(signal: AbortSignal): Promise<void> {
-    this.assertSafetyIntact();
-    this.state = "restarting";
-    this.recordDiagnosticLocally("restart_started", undefined);
-    const cleanupErrors = await this.cleanupConnection();
-    for (const cleanupError of cleanupErrors) {
-      this.recordDiagnosticAndNotify("connection_stop_error", cleanupError);
-    }
-    try {
-      await this.connectAndStartThread(signal);
-      this.assertSafetyIntact();
-      this.state = "ready";
-      this.recordDiagnosticLocally("restart_completed", undefined);
-    } catch (error: unknown) {
-      if (
-        error instanceof CodexSessionAuthenticationError
-        && this.connection != null
-        && !this.safetyViolation
-      ) {
-        this.state = "authentication_required";
-        return;
-      }
-      await this.disableAi({
-        cause: error,
-        turnFailure: { kind: "disabled" },
-        diagnosticDisposition: { kind: "record" },
-      });
-    }
+  private handleProcessExit(error: CodexProcessExitError): void {
+    this.connectionRecovery.handleProcessExit(error);
   }
 
   private assertSafetyIntact(): void {
@@ -2887,258 +904,17 @@ export class CodexSessionService {
   }
 
   private async disableAiInternal(request: AiDisableRequest): Promise<AiDisableResult> {
-    this.state = "disabled";
-    if (request.diagnosticDisposition.kind === "record") {
-      this.recordDiagnosticAndNotify("ai_disabled", request.cause);
-    } else {
-      this.recordDiagnosticLocally("ai_disabled", request.cause);
-    }
-    const cleanupErrors = await this.cleanupResources();
-    const cleanupDispositions: DiagnosticFailureDisposition[] = cleanupErrors.map(
-      (error): DiagnosticFailureDisposition => {
-        if (request.diagnosticDisposition.kind !== "propagate_unrecorded") {
-          this.recordDiagnosticAndNotify("connection_stop_error", error);
-          return {
-            kind: "recorded_only",
-            recorded_error: error,
-            response_error: error,
-          };
-        }
-        this.recordDiagnosticLocally("connection_stop_error", error);
-        return {
-          kind: "unrecorded_only",
-          unrecorded_error: error,
-          response_error: error,
-        };
-      },
-    );
-    const turnError = request.turnFailure.kind === "provided"
-      ? request.turnFailure.error
-      : new CodexSessionDisabledError(request.cause);
-    const causeDisposition: DiagnosticFailureDisposition = request.diagnosticDisposition.kind === "propagate_unrecorded"
-      ? {
-          kind: "unrecorded_only",
-          unrecorded_error: request.cause,
-          response_error: turnError,
-        }
-      : {
-          kind: "recorded_only",
-          recorded_error: request.cause,
-          response_error: turnError,
-        };
-    const active = this.activeTurn;
-    if (active != null) {
-      this.finishTurn(
-        active,
-        new DiagnosticFailureDispositionError(
-          combineDiagnosticFailureDispositions(
-            causeDisposition,
-            cleanupDispositions,
-          ),
-        ),
-      );
-    }
-    if (cleanupErrors.length > 0) {
-      return { kind: "cleanup_failed", errors: cleanupErrors };
-    }
-    return { kind: "completed" };
-  }
-
-  private handleNotification(notification: CodexNotification): void {
-    if (notification.method === "thread/settings/updated") {
-      const activeProfile = notification.params.threadSettings.activePermissionProfile;
-      const profileId = activeProfile == null ? undefined : activeProfile.id;
-      const profileExtends = activeProfile == null ? undefined : activeProfile.extends;
-      const sandboxValidation = validateSandboxPolicy(
-        notification.params.threadSettings.sandboxPolicy,
-        this.options.tmpDirectoryPath,
-      );
-      const threadSettingsNotification: ThreadSettingsNotification = {
-        threadId: notification.params.threadId,
-        profileId,
-        profileExtends,
-        sandboxValidation,
-      };
-      this.threadSettingsNotification = threadSettingsNotification;
-      const currentThreadId = this.threadId;
-      if (
-        currentThreadId === notification.params.threadId
-        && isSafetyCriticalState(this.state)
-        && !isValidThreadSettingsNotification(threadSettingsNotification)
-      ) {
-        if (sandboxValidation.kind !== "valid") {
-          this.markSafetyViolation(
-            new CodexThreadStartCapabilityError(sandboxValidation.failureCode),
-            { kind: "record" },
-          );
-        } else {
-          this.markSafetyViolation(
-            new CodexSessionCapabilityError("Codexスレッドの権限制約が変更されました。"),
-            { kind: "record" },
-          );
-        }
-      }
-      return;
-    }
-    if (notification.method === "skills/changed") {
-      this.threadConfigurationChanged = true;
-      return;
-    }
-    const active = this.activeTurn;
-    if (active == null) {
-      return;
-    }
-    if (!isTurnNotification(notification)) {
-      return;
-    }
-    const threadId = notificationThreadId(notification);
-    if (threadId !== active.threadId) {
-      return;
-    }
-    if (active.phase === "starting") {
-      if (active.abortRequested) {
-        return;
-      }
-      if (active.bufferedNotifications.length >= maximumBufferedNotifications) {
-        active.abortRequested = true;
-        void this.recoverAfterStartingAbort(active, new CodexSessionTurnError());
-        return;
-      }
-      active.bufferedNotifications.push(notification);
-      return;
-    }
-    if (notificationTurnId(notification) !== active.turnId) {
-      return;
-    }
-    this.handleRunningTurnNotification(active, notification);
-  }
-
-  private processBufferedNotifications(
-    active: ActiveTurnRunning,
-    notifications: readonly CodexNotification[],
-  ): void {
-    for (const notification of notifications) {
-      if (this.activeTurn !== active) {
-        return;
-      }
-      if (notificationTurnId(notification) !== active.turnId) {
-        continue;
-      }
-      this.handleRunningTurnNotification(active, notification);
-    }
-  }
-
-  private handleRunningTurnNotification(
-    active: ActiveTurnRunning,
-    notification: CodexNotification,
-  ): void {
-    switch (notification.method) {
-      case "turn/started":
-        return;
-      case "turn/completed":
-        active.completion = {
-          status: notification.params.turn.status,
-          error: notification.params.turn.error,
-        };
-        this.completeTurnIfReady(active);
-        return;
-      case "item/completed":
-        {
-          const finalItem = finalAgentMessageSchema.safeParse(notification.params.item);
-          if (finalItem.success) {
-            active.finalItem = finalItem.data;
-          }
-        }
-        this.completeTurnIfReady(active);
-        return;
-      case "item/agentMessage/delta":
-        this.emitDelta({
-          threadId: notification.params.threadId,
-          turnId: notification.params.turnId,
-          itemId: notification.params.itemId,
-          delta: notification.params.delta,
-        });
-        return;
-      default:
-        return;
-    }
-  }
-
-  private completeTurnIfReady(active: ActiveTurnRunning): void {
-    if (this.activeTurn !== active || active.completion == null) {
-      return;
-    }
-    if (active.abortRequested) {
-      this.finishTurn(active, new CodexSessionAbortedError());
-      return;
-    }
-    if (active.completion.status !== "completed") {
-      const error = new CodexSessionTurnError(active.completion.error);
-      this.recordDiagnosticLocally("turn_error", error);
-      this.finishTurn(active, createUnrecordedSessionFailure(error));
-      return;
-    }
-    const finalItem = active.finalItem;
-    if (finalItem == null || finalItem.phase !== "final_answer") {
-      const error = new CodexSessionOutputValidationError(
-        new Error("最終agentMessageがありません。"),
-      );
-      this.recordDiagnosticLocally("output_validation_error", error);
-      this.finishTurn(active, error);
-      return;
-    }
-    let response: CodexGeneratedResponse;
-    try {
-      response = parseStructuredOutput(finalItem.text);
-    } catch (error: unknown) {
-      this.recordDiagnosticLocally("output_validation_error", error);
-      this.finishTurn(active, error);
-      return;
-    }
-    this.structuredOutputVerified = true;
-    const result = codexSessionTurnResultSchema.parse({
-      threadId: active.threadId,
-      turnId: active.turnId,
-      response,
+    return disableCodexAi(request, {
+      setDisabled: () => { this.state = "disabled"; },
+      recordDiagnosticAndNotify: (code, error) => this.recordDiagnosticAndNotify(code, error),
+      recordDiagnosticLocally: (code, error) => this.recordDiagnosticLocally(code, error),
+      cleanupResources: () => this.cleanupResources(),
+      getActiveTurn: () => this.turnCoordinator.activeTurn,
+      finishTurn: (active, error) => this.turnCoordinator.finishTurn(active, error),
+      createTurnFailure: (cause, cleanup) => new DiagnosticFailureDispositionError(
+        combineDiagnosticFailureDispositions(cause, cleanup),
+      ),
     });
-    this.finishTurn(active, result);
-  }
-
-  private emitDelta(delta: CodexSessionDelta): void {
-    const parsed = codexSessionDeltaSchema.safeParse(delta);
-    if (!parsed.success) {
-      this.recordDiagnosticAndNotify("connection_protocol_error", parsed.error);
-      return;
-    }
-    for (const listener of this.deltaListeners) {
-      try {
-        const result = listener(parsed.data);
-        if (result != null) {
-          void Promise.resolve(result).catch((error: unknown) => {
-            this.recordDiagnosticAndNotify("listener_error", error);
-          });
-        }
-      } catch (error: unknown) {
-        this.recordDiagnosticAndNotify("listener_error", error);
-      }
-    }
-  }
-
-  private finishTurn(active: ActiveTurn, value: unknown): void {
-    if (this.activeTurn !== active) {
-      return;
-    }
-    this.activeTurn = undefined;
-    this.activeProposalWorkspace = undefined;
-    active.signal.removeEventListener("abort", active.abortListener);
-    if (this.state === "turning") {
-      this.state = "ready";
-    }
-    if (isSessionTurnResult(value)) {
-      active.resolve(value);
-      return;
-    }
-    active.reject(value);
   }
 
   private async cleanupConnection(): Promise<unknown[]> {
@@ -3216,8 +992,4 @@ export class CodexSessionService {
     this.options.onError(cause);
   }
 
-}
-
-function isSessionTurnResult(value: unknown): value is CodexSessionTurnResult {
-  return codexSessionTurnResultSchema.safeParse(value).success;
 }

@@ -2994,11 +2994,6 @@
     },
     {
       "path": "src/main/codex/session/session.ts",
-      "rule": "module-mutable",
-      "symbol": "requiredSkillNames"
-    },
-    {
-      "path": "src/main/codex/session/session.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/proposal-workspace/index.ts"
     },
