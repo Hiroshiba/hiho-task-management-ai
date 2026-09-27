@@ -36,6 +36,7 @@ import {
   type BlockStateResult,
 } from "../domain";
 import { hashGuiEditBaseline } from "../gui-edit";
+import { createTaskMap, loadSelectedSnapshot } from "../application/task-read/selected-snapshot";
 import type { StorageDatabase } from "../storage";
 
 const projectAreaPrefix = "TaskHub/領域/";
@@ -110,150 +111,6 @@ function taskStatusOrderValue(status: TaskStatus): number {
     throw new Error("タスク状態の並び順を解決できません。");
   }
   return value;
-}
-
-function validateProjectGid(projectGid: string): string {
-  return gidSchema.parse(projectGid);
-}
-
-function createTaskMap(tasks: readonly Task[]): ReadonlyMap<string, Task> {
-  const taskByGid = new Map<string, Task>();
-  tasks.forEach((task) => {
-    if (taskByGid.has(task.gid)) {
-      throw new Error("タスクキャッシュに同じGIDが重複しています。");
-    }
-    taskByGid.set(task.gid, task);
-  });
-  return taskByGid;
-}
-
-function createEntryMap(
-  entries: readonly TaskCacheEntry[],
-): ReadonlyMap<string, TaskCacheEntry> {
-  const entryByGid = new Map<string, TaskCacheEntry>();
-  entries.forEach((entry) => {
-    if (entryByGid.has(entry.gid)) {
-      throw new Error("タスクキャッシュに同じGIDが重複しています。");
-    }
-    entryByGid.set(entry.gid, entry);
-  });
-  return entryByGid;
-}
-
-function isProjectMember(entry: TaskCacheEntry, projectGid: string): boolean {
-  const response = entry.asana_response;
-  return (
-    response.projects.some((project) => project.gid === projectGid) ||
-    response.memberships.some((membership) => membership.project.gid === projectGid)
-  );
-}
-
-function selectProjectEntries(
-  entries: readonly TaskCacheEntry[],
-  projectGid: string,
-): readonly TaskCacheEntry[] {
-  const entryByGid = new Map<string, TaskCacheEntry>();
-  entries.forEach((entry) => {
-    if (entryByGid.has(entry.gid)) {
-      throw new Error("タスクキャッシュに同じGIDが重複しています。");
-    }
-    entryByGid.set(entry.gid, entry);
-  });
-
-  const roots = entries.filter((entry) => isProjectMember(entry, projectGid));
-  if (entries.length > 0 && roots.length === 0) {
-    throw new Error("タスクキャッシュに対象プロジェクトの所属がありません。");
-  }
-
-  const selectedGids = new Set<string>();
-  const pendingGids = roots.map((entry) => entry.gid).sort(compareStrings);
-  while (pendingGids.length > 0) {
-    const gid = pendingGids.shift();
-    if (gid == null) {
-      throw new Error("タスクキャッシュの走査対象を取得できません。");
-    }
-    if (selectedGids.has(gid)) {
-      continue;
-    }
-    const entry = entryByGid.get(gid);
-    if (entry == null) {
-      throw new Error("タスクキャッシュの親子参照が壊れています。");
-    }
-    selectedGids.add(gid);
-    const childGids = [
-      ...entry.task.child_gids,
-      ...entries
-        .filter((candidate) => candidate.task.parent_gid === gid)
-        .map((candidate) => candidate.gid),
-    ];
-    childGids
-      .filter((childGid) => entryByGid.has(childGid))
-      .sort(compareStrings)
-      .forEach((childGid) => {
-        if (!selectedGids.has(childGid) && !pendingGids.includes(childGid)) {
-          pendingGids.push(childGid);
-        }
-      });
-  }
-
-  if (selectedGids.size !== entries.length) {
-    throw new Error("タスクキャッシュに対象外または孤立したタスクがあります。");
-  }
-  return entries
-    .filter((entry) => selectedGids.has(entry.gid))
-    .sort((left, right) => compareStrings(left.gid, right.gid));
-}
-
-function loadSelectedSnapshot(
-  storage: ReadModelStorage,
-  projectGid: string,
-): SelectedSnapshot {
-  const validatedProjectGid = validateProjectGid(projectGid);
-  const entries = taskCacheEntriesSchema.parse(storage.getTaskCache());
-  const metadataValue = storage.getProjectMetadataCache(validatedProjectGid);
-  if (metadataValue == null) {
-    throw new Error("対象プロジェクトのメタデータキャッシュがありません。");
-  }
-  const metadata = projectMetadataCacheSchema.parse(metadataValue);
-  if (metadata.project.gid !== validatedProjectGid) {
-    throw new Error("プロジェクトメタデータのGIDが一致しません。");
-  }
-
-  const syncStateValue = storage.getSyncState(validatedProjectGid);
-  if (syncStateValue == null) {
-    throw new Error("対象プロジェクトの同期状態がありません。");
-  }
-  const syncState = syncStateSchema.parse(syncStateValue);
-  if (syncState.project_gid !== validatedProjectGid) {
-    throw new Error("同期状態のGIDが一致しません。");
-  }
-  if (syncState.last_successful_sync_at == null) {
-    throw new Error("最終成功同期時刻がありません。");
-  }
-
-  const cleanupItemsValue = storage.getCleanupItems();
-  if (cleanupItemsValue == null) {
-    throw new Error("要整理項目キャッシュがありません。");
-  }
-  const cleanupItems = cleanupItemsSchema.parse(cleanupItemsValue);
-
-  const rankingValue = storage.getRankingCache();
-  const ranking = rankingValue == null ? undefined : rankingCacheSchema.parse(rankingValue);
-  const selectedEntries = selectProjectEntries(entries, validatedProjectGid);
-  const tasks = selectedEntries.map((entry) => entry.task);
-  const taskByGid = createTaskMap(tasks);
-  const entryByGid = createEntryMap(selectedEntries);
-  return {
-    projectGid: validatedProjectGid,
-    entries: selectedEntries,
-    tasks,
-    taskByGid,
-    entryByGid,
-    metadata,
-    ranking,
-    syncState,
-    cleanupItems,
-  };
 }
 
 function createAreas(metadata: ProjectMetadataCache): readonly string[] {
@@ -965,7 +822,17 @@ export class ReadModelService {
 
   /** プロジェクト概要を取得します。 */
   public getOverview(projectGid: string): ViewModelOverview {
-    const snapshot = loadSelectedSnapshot(this.storage, projectGid);
+    const snapshot = loadSelectedSnapshot<
+      TaskCacheEntry, ProjectMetadataCache, RankingCache, SyncState, CleanupItemsCache
+    >(this.storage, projectGid, {
+      projectGid: (value) => gidSchema.parse(value),
+      entries: (value) => taskCacheEntriesSchema.parse(value),
+      metadata: (value) => projectMetadataCacheSchema.parse(value),
+      ranking: (value) => rankingCacheSchema.parse(value),
+      syncState: (value) => syncStateSchema.parse(value),
+      cleanupItems: (value) => cleanupItemsSchema.parse(value),
+      compareStrings,
+    });
     const cleanupItems = createCleanupViews(snapshot.cleanupItems);
     const projection = createRankingProjection(snapshot.tasks, snapshot.ranking);
     const blockStateByGid = createBlockStateProjection(snapshot.tasks);
@@ -1003,7 +870,17 @@ export class ReadModelService {
 
   /** タスク詳細を取得します。 */
   public getTaskDetail(projectGid: string, taskGid: string): ViewModelTaskDetail {
-    const snapshot = loadSelectedSnapshot(this.storage, projectGid);
+    const snapshot = loadSelectedSnapshot<
+      TaskCacheEntry, ProjectMetadataCache, RankingCache, SyncState, CleanupItemsCache
+    >(this.storage, projectGid, {
+      projectGid: (value) => gidSchema.parse(value),
+      entries: (value) => taskCacheEntriesSchema.parse(value),
+      metadata: (value) => projectMetadataCacheSchema.parse(value),
+      ranking: (value) => rankingCacheSchema.parse(value),
+      syncState: (value) => syncStateSchema.parse(value),
+      cleanupItems: (value) => cleanupItemsSchema.parse(value),
+      compareStrings,
+    });
     const validatedTaskGid = gidSchema.parse(taskGid);
     const task = snapshot.taskByGid.get(validatedTaskGid);
     if (task == null) {
