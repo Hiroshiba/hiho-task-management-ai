@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { GuiEditExecutionNotFoundError, TaskWriteRetryNotAllowedError, type GuiEditExecution } from "../../application/gui-edit";
+import type { GuiEditExecution } from "../../application/gui-edit";
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { detailSchema, overviewSchema } from "../../../shared/ipc-contracts/task-view";
 import { tasksContracts } from "../../../shared/ipc-contracts/tasks";
@@ -178,29 +178,8 @@ export function createTasksHandlers(workflows: TasksHandlerWorkflows): TasksHand
     }),
     applyEdit: createContractHandler(tasksContracts.applyEdit, async (request, signal) =>
       toTaskEditResult(await guiEdit.applyGuiEdit(request, signal))),
-    getExecution: async (payload, signal) => {
-      try {
-        return await getExecution(payload, signal);
-      } catch (error: unknown) {
-        if (error instanceof GuiEditExecutionNotFoundError) {
-          return tasksContracts.getExecution.response.parse({ kind: "error", code: "not_found", message: error.message });
-        }
-        throw error;
-      }
-    },
-    retryExecution: async (payload, signal) => {
-      try {
-        return await retryExecution(payload, signal);
-      } catch (error: unknown) {
-        if (error instanceof GuiEditExecutionNotFoundError) {
-          return tasksContracts.retryExecution.response.parse({ kind: "error", code: "not_found", message: error.message });
-        }
-        if (error instanceof TaskWriteRetryNotAllowedError) {
-          return tasksContracts.retryExecution.response.parse({ kind: "error", code: "conflict", message: error.message });
-        }
-        throw error;
-      }
-    },
+    getExecution,
+    retryExecution,
   };
 }
 

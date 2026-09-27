@@ -1,9 +1,5 @@
 import type { z } from "zod";
-import {
-  ProposalExecutionNotFoundError,
-  TaskWriteRetryNotAllowedError,
-  type StoredProposalExecution,
-} from "../../application/proposal-apply";
+import type { StoredProposalExecution } from "../../application/proposal-apply";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
 import { createContractHandler, type ContractHandler, type IpcSuccessValue } from "./contract-handler";
 import {
@@ -110,29 +106,8 @@ export function createProposalsHandlers(workflows: ProposalsHandlerWorkflows): P
       const synchronized = await history.synchronize(signal);
       return { status: synchronized.status, synced_at: synchronized.synced_at };
     }),
-    getExecution: async (payload, signal) => {
-      try {
-        return await getExecution(payload, signal);
-      } catch (error: unknown) {
-        if (error instanceof ProposalExecutionNotFoundError) {
-          return proposalsContracts.getExecution.response.parse({ kind: "error", code: "not_found", message: error.message });
-        }
-        throw error;
-      }
-    },
-    retryExecution: async (payload, signal) => {
-      try {
-        return await retryExecution(payload, signal);
-      } catch (error: unknown) {
-        if (error instanceof ProposalExecutionNotFoundError) {
-          return proposalsContracts.retryExecution.response.parse({ kind: "error", code: "not_found", message: error.message });
-        }
-        if (error instanceof TaskWriteRetryNotAllowedError) {
-          return proposalsContracts.retryExecution.response.parse({ kind: "error", code: "conflict", message: error.message });
-        }
-        throw error;
-      }
-    },
+    getExecution,
+    retryExecution,
   };
 }
 
