@@ -143,6 +143,7 @@ import {
   type AiSessionBaselineStore as RuntimeAiSessionBaselineStore,
   type AiSessionRecord as RuntimeAiSessionRecord,
 } from "../bootstrap/ai-session-runtime";
+import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -937,9 +938,10 @@ export class TaskHubApplication {
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
   private syncFailureDiagnosticSuppressionCount = 0;
-  private journalRecoveryPending: boolean;
-  private journalRecoveryRunning = false;
-  private journalRecoveryPromise: Promise<void> | undefined;
+  private readonly journalRecovery: JournalRecoveryRuntime<
+    ReturnType<StorageDatabase["getIncompleteApplicationJournals"]>[number],
+    AsanaProposalRecoveryResult
+  >;
   private configuredCodexLaunchState: ConfiguredCodexLaunchState = {
     kind: "pending",
   };
@@ -1235,7 +1237,27 @@ export class TaskHubApplication {
       fullSync: (input, signal) => this.runSetupFullSync(input, signal),
     });
     this.settings = this.database.getDeviceSettings();
-    this.journalRecoveryPending = this.database.getIncompleteApplicationJournals().length > 0;
+    this.journalRecovery = new JournalRecoveryRuntime({
+      validateAbortSignal,
+      throwIfAborted,
+      hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
+      enqueueRecovery: (signal, run) => this.operationQueue.enqueue({
+        priority: "user",
+        kind: "journal_recovery",
+        signal,
+        run: (context) => run(context.signal),
+      }),
+      getIncompleteJournals: () => this.database.getIncompleteApplicationJournals(),
+      recover: (signal) => this.requireApplicationCoordinator().recover(
+        {
+          applications: [],
+          project_gids: [this.requireContext().project_gid],
+        },
+        signal,
+      ),
+      afterRecovery: (result) =>
+        this.cleanupAggregation.replaceProposalConflictsFromRecovery(result),
+    });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
     this.configureAsanaFromSettings(this.settings);
     this.configureContextFromState(this.setup.getState());
@@ -2288,10 +2310,10 @@ export class TaskHubApplication {
     if (this.aiApplicationState === "applying") {
       throw new Error("AI変更案の適用完了前に別の同期を開始できません。");
     }
-    await this.recoverApplicationJournal(signal);
+    await this.journalRecovery.recover(signal);
     throwIfAborted(signal);
     if (
-      this.journalRecoveryPending
+      this.journalRecovery.hasPending()
       || this.database
         .getIncompleteApplicationJournals()
         .some((journal) => journal.final_result == null)
@@ -2337,7 +2359,7 @@ export class TaskHubApplication {
     let synchronizationDeferred = startedOffline;
     if (!synchronizationDeferred) {
       try {
-        await this.recoverApplicationJournal(signal);
+        await this.journalRecovery.recover(signal);
       } catch (error: unknown) {
         this.rethrowFeatureAbort(error, signal);
         this.recordFeatureFailure(
@@ -2483,113 +2505,6 @@ export class TaskHubApplication {
     this.publishAiStatus();
   }
 
-  private async recoverApplicationJournal(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    if (this.operationQueue.hasOwner(signal)) {
-      await this.performApplicationJournalRecovery(signal);
-      return;
-    }
-    const runningRecovery = this.journalRecoveryPromise;
-    if (runningRecovery != null) {
-      await runningRecovery;
-      throwIfAborted(signal);
-      return;
-    }
-    const recovery = this.operationQueue.enqueue({
-      priority: "user",
-      kind: "journal_recovery",
-      signal,
-      run: (context) => this.performApplicationJournalRecovery(context.signal),
-    });
-    this.journalRecoveryPromise = recovery;
-    try {
-      await recovery;
-    } finally {
-      if (this.journalRecoveryPromise === recovery) {
-        this.journalRecoveryPromise = undefined;
-      }
-    }
-  }
-
-  private async performApplicationJournalRecovery(
-    signal: AbortSignal,
-  ): Promise<void> {
-    const incomplete = this.database.getIncompleteApplicationJournals();
-    if (
-      !this.journalRecoveryPending
-      && !incomplete.some((journal) => journal.final_result == null)
-    ) {
-      return;
-    }
-    this.journalRecoveryPending = true;
-    this.journalRecoveryRunning = true;
-    try {
-      const result = await this.requireApplicationCoordinator().recover(
-        {
-          applications: [],
-          project_gids: [this.requireContext().project_gid],
-        },
-        signal,
-      );
-      const remainingJournals = this.database.getIncompleteApplicationJournals();
-      const unresolvedResultKeys = new Map<string, Set<string>>();
-      const localSyncPendingKeys = new Map<string, Set<string>>();
-      const includeKey = (
-        keys: Map<string, Set<string>>,
-        proposalId: string,
-        operationId: string,
-      ): void => {
-        const operationIds = keys.get(proposalId) ?? new Set<string>();
-        operationIds.add(operationId);
-        keys.set(proposalId, operationIds);
-      };
-      for (const journal of result.unresolved_journals) {
-        includeKey(unresolvedResultKeys, journal.proposal_id, journal.operation_id);
-      }
-      for (const application of result.applications) {
-        for (const operation of application.operations) {
-          if (operation.reason_code === "local_resync_required") {
-            includeKey(localSyncPendingKeys, application.proposal_id, operation.operation_id);
-          }
-        }
-      }
-      const unexpectedRemainingJournals = remainingJournals.filter(
-        (journal) => {
-          const isReportedUnknown = journal.final_result === "unknown"
-            && unresolvedResultKeys
-              .get(journal.proposal_id)
-              ?.has(journal.operation_id) === true;
-          const isLocalSyncPending = localSyncPendingKeys
-            .get(journal.proposal_id)
-            ?.has(journal.operation_id) === true;
-          return !isReportedUnknown && !isLocalSyncPending;
-        },
-      );
-      if (unexpectedRemainingJournals.length > 0) {
-        throw new Error(
-          "復旧結果に含まれない未完了のAI適用ジャーナルが残っています。",
-        );
-      }
-      await this.afterJournalRecovery(result, signal);
-      this.journalRecoveryPending = remainingJournals.some(
-        (journal) => journal.final_result == null,
-      );
-    } finally {
-      this.journalRecoveryRunning = false;
-    }
-  }
-
-  private afterJournalRecovery(
-    result: AsanaProposalRecoveryResult,
-    signal: AbortSignal,
-  ): Promise<void> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    this.cleanupAggregation.replaceProposalConflictsFromRecovery(result);
-    return Promise.resolve();
-  }
-
   private async requireSynchronizedResult(
     resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
   ): Promise<Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>> {
@@ -2628,7 +2543,7 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<void> {
     void result;
-    await this.recoverApplicationJournal(signal);
+    await this.journalRecovery.recover(signal);
     await this.afterLocalStateRefresh(signal);
     await this.synchronizeConfiguredCodexAfterAsana(signal);
   }
@@ -2647,7 +2562,7 @@ export class TaskHubApplication {
     requiredTaskGids: readonly string[],
     signal: AbortSignal,
   ): Promise<PostWriteSynchronizationResultWithCause> {
-    if (this.journalRecoveryRunning) {
+    if (this.journalRecovery.isRunning()) {
       return this.synchronizeRecoveredApplicationJournals(requiredTaskGids, signal);
     }
     if (this.aiApplicationState !== "applying") {
@@ -3135,7 +3050,7 @@ export class TaskHubApplication {
       throw new Error("Asana同期が正常なオンライン状態になるまで書き込みを開始できません。");
     }
     if (
-      this.journalRecoveryPending
+      this.journalRecovery.hasPending()
       || this.database.getIncompleteApplicationJournals().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで書き込みを開始できません。");
@@ -3178,7 +3093,7 @@ export class TaskHubApplication {
       throw new Error("Asana同期エラーを解消するまで変更操作を受け付けられません。");
     }
     if (
-      this.journalRecoveryPending
+      this.journalRecovery.hasPending()
       || this.database.getIncompleteApplicationJournals().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで変更操作を受け付けられません。");
