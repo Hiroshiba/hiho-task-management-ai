@@ -605,6 +605,22 @@ export class AsanaSyncCoordinator {
     input: AsanaSyncCoordinatorInput,
     signal: AbortSignal,
   ): Promise<AsanaSyncCoordinatorResult> {
+    return this.coordinateWithWriteMode(input, signal, false);
+  }
+
+  /** Asanaへ書き込まずに実状態を収集してローカルの同期状態を更新します。 */
+  public async coordinateReadOnly(
+    input: AsanaSyncCoordinatorInput,
+    signal: AbortSignal,
+  ): Promise<AsanaSyncCoordinatorResult> {
+    return this.coordinateWithWriteMode(input, signal, true);
+  }
+
+  private async coordinateWithWriteMode(
+    input: AsanaSyncCoordinatorInput,
+    signal: AbortSignal,
+    readOnly: boolean,
+  ): Promise<AsanaSyncCoordinatorResult> {
     const validatedInput = coordinatorInputSchema.parse(input);
     validateAbortSignal(signal);
     if (this.synchronizationInProgress) {
@@ -632,6 +648,7 @@ export class AsanaSyncCoordinator {
         existingState,
         existingMetadata,
         signal,
+        readOnly,
       );
       const syncedAt = isoDateTimeSchema.parse(this.timestampProvider());
       const activityDate = jstDateFromTimestamp(syncedAt);
@@ -660,7 +677,14 @@ export class AsanaSyncCoordinator {
         protectionRequired,
       );
       const applicationOutcome: NormalizationApplicationOutcome =
-        requiredSectionInspection.hasMissingGid
+        readOnly
+          ? {
+            kind: "read_only",
+            applicationResult: createEmptyApplicationResult(),
+            rawTasks: sortedTasks(collection.raw_tasks),
+            normalization: firstNormalization,
+          }
+          : requiredSectionInspection.hasMissingGid
           ? {
             kind: "skipped_missing_section",
             applicationResult: createEmptyApplicationResult(),
@@ -783,6 +807,7 @@ export class AsanaSyncCoordinator {
     existingState: SyncState | undefined,
     existingMetadata: ProjectMetadataCache | undefined,
     signal: AbortSignal,
+    readOnly: boolean,
   ): Promise<CollectionSnapshot> {
     if (input.mode === "full") {
       const establishedToken = existingState?.events_token == null
@@ -796,6 +821,7 @@ export class AsanaSyncCoordinator {
         undefined,
         signal,
         [],
+        readOnly,
       );
     }
     if (existingState?.events_token == null) {
@@ -806,6 +832,7 @@ export class AsanaSyncCoordinator {
         "sync_token_missing",
         signal,
         [],
+        readOnly,
       );
     }
     if (
@@ -821,6 +848,7 @@ export class AsanaSyncCoordinator {
         "metadata_missing",
         signal,
         [],
+        readOnly,
       );
     }
     const deltaResult = await this.collectDeltaFromToken(
@@ -835,12 +863,14 @@ export class AsanaSyncCoordinator {
         deltaResult.reason,
         signal,
         [],
+        readOnly,
       );
     }
     const materializedDelta = await this.materializeDelta(
       input,
       deltaResult,
       signal,
+      readOnly,
     );
     return {
       performed_mode: "delta",
@@ -889,6 +919,7 @@ export class AsanaSyncCoordinator {
     input: AsanaSyncCoordinatorInput,
     result: Extract<AsanaDeltaSyncResult, { kind: "delta" }>,
     signal: AbortSignal,
+    readOnly: boolean,
   ): Promise<MaterializedDelta> {
     const project = await this.readClient.getProject(
       input.project_gid,
@@ -918,6 +949,7 @@ export class AsanaSyncCoordinator {
         ]),
       },
       signal,
+      readOnly,
     );
     return {
       sync_token: result.sync_token,
@@ -938,12 +970,14 @@ export class AsanaSyncCoordinator {
     fallbackReason: FallbackReason | undefined,
     signal: AbortSignal,
     inaccessibleGids: readonly string[],
+    readOnly: boolean,
   ): Promise<CollectionSnapshot> {
     const full = await this.collectFull(
       input,
       fallbackReason,
       signal,
       inaccessibleGids,
+      readOnly,
     );
     const catchUp = await this.collectDeltaFromToken(
       input,
@@ -953,7 +987,7 @@ export class AsanaSyncCoordinator {
     if (catchUp.kind === "delta") {
       return mergeDeltaSnapshot(
         full,
-        await this.materializeDelta(input, catchUp, signal),
+        await this.materializeDelta(input, catchUp, signal, readOnly),
       );
     }
 
@@ -962,6 +996,7 @@ export class AsanaSyncCoordinator {
       catchUp.reason,
       signal,
       full.inaccessible_gids,
+      readOnly,
     );
     const retryCatchUp = await this.collectDeltaFromToken(
       input,
@@ -973,7 +1008,7 @@ export class AsanaSyncCoordinator {
     }
     return mergeDeltaSnapshot(
       retryFull,
-      await this.materializeDelta(input, retryCatchUp, signal),
+      await this.materializeDelta(input, retryCatchUp, signal, readOnly),
     );
   }
 
@@ -982,6 +1017,7 @@ export class AsanaSyncCoordinator {
     fallbackReason: FallbackReason | undefined,
     signal: AbortSignal,
     inaccessibleGids: readonly string[],
+    readOnly: boolean,
   ): Promise<CollectionSnapshot> {
     const sourceResult = asanaFullSyncResultSchema.parse(
       await this.fullSyncSource.collect(
@@ -990,6 +1026,7 @@ export class AsanaSyncCoordinator {
           section_gids: input.section_gids,
         },
         signal,
+        readOnly,
       ),
     );
     if (sourceResult.project.gid !== input.project_gid) {

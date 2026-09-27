@@ -261,6 +261,7 @@ import {
   type IpcExternalAgentPort,
   type IpcServicePorts,
   type IpcSetupPort,
+  type IpcProposalHistoryPort,
 } from "../ipc";
 import {
   ipcAiDeltaEventSchema,
@@ -273,6 +274,11 @@ import {
   ipcReadModelOverviewResponseSchema,
   ipcReadModelTaskDetailResponseSchema,
   ipcSyncInputSchema,
+  ipcProposalHistoryStatusSchema,
+  ipcProposalHistoryConfirmInputSchema,
+  type IpcProposalHistoryStatus,
+  type IpcProposalHistoryConfirmInput,
+  type IpcProposalHistorySynchronization,
   type IpcAiStatus,
   type IpcCodexDelta,
   type IpcGuiEditInput as IpcGuiRequest,
@@ -302,6 +308,7 @@ import {
 } from "../storage";
 import {
   SqliteSettingsRepository,
+  SqliteLegacyProposalHistoryRepository,
   type PersistenceRuntime,
   type PersistentTextFile,
   type SqliteConnection,
@@ -805,6 +812,13 @@ function getLegacyProposalOperationStatus(
   operationId: string,
 ):
   | { readonly kind: "journal"; readonly journal: ApplicationJournal }
+  | {
+      readonly kind: "legacy_history";
+      readonly source_stage: string;
+      readonly source_final_result: "applied" | "not_applied" | "unknown" | "failed" | null;
+      readonly confirmation_state: "not_required" | "required" | "confirmed" | "synchronized";
+      readonly confirmed_result: "applied" | "not_applied" | "manually_adjusted" | null;
+    }
   | { readonly kind: "unknown"; readonly reason_code: "journal_result_unknown"; readonly message: string }
   | undefined {
   const legacy = repository.getByProposal(proposalId);
@@ -818,6 +832,15 @@ function getLegacyProposalOperationStatus(
   }
   const step = legacy.execution.steps.find((item) => item.operation_id === operationId);
   if (step == null) return undefined;
+  if (step.confirmation_state != null) {
+    return {
+      kind: "legacy_history",
+      source_stage: step.stage,
+      source_final_result: step.final_result,
+      confirmation_state: step.confirmation_state,
+      confirmed_result: step.confirmed_result ?? null,
+    };
+  }
   if (step.state === "confirmation_required") {
     return {
       kind: "unknown",
@@ -862,6 +885,7 @@ type ApplicationFileStores = {
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
   private readonly database: StorageDatabase;
+  private readonly legacyProposalHistoryRepository: SqliteLegacyProposalHistoryRepository;
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
@@ -985,6 +1009,7 @@ export class TaskHubApplication {
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(persistence);
+    this.legacyProposalHistoryRepository = new SqliteLegacyProposalHistoryRepository(persistence);
     this.settingsRepository = new SqliteSettingsRepository(
       persistence.connection,
       (value) => deviceSettingsSchema.parse(value),
@@ -1434,7 +1459,7 @@ export class TaskHubApplication {
         signal,
         run: (context) => run(context.signal),
       }),
-      getIncompleteJournals: () => this.getIncompleteLegacyJournals(),
+      getIncompleteJournals: () => [],
       hasAdditionalIncomplete: () => this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
         || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
       recover: async (signal) => {
@@ -1879,6 +1904,7 @@ export class TaskHubApplication {
       gui: this.createGuiPort(),
       externalAgent: this.createExternalAgentPort(),
       ai: this.createAiPort(),
+      proposalHistory: this.createProposalHistoryPort(),
       obsidian: this.obsidian.createIpcPort(),
     };
   }
@@ -2440,7 +2466,7 @@ export class TaskHubApplication {
     this.aiEvents.publishStatus();
   }
 
-  private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
+  private async refreshLocalTaskState(signal: AbortSignal): Promise<void> {
     const tasks = parseTaskCache(this.database.getTaskCache())
       .map((entry) => taskSchema.parse(entry.task));
     await this.cleanupAggregation.replaceBrokenVaultLinksFromTasks(
@@ -2448,6 +2474,10 @@ export class TaskHubApplication {
       signal,
     );
     signal.throwIfAborted();
+  }
+
+  private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
+    await this.refreshLocalTaskState(signal);
     const displayOrder = this.operationalServices.getDisplayOrder();
     if (displayOrder == null) {
       return;
@@ -2757,13 +2787,121 @@ export class TaskHubApplication {
         return [{ proposal_id: result.proposal_id, operation_id: operationId, final_result: null }];
       }
       return result.execution.steps
-        .filter((step) => step.state === "confirmation_required")
+        .filter((step) => step.state === "confirmation_required"
+          || step.state === "synchronization_required")
         .map((step) => ({
           proposal_id: result.execution.proposal_id,
           operation_id: step.operation_id,
           final_result: null,
         }));
     });
+  }
+
+  private getProposalHistoryStatus(): IpcProposalHistoryStatus {
+    const entries: IpcProposalHistoryStatus["entries"] = this.legacyProposalExecutionRepository.getIncomplete().flatMap<IpcProposalHistoryStatus["entries"][number]>((result) => {
+      if (result.kind === "rejected") {
+        if (result.operation_id == null) {
+          throw new Error("移行できない旧適用ジャーナルの操作IDがありません。");
+        }
+        return [{
+          kind: "migration_failed",
+          proposal_id: result.proposal_id,
+          operation_id: result.operation_id,
+          error_id: result.error_id,
+        }];
+      }
+      return result.execution.steps.flatMap<IpcProposalHistoryStatus["entries"][number]>((step) => {
+        if (step.state === "confirmation_required") {
+          if (step.final_result != null && step.final_result !== "unknown") {
+            throw new Error("旧適用履歴の未確定結果が元の保存結果と一致しません。");
+          }
+          return [{
+            kind: "confirmation_required",
+            proposal_id: result.execution.proposal_id,
+            operation_id: step.operation_id,
+            target_id: step.target.kind === "task" ? step.target.gid
+              : step.target.kind === "new_task" ? step.target.uuid : step.target.ref,
+            target_kind: step.target.kind,
+            source_stage: step.stage,
+            source_final_result: step.final_result,
+          }];
+        }
+        if (step.state === "synchronization_required") {
+          if (step.confirmed_result == null) {
+            throw new Error("旧適用履歴の確認済み結果がありません。");
+          }
+          return [{
+            kind: "synchronization_required",
+            proposal_id: result.execution.proposal_id,
+            operation_id: step.operation_id,
+            target_id: step.target.kind === "task" ? step.target.gid
+              : step.target.kind === "new_task" ? step.target.uuid : step.target.ref,
+            target_kind: step.target.kind,
+            confirmed_result: step.confirmed_result,
+          }];
+        }
+        return [];
+      });
+    });
+    return ipcProposalHistoryStatusSchema.parse({ entries });
+  }
+
+  private createProposalHistoryPort(): IpcProposalHistoryPort {
+    return {
+      getStatus: () => this.getProposalHistoryStatus(),
+      confirm: (input: IpcProposalHistoryConfirmInput) => {
+        const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
+        this.legacyProposalHistoryRepository.confirm(
+          checked.proposal_id,
+          checked.operation_id,
+          checked.checked_target_id,
+          checked.confirmed_result,
+        );
+        return this.getProposalHistoryStatus();
+      },
+      synchronize: (signal: AbortSignal) => this.synchronizeProposalHistory(signal),
+    };
+  }
+
+  private async synchronizeProposalHistory(signal: AbortSignal): Promise<IpcProposalHistorySynchronization> {
+    validateAbortSignal(signal);
+    this.assertOperationalReady();
+    this.asanaReauthentication.assertIdle();
+    if (!this.isOnline()) {
+      throw new Error("オフライン中は旧適用履歴の読取同期を実行できません。");
+    }
+    const expectedContext = this.requireContext();
+    this.legacyProposalHistoryRepository.assertSynchronizationReady();
+    const result = await this.operationQueue.enqueue({
+      priority: "user",
+      kind: "synchronization",
+      signal,
+      beforeStart: () => {
+        this.assertContextUnchanged(expectedContext);
+        this.legacyProposalHistoryRepository.assertSynchronizationReady();
+        if (this.journalRecovery.hasPending()) {
+          throw new Error("未完了の新しい適用executionがあるため旧履歴を同期できません。");
+        }
+      },
+      run: async (context) => {
+        const synchronized = await this.syncCoordinator.coordinateReadOnly({
+          mode: "full",
+          project_gid: expectedContext.project_gid,
+          section_gids: expectedContext.section_gids,
+          device_id: expectedContext.device_id,
+          app_version: this.options.app_version,
+          required_task_gids: [],
+        }, context.signal);
+        context.signal.throwIfAborted();
+        await this.refreshLocalTaskState(context.signal);
+        context.signal.throwIfAborted();
+        this.requireRuntime().acceptReadOnlySynchronization(synchronized.synced_at, context.signal);
+        context.signal.throwIfAborted();
+        this.legacyProposalHistoryRepository.completeSynchronization();
+        return synchronized;
+      },
+    });
+    return { status: this.getProposalHistoryStatus(), synced_at: result.synced_at };
   }
 
   private getSavedProposalOperationStatus(

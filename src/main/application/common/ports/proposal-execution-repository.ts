@@ -89,15 +89,15 @@ export type LegacyProposalExecutionStep = {
   readonly operation_id: string;
   readonly operation_order?: number;
   readonly stage: string;
-  readonly state: "succeeded" | "failed" | "confirmation_required";
+  readonly state: "succeeded" | "failed" | "confirmation_required" | "synchronization_required";
   readonly started_at: string;
   readonly target:
     | { readonly kind: "task"; readonly gid: string }
     | { readonly kind: "temporary"; readonly ref: string }
     | { readonly kind: "new_task"; readonly uuid: string };
   readonly final_result: "applied" | "not_applied" | "unknown" | "failed" | null;
-  readonly confirmation_state?: "not_required" | "required" | "confirmed";
-  readonly confirmed_result?: "applied" | "not_applied";
+  readonly confirmation_state?: "not_required" | "required" | "confirmed" | "synchronized";
+  readonly confirmed_result?: "applied" | "not_applied" | "manually_adjusted";
   readonly operation_kind?: string;
 };
 
@@ -105,7 +105,7 @@ export type LegacyProposalExecution = {
   readonly format: "application_journal";
   readonly execution_id: string;
   readonly proposal_id: string;
-  readonly state: "succeeded" | "failed" | "confirmation_required";
+  readonly state: "succeeded" | "failed" | "confirmation_required" | "synchronization_required";
   readonly steps: readonly LegacyProposalExecutionStep[];
 };
 

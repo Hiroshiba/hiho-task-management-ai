@@ -86,6 +86,11 @@ import {
   ipcSyncResponseSchema,
   ipcSyncResultSchema,
   ipcSyncStateEventSchema,
+  ipcProposalHistoryStatusSchema,
+  ipcProposalHistoryConfirmInputSchema,
+  ipcProposalHistoryConfirmResponseSchema,
+  ipcProposalHistoryGetStatusResponseSchema,
+  ipcProposalHistorySynchronizeResponseSchema,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
   type IpcAiEditInput,
@@ -1656,6 +1661,20 @@ export function createMockTaskHubApi(): TaskHubApi {
           syncListeners.delete(listener);
         };
       },
+    },
+    proposalHistory: {
+      getStatus: () => Promise.resolve(ipcProposalHistoryGetStatusResponseSchema.parse(
+        ok(ipcProposalHistoryStatusSchema.parse({ entries: [] })),
+      )),
+      confirm: (input) => Promise.resolve().then(() => {
+        ipcProposalHistoryConfirmInputSchema.parse(input);
+        return ipcProposalHistoryConfirmResponseSchema.parse(
+          failure("not_found", "確認対象の旧適用履歴がmockにありません。"),
+        );
+      }),
+      synchronize: () => Promise.resolve(ipcProposalHistorySynchronizeResponseSchema.parse(
+        failure("not_found", "専用同期を待つ旧適用履歴がmockにありません。"),
+      )),
     },
     setup: {
       getState: () => Promise.resolve().then(() => {

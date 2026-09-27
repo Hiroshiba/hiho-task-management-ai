@@ -44,6 +44,9 @@ import type {
   IpcSetupWorkspaceSelectionInput,
   IpcSyncResult,
   IpcSyncStateEvent,
+  IpcProposalHistoryStatus,
+  IpcProposalHistoryConfirmInput,
+  IpcProposalHistorySynchronization,
 } from "./ipc";
 
 type IpcResult<T> = Promise<
@@ -81,6 +84,11 @@ export interface TaskHubApi {
     readonly getState: () => IpcResult<IpcSyncStateEvent>;
     readonly run: (input: { readonly mode: "full" | "delta" }) => IpcResult<IpcSyncResult>;
     readonly onState: IpcSubscription<IpcSyncStateEvent>;
+  };
+  readonly proposalHistory: {
+    readonly getStatus: () => IpcResult<IpcProposalHistoryStatus>;
+    readonly confirm: (input: IpcProposalHistoryConfirmInput) => IpcResult<IpcProposalHistoryStatus>;
+    readonly synchronize: () => IpcResult<IpcProposalHistorySynchronization>;
   };
   readonly setup: {
     readonly getState: () => IpcResult<IpcSetupState>;

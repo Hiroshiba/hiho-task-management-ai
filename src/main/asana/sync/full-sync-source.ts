@@ -406,6 +406,7 @@ export class AsanaFullSyncSource {
   public async collectAffectedSubtrees(
     input: AsanaAffectedSubtreeInput,
     signal: AbortSignal,
+    readOnly: boolean,
   ): Promise<AsanaAffectedSubtreeResult> {
     const validatedInput = affectedSubtreeInputSchema.parse(input);
     const fetched = await fetchAffectedTasksAndAncestors(
@@ -461,7 +462,7 @@ export class AsanaFullSyncSource {
       collection.subtask_gids,
       validatedInput.project_gid,
       validatedInput.section_gids.not_started,
-      canRepairSubtaskMembership,
+      canRepairSubtaskMembership && !readOnly,
       signal,
     );
     return affectedSubtreeResultSchema.parse({
@@ -476,6 +477,7 @@ export class AsanaFullSyncSource {
   public async collect(
     input: AsanaFullSyncInput,
     signal: AbortSignal,
+    readOnly: boolean,
   ): Promise<AsanaFullSyncResult> {
     const validatedInput = fullSyncInputSchema.parse(input);
     const project = await this.readClient.getProject(
@@ -515,7 +517,7 @@ export class AsanaFullSyncSource {
       collection.subtask_gids,
       validatedInput.project_gid,
       validatedInput.section_gids.not_started,
-      canRepairSubtaskMembership,
+      canRepairSubtaskMembership && !readOnly,
       signal,
     );
     const sortedTasks = [...collection.tasks.values()].sort((left, right) =>

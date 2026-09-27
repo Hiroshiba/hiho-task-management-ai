@@ -125,6 +125,14 @@ export type NormalizationApplicationOutcome =
     >;
     readonly rawTasks: readonly AsanaTaskResponse[];
     readonly normalization: SnapshotNormalizationResult;
+  }
+  | {
+    readonly kind: "read_only";
+    readonly applicationResult: z.infer<
+      typeof asanaNormalizationPlanApplierResultSchema
+    >;
+    readonly rawTasks: readonly AsanaTaskResponse[];
+    readonly normalization: SnapshotNormalizationResult;
   };
 /** 文字列を辞書順で比較します。 */
 export function compareStrings(left: string, right: string): number {
@@ -159,7 +167,7 @@ export function createNormalizationNotifications(
   finalNormalization: SnapshotNormalizationResult,
   applicationOutcome: NormalizationApplicationOutcome,
 ): readonly NormalizationNotification[] {
-  if (applicationOutcome.kind === "skipped_missing_section") {
+  if (applicationOutcome.kind === "skipped_missing_section" || applicationOutcome.kind === "read_only") {
     return normalizationNotificationsSchema.parse([]);
   }
   const finalTasks = new Map(

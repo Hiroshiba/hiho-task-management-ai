@@ -90,6 +90,13 @@ export {
   ipcSyncResponseSchema,
   ipcSyncResultSchema,
   ipcSyncStateEventSchema,
+  ipcProposalHistoryStatusSchema,
+  ipcProposalHistoryGetStatusInputSchema,
+  ipcProposalHistoryGetStatusResponseSchema,
+  ipcProposalHistoryConfirmInputSchema,
+  ipcProposalHistoryConfirmResponseSchema,
+  ipcProposalHistorySynchronizeInputSchema,
+  ipcProposalHistorySynchronizeResponseSchema,
 } from "./schemas";
 export type {
   IpcAiApprovalInput,
@@ -143,4 +150,7 @@ export type {
   IpcSyncInput,
   IpcSyncResult,
   IpcSyncStateEvent,
+  IpcProposalHistoryStatus,
+  IpcProposalHistoryConfirmInput,
+  IpcProposalHistorySynchronization,
 } from "./schemas";

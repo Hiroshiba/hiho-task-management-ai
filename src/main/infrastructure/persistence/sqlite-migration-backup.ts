@@ -44,11 +44,22 @@ function assertBackupMatchesSource(
   if (JSON.stringify(sourceRows) !== JSON.stringify(backupRows)) {
     throw new Error("移行前バックアップの旧適用ジャーナルが元データと一致しません。");
   }
+  if (version === 8) {
+    const sourceHistory = source.prepare<[], unknown>(
+      "SELECT * FROM legacy_application_history ORDER BY proposal_id, operation_id",
+    ).all();
+    const backupHistory = backup.prepare<[], unknown>(
+      "SELECT * FROM legacy_application_history ORDER BY proposal_id, operation_id",
+    ).all();
+    if (JSON.stringify(sourceHistory) !== JSON.stringify(backupHistory)) {
+      throw new Error("移行前バックアップの旧適用履歴が元データと一致しません。");
+    }
+  }
 }
 
 function assertBackupReadable(backup: SqliteConnection): void {
   const version = backup.pragma("user_version", { simple: true });
-  if (typeof version !== "number" || !Number.isInteger(version) || version < 3 || version > 7) {
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 3 || version > 8) {
     throw new Error("移行前バックアップのschema versionを確認できません。");
   }
   const integrity = backup.prepare<[], IntegrityRow>("PRAGMA integrity_check").all();
@@ -67,23 +78,41 @@ export function backupSqliteBeforeMigration(
     throw new Error("移行前のSQLite schema versionを読み取れません。");
   }
   if (version === 0) return undefined;
-  if (version < 3 || version > 8) {
+  if (version < 3 || version > 9) {
     throw new Error(`未対応のSQLite schema versionです: ${version}`);
+  }
+  if (version === 8) {
+    const preV9Path = `${dbPath}.pre-v9.backup.sqlite3`;
+    const preV9Existing = captureSecurePersistentFile(preV9Path, "SQLite v9移行前バックアップ");
+    const preV9Snapshot = preV9Existing.kind === "existing"
+      ? preV9Existing
+      : ensureSecurePersistentFile(preV9Path, "SQLite v9移行前バックアップ");
+    if (statSync(preV9Path).size === 0) {
+      source.prepare<[string]>("VACUUM INTO ?").run(preV9Path);
+    }
+    assertSecurePersistentFileSnapshot(preV9Path, preV9Snapshot, "SQLite v9移行前バックアップ");
+    const preV9 = new BetterSqlite3(preV9Path, { readonly: true, fileMustExist: true });
+    try {
+      assertBackupReadable(preV9);
+      assertBackupMatchesSource(source, preV9, version);
+    } finally {
+      preV9.close();
+    }
   }
   const backupPath = `${dbPath}.pre-v8.backup.sqlite3`;
   const existing = captureSecurePersistentFile(backupPath, "SQLite移行前バックアップ");
-  if (version === 8 && existing.kind === "missing") return undefined;
-  const snapshot = version === 8 || existing.kind === "existing"
+  if (version >= 8 && existing.kind === "missing") return undefined;
+  const snapshot = version >= 8 || existing.kind === "existing"
     ? existing
     : ensureSecurePersistentFile(backupPath, "SQLite移行前バックアップ");
-  if (version !== 8 && statSync(backupPath).size === 0) {
+  if (version < 8 && statSync(backupPath).size === 0) {
     source.prepare<[string]>("VACUUM INTO ?").run(backupPath);
   }
   assertSecurePersistentFileSnapshot(backupPath, snapshot, "SQLite移行前バックアップ");
   const backup = new BetterSqlite3(backupPath, { readonly: true, fileMustExist: true });
   try {
     assertBackupReadable(backup);
-    if (version !== 8) assertBackupMatchesSource(source, backup, version);
+    if (version < 8) assertBackupMatchesSource(source, backup, version);
   } finally {
     backup.close();
   }

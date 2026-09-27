@@ -10,6 +10,7 @@ const mockFeatureNameSchema = z.enum([
   "asana",
   "readModel",
   "sync",
+  "proposalHistory",
   "setup",
   "gui",
   "externalAgent",
@@ -112,6 +113,9 @@ export async function createTaskHubApi(search: string, nativeApi: TaskHubApi | u
     },
     get sync() {
       return selectTaskHubNamespace("sync", mockSelection, nativeApi);
+    },
+    get proposalHistory() {
+      return selectTaskHubNamespace("proposalHistory", mockSelection, nativeApi);
     },
     get setup() {
       return selectTaskHubNamespace("setup", mockSelection, nativeApi);

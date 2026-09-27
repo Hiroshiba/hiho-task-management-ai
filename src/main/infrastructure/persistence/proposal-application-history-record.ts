@@ -163,8 +163,8 @@ export const historyRowSchema = z.object({
   source_stage: z.string(),
   source_final_result: z.enum(["applied", "not_applied", "unknown", "failed"]).nullable(),
   source_recovery_reason: z.string().nullable(),
-  confirmation_state: z.enum(["not_required", "required", "confirmed"]),
-  confirmed_result: z.enum(["applied", "not_applied"]).nullable(),
+  confirmation_state: z.enum(["not_required", "required", "confirmed", "synchronized"]),
+  confirmed_result: z.enum(["applied", "not_applied", "manually_adjusted"]).nullable(),
   snapshot_json: z.string(),
   snapshot_sha256: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
@@ -351,12 +351,25 @@ export function parseLegacyHistoryStep(value: unknown): LegacyProposalExecutionS
   if (
     (history.confirmation_state === "not_required" && needsConfirmation)
     || (history.confirmation_state !== "not_required" && !needsConfirmation)
-    || (history.confirmation_state === "confirmed") !== (history.confirmed_result != null)
+    || (history.confirmation_state === "confirmed" || history.confirmation_state === "synchronized")
+      !== (history.confirmed_result != null)
   ) {
     throw new Error("旧適用履歴の確認状態が元の結果と一致しません。");
   }
   const step = parseLegacyStep(original.normalized);
   if (history.confirmation_state === "confirmed") {
+    const confirmedResult = history.confirmed_result;
+    if (confirmedResult == null) {
+      throw new Error("旧適用履歴の確認結果がありません。");
+    }
+    return {
+      ...step,
+      state: "synchronization_required",
+      confirmation_state: history.confirmation_state,
+      confirmed_result: confirmedResult,
+    };
+  }
+  if (history.confirmation_state === "synchronized") {
     const confirmedResult = history.confirmed_result;
     if (confirmedResult == null) {
       throw new Error("旧適用履歴の確認結果がありません。");

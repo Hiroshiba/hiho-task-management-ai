@@ -13,4 +13,5 @@ export {
   type IpcServicePorts,
   type IpcSetupPort,
   type IpcSyncPort,
+  type IpcProposalHistoryPort,
 } from "./registry";

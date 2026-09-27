@@ -124,6 +124,12 @@ import {
   ipcSyncGetStateResponseSchema,
   ipcSyncResponseSchema,
   ipcSyncStateEventSchema,
+  ipcProposalHistoryGetStatusInputSchema,
+  ipcProposalHistoryGetStatusResponseSchema,
+  ipcProposalHistoryConfirmInputSchema,
+  ipcProposalHistoryConfirmResponseSchema,
+  ipcProposalHistorySynchronizeInputSchema,
+  ipcProposalHistorySynchronizeResponseSchema,
   type IpcAiApprovalInput,
   type IpcAppUpdateState,
   type IpcAiApprovalResult,
@@ -169,6 +175,9 @@ import {
   type IpcSyncInput,
   type IpcSyncResult,
   type IpcSyncStateEvent,
+  type IpcProposalHistoryStatus,
+  type IpcProposalHistoryConfirmInput,
+  type IpcProposalHistorySynchronization,
 } from "../../shared/ipc";
 
 type MaybePromise<T> = T | PromiseLike<T>;
@@ -205,6 +214,13 @@ export interface IpcSyncPort {
   getState(): MaybePromise<IpcSyncStateEvent>;
   run(input: IpcSyncInput, signal: AbortSignal): MaybePromise<IpcSyncSourceResult>;
   onState?(listener: (state: IpcSyncStateEvent) => void): () => void;
+}
+
+/** 旧適用履歴の明示照合と読取同期をIPCへ提供します。 */
+export interface IpcProposalHistoryPort {
+  getStatus(): MaybePromise<IpcProposalHistoryStatus>;
+  confirm(input: IpcProposalHistoryConfirmInput): MaybePromise<IpcProposalHistoryStatus>;
+  synchronize(signal: AbortSignal): MaybePromise<IpcProposalHistorySynchronization>;
 }
 
 /** 設定済みAsana認証操作をIPCへ提供するポートです。 */
@@ -316,6 +332,7 @@ export interface IpcServicePorts {
   readonly asana?: IpcAsanaPort;
   readonly readModel?: IpcReadModelPort;
   readonly sync?: IpcSyncPort;
+  readonly proposalHistory?: IpcProposalHistoryPort;
   readonly setup?: IpcSetupPort;
   readonly gui?: IpcGuiEditPort;
   readonly externalAgent?: IpcExternalAgentPort;
@@ -626,6 +643,21 @@ export class IpcHandlerRegistry {
     this.registerPortHandle(
       ipcMain, "sync:get-state", ipcSyncGetStateInputSchema, ipcSyncGetStateResponseSchema, "sync",
       async (port) => port.getState(),
+    );
+    this.registerPortHandle(
+      ipcMain, "proposal-history:get-status", ipcProposalHistoryGetStatusInputSchema,
+      ipcProposalHistoryGetStatusResponseSchema, "proposalHistory",
+      async (port) => port.getStatus(),
+    );
+    this.registerPortHandle(
+      ipcMain, "proposal-history:confirm", ipcProposalHistoryConfirmInputSchema,
+      ipcProposalHistoryConfirmResponseSchema, "proposalHistory",
+      async (port, input) => port.confirm(input),
+    );
+    this.registerPortHandle(
+      ipcMain, "proposal-history:synchronize", ipcProposalHistorySynchronizeInputSchema,
+      ipcProposalHistorySynchronizeResponseSchema, "proposalHistory",
+      async (port, _input, signal) => port.synchronize(signal),
     );
     this.registerPortHandle(
       ipcMain, "setup:get-state", ipcEmptyRequestSchema, ipcSetupStateResponseSchema, "setup",

@@ -179,7 +179,7 @@ const externalAgentOperationKind: AsanaOperationKind = "external_apply";
 
 type SavedOperationStatusResult =
   | { readonly kind: "journal"; readonly journal: ApplicationJournal }
-  | Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" }>;
+  | Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" | "legacy_history" }>;
 
 export type ExternalAgentBaseline = {
   readonly snapshot: AiWorkflowSnapshot;

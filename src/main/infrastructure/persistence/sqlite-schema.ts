@@ -1,6 +1,6 @@
 import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageSchemaVersion = 8;
+export const storageSchemaVersion = 9;
 
 export const storageLegacyTableNames = [
   "task_cache",
@@ -35,12 +35,12 @@ CREATE TABLE legacy_application_history (
   source_stage TEXT NOT NULL,
   source_final_result TEXT,
   source_recovery_reason TEXT,
-  confirmation_state TEXT NOT NULL CHECK (confirmation_state IN ('not_required', 'required', 'confirmed')),
-  confirmed_result TEXT CHECK (confirmed_result IS NULL OR confirmed_result IN ('applied', 'not_applied')),
+  confirmation_state TEXT NOT NULL CHECK (confirmation_state IN ('not_required', 'required', 'confirmed', 'synchronized')),
+  confirmed_result TEXT CHECK (confirmed_result IS NULL OR confirmed_result IN ('applied', 'not_applied', 'manually_adjusted')),
   snapshot_json TEXT NOT NULL,
   snapshot_sha256 TEXT NOT NULL,
   PRIMARY KEY (proposal_id, operation_id),
-  CHECK ((confirmation_state = 'confirmed') = (confirmed_result IS NOT NULL))
+  CHECK ((confirmation_state IN ('confirmed', 'synchronized')) = (confirmed_result IS NOT NULL))
 );
 `;
 

@@ -76,6 +76,10 @@ import {
   ipcSyncGetStateResponseSchema,
   ipcSyncResponseSchema,
   ipcSyncStateEventSchema,
+  ipcProposalHistoryGetStatusResponseSchema,
+  ipcProposalHistoryConfirmInputSchema,
+  ipcProposalHistoryConfirmResponseSchema,
+  ipcProposalHistorySynchronizeResponseSchema,
 } from "../shared/ipc";
 
 function invoke<TInput, TOutput>(
@@ -193,6 +197,22 @@ const api: TaskHubApi = {
       "sync:state:unsubscribe",
       ipcSyncStateEventSchema,
       listener,
+    ),
+  },
+  proposalHistory: {
+    getStatus: () => invokeEmpty(
+      "proposal-history:get-status",
+      ipcProposalHistoryGetStatusResponseSchema,
+    ),
+    confirm: (input) => invoke(
+      "proposal-history:confirm",
+      ipcProposalHistoryConfirmInputSchema,
+      ipcProposalHistoryConfirmResponseSchema,
+      input,
+    ),
+    synchronize: () => invokeEmpty(
+      "proposal-history:synchronize",
+      ipcProposalHistorySynchronizeResponseSchema,
     ),
   },
   setup: {

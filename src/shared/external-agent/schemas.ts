@@ -433,6 +433,13 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
         result: z.discriminatedUnion("kind", [
           z.object({ kind: z.literal("journal"), journal: applicationJournalReadableSchema }).strict(),
           z.object({
+            kind: z.literal("legacy_history"),
+            source_stage: z.string(),
+            source_final_result: z.enum(["applied", "not_applied", "unknown", "failed"]).nullable(),
+            confirmation_state: z.enum(["not_required", "required", "confirmed", "synchronized"]),
+            confirmed_result: z.enum(["applied", "not_applied", "manually_adjusted"]).nullable(),
+          }).strict(),
+          z.object({
             kind: z.literal("execution"),
             execution_id: identifierSchema,
             operation: savedExecutionOperationResultSchema,

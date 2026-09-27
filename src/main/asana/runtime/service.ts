@@ -353,6 +353,24 @@ export class AsanaSyncRuntime {
     return asanaSyncRuntimeStateSchema.parse(this.state);
   }
 
+  /** 専用の読取同期で保存した状態をランタイムへ反映します。 */
+  public acceptReadOnlySynchronization(syncedAt: string, signal: AbortSignal): void {
+    validateAbortSignal(signal);
+    signal.throwIfAborted();
+    if (!this.operationQueueHasOwner(signal)) {
+      throw new Error("読取同期の実行権を所有していません。");
+    }
+    const saved = this.readSyncState();
+    if (saved?.last_successful_sync_at !== syncedAt) {
+      throw new Error("読取同期の保存時刻が同期結果と一致しません。");
+    }
+    this.lastSuccessfulSyncAt = saved.last_successful_sync_at;
+    this.lastErrorCode = undefined;
+    this.connectionState = { kind: "online" };
+    this.publishState(createOnlineRuntimeState(this.lastSuccessfulSyncAt, undefined, []));
+    this.armTimer();
+  }
+
   /** 同期ランタイムを停止します。 */
   public async stop(): Promise<void> {
     if (!this.stopped) {

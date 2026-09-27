@@ -67,6 +67,8 @@ export class SqliteLegacyProposalExecutionRepository implements LegacyProposalEx
     const state: LegacyProposalExecution["state"] = steps.some(
       (step) => step.state === "confirmation_required",
     ) ? "confirmation_required" : steps.some(
+      (step) => step.state === "synchronization_required",
+    ) ? "synchronization_required" : steps.some(
       (step) => step.state === "failed",
     ) ? "failed" : "succeeded";
     return {
@@ -109,6 +111,7 @@ export class SqliteLegacyProposalExecutionRepository implements LegacyProposalEx
       return result;
     });
     return [...residual, ...histories.filter((result) => result.kind === "rejected"
-      || result.execution.state === "confirmation_required")];
+      || result.execution.state === "confirmation_required"
+      || result.execution.state === "synchronization_required")];
   }
 }

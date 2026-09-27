@@ -168,6 +168,55 @@ const syncRequestSchema = z
   .object({ mode: synchronizationModeSchema })
   .strict();
 
+const proposalHistoryEntrySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("confirmation_required"),
+    proposal_id: identifierSchema,
+    operation_id: identifierSchema,
+    target_id: identifierSchema,
+    target_kind: z.enum(["task", "temporary", "new_task"]),
+    source_stage: z.string(),
+    source_final_result: z.enum(["unknown"]).nullable(),
+  }).strict(),
+  z.object({
+    kind: z.literal("synchronization_required"),
+    proposal_id: identifierSchema,
+    operation_id: identifierSchema,
+    target_id: identifierSchema,
+    target_kind: z.enum(["task", "temporary", "new_task"]),
+    confirmed_result: z.enum(["applied", "not_applied", "manually_adjusted"]),
+  }).strict(),
+  z.object({
+    kind: z.literal("migration_failed"),
+    proposal_id: identifierSchema,
+    operation_id: identifierSchema,
+    error_id: identifierSchema,
+  }).strict(),
+]);
+
+export const ipcProposalHistoryStatusSchema = z.object({
+  entries: z.array(proposalHistoryEntrySchema),
+}).strict();
+export const ipcProposalHistoryGetStatusInputSchema = emptyRequestSchema;
+export const ipcProposalHistoryGetStatusResponseSchema = responseSchema(ipcProposalHistoryStatusSchema);
+export const ipcProposalHistoryConfirmInputSchema = z.object({
+  proposal_id: identifierSchema,
+  operation_id: identifierSchema,
+  checked_target_id: identifierSchema,
+  confirmed_result: z.enum(["applied", "not_applied", "manually_adjusted"]),
+  asana_checked: z.literal(true),
+}).strict();
+export const ipcProposalHistoryConfirmResponseSchema = responseSchema(ipcProposalHistoryStatusSchema);
+export const ipcProposalHistorySynchronizeInputSchema = emptyRequestSchema;
+const proposalHistorySynchronizationSchema = z.object({
+  status: ipcProposalHistoryStatusSchema,
+  synced_at: isoDateTimeSchema,
+}).strict();
+export const ipcProposalHistorySynchronizeResponseSchema = responseSchema(proposalHistorySynchronizationSchema);
+export type IpcProposalHistoryStatus = z.infer<typeof ipcProposalHistoryStatusSchema>;
+export type IpcProposalHistoryConfirmInput = z.infer<typeof ipcProposalHistoryConfirmInputSchema>;
+export type IpcProposalHistorySynchronization = z.infer<typeof proposalHistorySynchronizationSchema>;
+
 const activeTaskStatusSchema = z.enum(["not_started", "in_progress"]);
 const taskTitleSchema = createUtf8ByteLimitedStringSchema(1_024).refine(
   (value) => value.trim().length > 0,
@@ -582,6 +631,9 @@ export const ipcChannelSchema = z.enum([
   "sync:state:subscribe",
   "sync:state:unsubscribe",
   "sync:state",
+  "proposal-history:get-status",
+  "proposal-history:confirm",
+  "proposal-history:synchronize",
   "setup:get-state",
   "setup:get-integration-status",
   "setup:start",

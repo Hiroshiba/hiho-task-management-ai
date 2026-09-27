@@ -397,6 +397,28 @@ function migrateSchemaFromV7(
   migrate();
 }
 
+function migrateSchemaFromV8(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    assertExecutionTableColumns(database);
+    assertHistoryTableColumns(database);
+    const sourceCount = readTableRowCount(database, "legacy_application_history");
+    database.exec("ALTER TABLE legacy_application_history RENAME TO legacy_application_history_v8");
+    createHistoryTable(database);
+    database.exec(`INSERT INTO legacy_application_history
+      SELECT * FROM legacy_application_history_v8`);
+    assertTableRowCount(database, "legacy_application_history", sourceCount);
+    database.exec("DROP TABLE legacy_application_history_v8");
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
 export function initializeSqliteSchema(
   database: SqliteDatabase,
@@ -452,6 +474,11 @@ export function initializeSqliteSchema(
 
   if (userVersion === 7) {
     migrateSchemaFromV7(database, transaction);
+    return;
+  }
+
+  if (userVersion === 8) {
+    migrateSchemaFromV8(database, transaction);
     return;
   }
 
