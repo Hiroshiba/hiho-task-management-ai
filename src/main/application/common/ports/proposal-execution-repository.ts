@@ -45,8 +45,16 @@ export type SaveProposalExecution = {
   readonly plan: TaskWritePlan;
   readonly proposal_id?: string;
   readonly proposal_context?: ProposalExecutionContext;
-  readonly retry_of_execution_id?: string;
   readonly created_at: string;
+};
+
+export type SaveRetryProposalExecution = SaveProposalExecution & {
+  readonly retry_of_execution_id: string;
+};
+
+export type SavedRetryProposalExecution<Result extends object> = {
+  readonly execution: ProposalExecution<Result>;
+  readonly created: boolean;
 };
 
 export type StartProposalExecutionStep = {
@@ -77,6 +85,7 @@ export type CompleteProposalExecution<Result extends object> = {
 export interface ProposalExecutionRepository<Result extends object> {
   onChanged(listener: (execution: ProposalExecution<Result>) => void): () => void;
   save(input: SaveProposalExecution): void;
+  saveRetry(input: SaveRetryProposalExecution): SavedRetryProposalExecution<Result>;
   get(executionId: string): ProposalExecution<Result> | undefined;
   getByProposal(proposalId: string): readonly ProposalExecution<Result>[];
   getIncomplete(): readonly ProposalExecution<Result>[];

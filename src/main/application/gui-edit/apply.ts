@@ -52,7 +52,7 @@ export type GuiEditStartResult =
   | { readonly kind: "execution"; readonly execution: ProposalExecution<GuiTaskWriteResult> };
 
 export type GuiEditExecutionPort = {
-  readonly repository: Pick<ProposalExecutionRepository<GuiTaskWriteResult>, "save" | "get" | "getIncomplete">;
+  readonly repository: Pick<ProposalExecutionRepository<GuiTaskWriteResult>, "save" | "saveRetry" | "get" | "getIncomplete">;
   readonly engine: { run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<GuiTaskWriteResult>> };
   readonly createId: () => string;
   readonly now: () => string;

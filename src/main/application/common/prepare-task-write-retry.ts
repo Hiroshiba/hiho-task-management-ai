@@ -1,4 +1,4 @@
-import type { ProposalExecution, SaveProposalExecution } from "./ports/proposal-execution-repository";
+import type { ProposalExecution, SaveRetryProposalExecution } from "./ports/proposal-execution-repository";
 import { createTaskWritePlan, type TaskWritePayloadFingerprint } from "./task-write-plan";
 
 /** 明示再試行できないexecutionを表します。 */
@@ -15,7 +15,7 @@ export function prepareTaskWriteRetry(
   executionId: string,
   createdAt: string,
   fingerprint: TaskWritePayloadFingerprint,
-): SaveProposalExecution {
+): SaveRetryProposalExecution {
   if (source.state !== "failed" && source.state !== "confirmation_required") {
     throw new TaskWriteRetryNotAllowedError();
   }
@@ -24,10 +24,7 @@ export function prepareTaskWriteRetry(
     origin: source.plan.origin,
     ...(source.plan.gui_context == null ? {} : { gui_context: source.plan.gui_context }),
     known_references: source.plan.known_references,
-    steps: source.plan.steps.map((step, index) => ({
-      ...step,
-      step_id: `${executionId}:${index + 1}`,
-    })),
+    steps: source.plan.steps,
   }, fingerprint);
   return {
     plan,

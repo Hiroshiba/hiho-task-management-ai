@@ -38,7 +38,8 @@ export class GuiEditExecutionWorkflow {
       this.port.now(),
       this.port.fingerprint,
     );
-    this.port.repository.save(retry);
-    return this.port.engine.run(retry.plan.execution_id, signal);
+    const saved = this.port.repository.saveRetry(retry);
+    if (!saved.created) return saved.execution;
+    return this.port.engine.run(saved.execution.execution_id, signal);
   }
 }

@@ -56,7 +56,7 @@ type ApprovalResult = {
 };
 
 export type StoredProposalExecutionPort = {
-  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "get" | "getByProposal" | "getIncomplete" | "save">;
+  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "get" | "getByProposal" | "getIncomplete" | "save" | "saveRetry">;
   readonly historyRepository: ProposalApplicationHistoryRepository;
   readonly engine: {
     run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<StoredProposalWriteResult>>;

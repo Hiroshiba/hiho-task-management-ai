@@ -5,10 +5,12 @@ import type {
   ProposalExecution,
   ProposalExecutionRepository,
   SaveProposalExecution,
+  SaveRetryProposalExecution,
+  SavedRetryProposalExecution,
   SettleProposalExecutionStep,
   StartProposalExecutionStep,
 } from "../../application/common/ports/proposal-execution-repository";
-import { isTaskWriteJsonValue } from "../../domain/task-write-values";
+import { canonicalizeTaskWriteJson, isTaskWriteJsonValue } from "../../domain/task-write-values";
 import { taskWriteSynchronizationFailureCodeSchema } from "../../application/common/ports/asana-task-write";
 import type { PersistenceRuntime } from "./persistence-runtime";
 import {
@@ -76,14 +78,8 @@ implements ProposalExecutionRepository<Result> {
     const proposalId = input.proposal_id == null
       ? null
       : identifierSchema.parse(input.proposal_id);
-    const retryOfExecutionId = input.retry_of_execution_id == null
-      ? null
-      : identifierSchema.parse(input.retry_of_execution_id);
     const createdAt = timestampSchema.parse(input.created_at);
-    if (
-      (plan.origin === "proposal") !== (proposalId != null)
-      || retryOfExecutionId === plan.execution_id
-    ) {
+    if ((plan.origin === "proposal") !== (proposalId != null)) {
       throw new Error("executionの実行元とproposal IDが一致しません。");
     }
     const save = this.runtime.transaction(() => {
@@ -100,7 +96,7 @@ implements ProposalExecutionRepository<Result> {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)`).run(
         plan.execution_id,
         proposalId,
-        retryOfExecutionId,
+        null,
         plan.format_version,
         plan.origin,
         JSON.stringify(plan),
@@ -135,6 +131,119 @@ implements ProposalExecutionRepository<Result> {
       return execution;
     });
     this.publishChanged(save());
+  }
+
+  /** 元の確定済みstepを継承して明示再試行を原子的に保存します。 */
+  public saveRetry(input: SaveRetryProposalExecution): SavedRetryProposalExecution<Result> {
+    const plan = this.parsePlan(input.plan);
+    const context = parseExecutionContext(input.proposal_context, plan);
+    const proposalId = input.proposal_id == null
+      ? null
+      : identifierSchema.parse(input.proposal_id);
+    const sourceId = identifierSchema.parse(input.retry_of_execution_id);
+    const createdAt = timestampSchema.parse(input.created_at);
+    if ((plan.origin === "proposal") !== (proposalId != null) || sourceId === plan.execution_id) {
+      throw new Error("再試行executionの実行元と参照元が一致しません。");
+    }
+    const save = this.runtime.transaction((): SavedRetryProposalExecution<Result> => {
+      const source = this.get(sourceId);
+      if (source == null) {
+        throw new Error("再試行元のexecutionがありません。");
+      }
+      if (source.state !== "failed" && source.state !== "confirmation_required") {
+        throw new Error("未停止のexecutionを再試行できません。");
+      }
+      if (source.proposal_id !== (proposalId ?? undefined)
+        || canonicalizeTaskWriteJson({
+          ...source.plan,
+          execution_id: plan.execution_id,
+          plan_fingerprint: plan.plan_fingerprint,
+        }) !== canonicalizeTaskWriteJson(plan)
+        || (source.proposal_context == null) !== (context == null)
+        || (source.proposal_context != null && context != null
+          && canonicalizeTaskWriteJson(source.proposal_context) !== canonicalizeTaskWriteJson(context))) {
+        throw new Error("再試行planと元executionの保存内容が一致しません。");
+      }
+      const successors = this.runtime.connection.prepare<[string], ExecutionIdRow>(
+        "SELECT execution_id FROM proposal_executions WHERE retry_of_execution_id = ?",
+      ).all(sourceId);
+      if (successors.length > 1) {
+        throw new Error("再試行元のexecutionに複数の後継があります。");
+      }
+      const successor = successors[0];
+      if (successor != null) {
+        const execution = this.get(successor.execution_id);
+        if (execution == null) {
+          throw new Error("再試行済みexecutionを読み出せません。");
+        }
+        return { execution, created: false };
+      }
+      const stopped = source.steps.find((step) => step.state === source.state);
+      if (stopped == null) {
+        throw new Error("再試行元の停止stepがありません。");
+      }
+      const resumeAsana = stopped.descriptor.kind !== "proposal_operation_check"
+        && stopped.descriptor.kind !== "local_synchronize";
+      const state = resumeAsana || source.steps.some((step) => step.state === "succeeded")
+        ? "running"
+        : "planned";
+      this.runtime.connection.prepare<
+        [
+          string, string | null, string, number, string, string, string,
+          string | null, string | null, string, string, string,
+        ],
+        unknown
+      >(`INSERT INTO proposal_executions (
+        execution_id, proposal_id, retry_of_execution_id, format_version,
+        origin, plan_json, plan_fingerprint, context_json, context_fingerprint,
+        state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        plan.execution_id,
+        proposalId,
+        sourceId,
+        plan.format_version,
+        plan.origin,
+        JSON.stringify(plan),
+        plan.plan_fingerprint,
+        context == null ? null : JSON.stringify(context),
+        context == null ? null : fingerprintProposalExecutionContext(context),
+        state,
+        createdAt,
+        createdAt,
+      );
+      const resumeStepId = resumeAsana ? stopped.descriptor.step_id : null;
+      const copied = this.runtime.connection.prepare<
+        [string, string | null, string | null, string, string],
+        ChangeResult
+      >(`INSERT INTO proposal_execution_steps (
+        execution_id, step_id, step_order, kind, executor_version,
+        payload_fingerprint, state, attempt, receipt_json, updated_at
+      ) SELECT ?, step_id, step_order, kind, executor_version,
+        payload_fingerprint,
+        CASE WHEN state = 'succeeded' THEN 'succeeded'
+          WHEN step_id = ? THEN 'running' ELSE 'planned' END,
+        CASE WHEN state = 'succeeded' THEN attempt
+          WHEN step_id = ? THEN 1 ELSE 0 END,
+        CASE WHEN state = 'succeeded' THEN receipt_json ELSE NULL END,
+        ? FROM proposal_execution_steps WHERE execution_id = ? ORDER BY step_order`).run(
+        plan.execution_id,
+        resumeStepId,
+        resumeStepId,
+        createdAt,
+        sourceId,
+      );
+      if (copied.changes !== plan.steps.length) {
+        throw new Error("再試行stepの保存件数がplanと一致しません。");
+      }
+      const execution = this.get(plan.execution_id);
+      if (execution == null) {
+        throw new Error("再試行executionを読み出せません。");
+      }
+      return { execution, created: true };
+    });
+    const saved = save();
+    if (saved.created) this.publishChanged(saved.execution);
+    return saved;
   }
 
   /** IDに一致するexecutionと全stepを検証して読み出します。 */

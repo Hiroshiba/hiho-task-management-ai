@@ -108,6 +108,10 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   const gui: GuiEditExecutionPort = {
     repository: {
       save: (input) => repository.save(input),
+      saveRetry: (input) => {
+        const saved = repository.saveRetry(input);
+        return { ...saved, execution: guiExecution(saved.execution) };
+      },
       get: (executionId) => {
         const execution = repository.get(executionId);
         return execution == null || execution.plan.origin !== "gui-edit"
@@ -125,6 +129,10 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   const proposal: StoredProposalExecutionPort = {
     repository: {
       save: (input) => repository.save(input),
+      saveRetry: (input) => {
+        const saved = repository.saveRetry(input);
+        return { ...saved, execution: proposalExecution(saved.execution) };
+      },
       get: (executionId) => {
         const execution = repository.get(executionId);
         return execution == null || execution.plan.origin !== "proposal" ? undefined : proposalExecution(execution);
