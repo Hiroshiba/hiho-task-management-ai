@@ -4239,23 +4239,8 @@
     },
     {
       "path": "src/main/persistent-error-log.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/persistent-error-log.ts",
-      "rule": "module-mutable",
-      "symbol": "persistentErrorLogFailureOutputEnabled"
-    },
-    {
-      "path": "src/main/persistent-error-log.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/workflow/retry.ts"
-    },
-    {
-      "path": "src/main/persistent-error-log.ts",
-      "rule": "old-import",
-      "symbol": "src/main/application/diagnostics.ts"
     },
     {
       "path": "src/main/persistent-error-log.ts",
@@ -4276,16 +4261,6 @@
       "path": "src/main/persistent-error-log.ts",
       "rule": "old-import",
       "symbol": "src/main/redact-sensitive-text.ts"
-    },
-    {
-      "path": "src/main/persistent-error-log.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/persistent-error-log.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/main/persistent-error-log.ts",

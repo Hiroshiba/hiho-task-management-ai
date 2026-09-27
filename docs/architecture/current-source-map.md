@@ -1,6 +1,6 @@
 # 現行source map
 
-基準commit: `1a20178ab1a593ca5b0111728b504bb5466a8165`。対象は`src`以下の手編集source 196件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=1a20178ab1a593ca5b0111728b504bb5466a8165 --write`。
+基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 351件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
 
 ## 機能と入口
 
@@ -22,7 +22,7 @@
 | タスク画面 | renderer/features/tasks | src/renderer/src/Task*.vue |
 | 変更案画面 | renderer/features/proposals | src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue |
 | 設定画面 | renderer/features/settings | src/renderer/src/SettingsDialog.vue, src/renderer/src/SetupWizard.vue |
-| ログ・診断 | main/infrastructure/logging | src/main/persistent-error-log.ts, src/main/storage/diagnostic-log.ts |
+| ログ・診断 | main/infrastructure/logging | src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/storage/diagnostic-log.ts |
 | mock transport | renderer/shared/mock | src/renderer/src/task-hub.ts, src/renderer/src/mocks/ |
 
 | 入口 | 現行source | 最終owner |
@@ -37,7 +37,7 @@
 | 変更案適用と復旧 | src/main/ai/proposal-application/coordinator.ts | main/application/proposal-apply |
 | GUI編集 | src/main/gui-edit/service.ts | main/application/gui-edit |
 | Asana同期 | src/main/asana/sync/coordinator.ts | main/infrastructure/asana |
-| SQLite schema | src/main/storage/database.ts | main/infrastructure/persistence |
+| SQLite schema | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
 | mock transport | src/renderer/src/task-hub.ts | renderer/shared/api |
 
 ## 全sourceのowner候補
@@ -64,9 +64,104 @@
 | src/main/application/checkpoint.ts | main/infrastructure/persistence |
 | src/main/application/cleanup-aggregation.ts | main/application/task-read |
 | src/main/application/codex-adapter.ts | main/infrastructure/ai |
+| src/main/application/common/errors/error-reporter.ts | main/application/common |
 | src/main/application/diagnostics.ts | main/infrastructure/logging |
+| src/main/application/gui-edit/build-proposal-operation.ts | main/application/gui-edit |
+| src/main/application/gui-edit/index.ts | main/application/gui-edit |
+| src/main/application/gui-edit/relation-graph-validation.ts | main/application/gui-edit |
+| src/main/application/proposal-apply/application-diagnostic.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/application-plan-entry.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/application-plan.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/application-result.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/application-validation.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/apply-planning.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/apply-write-operation.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/apply-writing.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/category-tag-write.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/create-read-back.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/create-rejection-completion.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/create-task-write.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/existing-journal-result.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/external-metadata.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/external-value-comparison.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/journal-progress.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/native-operation-write.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/non-create-write.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/operation-order.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/operation-result.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/post-apply-completion.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-completion.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-failure.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-journal-start.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-operations.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-plan-conversion.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-plan.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-references.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-state.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-task-read.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/recovery-writer-input.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/status-write.ts | main/application/proposal-apply |
+| src/main/application/proposal-generate/approval-comparison.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/approval-conflict-schemas.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/approval-preparation.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/approval-results.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/approval-summary.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/approval-task-read.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/attempt-resources.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/baseline-snapshot.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/basic-validation-schemas.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/basic-value-comparison.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/evidence-binding.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/evidence-inheritance.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/evidence-sources.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-context.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-evidence.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-gui-edit.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-lifecycle.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-preparation.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-prepared-context.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-proposal-record.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-proposal-status.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-request.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-response.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-review.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-state.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-submission.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-task-query.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-validation-response.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-validation.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/graph-validation-schemas.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/impact-ranking.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/index.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-edit.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-evidence.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-view.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/rebind-before.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/retry-diagnostics.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/retry-error-projection.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/stored-proposal.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/task-projection.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-attempt.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-commit.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-preparation.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-prompt.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-response.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/turn-retry.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-options.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/workspace-validation.ts | main/application/proposal-generate |
 | src/main/application/schemas.ts | main/application/common |
 | src/main/application/service.ts | main/bootstrap |
+| src/main/application/settings/setup-asana-authorization.ts | main/application/settings |
+| src/main/application/settings/setup-asana-resources.ts | main/application/settings |
+| src/main/application/settings/setup-capability.ts | main/application/settings |
+| src/main/application/settings/setup-codex-state.ts | main/application/settings |
+| src/main/application/settings/setup-completion.ts | main/application/settings |
+| src/main/application/settings/setup-external-tool.ts | main/application/settings |
+| src/main/application/settings/setup-validation.ts | main/application/settings |
+| src/main/application/task-read/selected-snapshot.ts | main/application/task-read |
+| src/main/application/task-write/display-order-input.ts | main/application/task-write |
+| src/main/application/task-write/index.ts | main/application/task-write |
 | src/main/asana/client/client.ts | main/infrastructure/asana |
 | src/main/asana/client/index.ts | main/infrastructure/asana |
 | src/main/asana/client/setup-client.ts | main/infrastructure/asana |
@@ -105,10 +200,24 @@
 | src/main/auth/secret-storage/index.ts | main/infrastructure/persistence |
 | src/main/auth/secret-storage/schemas.ts | main/infrastructure/persistence |
 | src/main/auth/secret-storage/secret-storage.ts | main/infrastructure/persistence |
+| src/main/bootstrap/ai-interaction-runtime.ts | main/bootstrap |
+| src/main/bootstrap/ai-session-runtime.ts | main/bootstrap |
+| src/main/bootstrap/asana-reauthentication-runtime.ts | main/bootstrap |
+| src/main/bootstrap/configured-codex-runtime.ts | main/bootstrap |
+| src/main/bootstrap/external-tool-runtime.ts | main/bootstrap |
+| src/main/bootstrap/journal-recovery-runtime.ts | main/bootstrap |
+| src/main/bootstrap/main-lifecycle-runtime.ts | main/bootstrap |
+| src/main/bootstrap/main-window-readiness.ts | main/bootstrap |
+| src/main/bootstrap/obsidian-ports.ts | main/bootstrap |
+| src/main/bootstrap/open-external-resource.ts | main/bootstrap |
+| src/main/bootstrap/operational-context-runtime.ts | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | main/bootstrap |
+| src/main/bootstrap/renderer-environment.ts | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | main/bootstrap |
+| src/main/bootstrap/synchronization-operations.ts | main/bootstrap |
 | src/main/codex/app-server/connection.ts | main/infrastructure/ai |
 | src/main/codex/app-server/errors.ts | main/infrastructure/ai |
 | src/main/codex/app-server/index.ts | main/infrastructure/ai |
-| src/main/codex/app-server/schemas.ts | main/infrastructure/ai |
 | src/main/codex/app-server/version.ts | main/infrastructure/ai |
 | src/main/codex/obsidian/index.ts | main/infrastructure/ai |
 | src/main/codex/obsidian/schemas.ts | main/infrastructure/ai |
@@ -160,6 +269,52 @@
 | src/main/gui-edit/schemas.ts | main/application/gui-edit |
 | src/main/gui-edit/service.ts | main/application/gui-edit |
 | src/main/index.ts | main/bootstrap |
+| src/main/infrastructure/ai/codex-app-server/common-schemas.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/connection-overrides.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/index.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-schemas.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/capability-policy.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-configuration.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-inspector.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-recovery.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-start.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/disable-ai.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/dynamic-tools.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/errors.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/notification-methods.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/notification-router.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/proposal-workspace-tool.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/start-result.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/startup.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/thread-start.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/tool-response.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/turn-coordinator.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/turn-output.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/external-tools/connection-files.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/external-tools/invocation-policy.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/external-tools/json-depth.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/external-tools/run-with-retries.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/external-tools/server-listener.ts | main/infrastructure/ai |
+| src/main/infrastructure/ai/taskctl/local-ipc-files.ts | main/infrastructure/ai |
+| src/main/infrastructure/asana/normalization-plan.ts | main/infrastructure/asana |
+| src/main/infrastructure/asana/request-aborted-error.ts | main/infrastructure/asana |
+| src/main/infrastructure/asana/response-body.ts | main/infrastructure/asana |
+| src/main/infrastructure/asana/sync-normalization.ts | main/infrastructure/asana |
+| src/main/infrastructure/asana/synchronization-run.ts | main/infrastructure/asana |
+| src/main/infrastructure/logging/error-detail-base.ts | main/infrastructure/logging |
+| src/main/infrastructure/logging/index.ts | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | main/infrastructure/logging |
+| src/main/infrastructure/logging/safe-zod-issues.ts | main/infrastructure/logging |
+| src/main/infrastructure/obsidian/read-error.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/secure-note-reader.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/vault-path-security.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/persistence/secure-path-guard.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
+| src/main/ipc/handlers/event-subscriptions.ts | main/ipc |
+| src/main/ipc/handlers/failure-messages.ts | main/ipc |
 | src/main/ipc/index.ts | main/ipc |
 | src/main/ipc/registry.ts | main/ipc |
 | src/main/local-storage-path.ts | main/infrastructure/persistence |
@@ -260,8 +415,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/ai/proposal-application/coordinator.ts | definitiveCreateTaskRejectionStatuses | main/application/proposal-apply |
 | src/main/codex/app-server/version.ts | safeEnvironmentKeys | main/infrastructure/ai |
 | src/main/codex/app-server/version.ts | safeEnvironmentKeysByLowerCase | main/infrastructure/ai |
-| src/main/codex/session/session.ts | requiredSkillNames | main/infrastructure/ai |
-| src/main/external-tools/broker.ts | forbiddenInvocationVerbParts | main/infrastructure/ai |
 | src/main/external-tools/discord.ts | discordThreadTypes | main/infrastructure/ai |
 | src/main/external-tools/schemas.ts | readOnlyCommandHeads | main/infrastructure/ai |
 | src/main/external-tools/schemas.ts | forbiddenCommandParts | main/infrastructure/ai |
@@ -284,7 +437,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/index.ts | persistentErrorLog | main/infrastructure/logging |
 | src/main/index.ts | uncaughtExceptionMonitorRegistered | main/bootstrap |
 | src/main/index.ts | startupGate | main/bootstrap |
-| src/main/persistent-error-log.ts | persistentErrorLogFailureOutputEnabled | main/infrastructure/logging |
 | src/main/security.ts | allowedAsanaExternalHosts | main/bootstrap |
 | src/main/security.ts | allowedAsanaAuthorizationHosts | main/bootstrap |
 | src/main/security.ts | allowedCodexAuthorizationHosts | main/bootstrap |
@@ -469,17 +621,30 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/diagnostics.ts | DiagnosticLogService.nowProvider | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.retentionLimit | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.storage | main/infrastructure/logging |
+| src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.currentContext | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.ports | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.stoppedState | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-preparation.ts | ExternalAgentPreparation.contextPorts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-preparation.ts | ExternalAgentPreparation.contexts | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-preparation.ts | ExternalAgentPreparation.requests | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-review.ts | ExternalAgentReview.currentTarget | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-review.ts | ExternalAgentReview.getState | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-review.ts | ExternalAgentReview.listeners | main/application/proposal-generate |
+| src/main/application/proposal-generate/external-agent-submission.ts | ExternalAgentSubmission.requests | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.ProposalNotFoundError | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.StateError | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.WorkflowError | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.maximumProposals | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.parseProposalId | main/application/proposal-generate |
+| src/main/application/proposal-generate/proposal-store.ts | ProposalStore.selection | main/application/proposal-generate |
 | src/main/application/service.ts | AsanaOAuthRefreshHttpError.cause | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.aiApplicationState | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.aiDeltaListeners | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.aiSessionStarts | main/application/proposal-generate |
+| src/main/application/service.ts | TaskHubApplication.aiInteraction | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.aiRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.aiSessionWorkspaceParentPath | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.aiSessions | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.aiSessionsConfigured | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.aiStartResult | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.aiStatusListeners | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.applicationCoordinator | main/application/proposal-apply |
-| src/main/application/service.ts | TaskHubApplication.asanaReauthenticationOperation | main/application/settings |
+| src/main/application/service.ts | TaskHubApplication.asanaReauthentication | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.capability | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.checkpoint | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.cleanupAggregation | main/application/task-read |
@@ -489,54 +654,43 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/service.ts | TaskHubApplication.codexConnectionFactory | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.codexSession | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.codexWorkspace | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.configuredCodexLaunchState | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.configuredCodexSynchronizationPromise | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.context | main/application/settings |
+| src/main/application/service.ts | TaskHubApplication.configuredCodexRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.database | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.deltaSource | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.diagnostics | main/infrastructure/logging |
-| src/main/application/service.ts | TaskHubApplication.displayOrder | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.externalAgent | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalAgentBridge | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalAgentInstanceId | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalStatusEvidenceCollector | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.externalToolConfigurationOperation | main/application/settings |
-| src/main/application/service.ts | TaskHubApplication.externalToolLifecycle | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.externalToolRegistry | main/application/proposal-generate |
+| src/main/application/service.ts | TaskHubApplication.externalTools | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.fullSource | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.guiEdit | main/application/gui-edit |
 | src/main/application/service.ts | TaskHubApplication.interactiveReadClient | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.interactiveWriteClient | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.journalRecoveryPending | main/application/proposal-apply |
-| src/main/application/service.ts | TaskHubApplication.journalRecoveryPromise | main/application/proposal-apply |
-| src/main/application/service.ts | TaskHubApplication.journalRecoveryRunning | main/application/proposal-apply |
-| src/main/application/service.ts | TaskHubApplication.lastDisplaySyncAt | main/application/task-read |
+| src/main/application/service.ts | TaskHubApplication.journalRecovery | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.lifecycleRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.oauth | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.obsidian | main/application/obsidian-integration |
 | src/main/application/service.ts | TaskHubApplication.operationQueue | main/application/task-read |
+| src/main/application/service.ts | TaskHubApplication.operationalContext | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.operationalServices | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.options | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.planApplier | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.readClient | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.readModel | main/application/task-read |
-| src/main/application/service.ts | TaskHubApplication.readyActivated | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.removeRuntimeSubscription | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.resources | main/application/settings |
-| src/main/application/service.ts | TaskHubApplication.runtime | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.scheduler | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.secretStorage | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.settings | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.setup | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.setupClient | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.stopped | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.syncCoordinator | main/application/task-read |
-| src/main/application/service.ts | TaskHubApplication.syncDiagnosticState | main/application/task-read |
-| src/main/application/service.ts | TaskHubApplication.syncFailureDiagnosticSuppressionCount | main/application/task-read |
-| src/main/application/service.ts | TaskHubApplication.syncStateListeners | main/application/task-read |
+| src/main/application/service.ts | TaskHubApplication.syncStateRuntime | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.synchronizationOperations | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.tokenProvider | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.transport | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.vaultMappingSaveInProgress | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.writeClient | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.writer | main/application/proposal-apply |
+| src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.completionOperation | main/application/settings |
+| src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.dependencies | main/application/settings |
 | src/main/asana/client/client.ts | AsanaReadClient.transport | main/infrastructure/asana |
 | src/main/asana/client/setup-client.ts | AsanaSetupClient.transport | main/infrastructure/asana |
 | src/main/asana/client/task-write-client.ts | AsanaTaskWriteClient.transport | main/infrastructure/asana |
@@ -634,27 +788,55 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/auth/asana-oauth/errors.ts | AsanaOAuthResponseError.status | main/infrastructure/asana |
 | src/main/auth/asana-oauth/errors.ts | AsanaOAuthTokenEndpointError.code | main/infrastructure/asana |
 | src/main/auth/secret-storage/secret-storage.ts | SecretStorage.filePath | main/infrastructure/persistence |
+| src/main/bootstrap/ai-interaction-runtime.ts | AiInteractionRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.sessions | main/bootstrap |
+| src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.starts | main/bootstrap |
+| src/main/bootstrap/asana-reauthentication-runtime.ts | AsanaReauthenticationRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/asana-reauthentication-runtime.ts | AsanaReauthenticationRuntime.operation | main/bootstrap |
+| src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.launchState | main/bootstrap |
+| src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.synchronizationPromise | main/bootstrap |
+| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.configurationOperation | main/bootstrap |
+| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.currentRegistry | main/bootstrap |
+| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.lifecycle | main/bootstrap |
+| src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.pending | main/bootstrap |
+| src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.recoveryPromise | main/bootstrap |
+| src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.running | main/bootstrap |
+| src/main/bootstrap/main-lifecycle-runtime.ts | MainLifecycleRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/main-lifecycle-runtime.ts | MainLifecycleRuntime.readyActivated | main/bootstrap |
+| src/main/bootstrap/main-lifecycle-runtime.ts | MainLifecycleRuntime.stopped | main/bootstrap |
+| src/main/bootstrap/operational-context-runtime.ts | OperationalContextRuntime.context | main/bootstrap |
+| src/main/bootstrap/operational-context-runtime.ts | OperationalContextRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/operational-context-runtime.ts | OperationalContextRuntime.settings | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.aiSessionsConfigured | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.coordinator | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.displayOrder | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.guiEdit | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.runtime | main/bootstrap |
+| src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.writer | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.diagnosticState | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.lastDisplaySyncAt | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.listeners | main/bootstrap |
+| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.removeRuntimeSubscription | main/bootstrap |
+| src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.applicationState | main/bootstrap |
+| src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.dependencies | main/bootstrap |
+| src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.failureDiagnosticSuppressionCount | main/bootstrap |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.capabilities | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.child | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.clientInfo | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.codexHome | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.configOverrides | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.diagnosticListeners | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.diagnostics | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.dynamicToolHandler | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.dynamicToolRequests | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.environment | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.executable | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.forcedStopTimer | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.gracefulStopTimer | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.nextRequestId | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.notificationListeners | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.onError | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.pendingRequests | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.processTerminationTarget | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.queuedWrites | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.requestTimeoutMs | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.state | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stderrLineBytes | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stderrLineCount | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stderrReader | main/infrastructure/ai |
@@ -664,42 +846,34 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stopPromise | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stopReject | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.stopResolve | main/infrastructure/ai |
-| src/main/codex/app-server/connection.ts | CodexAppServerConnection.terminalError | main/infrastructure/ai |
 | src/main/codex/app-server/connection.ts | CodexAppServerConnection.writeQueue | main/infrastructure/ai |
 | src/main/codex/app-server/errors.ts | CodexProcessExitError.exitCode | main/infrastructure/ai |
 | src/main/codex/app-server/errors.ts | CodexProcessExitError.signal | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexProtocolError.failureCode | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexRequestAbortedError.method | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexRequestTimeoutError.method | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexRpcError.operation | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexRpcError.rpcCode | main/infrastructure/ai |
-| src/main/codex/app-server/errors.ts | CodexRpcError.rpcMessage | main/infrastructure/ai |
-| src/main/codex/app-server/schemas.ts | CodexConfigOverride.argument | main/infrastructure/ai |
-| src/main/codex/session/errors.ts | CodexThreadStartCapabilityError.failureCode | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.activeProposalWorkspace | main/infrastructure/ai |
-| src/main/codex/session/session.ts | CodexSessionService.activeTurn | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.additionalLocalSocketPaths | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.broker | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.connection | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.connectionConfigurationChanged | main/infrastructure/ai |
-| src/main/codex/session/session.ts | CodexSessionService.deltaListeners | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.connectionRecovery | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.diagnostics | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.disablePromise | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.dynamicToolHandler | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.frozenTaskctlSnapshot | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.lifecycleAbortListener | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.lifecycleSignal | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.modelFormatInstruction | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.notificationRouter | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.options | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.readOnlyVaultPaths | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.recoveryAbortController | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.removeDiagnosticListener | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.removeDynamicToolListener | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.removeNotificationListener | main/infrastructure/ai |
-| src/main/codex/session/session.ts | CodexSessionService.restartCount | main/infrastructure/ai |
-| src/main/codex/session/session.ts | CodexSessionService.restartPromise | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.responseSerializer | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.safetyViolation | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.selectedModel | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.skillConfiguration | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.startup | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.state | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.stopPromise | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.structuredOutputSchema | main/infrastructure/ai |
@@ -709,12 +883,14 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/codex/session/session.ts | CodexSessionService.threadConfigurationChanged | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.threadId | main/infrastructure/ai |
 | src/main/codex/session/session.ts | CodexSessionService.threadSettingsNotification | main/infrastructure/ai |
+| src/main/codex/session/session.ts | CodexSessionService.turnCoordinator | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.abortListener | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.abortSignal | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.connectionInfo | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.connectionInfoPath | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.connections | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.diagnostics | main/infrastructure/ai |
+| src/main/codex/taskctl/broker.ts | TaskctlBroker.files | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.internalError | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.server | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.snapshotProvider | main/infrastructure/ai |
@@ -726,15 +902,12 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/diagnostic-failure.ts | DiagnosticFailureDispositionError.disposition | main/application/common |
 | src/main/domain/normalization/graph.ts | RelationshipCycleError.relation | main/domain |
 | src/main/domain/normalization/graph.ts | RelationshipCycleError.task_gids | main/domain |
-| src/main/external-agent/service.ts | ExternalAgentService.context | main/application/proposal-generate |
-| src/main/external-agent/service.ts | ExternalAgentService.listeners | main/ipc |
+| src/main/external-agent/service.ts | ExternalAgentService.lifecycle | main/application/proposal-generate |
 | src/main/external-agent/service.ts | ExternalAgentService.options | main/bootstrap |
-| src/main/external-agent/service.ts | ExternalAgentService.preparedContexts | main/application/proposal-generate |
-| src/main/external-agent/service.ts | ExternalAgentService.preparedRequests | main/application/proposal-generate |
+| src/main/external-agent/service.ts | ExternalAgentService.preparation | main/application/proposal-generate |
 | src/main/external-agent/service.ts | ExternalAgentService.proposals | main/application/proposal-apply |
-| src/main/external-agent/service.ts | ExternalAgentService.requests | main/application/proposal-generate |
-| src/main/external-agent/service.ts | ExternalAgentService.reviewTarget | main/application/proposal-apply |
-| src/main/external-agent/service.ts | ExternalAgentService.stopped | main/bootstrap |
+| src/main/external-agent/service.ts | ExternalAgentService.review | main/application/proposal-generate |
+| src/main/external-agent/service.ts | ExternalAgentService.submission | main/application/proposal-generate |
 | src/main/external-agent/service.ts | ExternalAgentServiceError.code | main/application/common |
 | src/main/external-agent/transport.ts | ExternalAgentBridge.acceptingConnections | main/infrastructure/ai |
 | src/main/external-agent/transport.ts | ExternalAgentBridge.connections | main/infrastructure/ai |
@@ -751,13 +924,16 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/external-agent/transport.ts | ExternalAgentBridge.unixEndpointDirectoryPath | main/infrastructure/ai |
 | src/main/external-agent/transport.ts | ExternalAgentBridge.userDataPath | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.activeRuns | main/infrastructure/ai |
+| src/main/external-tools/broker.ts | ExternalToolBroker.connectionFiles | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.connectionInfo | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.connectionInfoPath | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.connections | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.diagnostics | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.discordCredentialProvider | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.endpoint | main/infrastructure/ai |
+| src/main/external-tools/broker.ts | ExternalToolBroker.invocationPolicy | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.registry | main/infrastructure/ai |
+| src/main/external-tools/broker.ts | ExternalToolBroker.runWithRetries | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.server | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.startAbortListener | main/infrastructure/ai |
 | src/main/external-tools/broker.ts | ExternalToolBroker.startAbortSignal | main/infrastructure/ai |
@@ -782,24 +958,59 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/gui-edit/service.ts | AsanaGuiEditService.reportFailure | main/application/gui-edit |
 | src/main/gui-edit/service.ts | AsanaGuiEditService.statusWriteClient | main/application/gui-edit |
 | src/main/gui-edit/service.ts | AsanaGuiEditService.writer | main/application/gui-edit |
+| src/main/infrastructure/ai/codex-app-server/connection-overrides.ts | CodexConfigOverride.argument | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexProtocolError.failureCode | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexRequestAbortedError.method | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexRequestTimeoutError.method | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexRpcError.operation | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexRpcError.rpcCode | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/errors.ts | CodexRpcError.rpcMessage | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.diagnosticListeners | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.diagnostics | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.dynamicToolHandler | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.dynamicToolRequests | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.nextRequestId | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.notificationListeners | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.onError | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.pendingRequests | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.requestTimeoutMs | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.state | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-app-server/rpc-endpoint.ts | CodexRpcEndpoint.terminalError | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-recovery.ts | CodexConnectionRecovery.options | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-recovery.ts | CodexConnectionRecovery.restartCount | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/connection-recovery.ts | CodexConnectionRecovery.restartPromise | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/dynamic-tools.ts | CodexDynamicToolHandler.options | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/errors.ts | CodexThreadStartCapabilityError.failureCode | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/notification-router.ts | CodexSessionNotificationRouter.options | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/startup.ts | CodexSessionStartup.options | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/tool-response.ts | CodexToolResponseSerializer.maximumDynamicToolResponseBytes | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/tool-response.ts | CodexToolResponseSerializer.maximumProposalWorkspaceResponseBytes | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/tool-response.ts | CodexToolResponseSerializer.obsidianResponseSchema | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/tool-response.ts | CodexToolResponseSerializer.taskctlResponseSchema | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.activeTurn | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.deltaListeners | main/infrastructure/ai |
+| src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.options | main/infrastructure/ai |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.encodedSecrets | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.errorLogPath | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.formatter | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.knownSecrets | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.logsPath | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.reported | main/infrastructure/logging |
+| src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.writing | main/infrastructure/logging |
+| src/main/infrastructure/obsidian/read-error.ts | ObsidianReadError.code | main/infrastructure/obsidian |
+| src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.disposed | main/ipc |
+| src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.options | main/ipc |
+| src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.removers | main/ipc |
+| src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.subscribers | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.activeAbortControllers | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.aiStatusSubscribers | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.aiSubscribers | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.appUpdateSubscribers | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.cleanup | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.disposed | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.externalAgentSubscribers | main/ipc |
+| src/main/ipc/registry.ts | IpcHandlerRegistry.eventSubscriptions | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.options | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.registeredIpcMain | main/ipc |
-| src/main/ipc/registry.ts | IpcHandlerRegistry.syncSubscribers | main/ipc |
-| src/main/obsidian/obsidian-read-service.ts | ObsidianReadError.code | main/infrastructure/obsidian |
 | src/main/obsidian/obsidian-read-service.ts | ObsidianReadService.database | main/infrastructure/obsidian |
-| src/main/persistent-error-log.ts | PersistentErrorLog.errorLogPath | main/infrastructure/logging |
-| src/main/persistent-error-log.ts | PersistentErrorLog.logsPath | main/infrastructure/logging |
-| src/main/persistent-error-log.ts | PersistentErrorLog.writing | main/infrastructure/logging |
 | src/main/read-model/service.ts | ReadModelService.storage | main/application/task-read |
 | src/main/setup/service.ts | SetupOrchestrator.asana | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.authorizationCompletionOperation | main/application/settings |
+| src/main/setup/service.ts | SetupOrchestrator.asanaAuthorization | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.capability | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.checkpoint | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.codex | main/application/settings |
@@ -808,7 +1019,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/setup/service.ts | SetupOrchestrator.deviceId | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.externalTool | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.fullSync | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.oauth | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.reportCapabilityFailure | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.resources | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.resumeRequired | main/application/settings |
@@ -995,7 +1205,7 @@ channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`で�
 | 初回設定JSON | setup-checkpoint.json | src/main/index.ts | main/application/settings |
 | ウィンドウJSON | window-state.json | src/main/index.ts | main/bootstrap |
 | 更新試行JSON | application-update-attempt.json | src/main/application-update.ts | main/bootstrap |
-| エラーJSONL | taskhub-error.log | src/main/persistent-error-log.ts | main/infrastructure/logging |
+| エラーJSONL | taskhub-error.log | src/main/infrastructure/logging/jsonl-error-reporter.ts | main/infrastructure/logging |
 | 外部Codex設定JSON | external-agent/config.json | src/main/external-agent/resources.ts | main/application/settings |
 | 外部Codex接続JSON | external-agent/connection.json | src/main/external-agent/resources.ts | main/infrastructure/ai |
 | taskctl接続JSON | taskctl-connection.json | src/main/codex/taskctl/broker.ts | main/infrastructure/ai |
@@ -1005,7 +1215,7 @@ channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`で�
 
 | 形式 | 現行version | 現行source | version symbol |
 | --- | --- | --- | --- |
-| SQLite | 5 | src/main/storage/database.ts | storageSchemaVersion |
+| SQLite | 5 | src/main/infrastructure/persistence/sqlite-schema.ts | storageSchemaVersion |
 | 初回設定JSON | 2 | src/main/application/checkpoint.ts | checkpointVersion |
 | 暗号化JSON | 1 | src/main/auth/secret-storage/secret-storage.ts | encryptedFileVersion |
 | ウィンドウJSON | 1 | src/main/window-state.ts | windowStateVersion |

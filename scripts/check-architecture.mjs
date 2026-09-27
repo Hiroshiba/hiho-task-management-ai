@@ -133,7 +133,8 @@ function isAllowedInternalImport(fromOwner, targetOwner, targetPath) {
   }
   if (from === "infrastructure") {
     return targetOwner === "main/domain"
-      || targetPath.startsWith("src/main/application/common/ports/");
+      || targetPath.startsWith("src/main/application/common/ports/")
+      || targetPath === "src/main/application/common/errors/error-reporter.ts";
   }
   if (from === "main/ipc") {
     return targetOwner === "shared/ipc-contracts"

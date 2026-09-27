@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { autoUpdater } from "electron-updater";
 import type { DiagnosticRecord } from "./application/diagnostics";
+import type { ErrorReportContext } from "./application/common/errors/error-reporter";
 import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
 import { TaskHubApplication } from "./application/service";
 import { createMainWindowReadyWait, type MainWindowReadyWait } from "./bootstrap/main-window-readiness";
@@ -34,13 +35,9 @@ import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
+import { persistentErrorLogFormatter } from "./persistent-error-log";
 import { createStartupGate, type StartupGate } from "./startup-gate";
-import {
-  PersistentErrorLog,
-  type PersistentErrorLogContext,
-  type PersistentErrorLogSource,
-  writePersistentErrorLogFailure,
-} from "./persistent-error-log";
+import { JsonlErrorReporter, writeErrorReportFailure } from "./infrastructure/logging";
 import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
@@ -81,23 +78,23 @@ let foregroundScheduled = false;
 let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
-let persistentErrorLog: PersistentErrorLog | undefined;
+let persistentErrorLog: JsonlErrorReporter | undefined;
 let uncaughtExceptionMonitorRegistered = false;
 const startupGate = createStartupGate();
 
 registerUncaughtExceptionMonitor();
 const singleInstanceLockAcquired = app.requestSingleInstanceLock();
 
-function createPersistentErrorLog(): PersistentErrorLog | undefined {
+function createPersistentErrorLog(): JsonlErrorReporter | undefined {
   try {
-    return new PersistentErrorLog(app.getPath("logs"));
+    return new JsonlErrorReporter(app.getPath("logs"), [], persistentErrorLogFormatter);
   } catch (error) {
-    writePersistentErrorLogFailure(error);
+    writeErrorReportFailure(error, [], persistentErrorLogFormatter.redactText);
     return undefined;
   }
 }
 
-function getPersistentErrorLog(): PersistentErrorLog | undefined {
+function getPersistentErrorLog(): JsonlErrorReporter | undefined {
   const logger = persistentErrorLog;
   if (logger != null) {
     return logger;
@@ -111,32 +108,39 @@ function getPersistentErrorLog(): PersistentErrorLog | undefined {
 }
 
 function recordPersistentError(
-  source: PersistentErrorLogSource,
+  source: ErrorReportContext["source"],
   diagnosticCode: DiagnosticRecord["code"],
-  context: PersistentErrorLogContext,
-  severity: DiagnosticRecord["severity"],
+  context: ErrorReportContext["context"],
+  severity: ErrorReportContext["level"],
   error: unknown,
 ): void {
   const logger = getPersistentErrorLog();
   if (logger == null) {
-    writePersistentErrorLogFailure(error);
+    writeErrorReportFailure(error, [], persistentErrorLogFormatter.redactText);
     return;
   }
-  logger.record(source, diagnosticCode, context, severity, error);
+  logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
 }
 
 function recordPersistentErrorStrict(
-  source: PersistentErrorLogSource,
+  source: ErrorReportContext["source"],
   diagnosticCode: DiagnosticRecord["code"],
-  context: PersistentErrorLogContext,
-  severity: DiagnosticRecord["severity"],
+  context: ErrorReportContext["context"],
+  severity: ErrorReportContext["level"],
   error: unknown,
+  operationId: string | undefined,
 ): void {
   const logger = getPersistentErrorLog();
   if (logger == null) {
     throw new Error("永続エラーログを初期化できません。", { cause: error });
   }
-  logger.recordStrict(source, diagnosticCode, context, severity, error);
+  logger.reportErrorOnceStrict(error, {
+    source,
+    diagnosticCode,
+    context,
+    level: severity,
+    ...(operationId == null ? {} : { operationId }),
+  });
 }
 
 function registerUncaughtExceptionMonitor(): void {
@@ -244,6 +248,7 @@ function recordApplicationJournalDiagnostic(
       "service_diagnostic",
       diagnostic.severity,
       persistentError,
+      metadata.operation_id,
     );
     recordedSinkCount += 1;
   } catch (sinkError) {

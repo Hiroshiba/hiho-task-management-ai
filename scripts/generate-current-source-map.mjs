@@ -21,7 +21,7 @@ const entryPoints = [
   ["変更案適用と復旧", "src/main/ai/proposal-application/coordinator.ts", "main/application/proposal-apply"],
   ["GUI編集", "src/main/gui-edit/service.ts", "main/application/gui-edit"],
   ["Asana同期", "src/main/asana/sync/coordinator.ts", "main/infrastructure/asana"],
-  ["SQLite schema", "src/main/storage/database.ts", "main/infrastructure/persistence"],
+  ["SQLite schema", "src/main/infrastructure/persistence/sqlite-schema.ts", "main/infrastructure/persistence"],
   ["mock transport", "src/renderer/src/task-hub.ts", "renderer/shared/api"],
 ];
 
@@ -42,7 +42,7 @@ const functions = [
   ["タスク画面", "renderer/features/tasks", "src/renderer/src/Task*.vue"],
   ["変更案画面", "renderer/features/proposals", "src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue"],
   ["設定画面", "renderer/features/settings", "src/renderer/src/SettingsDialog.vue, src/renderer/src/SetupWizard.vue"],
-  ["ログ・診断", "main/infrastructure/logging", "src/main/persistent-error-log.ts, src/main/storage/diagnostic-log.ts"],
+  ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/storage/diagnostic-log.ts"],
   ["mock transport", "renderer/shared/mock", "src/renderer/src/task-hub.ts, src/renderer/src/mocks/"],
 ];
 
@@ -60,7 +60,7 @@ const fileFormats = [
   ["初回設定JSON", "setup-checkpoint.json", "src/main/index.ts", '"setup-checkpoint.json"', "main/application/settings"],
   ["ウィンドウJSON", "window-state.json", "src/main/index.ts", '"window-state.json"', "main/bootstrap"],
   ["更新試行JSON", "application-update-attempt.json", "src/main/application-update.ts", '"application-update-attempt.json"', "main/bootstrap"],
-  ["エラーJSONL", "taskhub-error.log", "src/main/persistent-error-log.ts", '"taskhub-error.log"', "main/infrastructure/logging"],
+  ["エラーJSONL", "taskhub-error.log", "src/main/infrastructure/logging/jsonl-error-reporter.ts", '"taskhub-error.log"', "main/infrastructure/logging"],
   ["外部Codex設定JSON", "external-agent/config.json", "src/main/external-agent/resources.ts", '"config.json"', "main/application/settings"],
   ["外部Codex接続JSON", "external-agent/connection.json", "src/main/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
   ["taskctl接続JSON", "taskctl-connection.json", "src/main/codex/taskctl/broker.ts", '"taskctl-connection.json"', "main/infrastructure/ai"],
@@ -113,7 +113,10 @@ const appStateOwners = new Map([
 ]);
 
 const externalAgentStateOwners = new Map([
-  ["main/application/proposal-generate", ["context", "preparedContexts", "preparedRequests", "requests"]],
+  ["main/application/proposal-generate", [
+    "context", "lifecycle", "preparation", "preparedContexts", "preparedRequests",
+    "requests", "review", "submission",
+  ]],
   ["main/application/proposal-apply", ["proposals", "reviewTarget"]],
   ["main/ipc", ["listeners"]],
   ["main/bootstrap", ["options", "stopped"]],
@@ -146,10 +149,14 @@ const applicationStateOwners = new Map([
   ["main/application/obsidian-integration", ["obsidian"]],
   ["main/infrastructure/logging", ["diagnostics"]],
   ["main/bootstrap", [
-    "codexAdapter", "codexConnectionFactory", "codexSession", "codexWorkspace", "database",
-    "deltaSource", "fullSource", "interactiveReadClient", "interactiveWriteClient", "options",
-    "readClient", "readyActivated", "removeRuntimeSubscription", "secretStorage", "setupClient",
-    "stopped", "tokenProvider", "transport", "writeClient",
+    "aiInteraction", "aiRuntime", "asanaReauthentication", "codexAdapter",
+    "codexConnectionFactory", "codexSession", "codexWorkspace", "configuredCodexRuntime",
+    "database", "deltaSource", "externalTools", "fullSource", "interactiveReadClient",
+    "interactiveWriteClient", "journalRecovery", "lifecycleRuntime", "operationalContext",
+    "operationalServices", "options", "readClient", "readyActivated",
+    "removeRuntimeSubscription", "secretStorage", "setupClient", "stopped",
+    "syncStateRuntime", "synchronizationOperations", "tokenProvider", "transport",
+    "writeClient",
   ]],
 ]);
 
@@ -237,7 +244,7 @@ function render(revision) {
   if (operations.length !== 17) {
     throw new Error(`変更案の操作は17種類のはずです: ${operations.length}`);
   }
-  const databaseSource = readSource("src/main/storage/database.ts");
+  const databaseSource = readSource("src/main/infrastructure/persistence/sqlite-schema.ts");
   const tables = [...new Set([...databaseSource.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1]))].sort();
   if (tables.length !== sqliteOwners.size || tables.some((name) => !sqliteOwners.has(name))) {
     throw new Error("SQLite tableのowner候補が不足しています。");
@@ -248,7 +255,7 @@ function render(revision) {
     }
   }
   const versions = [
-    ["SQLite", "src/main/storage/database.ts", "storageSchemaVersion"],
+    ["SQLite", "src/main/infrastructure/persistence/sqlite-schema.ts", "storageSchemaVersion"],
     ["初回設定JSON", "src/main/application/checkpoint.ts", "checkpointVersion"],
     ["暗号化JSON", "src/main/auth/secret-storage/secret-storage.ts", "encryptedFileVersion"],
     ["ウィンドウJSON", "src/main/window-state.ts", "windowStateVersion"],
