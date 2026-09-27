@@ -137,18 +137,20 @@ function createProposalConflictItem(
 
 function createProposalConflictItems(
   result: AsanaProposalApplicationResult,
+  includeLocalResyncRequired: boolean,
 ): ProposalConflictCleanupItem[] {
   const items: ProposalConflictCleanupItem[] = [];
   for (const operation of result.operations) {
     if (
       operation.outcome !== "unknown"
-      || ![
+      || (![
         "recovery_required",
         "recovery_context_missing",
         "task_not_found",
         "duplicate_external_id",
         "journal_target_mismatch",
       ].includes(operation.reason_code)
+        && !(includeLocalResyncRequired && operation.reason_code === "local_resync_required"))
     ) {
       continue;
     }
@@ -263,17 +265,18 @@ export class CleanupAggregationService {
         proposal_id: validatedResult.proposal_id,
         operation_id: operation.operation_id,
       })),
-      createProposalConflictItems(validatedResult),
+      createProposalConflictItems(validatedResult, false),
     );
   }
 
   /** 復旧結果全体から未解決のAI変更案項目を再構築します。 */
   public replaceProposalConflictsFromRecovery(
     result: AsanaProposalRecoveryResult,
+    includeLocalResyncRequired: boolean,
   ): CleanupItemsCache {
     const validatedResult = asanaProposalRecoveryResultSchema.parse(result);
     const items = validatedResult.applications.flatMap((application) =>
-      createProposalConflictItems(application),
+      createProposalConflictItems(application, includeLocalResyncRequired),
     );
     items.push(
       ...validatedResult.unresolved_journals.map((journal) =>

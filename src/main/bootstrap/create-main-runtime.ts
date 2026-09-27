@@ -17,6 +17,7 @@ import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/l
 import {
   ApplicationUpdateAttemptStore,
   PersistenceRuntime,
+  SqliteLegacyProposalExecutionRepository,
   SqliteProposalExecutionRepository,
   WindowStateStore,
 } from "../infrastructure/persistence";
@@ -131,7 +132,11 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
               throw new Error("後続同期の実行条件が保存済みplanと一致しません。");
             }
             const result = origin === "proposal"
-              ? await bridge.synchronizeAfterProposalWrite(context.synchronization_task_gids, signal)
+              ? await bridge.synchronizeAfterProposalWrite(
+                context.synchronization_task_gids,
+                context.execution_id,
+                signal,
+              )
               : await bridge.synchronizeAfterGuiWrite(context.synchronization_task_gids, signal);
             if (result.kind === "recovery_required") {
               throw new Error(`書き込み後のAsana同期が完了しませんでした。エラーコード: ${result.error_code}`, {
@@ -155,6 +160,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     if (USE_NEW_WRITE_EXECUTION_ENGINE) {
       legacy.setProposalWriteExecution({
         repository,
+        legacyRepository: new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter),
         engine,
         createId,
         now: () => nowProvider().toISOString(),

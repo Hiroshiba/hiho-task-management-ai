@@ -24,6 +24,7 @@ type JournalRecoveryDependencies<Journal extends RecoveryJournal, Result extends
   readonly hasOperationOwner: (signal: AbortSignal) => boolean;
   readonly enqueueRecovery: (signal: AbortSignal, run: (signal: AbortSignal) => Promise<void>) => Promise<void>;
   readonly getIncompleteJournals: () => readonly Journal[];
+  readonly hasAdditionalIncomplete: () => boolean;
   readonly recover: (signal: AbortSignal) => Promise<Result>;
   readonly afterRecovery: (result: Result) => void;
 };
@@ -40,7 +41,7 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
 
   /** 未完了ジャーナルの復旧が必要かを返します。 */
   public hasPending(): boolean {
-    return this.pending;
+    return this.pending || this.dependencies.hasAdditionalIncomplete();
   }
 
   /** ジャーナル復旧中かを返します。 */
@@ -53,6 +54,7 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
     this.dependencies.validateAbortSignal(signal);
     this.dependencies.throwIfAborted(signal);
     if (this.dependencies.hasOperationOwner(signal)) {
+      if (this.running) return;
       await this.performRecovery(signal);
       return;
     }
@@ -80,6 +82,7 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
     const incomplete = this.dependencies.getIncompleteJournals();
     if (
       !this.pending
+      && !this.dependencies.hasAdditionalIncomplete()
       && !incomplete.some((journal) => journal.final_result == null)
     ) {
       return;
@@ -112,7 +115,7 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
       }
       const unexpectedRemainingJournals = remainingJournals.filter(
         (journal) => {
-          const isReportedUnknown = journal.final_result === "unknown"
+          const isReportedUnknown = (journal.final_result === "unknown" || journal.final_result == null)
             && unresolvedResultKeys
               .get(journal.proposal_id)
               ?.has(journal.operation_id) === true;
@@ -124,6 +127,9 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
       );
       if (unexpectedRemainingJournals.length > 0) {
         throw new Error("復旧結果に含まれない未完了のAI適用ジャーナルが残っています。");
+      }
+      if (this.dependencies.hasAdditionalIncomplete()) {
+        throw new Error("復旧後も未完了のproposal executionが残っています。");
       }
       this.dependencies.validateAbortSignal(signal);
       this.dependencies.throwIfAborted(signal);

@@ -1,4 +1,8 @@
-import type { ProposalExecution, ProposalExecutionRepository } from "../common/ports/proposal-execution-repository";
+import type {
+  LegacyProposalExecutionRepository,
+  ProposalExecution,
+  ProposalExecutionRepository,
+} from "../common/ports/proposal-execution-repository";
 import type { TaskWritePlan, TaskWritePayloadFingerprint } from "../common/task-write-plan";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
 import { planProposalTaskWrites } from "./proposal-write-plan";
@@ -51,7 +55,8 @@ type ApprovalResult = {
 };
 
 export type StoredProposalExecutionPort = {
-  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal" | "save">;
+  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal" | "getIncomplete" | "save">;
+  readonly legacyRepository: LegacyProposalExecutionRepository;
   readonly engine: {
     run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<StoredProposalWriteResult>>;
   };

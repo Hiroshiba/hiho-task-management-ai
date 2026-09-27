@@ -119,6 +119,7 @@ import {
   AsanaProposalOperationWriter,
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,
+  asanaProposalRecoveryResultSchema,
   asanaPostWriteSynchronizationResultSchema,
   type ApplicationDiagnostic,
   type AsanaProposalApplicationInput,
@@ -149,6 +150,7 @@ import {
   collectApprovalProjectTasks,
   createApplicationSummary,
   createApprovalPreparationInput,
+  recoverStoredProposals,
   assertApprovalInputMatchesStored,
   type StoredProposalExecutionPort,
 } from "./proposal-apply";
@@ -1371,15 +1373,22 @@ export class TaskHubApplication {
         run: (context) => run(context.signal),
       }),
       getIncompleteJournals: () => this.database.getIncompleteApplicationJournals(),
-      recover: (signal) => this.requireApplicationCoordinator().recover(
-        {
-          applications: [],
-          project_gids: [this.requireContext().project_gid],
-        },
-        signal,
+      hasAdditionalIncomplete: () => this.proposalWriteExecution.kind === "stored_plan"
+        && this.proposalWriteExecution.port.repository.getIncomplete().length > 0,
+      recover: (signal) => this.proposalWriteExecution.kind === "stored_plan"
+        ? recoverStoredProposals(this.proposalWriteExecution.port, signal)
+          .then((result) => asanaProposalRecoveryResultSchema.parse(result))
+        : this.requireApplicationCoordinator().recover(
+          {
+            applications: [],
+            project_gids: [this.requireContext().project_gid],
+          },
+          signal,
+        ),
+      afterRecovery: (result) => this.cleanupAggregation.replaceProposalConflictsFromRecovery(
+        result,
+        this.proposalWriteExecution.kind === "stored_plan",
       ),
-      afterRecovery: (result) =>
-        this.cleanupAggregation.replaceProposalConflictsFromRecovery(result),
     });
     this.synchronizationOperations = new SynchronizationOperations<
       AsanaSyncRuntimeInternalResult,
@@ -1390,9 +1399,22 @@ export class TaskHubApplication {
       throwIfAborted,
       hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
       hasPendingJournal: () => this.journalRecovery.hasPending(),
-      hasIncompleteJournal: () => this.database.getIncompleteApplicationJournals()
-        .some((journal) => journal.final_result == null),
+      hasIncompleteJournal: () => this.database.getIncompleteApplicationJournals().length > 0
+        || (this.proposalWriteExecution.kind === "stored_plan"
+          && this.proposalWriteExecution.port.repository.getIncomplete().length > 0),
       isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
+      assertRecoveredSynchronizationReady: (executionId) => {
+        if (this.database.getIncompleteApplicationJournals().length > 0) {
+          throw new Error("未確定の旧AI適用ジャーナルがあるため後続同期を開始できません。");
+        }
+        if (this.proposalWriteExecution.kind !== "stored_plan") {
+          throw new Error("保存済みplan実行入口がありません。");
+        }
+        if (this.proposalWriteExecution.port.repository.getIncomplete()
+          .some((execution) => execution.execution_id !== executionId)) {
+          throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
+        }
+      },
       recoverJournal: (signal) => this.journalRecovery.recover(signal),
       afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
       synchronizeCodexAfterAsana: (signal) =>
@@ -1585,7 +1607,11 @@ export class TaskHubApplication {
         options.create_id,
         () => createNowIso(this.options.now_provider),
         (requiredTaskGids, signal) =>
-          this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
+          this.synchronizationOperations.afterAiApply(
+            requiredTaskGids,
+            { kind: "legacy" },
+            signal,
+          ),
         (error, event) => this.options.diagnostic(error, "application_journal", event),
       ),
       createGuiEdit: (writer) => new AsanaGuiEditService(
@@ -1769,8 +1795,12 @@ export class TaskHubApplication {
       transport: this.highPriorityTransport,
       readClient: this.interactiveReadClient,
       isNotFound: (error) => getUniqueAsanaHttpStatus(error) === 404,
-      synchronizeAfterProposalWrite: (requiredTaskGids, signal) =>
-        this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
+      synchronizeAfterProposalWrite: (requiredTaskGids, executionId, signal) =>
+        this.synchronizationOperations.afterAiApply(
+          requiredTaskGids,
+          { kind: "stored", executionId },
+          signal,
+        ),
       synchronizeAfterGuiWrite: (requiredTaskGids, signal) =>
         this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
     };

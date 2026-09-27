@@ -5,6 +5,9 @@ type SynchronizationResult =
   | { readonly kind: "failed"; readonly error_code: string; readonly cause: unknown };
 
 type PostWriteResult = { readonly kind: "synchronized" | "recovery_required" };
+type AiApplyExecution =
+  | { readonly kind: "legacy" }
+  | { readonly kind: "stored"; readonly executionId: string };
 
 class UnreachableError extends Error {}
 
@@ -19,6 +22,7 @@ type SynchronizationDependencies<
   readonly hasPendingJournal: () => boolean;
   readonly hasIncompleteJournal: () => boolean;
   readonly isJournalRecoveryRunning: () => boolean;
+  readonly assertRecoveredSynchronizationReady: (executionId: string) => void;
   readonly recoverJournal: (signal: AbortSignal) => Promise<void>;
   readonly afterLocalStateRefresh: (signal: AbortSignal) => Promise<void>;
   readonly synchronizeCodexAfterAsana: (signal: AbortSignal) => Promise<void>;
@@ -161,9 +165,13 @@ export class SynchronizationOperations<
   /** AI適用後の同期と適用状態の復元を管理します。 */
   public async afterAiApply(
     requiredTaskGids: readonly string[],
+    execution: AiApplyExecution,
     signal: AbortSignal,
   ): Promise<PostResult> {
     if (this.dependencies.isJournalRecoveryRunning()) {
+      if (execution.kind === "stored") {
+        this.dependencies.assertRecoveredSynchronizationReady(execution.executionId);
+      }
       return this.synchronizeRecoveredApplicationJournals(requiredTaskGids, signal);
     }
     if (this.applicationState !== "applying") {

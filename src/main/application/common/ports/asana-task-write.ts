@@ -59,6 +59,7 @@ export interface TaskWriteAsanaBridge {
   isNotFound(error: unknown): boolean;
   synchronizeAfterProposalWrite(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<TaskWritePostSynchronizationResult>;
   synchronizeAfterGuiWrite(
