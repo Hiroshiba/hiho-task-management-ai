@@ -71,6 +71,7 @@ import {
   ipcSetupSelectProjectInputSchema,
   ipcSetupSelectWorkspaceInputSchema,
   ipcSetupStateResponseSchema,
+  ipcIntegrationStatusResponseSchema,
   ipcSyncInputSchema,
   ipcSyncGetStateResponseSchema,
   ipcSyncResponseSchema,
@@ -196,6 +197,10 @@ const api: TaskHubApi = {
   },
   setup: {
     getState: () => invokeEmpty("setup:get-state", ipcSetupStateResponseSchema),
+    getIntegrationStatus: () => invokeEmpty(
+      "setup:get-integration-status",
+      ipcIntegrationStatusResponseSchema,
+    ),
     start: () => invokeEmpty("setup:start", ipcSetupStateResponseSchema),
     completeCodexAuthentication: () => invokeEmpty(
       "setup:complete-codex-authentication",

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { integrationStatusSchema, type IntegrationStatus } from "../ipc-contracts/integration-status";
 import {
   areaSchema,
   cleanupItemsSchema,
@@ -582,6 +583,7 @@ export const ipcChannelSchema = z.enum([
   "sync:state:unsubscribe",
   "sync:state",
   "setup:get-state",
+  "setup:get-integration-status",
   "setup:start",
   "setup:complete-codex-authentication",
   "setup:begin-asana-authorization",
@@ -655,6 +657,7 @@ export const ipcAsanaCancelReauthenticationResponseSchema = responseSchema(
   asanaAuthenticationStateSchema,
 );
 export const ipcSetupStateResponseSchema = responseSchema(setupStateSchema);
+export const ipcIntegrationStatusResponseSchema = responseSchema(integrationStatusSchema);
 export const ipcSetupStartInputSchema = setupEmptyInputSchema;
 export const ipcSetupCompleteCodexAuthenticationInputSchema = setupEmptyInputSchema;
 export const ipcSetupBeginAsanaAuthorizationInputSchema = setupAsanaAuthorizationBeginInput;
@@ -744,6 +747,7 @@ export type IpcAsanaReauthenticationCancelInput = z.infer<
   typeof ipcAsanaCancelReauthenticationInputSchema
 >;
 export type IpcSetupState = SetupState;
+export type IpcIntegrationStatus = IntegrationStatus;
 export type IpcSetupAsanaAuthorizationBeginInput = SetupAsanaAuthorizationBeginInput;
 export type IpcSetupAsanaAuthorizationCompleteInput = SetupAsanaAuthorizationCompleteInput;
 export type IpcSetupAsanaAuthorizationCancelInput = SetupAsanaAuthorizationCancelInput;

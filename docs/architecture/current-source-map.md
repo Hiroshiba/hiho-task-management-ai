@@ -1,6 +1,6 @@
 # 現行source map
 
-基準commit: `5328a66f2f2a7a036a5ba6c6eaac5d215fe156db`。対象は`src`以下の手編集source 359件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=5328a66f2f2a7a036a5ba6c6eaac5d215fe156db --write`。
+基準commit: `7be99af8d2bf12be4af60d8407c4eeb4060a5e4f`。対象は`src`以下の手編集source 373件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=7be99af8d2bf12be4af60d8407c4eeb4060a5e4f --write`。
 
 ## 機能と入口
 
@@ -15,9 +15,9 @@
 | 外部Codex接続とツール | main/infrastructure/ai | src/main/codex/, src/main/external-agent/transport.ts, src/main/external-tools/ |
 | 外部提案の準備・生成 | main/application/proposal-generate | src/main/external-agent/service.ts |
 | 外部提案の承認・適用 | main/application/proposal-apply | src/main/external-agent/service.ts |
-| Obsidian参照・Vault設定 | main/application/obsidian-integration | src/main/obsidian/, src/main/storage/vault-mappings.ts |
-| GitHub App連携 | main/application/github-integration | 現行アプリ実装なし。READMEの公開用GitHub App設定だけ |
-| 設定と秘密情報 | main/application/settings | src/main/storage/device-settings.ts, src/main/auth/secret-storage/ |
+| Obsidian参照・Vault設定 | main/application/obsidian-integration | src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/storage/vault-mappings.ts |
+| GitHub App連携 | main/application/github-integration | 現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す |
+| 設定と秘密情報 | main/application/settings | src/main/application/settings/, src/main/storage/device-settings.ts, src/main/auth/secret-storage/ |
 | IPC契約と配送 | shared/ipc-contracts と main/ipc と preload | src/shared/ipc/, src/main/ipc/, src/preload/ |
 | タスク画面 | renderer/features/tasks | src/renderer/src/Task*.vue |
 | 変更案画面 | renderer/features/proposals | src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue |
@@ -41,6 +41,8 @@
 | Asana同期 | src/main/asana/sync/coordinator.ts | main/infrastructure/asana |
 | タスク読取と同期 | src/main/application/task-read/workflow.ts | main/application/task-read |
 | タスク読取の保存 | src/main/infrastructure/persistence/task-read-repository.ts | main/infrastructure/persistence |
+| Obsidian連携 | src/main/application/obsidian-integration/workflow.ts | main/application/obsidian-integration |
+| Vault読取 | src/main/infrastructure/obsidian/read-service.ts | main/infrastructure/obsidian |
 | SQLite schema | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
 | mock transport | src/renderer/src/task-hub.ts | renderer/shared/api |
 
@@ -71,11 +73,15 @@
 | src/main/application/common/errors/diagnostic-failure.ts | main/application/common |
 | src/main/application/common/errors/error-reporter.ts | main/application/common |
 | src/main/application/common/ports/asana-task-read.ts | main/application/common |
+| src/main/application/common/ports/obsidian-vault-repository.ts | main/application/common |
+| src/main/application/common/ports/settings-repository.ts | main/application/common |
 | src/main/application/common/ports/task-read-repository.ts | main/application/common |
 | src/main/application/diagnostics.ts | main/infrastructure/logging |
 | src/main/application/gui-edit/build-proposal-operation.ts | main/application/gui-edit |
 | src/main/application/gui-edit/index.ts | main/application/gui-edit |
 | src/main/application/gui-edit/relation-graph-validation.ts | main/application/gui-edit |
+| src/main/application/obsidian-integration/index.ts | main/application/obsidian-integration |
+| src/main/application/obsidian-integration/workflow.ts | main/application/obsidian-integration |
 | src/main/application/proposal-apply/application-diagnostic.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/application-plan-entry.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/application-plan.ts | main/application/proposal-apply |
@@ -159,13 +165,21 @@
 | src/main/application/proposal-generate/workspace-validation.ts | main/application/proposal-generate |
 | src/main/application/schemas.ts | main/application/common |
 | src/main/application/service.ts | main/bootstrap |
+| src/main/application/settings/asana-reauthentication.ts | main/application/settings |
+| src/main/application/settings/index.ts | main/application/settings |
+| src/main/application/settings/integration-status.ts | main/application/settings |
 | src/main/application/settings/setup-asana-authorization.ts | main/application/settings |
 | src/main/application/settings/setup-asana-resources.ts | main/application/settings |
 | src/main/application/settings/setup-capability.ts | main/application/settings |
 | src/main/application/settings/setup-codex-state.ts | main/application/settings |
 | src/main/application/settings/setup-completion.ts | main/application/settings |
 | src/main/application/settings/setup-external-tool.ts | main/application/settings |
+| src/main/application/settings/setup-ipc-workflow.ts | main/application/settings |
+| src/main/application/settings/setup-ports.ts | main/application/settings |
+| src/main/application/settings/setup-state-tools.ts | main/application/settings |
 | src/main/application/settings/setup-validation.ts | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | main/application/settings |
+| src/main/application/settings/state.ts | main/application/settings |
 | src/main/application/task-read/index.ts | main/application/task-read |
 | src/main/application/task-read/selected-snapshot.ts | main/application/task-read |
 | src/main/application/task-read/sync-state-runtime.ts | main/application/task-read |
@@ -213,7 +227,6 @@
 | src/main/auth/secret-storage/secret-storage.ts | main/infrastructure/persistence |
 | src/main/bootstrap/ai-interaction-runtime.ts | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | main/bootstrap |
-| src/main/bootstrap/asana-reauthentication-runtime.ts | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | main/bootstrap |
 | src/main/bootstrap/create-main-runtime.ts | main/bootstrap |
 | src/main/bootstrap/external-tool-runtime.ts | main/bootstrap |
@@ -221,7 +234,6 @@
 | src/main/bootstrap/legacy-runtime-port.ts | main/bootstrap |
 | src/main/bootstrap/main-lifecycle-runtime.ts | main/bootstrap |
 | src/main/bootstrap/main-window-readiness.ts | main/bootstrap |
-| src/main/bootstrap/obsidian-ports.ts | main/bootstrap |
 | src/main/bootstrap/open-external-resource.ts | main/bootstrap |
 | src/main/bootstrap/operational-context-runtime.ts | main/bootstrap |
 | src/main/bootstrap/operational-services-runtime.ts | main/bootstrap |
@@ -256,8 +268,12 @@
 | src/main/domain/normalization/index.ts | main/domain |
 | src/main/domain/normalization/status.ts | main/domain |
 | src/main/domain/normalization/tags.ts | main/domain |
+| src/main/domain/obsidian-contracts.ts | main/domain |
+| src/main/domain/obsidian-errors.ts | main/domain |
+| src/main/domain/obsidian-uri.ts | main/domain |
 | src/main/domain/ranking/calculator.ts | main/domain |
 | src/main/domain/ranking/index.ts | main/domain |
+| src/main/domain/setup-state.ts | main/domain |
 | src/main/domain/snapshot-hash.ts | main/domain |
 | src/main/domain/snapshot-normalization/index.ts | main/domain |
 | src/main/domain/snapshot-normalization/normalizer.ts | main/domain |
@@ -321,13 +337,18 @@
 | src/main/infrastructure/logging/index.ts | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | main/infrastructure/logging |
 | src/main/infrastructure/logging/safe-zod-issues.ts | main/infrastructure/logging |
+| src/main/infrastructure/obsidian/index.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/markdown-reader.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/read-error.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/read-service.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/secure-note-reader.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/tasks-vault-discovery.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/vault-path-security.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/persistence/index.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secure-file-snapshot.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secure-path-guard.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/settings-repository.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-connection.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
@@ -337,20 +358,13 @@
 | src/main/ipc/index.ts | main/ipc |
 | src/main/ipc/registry.ts | main/ipc |
 | src/main/local-storage-path.ts | main/infrastructure/persistence |
-| src/main/obsidian/errors.ts | main/infrastructure/obsidian |
 | src/main/obsidian/index.ts | main/infrastructure/obsidian |
-| src/main/obsidian/obsidian-read-service.ts | main/infrastructure/obsidian |
-| src/main/obsidian/obsidian-uri.ts | main/infrastructure/obsidian |
-| src/main/obsidian/tasks-vault-discovery.ts | main/infrastructure/obsidian |
 | src/main/persistent-error-log.ts | main/infrastructure/logging |
 | src/main/redact-sensitive-text.ts | main/infrastructure/logging |
 | src/main/security.ts | main/bootstrap |
-| src/main/setup/index.ts | main/application/settings |
-| src/main/setup/service.ts | main/application/settings |
 | src/main/startup-gate.ts | main/bootstrap |
 | src/main/storage/application-journal.ts | main/infrastructure/persistence |
 | src/main/storage/database.ts | main/infrastructure/persistence |
-| src/main/storage/device-settings.ts | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | main/infrastructure/persistence |
 | src/main/storage/index.ts | main/infrastructure/persistence |
@@ -395,6 +409,8 @@
 | src/shared/domain/schemas.ts | main/domain |
 | src/shared/external-agent/index.ts | shared/ipc-contracts |
 | src/shared/external-agent/schemas.ts | shared/ipc-contracts |
+| src/shared/ipc-contracts/integration-status.ts | shared/ipc-contracts |
+| src/shared/ipc-contracts/setup-schemas.ts | shared/ipc-contracts |
 | src/shared/ipc/index.ts | shared/ipc-contracts |
 | src/shared/ipc/schemas.ts | shared/ipc-contracts |
 | src/shared/setup/index.ts | shared/ipc-contracts |
@@ -493,6 +509,9 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/renderer/src/App.vue | filter | renderer/features/tasks |
 | src/renderer/src/App.vue | guiEditGeneration | renderer/features/tasks |
 | src/renderer/src/App.vue | guiEditStates | renderer/features/tasks |
+| src/renderer/src/App.vue | integrationStatus | renderer/features/settings |
+| src/renderer/src/App.vue | integrationStatusError | renderer/features/settings |
+| src/renderer/src/App.vue | integrationStatusLoading | renderer/features/settings |
 | src/renderer/src/App.vue | isMounted | renderer/app |
 | src/renderer/src/App.vue | lastLoadedSuccessfulSyncAt | renderer/features/tasks |
 | src/renderer/src/App.vue | normalizationNotificationDisplayState | renderer/features/tasks |
@@ -629,6 +648,8 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/diagnostics.ts | DiagnosticLogService.nowProvider | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.retentionLimit | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.storage | main/infrastructure/logging |
+| src/main/application/obsidian-integration/workflow.ts | ObsidianIntegrationWorkflow.dependencies | main/application/obsidian-integration |
+| src/main/application/obsidian-integration/workflow.ts | ObsidianIntegrationWorkflow.saveInProgress | main/application/obsidian-integration |
 | src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.currentContext | main/application/proposal-generate |
 | src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.ports | main/application/proposal-generate |
 | src/main/application/proposal-generate/external-agent-lifecycle.ts | ExternalAgentLifecycle.stoppedState | main/application/proposal-generate |
@@ -653,8 +674,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/service.ts | TaskHubApplication.aiStartResult | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.aiStatusListeners | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.asanaReauthentication | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.capability | main/application/settings |
-| src/main/application/service.ts | TaskHubApplication.checkpoint | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.cleanupAggregation | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.codexAdapter | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.codexAuthenticationRequired | main/application/settings |
@@ -681,20 +700,38 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/service.ts | TaskHubApplication.operationalServices | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.options | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.readClient | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.resources | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.scheduler | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.secretStorage | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.settingsRepository | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.setup | main/application/settings |
-| src/main/application/service.ts | TaskHubApplication.setupClient | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.setupIpc | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.syncCoordinator | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.synchronizationOperations | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.taskRead | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.tokenProvider | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.transport | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.vaultMappingSaveInProgress | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.writeClient | main/bootstrap |
+| src/main/application/settings/asana-reauthentication.ts | AsanaReauthenticationRuntime.dependencies | main/application/settings |
+| src/main/application/settings/asana-reauthentication.ts | AsanaReauthenticationRuntime.operation | main/application/settings |
 | src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.completionOperation | main/application/settings |
 | src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.dependencies | main/application/settings |
+| src/main/application/settings/setup-ipc-workflow.ts | SetupIpcWorkflow.dependencies | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.asana | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.asanaAuthorization | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.capability | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.checkpoint | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.codex | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.codexAvailability | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.contracts | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.database | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.deviceId | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.externalTool | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.fullSync | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.reportCapabilityFailure | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.resources | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.resumeRequired | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.state | main/application/settings |
+| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.stateTools | main/application/settings |
 | src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.dependencies | main/application/task-read |
 | src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.diagnosticState | main/application/task-read |
 | src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.lastDisplaySyncAt | main/application/task-read |
@@ -806,8 +843,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.dependencies | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.sessions | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.starts | main/bootstrap |
-| src/main/bootstrap/asana-reauthentication-runtime.ts | AsanaReauthenticationRuntime.dependencies | main/bootstrap |
-| src/main/bootstrap/asana-reauthentication-runtime.ts | AsanaReauthenticationRuntime.operation | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.dependencies | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.launchState | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.synchronizationPromise | main/bootstrap |
@@ -1007,7 +1042,12 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.reported | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.writing | main/infrastructure/logging |
 | src/main/infrastructure/obsidian/read-error.ts | ObsidianReadError.code | main/infrastructure/obsidian |
+| src/main/infrastructure/obsidian/read-service.ts | ObsidianReadService.repository | main/infrastructure/obsidian |
 | src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.database | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.clearStatement | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.parseSettings | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.saveStatement | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.selectStatement | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/task-read-repository.ts | TaskReadPersistenceRepository.contracts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/task-read-repository.ts | TaskReadPersistenceRepository.runtime | main/infrastructure/persistence |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.disposed | main/ipc |
@@ -1019,21 +1059,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/ipc/registry.ts | IpcHandlerRegistry.eventSubscriptions | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.options | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.registeredIpcMain | main/ipc |
-| src/main/obsidian/obsidian-read-service.ts | ObsidianReadService.database | main/infrastructure/obsidian |
-| src/main/setup/service.ts | SetupOrchestrator.asana | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.asanaAuthorization | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.capability | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.checkpoint | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.codex | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.codexAvailability | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.database | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.deviceId | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.externalTool | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.fullSync | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.reportCapabilityFailure | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.resources | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.resumeRequired | main/application/settings |
-| src/main/setup/service.ts | SetupOrchestrator.state | main/application/settings |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.completeStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.corruptPlanRecoveryCauses | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.database | main/infrastructure/persistence |
@@ -1046,17 +1071,12 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectOneStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.updateStageStatement | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.applicationJournalStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.deviceSettingsStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.diagnosticLogStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.externalToolDefinitionStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.runtime | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.taskRead | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.taskReadContracts | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.vaultMappingStore | main/infrastructure/persistence |
-| src/main/storage/device-settings.ts | DeviceSettingsStore.clearStatement | main/infrastructure/persistence |
-| src/main/storage/device-settings.ts | DeviceSettingsStore.database | main/infrastructure/persistence |
-| src/main/storage/device-settings.ts | DeviceSettingsStore.saveStatement | main/infrastructure/persistence |
-| src/main/storage/device-settings.ts | DeviceSettingsStore.selectStatement | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.database | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.deleteOlderStatement | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.insertStatement | main/infrastructure/persistence |
@@ -1115,6 +1135,7 @@ channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`で�
 | sync:state:unsubscribe | main/application/task-read |
 | sync:state | main/application/task-read |
 | setup:get-state | main/application/settings |
+| setup:get-integration-status | main/application/settings |
 | setup:start | main/application/settings |
 | setup:complete-codex-authentication | main/application/settings |
 | setup:begin-asana-authorization | main/application/settings |
@@ -1236,9 +1257,6 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | saveSyncState | TaskReadPersistenceRepository | T09 |
 | getSyncState | TaskReadPersistenceRepository | T09 |
 | getSyncStates | TaskReadPersistenceRepository | T09 |
-| saveDeviceSettings | DeviceSettingsRepository | T17 |
-| getDeviceSettings | DeviceSettingsRepository | T17 |
-| clearDeviceSettings | DeviceSettingsRepository | T17 |
 | saveVaultMapping | VaultMappingRepository | T15 |
 | deleteVaultMapping | VaultMappingRepository | T15 |
 | getVaultMappings | VaultMappingRepository | T15 |

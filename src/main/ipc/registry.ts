@@ -117,6 +117,7 @@ import {
   ipcSetupSelectWorkspaceInputSchema,
   ipcSetupStartInputSchema,
   ipcSetupStateResponseSchema,
+  ipcIntegrationStatusResponseSchema,
   ipcSyncInputSchema,
   ipcSyncResultSchema,
   ipcSyncGetStateInputSchema,
@@ -146,6 +147,7 @@ import {
   type IpcSetupExternalToolChoiceInput,
   type IpcSetupProjectSelectionInput,
   type IpcSetupState,
+  type IpcIntegrationStatus,
   type IpcSetupVaultChoiceInput,
   type IpcSetupWorkspaceSelectionInput,
   type IpcFailure,
@@ -222,6 +224,7 @@ export interface IpcAsanaPort {
 /** 初回設定の状態機械をIPCへ提供するポートです。 */
 export interface IpcSetupPort {
   getState(): MaybePromise<IpcSetupState>;
+  getIntegrationStatus(): MaybePromise<IpcIntegrationStatus>;
   start(signal: AbortSignal): MaybePromise<IpcSetupState>;
   completeCodexAuthentication(signal: AbortSignal): MaybePromise<IpcSetupState>;
   beginAsanaAuthorization(
@@ -627,6 +630,10 @@ export class IpcHandlerRegistry {
     this.registerPortHandle(
       ipcMain, "setup:get-state", ipcEmptyRequestSchema, ipcSetupStateResponseSchema, "setup",
       async (port) => port.getState(),
+    );
+    this.registerPortHandle(
+      ipcMain, "setup:get-integration-status", ipcEmptyRequestSchema, ipcIntegrationStatusResponseSchema, "setup",
+      async (port) => port.getIntegrationStatus(),
     );
     this.registerPortHandle(
       ipcMain, "setup:start", ipcSetupStartInputSchema, ipcSetupStateResponseSchema, "setup",

@@ -1750,11 +1750,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/codex/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/main/codex/session/index.ts"
     },
     {
@@ -1791,16 +1786,6 @@
       "path": "src/main/application/service.ts",
       "rule": "old-import",
       "symbol": "src/main/ipc/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/tasks-vault-discovery.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -1925,11 +1910,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
-      "symbol": "src/main/codex/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
       "symbol": "src/main/codex/session/index.ts"
     },
     {
@@ -1961,16 +1941,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/gui-edit/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/obsidian/tasks-vault-discovery.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -3825,11 +3795,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "old-import",
-      "symbol": "src/main/obsidian/obsidian-uri.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "old-import",
       "symbol": "src/main/persistent-error-log.ts"
     },
     {
@@ -3876,11 +3841,6 @@
       "path": "src/main/index.ts",
       "rule": "private-entry",
       "symbol": "src/main/local-storage-path.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/obsidian/obsidian-uri.ts"
     },
     {
       "path": "src/main/index.ts",
@@ -3998,94 +3958,9 @@
       "symbol": "src/main/local-storage-path.ts"
     },
     {
-      "path": "src/main/obsidian/errors.ts",
-      "rule": "old-path",
-      "symbol": "src/main/obsidian/errors.ts"
-    },
-    {
-      "path": "src/main/obsidian/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/errors.ts"
-    },
-    {
-      "path": "src/main/obsidian/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/obsidian-read-service.ts"
-    },
-    {
-      "path": "src/main/obsidian/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/obsidian-uri.ts"
-    },
-    {
       "path": "src/main/obsidian/index.ts",
       "rule": "old-path",
       "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-read-service.ts",
-      "rule": "old-path",
-      "symbol": "src/main/obsidian/obsidian-read-service.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-uri.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/obsidian-read-service.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-uri.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/obsidian-uri.ts",
-      "rule": "old-path",
-      "symbol": "src/main/obsidian/obsidian-uri.ts"
-    },
-    {
-      "path": "src/main/obsidian/tasks-vault-discovery.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/tasks-vault-discovery.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/obsidian-read-service.ts"
-    },
-    {
-      "path": "src/main/obsidian/tasks-vault-discovery.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/obsidian/tasks-vault-discovery.ts",
-      "rule": "old-path",
-      "symbol": "src/main/obsidian/tasks-vault-discovery.ts"
     },
     {
       "path": "src/main/persistent-error-log.ts",

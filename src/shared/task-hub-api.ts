@@ -39,6 +39,7 @@ import type {
   IpcSetupExternalToolChoiceInput,
   IpcSetupProjectSelectionInput,
   IpcSetupState,
+  IpcIntegrationStatus,
   IpcSetupVaultChoiceInput,
   IpcSetupWorkspaceSelectionInput,
   IpcSyncResult,
@@ -83,6 +84,7 @@ export interface TaskHubApi {
   };
   readonly setup: {
     readonly getState: () => IpcResult<IpcSetupState>;
+    readonly getIntegrationStatus: () => IpcResult<IpcIntegrationStatus>;
     readonly start: () => IpcResult<IpcSetupState>;
     readonly completeCodexAuthentication: () => IpcResult<IpcSetupState>;
     readonly beginAsanaAuthorization: (

@@ -6,8 +6,9 @@ import { z } from "zod";
 import {
   vaultMappingSchema,
   type VaultMapping,
-} from "../../shared/storage";
-import { ObsidianReadError, validateVaultMappingPath } from "./obsidian-read-service";
+} from "../../domain/obsidian-contracts";
+import { ObsidianReadError } from "./read-error";
+import { validateVaultMappingPath } from "./read-service";
 
 const tasksVaultId = "tasks";
 const tasksVaultMappingSchema = vaultMappingSchema.extend({

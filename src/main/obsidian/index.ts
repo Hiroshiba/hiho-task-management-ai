@@ -1,9 +1,6 @@
+export { ObsidianVaultMappingConflictError } from "../domain/obsidian-errors";
+export { createObsidianOpenUri } from "../domain/obsidian-uri";
 export {
-  ObsidianVaultMappingConflictError,
-} from "./errors";
-export {
-  ObsidianReadError,
-  ObsidianReadService,
   obsidianNoteReadResultSchema,
   obsidianNoteSummaryArraySchema,
   obsidianRecentNoteArraySchema,
@@ -13,15 +10,11 @@ export {
   obsidianSearchResultArraySchema,
   obsidianVaultIdSchema,
   obsidianVaultValidationResultSchema,
-  validateVaultMappingPath,
   type ObsidianNoteReadResult,
   type ObsidianNoteSummary,
   type ObsidianRecentNote,
-  type ObsidianReadErrorCode,
   type ObsidianResolvedPathResult,
   type ObsidianSearchResult,
   type ObsidianVaultValidationResult,
-} from "./obsidian-read-service";
-export {
-  createObsidianOpenUri,
-} from "./obsidian-uri";
+} from "../domain/obsidian-contracts";
+export { ObsidianReadError } from "../infrastructure/obsidian";

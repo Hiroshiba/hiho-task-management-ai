@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "reka-ui";
 import type { ExternalAgentBridgeState } from "../../shared/external-agent";
+import type { IntegrationStatus } from "../../shared/ipc-contracts/integration-status";
 import { vaultMappingSchema, type VaultMapping } from "../../shared/storage";
 import type {
   AiSessionFeedback,
@@ -17,6 +18,9 @@ import type {
 
 const props = defineProps<{
   open: boolean;
+  integrationStatus: IntegrationStatus | undefined;
+  integrationStatusLoading: boolean;
+  integrationStatusError: string | undefined;
   state: RendererExternalAgentState;
   busy: boolean;
   restoreFocus: boolean;
@@ -424,6 +428,33 @@ watch(() => props.vaultSaveGeneration, () => {
         >
           {{ props.state.message }}
         </p>
+
+        <section class="mt-5 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+          <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">
+            GitHub連携
+          </h2>
+          <p
+            v-if="props.integrationStatusLoading"
+            class="mt-2 text-sm text-slate-700 dark:text-slate-300"
+            role="status"
+          >
+            連携状態を確認しています。
+          </p>
+          <p
+            v-else-if="props.integrationStatusError != null"
+            class="mt-2 text-sm text-rose-900 dark:text-rose-100"
+            role="alert"
+          >
+            {{ props.integrationStatusError }}
+          </p>
+          <p
+            v-else-if="props.integrationStatus?.github_app.kind === 'unavailable'"
+            class="mt-2 text-sm text-slate-700 dark:text-slate-300"
+            role="status"
+          >
+            GitHub連携は現在利用できません。
+          </p>
+        </section>
 
         <section class="mt-5 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
           <div class="flex flex-wrap items-start justify-between gap-3">

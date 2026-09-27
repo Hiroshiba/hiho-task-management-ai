@@ -8,6 +8,7 @@
 | 起動、停止、ウィンドウ、online監視、自動更新 | `register-main-lifecycle.ts` | MainRuntime生成後 | app終了時にtimer、listener、windowを破棄。ウィンドウ状態と更新試行はJSONへ保存 |
 | DB接続とtransaction | persistence adapter | MainRuntime生成時 | MainRuntime dispose。SQLiteへ保存 |
 | Asana認証と同期実行 | settingsとtask-read workflowの実行単位 | 要求受付と同期開始時 | 終了時に中断・listenerを解放。token、同期状態、cacheは既存保存形式へ保存 |
+| Vaultマッピング保存中lock | Obsidian integration workflow | 保存開始時 | 成功・失敗・中断後にfinallyで解放。マッピングはSQLiteへ保存 |
 | Codex sessionと外部ツール接続 | proposal-generate workflowとAI adapter | session開始時 | session終了時にprocess、socket、作業資源を破棄。未承認案は永続化しない |
 | 外部提案の文脈、準備要求、提案基準、提出要求 | proposal-generate workflow | 文脈設定と提案準備時 | 文脈変更時に準備済み文脈を失効。提出要求は同一稼働中に照合し、停止時に破棄。未承認案は永続化しない |
 | 提出済み外部提案の確認対象、承認状態、適用結果 | proposal-apply workflow | 提出受付時 | MainRuntime終了時にmemoryを破棄。適用記録はjournalへ保存 |
@@ -19,9 +20,9 @@
 | Rendererの起動状態と配色 | `renderer/app` | app mount | media listenerをunmountで解除。配色初期値はOS設定 |
 | タスク一覧、選択、filter、sort、編集進捗 | `renderer/features/tasks` | feature mount | timerとlistenerをunmountで解除。sortは再起動で初期値へ戻す |
 | 変更案、AI session表示、承認、適用、復旧の表示 | `renderer/features/proposals` | feature mount | subscriptionと未完了UI要求をunmountで解除。案本文は保存しない |
-| 初回設定、認証入力、Vault設定の表示 | `renderer/features/settings` | feature mount | listenerをunmountで解除。保存済み値はMainから再読込 |
+| 初回設定、認証入力、Vault設定とGitHub連携状態の表示 | `renderer/features/settings` | feature mount | listenerをunmountで解除。保存済み値と連携状態はMainから再読込 |
 | Obsidian link状態 | `renderer/features/obsidian-integration` | feature mount | 要求世代とlistenerをunmountで破棄 |
-| GitHub連携表示 | `renderer/features/github-integration` | feature mount | listenerをunmountで解除。GitHub adapterは機能使用時に生成 |
+| GitHub連携機能の表示 | `renderer/features/github-integration` | feature mount | listenerをunmountで解除。GitHub App clientがない間はsettingsが利用不可状態を返す |
 | mock選択 | `renderer/shared/mock/mock-selection.ts` | URLを1回解析 | reloadまでimmutable |
 | toastとfeature非依存UI部品 | `renderer/shared/components` | app mount | unmount時にtimerとlistenerを解除 |
 

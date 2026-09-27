@@ -23,6 +23,7 @@ import {
   ipcAsanaCompleteReauthenticationInputSchema,
   ipcFailureSchema,
   ipcGuiEditResultSchema,
+  ipcIntegrationStatusResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
   ipcGuiEditInputSchema,
@@ -33,6 +34,7 @@ import {
   type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcGuiEditResult,
+  type IpcIntegrationStatus,
   type IpcSyncResult,
   type IpcSyncStateEvent,
 } from "../../shared/ipc";
@@ -283,6 +285,9 @@ const aiSessionCreating = ref(false);
 const aiDialogFeedback = ref<Feedback | undefined>();
 const settingsDialogVisible = ref(false);
 const settingsDialogFeedback = ref<Feedback | undefined>();
+const integrationStatus = ref<IpcIntegrationStatus | undefined>();
+const integrationStatusLoading = ref(false);
+const integrationStatusError = ref<string | undefined>();
 const vaultMappings = ref<readonly VaultMapping[]>([]);
 const vaultMappingsLoading = ref(false);
 const vaultMappingBusy = ref(false);
@@ -2929,10 +2934,31 @@ async function openAiAssistant(): Promise<void> {
   aiDialogVisible.value = true;
 }
 
+async function loadIntegrationStatus(): Promise<void> {
+  integrationStatusLoading.value = true;
+  integrationStatusError.value = undefined;
+  try {
+    const result = ipcIntegrationStatusResponseSchema.parse(
+      await taskHub.setup.getIntegrationStatus(),
+    );
+    if (isFailure(result)) {
+      integrationStatusError.value = displayFailure(result).message;
+      return;
+    }
+    integrationStatus.value = result.value;
+  } catch (error) {
+    integrationStatusError.value = "GitHub連携の状態を確認できませんでした。";
+    throw error;
+  } finally {
+    integrationStatusLoading.value = false;
+  }
+}
+
 watch(settingsDialogVisible, (open) => {
   if (open) {
     aiDialogVisible.value = false;
     void loadVaultMappings();
+    void loadIntegrationStatus();
   }
 });
 
@@ -3558,6 +3584,9 @@ onUnmounted(() => {
       />
       <SettingsDialog
         :open="settingsDialogVisible"
+        :integration-status="integrationStatus"
+        :integration-status-loading="integrationStatusLoading"
+        :integration-status-error="integrationStatusError"
         :state="externalAgentState"
         :busy="externalAgentBusy"
         :restore-focus="!aiDialogVisible"

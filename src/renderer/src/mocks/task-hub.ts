@@ -78,6 +78,7 @@ import {
   ipcSetupSelectWorkspaceInputSchema,
   ipcSetupStartInputSchema,
   ipcSetupStateResponseSchema,
+  ipcIntegrationStatusResponseSchema,
   ipcSetupStateSchema,
   ipcSyncGetStateInputSchema,
   ipcSyncGetStateResponseSchema,
@@ -1660,6 +1661,12 @@ export function createMockTaskHubApi(): TaskHubApi {
       getState: () => Promise.resolve().then(() => {
         ipcEmptyRequestSchema.parse(undefined);
         return setupResult();
+      }),
+      getIntegrationStatus: () => Promise.resolve().then(() => {
+        ipcEmptyRequestSchema.parse(undefined);
+        return ipcIntegrationStatusResponseSchema.parse(ok({
+          github_app: { kind: "unavailable", reason_code: "client_unavailable" },
+        }));
       }),
       start: () => Promise.resolve().then(() => {
         ipcSetupStartInputSchema.parse(undefined);

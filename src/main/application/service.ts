@@ -89,7 +89,6 @@ import {
   type CodexSessionConnectionFactory,
   type CodexSessionStartResult,
 } from "../codex/session";
-import type { CodexObsidianReadPort } from "../codex/obsidian";
 import {
   combineDiagnosticFailures,
   DiagnosticFailureDispositionError,
@@ -136,10 +135,6 @@ import {
 import { collectApprovalProjectTasks } from "./proposal-generate";
 import { buildDisplayOrderInput } from "./task-write";
 import { validateRelationGraph } from "./gui-edit";
-import {
-  createCodexObsidianReadPort,
-  createObsidianPort,
-} from "../bootstrap/obsidian-ports";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import {
   AiSessionRuntime,
@@ -164,13 +159,8 @@ import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
 import { OperationalServicesRuntime } from "../bootstrap/operational-services-runtime";
 import { SyncStateRuntime, TaskReadIndex, TaskReadWorkflow } from "./task-read";
-import {
-  createObsidianOpenUri,
-  ObsidianReadService,
-  ObsidianVaultMappingConflictError,
-  validateVaultMappingPath,
-} from "../obsidian";
-import { discoverTasksVault } from "../obsidian/tasks-vault-discovery";
+import { ObsidianReadError, ObsidianReadService, discoverTasksVault } from "../infrastructure/obsidian";
+import { ObsidianIntegrationWorkflow } from "./obsidian-integration";
 import {
   ExternalToolBroker,
   ExternalToolError,
@@ -239,7 +229,6 @@ import {
   type IpcAiPort,
   type IpcGuiEditPort,
   type IpcExternalAgentPort,
-  type IpcObsidianPort,
   type IpcServicePorts,
   type IpcSetupPort,
 } from "../ipc";
@@ -269,8 +258,6 @@ import {
   type IpcAsanaAuthenticationState,
   type IpcAsanaReauthenticationCancelInput,
   type IpcAsanaReauthenticationCompleteInput,
-  type IpcObsidianVaultMapping,
-  type IpcObsidianVaultMappings,
 } from "../../shared/ipc";
 import {
   deviceSettingsSchema,
@@ -806,7 +793,7 @@ export class TaskHubApplication {
     AsanaSyncRuntimeState,
     AsanaSyncCoordinatorResult
   >;
-  private readonly obsidian: ObsidianReadService;
+  private readonly obsidian: ObsidianIntegrationWorkflow;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
   private readonly externalAgentInstanceId: string;
@@ -859,7 +846,6 @@ export class TaskHubApplication {
     IpcAiApprovalResult,
     OperationalContext
   >;
-  private vaultMappingSaveInProgress = false;
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
@@ -982,15 +968,32 @@ export class TaskHubApplication {
       configOverrides: [],
     }, onCodexError);
     this.codexConnectionFactory = connectionFactory;
-    this.obsidian = new ObsidianReadService(this.database);
+    this.obsidian = new ObsidianIntegrationWorkflow({
+      repository: this.database,
+      reader: new ObsidianReadService(this.database),
+      discoverTasksVault,
+      assertOperationalReady: () => this.assertOperationalReady(),
+      isStopped: () => this.lifecycleRuntime.isStopped(),
+      isExternalToolConfigurationRunning: () => this.externalTools.isConfigurationRunning(),
+      hasActiveAiSessions: () => this.aiRuntime.hasActiveSessions(),
+      codexSessionState: () => this.codexSession.getState(),
+      configuredReadOnlyVaultPaths: options.read_only_vault_paths,
+      setCodexReadOnlyVaultPaths: (paths) => this.codexSession.setReadOnlyVaultPaths(paths),
+      openObsidianUrl: (uri, signal) => this.options.open_obsidian_url(uri, signal),
+      reportFailure: (error) => {
+        if (error instanceof ObsidianReadError) {
+          this.options.diagnostic(error, "obsidian", serviceErrorDiagnostic);
+        }
+      },
+    });
     this.codexSession = new CodexSessionService({
       codexExecutablePath: options.codex_executable,
       workspacePath: this.codexWorkspace.workspacePath,
       agentsFilePath: this.codexWorkspace.agentsFilePath,
       tmpDirectoryPath: this.codexWorkspace.tmpDirectoryPath,
       expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
-      obsidianReader: this.createCodexObsidianReadPort(),
-      readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
+      obsidianReader: this.obsidian.createCodexPort(),
+      readOnlyVaultPaths: [...this.obsidian.readOnlyVaultPaths()],
       connectionFactory,
       onError: onCodexError,
       snapshotProvider: () => this.createTaskctlSnapshot(),
@@ -1277,7 +1280,7 @@ export class TaskHubApplication {
         parseCapabilityResult: (value) => capabilityCheckResultSchema.parse(value),
         isCapabilityError: (error): error is AsanaCapabilityCheckError => error instanceof AsanaCapabilityCheckError,
         hasRestAsanaHttpError,
-        validateVaultPath: validateVaultMappingPath,
+        validateVaultPath: (mapping, signal) => this.obsidian.validateMapping(mapping, signal),
       },
     });
     this.operationalContext = new OperationalContextRuntime<
@@ -1305,7 +1308,7 @@ export class TaskHubApplication {
       setTokenProvider: (clientId) => this.tokenProvider.setProvider(
         new AsanaOAuthClient(clientId, this.secretStorage),
       ),
-      updateCodexVaultPaths: () => this.updateCodexVaultPaths(),
+      updateCodexVaultPaths: () => this.obsidian.refreshCodexVaultPaths(),
       assertOperationalReady: () => this.assertOperationalReady(),
     });
     this.journalRecovery = new JournalRecoveryRuntime({
@@ -1576,19 +1579,7 @@ export class TaskHubApplication {
       validateAbortSignal,
       throwIfAborted,
       initializeExternalAgentBridge: () => this.initializeExternalAgentBridge(),
-      ensureTasksVaultMapping: async (signal) => {
-        const hasTasksVaultMapping = this.database.getVaultMappings().some(
-          (mapping) => mapping.vault_id === "tasks",
-        );
-        if (!hasTasksVaultMapping) {
-          const tasksVaultDiscovery = await discoverTasksVault(signal);
-          if (tasksVaultDiscovery.kind === "found") {
-            throwIfAborted(signal);
-            this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
-            this.updateCodexVaultPaths();
-          }
-        }
-      },
+      ensureTasksVaultMapping: (signal) => this.obsidian.ensureTasksVaultMapping(signal),
       recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
       reconcileExternalTools: (signal) => this.externalTools.reconcileAtStartup(signal),
       getSetupState: () => this.setup.getState(),
@@ -1732,7 +1723,7 @@ export class TaskHubApplication {
       gui: this.createGuiPort(),
       externalAgent: this.createExternalAgentPort(),
       ai: this.createAiPort(),
-      obsidian: this.createObsidianPort(),
+      obsidian: this.obsidian.createIpcPort(),
     };
   }
 
@@ -1779,27 +1770,6 @@ export class TaskHubApplication {
       return;
     }
     runtime.setOnline(online);
-  }
-
-  private readOnlyVaultPaths(): readonly string[] {
-    const paths = new Set<string>(this.options.read_only_vault_paths);
-    for (const mapping of this.database.getVaultMappings()) {
-      const validatedMapping = mapping;
-      paths.add(validatedMapping.absolute_path);
-    }
-    return [...paths].sort((left, right) => left.localeCompare(right));
-  }
-
-  private updateCodexVaultPaths(): void {
-    const state = this.codexSession.getState();
-    if (
-      state !== "created"
-      && state !== "authentication_required"
-      && state !== "ready"
-    ) {
-      return;
-    }
-    this.codexSession.setReadOnlyVaultPaths(this.readOnlyVaultPaths());
   }
 
   private configureOperationalServices(): void {
@@ -2816,57 +2786,6 @@ export class TaskHubApplication {
     return this.externalAgent;
   }
 
-  private assertVaultMappingSaveAllowed(): void {
-    if (this.lifecycleRuntime.isStopped()) {
-      throw new ObsidianVaultMappingConflictError();
-    }
-    if (
-      this.externalTools.isConfigurationRunning()
-      || this.aiRuntime.hasActiveSessions()
-    ) {
-      throw new ObsidianVaultMappingConflictError();
-    }
-    const codexState = this.codexSession.getState();
-    if (
-      codexState !== "created"
-      && codexState !== "authentication_required"
-      && codexState !== "ready"
-      && codexState !== "disabled"
-    ) {
-      throw new ObsidianVaultMappingConflictError();
-    }
-  }
-
-  private async saveVaultMapping(
-    input: IpcObsidianVaultMapping,
-    signal: AbortSignal,
-  ): Promise<IpcObsidianVaultMappings> {
-    this.assertOperationalReady();
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    if (this.vaultMappingSaveInProgress) {
-      throw new ObsidianVaultMappingConflictError();
-    }
-    this.assertVaultMappingSaveAllowed();
-    this.vaultMappingSaveInProgress = true;
-    try {
-      const requestedMapping = vaultMappingSchema.parse(input);
-      const validatedVault = await validateVaultMappingPath(requestedMapping, signal);
-      throwIfAborted(signal);
-      this.assertOperationalReady();
-      this.assertVaultMappingSaveAllowed();
-      const mapping = vaultMappingSchema.parse({
-        vault_id: validatedVault.vault_id,
-        absolute_path: validatedVault.real_path,
-      });
-      this.database.saveVaultMapping(mapping);
-      this.updateCodexVaultPaths();
-      return this.database.getVaultMappings();
-    } finally {
-      this.vaultMappingSaveInProgress = false;
-    }
-  }
-
   private createGuiRejectedResult(
     taskGid: string,
     reasonCode:
@@ -3002,8 +2921,8 @@ export class TaskHubApplication {
       agentsFilePath: workspace.agentsFilePath,
       tmpDirectoryPath: workspace.tmpDirectoryPath,
       expectedCodexHomePathProvider: () => this.codexWorkspace.codexHomePath,
-      obsidianReader: this.createCodexObsidianReadPort(),
-      readOnlyVaultPaths: [...this.readOnlyVaultPaths()],
+      obsidianReader: this.obsidian.createCodexPort(),
+      readOnlyVaultPaths: [...this.obsidian.readOnlyVaultPaths()],
       additionalUnixSocketPaths: externalToolEndpoint == null
         ? []
         : [externalToolEndpoint],
@@ -3154,37 +3073,7 @@ export class TaskHubApplication {
     };
   }
 
-  private createObsidianPort(): IpcObsidianPort {
-    return createObsidianPort({
-      assertOperationalReady: () => this.assertOperationalReady(),
-      validateAbortSignal,
-      throwIfAborted,
-      getVaultMappings: () => this.database.getVaultMappings(),
-      saveVaultMapping: (input, signal) => this.saveVaultMapping(input, signal),
-      validateVault: (vaultId, signal) => this.obsidian.validateVault(vaultId, signal),
-      resolveRelativePath: (vaultId, relativePath, signal) =>
-        this.obsidian.resolveRelativePath(vaultId, relativePath, signal),
-      noteExists: (vaultId, relativePath, signal) =>
-        this.obsidian.noteExists(vaultId, relativePath, signal),
-      createOpenUri: createObsidianOpenUri,
-      openObsidianUrl: (uri, signal) => this.options.open_obsidian_url(uri, signal),
-    });
-  }
 
-  private createCodexObsidianReadPort(): CodexObsidianReadPort {
-    return createCodexObsidianReadPort({
-      validateAbortSignal,
-      throwIfAborted,
-      getVaultMappings: () => this.database.getVaultMappings(),
-      listNotes: (vaultId, signal) => this.obsidian.listNotes(vaultId, signal),
-      searchNotes: (vaultId, query, signal) =>
-        this.obsidian.searchNotes(vaultId, query, signal),
-      readNote: (vaultId, relativePath, signal) =>
-        this.obsidian.readNote(vaultId, relativePath, signal),
-      recentNotes: (vaultId, limit, signal) =>
-        this.obsidian.recentNotes(vaultId, limit, signal),
-    });
-  }
 }
 
 /** 旧保存形式の移行処理を一時的な起動portへ渡します。 */

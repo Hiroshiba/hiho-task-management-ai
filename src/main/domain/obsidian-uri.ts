@@ -1,20 +1,21 @@
 import { z } from "zod";
 import {
-  createUtf8ByteLimitedStringSchema,
-  getUtf8ByteLength,
-} from "../../shared/domain";
-import {
   obsidianRelativeMarkdownPathSchema,
   obsidianVaultIdSchema,
-} from "./obsidian-read-service";
+} from "./obsidian-contracts";
 
 const maximumObsidianUriValueCharacters = 4_096;
 const maximumObsidianUriValueBytes = 4_096;
 const maximumObsidianUriCharacters = 32_768;
 const maximumObsidianUriBytes = 32_768;
 
-const obsidianUriValueSchema = createUtf8ByteLimitedStringSchema(
-  maximumObsidianUriValueBytes,
+function getUtf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+const obsidianUriValueSchema = z.string().refine(
+  (value) => getUtf8ByteLength(value) <= maximumObsidianUriValueBytes,
+  { message: `UTF-8換算で${maximumObsidianUriValueBytes}バイト以下の文字列を指定してください。` },
 )
   .min(1)
   .max(maximumObsidianUriValueCharacters)
@@ -23,6 +24,7 @@ const obsidianUriValueSchema = createUtf8ByteLimitedStringSchema(
     "Obsidian URIの値にNUL文字を指定できません。",
   );
 
+/** Obsidianノートを開く要求を検証します。 */
 export const obsidianOpenUriInputSchema = z
   .object({
     vault_id: obsidianUriValueSchema.pipe(obsidianVaultIdSchema),

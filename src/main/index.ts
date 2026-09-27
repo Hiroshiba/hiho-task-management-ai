@@ -36,7 +36,7 @@ import { getUniqueAsanaHttpStatus } from "./asana/transport";
 import { resolveCodexExecutable } from "./codex/app-server";
 import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
-import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
+import { obsidianOpenUriInputSchema } from "./domain/obsidian-uri";
 import { persistentErrorLogFormatter } from "./persistent-error-log";
 import { createStartupGate, type StartupGate } from "./startup-gate";
 import { writeErrorReportFailure } from "./infrastructure/logging";
