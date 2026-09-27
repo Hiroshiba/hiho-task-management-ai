@@ -1,12 +1,12 @@
 # 現行source map
 
-基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 354件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
+基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 358件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
 
 ## 機能と入口
 
 | 機能 | 最終owner | 現行source |
 | --- | --- | --- |
-| アプリ起動・更新・ウィンドウ | main/bootstrap | src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts |
+| アプリ起動・更新・ウィンドウ | main/bootstrap | src/main/bootstrap/create-main-runtime.ts, src/main/bootstrap/register-main-lifecycle.ts, src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts |
 | 初回設定とAsana認証 | main/application/settings | src/main/setup/, src/main/auth/asana-oauth/ |
 | タスク取得・同期・順位 | main/application/task-read | src/main/read-model/, src/main/asana/sync/, src/main/domain/ranking/ |
 | タスク直接編集 | main/application/gui-edit | src/main/gui-edit/, src/main/asana/client/task-write-client.ts |
@@ -27,8 +27,10 @@
 
 | 入口 | 現行source | 最終owner |
 | --- | --- | --- |
-| Electron起動と終了 | src/main/index.ts | main/bootstrap |
-| Mainの現行統合 | src/main/application/service.ts | main/bootstrap |
+| Electron起動入口 | src/main/index.ts | main/bootstrap |
+| MainRuntime生成 | src/main/bootstrap/create-main-runtime.ts | main/bootstrap |
+| Electron起動と終了 | src/main/bootstrap/register-main-lifecycle.ts | main/bootstrap |
+| Mainの旧統合 | src/main/application/service.ts | main/bootstrap |
 | IPC登録 | src/main/ipc/registry.ts | main/ipc |
 | preload bridge | src/preload/index.ts | preload |
 | Renderer起動 | src/renderer/src/main.ts | renderer/app |
@@ -64,6 +66,7 @@
 | src/main/application/checkpoint.ts | main/infrastructure/persistence |
 | src/main/application/cleanup-aggregation.ts | main/application/task-read |
 | src/main/application/codex-adapter.ts | main/infrastructure/ai |
+| src/main/application/common/errors/diagnostic-failure.ts | main/application/common |
 | src/main/application/common/errors/error-reporter.ts | main/application/common |
 | src/main/application/diagnostics.ts | main/infrastructure/logging |
 | src/main/application/gui-edit/build-proposal-operation.ts | main/application/gui-edit |
@@ -204,14 +207,17 @@
 | src/main/bootstrap/ai-session-runtime.ts | main/bootstrap |
 | src/main/bootstrap/asana-reauthentication-runtime.ts | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | main/bootstrap |
+| src/main/bootstrap/create-main-runtime.ts | main/bootstrap |
 | src/main/bootstrap/external-tool-runtime.ts | main/bootstrap |
 | src/main/bootstrap/journal-recovery-runtime.ts | main/bootstrap |
+| src/main/bootstrap/legacy-runtime-port.ts | main/bootstrap |
 | src/main/bootstrap/main-lifecycle-runtime.ts | main/bootstrap |
 | src/main/bootstrap/main-window-readiness.ts | main/bootstrap |
 | src/main/bootstrap/obsidian-ports.ts | main/bootstrap |
 | src/main/bootstrap/open-external-resource.ts | main/bootstrap |
 | src/main/bootstrap/operational-context-runtime.ts | main/bootstrap |
 | src/main/bootstrap/operational-services-runtime.ts | main/bootstrap |
+| src/main/bootstrap/register-main-lifecycle.ts | main/bootstrap |
 | src/main/bootstrap/renderer-environment.ts | main/bootstrap |
 | src/main/bootstrap/sync-state-runtime.ts | main/bootstrap |
 | src/main/bootstrap/synchronization-operations.ts | main/bootstrap |
@@ -236,7 +242,6 @@
 | src/main/codex/workspace/initializer.ts | main/infrastructure/ai |
 | src/main/codex/workspace/integrations.ts | main/infrastructure/ai |
 | src/main/codex/workspace/schemas.ts | main/infrastructure/ai |
-| src/main/diagnostic-failure.ts | main/application/common |
 | src/main/domain/external-data-ingestion.ts | main/domain |
 | src/main/domain/external-data-merge.ts | main/domain |
 | src/main/domain/index.ts | main/domain |
@@ -310,6 +315,7 @@
 | src/main/infrastructure/obsidian/read-error.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/secure-note-reader.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/vault-path-security.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/persistence/index.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secure-file-snapshot.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secure-path-guard.ts | main/infrastructure/persistence |
@@ -425,19 +431,15 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/index.ts | mainWindow | main/bootstrap |
 | src/main/index.ts | mainWindowRegistry | main/bootstrap |
 | src/main/index.ts | mainWindowStateController | main/bootstrap |
-| src/main/index.ts | taskHubApplication | main/bootstrap |
 | src/main/index.ts | applicationUpdateService | main/bootstrap |
-| src/main/index.ts | lifecycleController | main/bootstrap |
 | src/main/index.ts | windowCreationPromise | main/bootstrap |
 | src/main/index.ts | applicationStartPromise | main/bootstrap |
 | src/main/index.ts | backgroundOperations | main/bootstrap |
-| src/main/index.ts | shutdownState | main/bootstrap |
 | src/main/index.ts | onlineMonitorState | main/bootstrap |
 | src/main/index.ts | foregroundScheduled | main/bootstrap |
 | src/main/index.ts | onlinePollScheduled | main/bootstrap |
 | src/main/index.ts | powerMonitorRegistered | main/bootstrap |
 | src/main/index.ts | versionIpcRegistered | main/bootstrap |
-| src/main/index.ts | persistentErrorLog | main/infrastructure/logging |
 | src/main/index.ts | uncaughtExceptionMonitorRegistered | main/bootstrap |
 | src/main/index.ts | startupGate | main/bootstrap |
 | src/main/security.ts | allowedAsanaExternalHosts | main/bootstrap |
@@ -620,6 +622,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/codex-adapter.ts | CodexSetupAdapter.startResult | main/infrastructure/ai |
 | src/main/application/codex-adapter.ts | CodexSetupAdapter.started | main/infrastructure/ai |
 | src/main/application/codex-adapter.ts | CodexSetupAdapter.structuredOutputVerified | main/infrastructure/ai |
+| src/main/application/common/errors/diagnostic-failure.ts | DiagnosticFailureDispositionError.disposition | main/application/common |
 | src/main/application/diagnostics.ts | DiagnosticLogService.appVersion | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.nowProvider | main/infrastructure/logging |
 | src/main/application/diagnostics.ts | DiagnosticLogService.retentionLimit | main/infrastructure/logging |
@@ -902,7 +905,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.state | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.stopPromise | main/infrastructure/ai |
 | src/main/codex/taskctl/broker.ts | TaskctlBroker.tmpDirectoryPath | main/infrastructure/ai |
-| src/main/diagnostic-failure.ts | DiagnosticFailureDispositionError.disposition | main/application/common |
 | src/main/domain/normalization/graph.ts | RelationshipCycleError.relation | main/domain |
 | src/main/domain/normalization/graph.ts | RelationshipCycleError.task_gids | main/domain |
 | src/main/external-agent/service.ts | ExternalAgentService.lifecycle | main/application/proposal-generate |
@@ -1209,7 +1211,7 @@ channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`で�
 
 | 形式 | 保存先または対象 | 現行source | 利用上のowner候補 |
 | --- | --- | --- | --- |
-| SQLite | taskhub.sqlite3 | src/main/index.ts | main/infrastructure/persistence |
+| SQLite | taskhub.sqlite3 | src/main/bootstrap/create-main-runtime.ts | main/infrastructure/persistence |
 | 暗号化JSON | secret-storage.json | src/main/index.ts | main/infrastructure/persistence |
 | 初回設定JSON | setup-checkpoint.json | src/main/index.ts | main/application/settings |
 | ウィンドウJSON | window-state.json | src/main/index.ts | main/bootstrap |
@@ -1289,3 +1291,14 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | sync_state | main/application/task-read |
 | task_cache | main/application/task-read |
 | vault_mappings | main/application/obsidian-integration |
+
+## T49で削除する移行経路
+
+旧Main機能の移行後は、次の経路と`check-architecture.mjs`の旧service向け例外を削除します。
+
+| 対象 | 削除条件 |
+| --- | --- |
+| src/main/application/service.ts | 未移行機能のworkflow移管完了 |
+| src/main/bootstrap/legacy-runtime-port.ts | 旧serviceへの唯一の接続が不要 |
+| src/main/storage/database.tsとsrc/main/storage/index.ts | 用途別repositoryへのfacade移管と旧保存形式の移行完了 |
+| src/main/bootstrap/main-lifecycle-runtime.ts | 旧serviceの起動・停止処理を新runtimeへ移管 |

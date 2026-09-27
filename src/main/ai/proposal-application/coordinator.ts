@@ -73,7 +73,7 @@ import {
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
   type DiagnosticFailureDisposition,
-} from "../../diagnostic-failure";
+} from "../../application/common/errors/diagnostic-failure";
 import {
   AsanaProposalOperationWriter,
   CreateTaskNotFoundError,

@@ -5,7 +5,7 @@ import type {
   WebContents,
 } from "electron";
 import { z } from "zod";
-import { DiagnosticFailureDispositionError } from "../diagnostic-failure";
+import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import {
   assertTrustedIpcSender,
   isApplicationUrl,

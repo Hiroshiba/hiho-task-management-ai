@@ -52,7 +52,7 @@ import {
   assertSelectedProposalGraphIsSafe, eligibleOperationIds, preserveSelection,
   resolveSelectedOperationIds,
 } from "./selection";
-import { DiagnosticFailureDispositionError } from "../../diagnostic-failure";
+import { DiagnosticFailureDispositionError } from "../../application/common/errors/diagnostic-failure";
 import { redactSensitiveText } from "../../redact-sensitive-text";
 import {
   createValidationErrorsDocument as buildValidationErrorsDocument,

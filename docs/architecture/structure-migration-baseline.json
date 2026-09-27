@@ -1065,11 +1065,6 @@
     {
       "path": "src/main/ai/proposal-application/coordinator.ts",
       "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
       "symbol": "src/shared/ai/index.ts"
     },
     {
@@ -1455,11 +1450,6 @@
     {
       "path": "src/main/ai/workflow/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/ai/workflow/service.ts",
-      "rule": "old-import",
       "symbol": "src/main/redact-sensitive-text.ts"
     },
     {
@@ -1575,11 +1565,6 @@
     {
       "path": "src/main/application/codex-adapter.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/application/codex-adapter.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/setup/index.ts"
     },
     {
@@ -1596,11 +1581,6 @@
       "path": "src/main/application/codex-adapter.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/session/index.ts"
-    },
-    {
-      "path": "src/main/application/codex-adapter.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/application/codex-adapter.ts",
@@ -1786,11 +1766,6 @@
       "path": "src/main/application/service.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/workspace/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -2230,11 +2205,6 @@
     {
       "path": "src/main/asana/runtime/service.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/storage/index.ts"
     },
     {
@@ -2271,11 +2241,6 @@
       "path": "src/main/asana/runtime/service.ts",
       "rule": "old-import",
       "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/asana/runtime/service.ts",
@@ -2985,11 +2950,6 @@
     {
       "path": "src/main/codex/session/session.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/codex/session/session.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/obsidian/index.ts"
     },
     {
@@ -3021,11 +2981,6 @@
       "path": "src/main/codex/session/session.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/taskctl/index.ts"
-    },
-    {
-      "path": "src/main/codex/session/session.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/codex/session/session.ts",
@@ -3211,11 +3166,6 @@
       "path": "src/main/codex/workspace/schemas.ts",
       "rule": "old-path",
       "symbol": "src/main/codex/workspace/schemas.ts"
-    },
-    {
-      "path": "src/main/diagnostic-failure.ts",
-      "rule": "old-path",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/domain/external-data-ingestion.ts",
@@ -3825,11 +3775,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "module-mutable",
-      "symbol": "lifecycleController"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
       "symbol": "mainWindow"
     },
     {
@@ -3855,27 +3800,12 @@
     {
       "path": "src/main/index.ts",
       "rule": "module-mutable",
-      "symbol": "persistentErrorLog"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
       "symbol": "powerMonitorRegistered"
     },
     {
       "path": "src/main/index.ts",
       "rule": "module-mutable",
-      "symbol": "shutdownState"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
       "symbol": "startupGate"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
-      "symbol": "taskHubApplication"
     },
     {
       "path": "src/main/index.ts",
@@ -3910,11 +3840,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "old-import",
-      "symbol": "src/main/application/service.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "old-import",
       "symbol": "src/main/asana/runtime/index.ts"
     },
     {
@@ -3926,11 +3851,6 @@
       "path": "src/main/index.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/app-server/index.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/index.ts",
@@ -4050,11 +3970,6 @@
     {
       "path": "src/main/ipc/registry.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/diagnostic-failure.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/external-agent/index.ts"
     },
     {
@@ -4086,11 +4001,6 @@
       "path": "src/main/ipc/registry.ts",
       "rule": "old-import",
       "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/diagnostic-failure.ts"
     },
     {
       "path": "src/main/ipc/registry.ts",

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -90,7 +89,7 @@ import {
   combineDiagnosticFailures,
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
-} from "../diagnostic-failure";
+} from "./common/errors/diagnostic-failure";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -277,8 +276,10 @@ import {
 } from "../../shared/storage";
 import {
   StorageDatabase,
+  migrateLegacyProposalConflictIdentifiers,
   type ExternalToolDefinitionRecord,
 } from "../storage";
+import type { PersistenceRuntime, SqliteConnection } from "../infrastructure/persistence";
 
 type OperationalContext = {
   readonly device_id: string;
@@ -825,7 +826,7 @@ export class TaskHubApplication {
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
-  private readonly externalAgentInstanceId = identifierSchema.parse(randomUUID());
+  private readonly externalAgentInstanceId: string;
   private readonly externalAgent: ExternalAgentService;
   private readonly externalAgentBridge: ExternalAgentBridge;
   private readonly externalTools: ExternalToolRuntime<
@@ -898,11 +899,12 @@ export class TaskHubApplication {
     AsanaSyncRuntimeInternalResult
   >;
 
-  public constructor(options: ApplicationOptions) {
+  public constructor(options: ApplicationOptions, persistence: PersistenceRuntime) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
+    this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
-    this.database = new StorageDatabase(options.database_path);
+    this.database = new StorageDatabase(persistence);
     this.diagnostics = new DiagnosticLogService(
       this.database,
       options.app_version,
@@ -939,7 +941,7 @@ export class TaskHubApplication {
     this.planApplier = new AsanaNormalizationPlanApplier(
       this.readClient,
       this.writeClient,
-      randomUUID,
+      options.create_id,
     );
     this.syncCoordinator = new AsanaSyncCoordinator(
       this.readClient,
@@ -1062,7 +1064,7 @@ export class TaskHubApplication {
       assertOperationalReady: () => this.assertOperationalReady(),
       validateAbortSignal,
       throwIfAborted,
-      createSessionId: () => identifierSchema.parse(randomUUID()),
+      createSessionId: () => identifierSchema.parse(this.options.create_id()),
       parseSessionId: (sessionId) => identifierSchema.parse(sessionId),
       workspaceUserDataPath: (sessionId) => join(
         this.aiSessionWorkspaceParentPath,
@@ -1487,7 +1489,7 @@ export class TaskHubApplication {
         this.interactiveReadClient,
         writer,
         this.database,
-        randomUUID,
+        options.create_id,
         () => createNowIso(this.options.now_provider),
         (requiredTaskGids, signal) =>
           this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
@@ -1521,7 +1523,7 @@ export class TaskHubApplication {
           updateTask: (taskGid, update, signal) =>
             this.interactiveWriteClient.updateTask(taskGid, update, signal),
         },
-        randomUUID,
+        options.create_id,
         (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
       ),
     });
@@ -1594,7 +1596,6 @@ export class TaskHubApplication {
       stopCodexSession: () => this.codexSession.stop({ kind: "record" }),
       externalBroker: () => this.externalTools.brokerForStop(),
       markExternalStopped: () => this.externalTools.markStopped(),
-      closeDatabase: () => this.database.close(),
       combineFailures: (errors) => combineDiagnosticFailures(errors),
     });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
@@ -1739,7 +1740,7 @@ export class TaskHubApplication {
         return identifierSchema.parse(context.device_id);
       }
     }
-    return identifierSchema.parse(randomUUID());
+    return identifierSchema.parse(this.options.create_id());
   }
 
   private configureAsanaFromSettings(settings: DeviceSettings | undefined): void {
@@ -3015,7 +3016,7 @@ export class TaskHubApplication {
       | "context_changed",
   ): IpcGuiEditResult {
     return ipcGuiEditResultSchema.parse({
-      operation_id: randomUUID(),
+      operation_id: this.options.create_id(),
       task_gid: taskGid,
       outcome: "rejected",
       reason_code: reasonCode,
@@ -3323,4 +3324,9 @@ export class TaskHubApplication {
         this.obsidian.recentNotes(vaultId, limit, signal),
     });
   }
+}
+
+/** 旧保存形式の移行処理を一時的な起動portへ渡します。 */
+export function migrateLegacyStorage(database: SqliteConnection): void {
+  migrateLegacyProposalConflictIdentifiers(database);
 }

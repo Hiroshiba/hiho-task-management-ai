@@ -134,10 +134,12 @@ function isAllowedInternalImport(fromOwner, targetOwner, targetPath) {
   if (from === "infrastructure") {
     return targetOwner === "main/domain"
       || targetPath.startsWith("src/main/application/common/ports/")
-      || targetPath === "src/main/application/common/errors/error-reporter.ts";
+      || targetPath === "src/main/application/common/errors/error-reporter.ts"
+      || targetPath === "src/main/application/common/errors/diagnostic-failure.ts";
   }
   if (from === "main/ipc") {
     return targetOwner === "shared/ipc-contracts"
+      || targetPath === "src/main/application/common/errors/diagnostic-failure.ts"
       || target === "workflow" && isPublicEntry(targetOwner, targetPath);
   }
   if (from === "preload") return targetOwner === "shared/ipc-contracts";
@@ -172,6 +174,12 @@ function isForbiddenExternalImport(owner, specifier) {
 
 function diagnostic(path, rule, symbol) {
   return { path, rule, symbol };
+}
+
+function isAllowedLegacyBridgeViolation(path, rule, symbol) {
+  return path === "src/main/bootstrap/legacy-runtime-port.ts"
+    && rule === "old-import"
+    && symbol === "src/main/application/service.ts";
 }
 
 function collectCycles(graph) {
@@ -241,7 +249,8 @@ function collectDiagnostics(paths, files) {
         continue;
       }
       graph.get(path).add(targetPath);
-      if (!isFinalPath(targetPath)) {
+      if (!isFinalPath(targetPath)
+        && !isAllowedLegacyBridgeViolation(path, "old-import", targetPath)) {
         diagnostics.push(diagnostic(path, "old-import", targetPath));
       }
       if (!isAllowedInternalImport(owner, ownerForPath(targetPath), targetPath)) {

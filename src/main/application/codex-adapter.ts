@@ -10,7 +10,7 @@ import {
   CodexSessionService,
   type CodexSessionStartResult,
 } from "../codex/session";
-import { DiagnosticFailureDispositionError } from "../diagnostic-failure";
+import { DiagnosticFailureDispositionError } from "./common/errors/diagnostic-failure";
 import {
   setupCodexAvailabilitySchema,
   type SetupCodexAvailability,

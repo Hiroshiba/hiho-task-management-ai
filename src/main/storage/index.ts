@@ -1,5 +1,6 @@
 export {
   StorageDatabase,
+  migrateLegacyProposalConflictIdentifiers,
   storageBusyTimeoutMilliseconds,
   storageSchemaVersion,
 } from "./database";

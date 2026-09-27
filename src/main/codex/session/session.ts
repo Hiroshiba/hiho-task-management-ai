@@ -72,7 +72,7 @@ import {
   DiagnosticFailureDispositionError,
   combineDiagnosticFailureDispositions,
   diagnosticFailureDispositionFromError,
-} from "../../diagnostic-failure";
+} from "../../application/common/errors/diagnostic-failure";
 import {
   codexGeneratedResponseSchema,
   maximumCodexResponseJsonBytes,

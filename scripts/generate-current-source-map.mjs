@@ -11,8 +11,10 @@ import {
 } from "./architecture-source.mjs";
 
 const entryPoints = [
-  ["Electron起動と終了", "src/main/index.ts", "main/bootstrap"],
-  ["Mainの現行統合", "src/main/application/service.ts", "main/bootstrap"],
+  ["Electron起動入口", "src/main/index.ts", "main/bootstrap"],
+  ["MainRuntime生成", "src/main/bootstrap/create-main-runtime.ts", "main/bootstrap"],
+  ["Electron起動と終了", "src/main/bootstrap/register-main-lifecycle.ts", "main/bootstrap"],
+  ["Mainの旧統合", "src/main/application/service.ts", "main/bootstrap"],
   ["IPC登録", "src/main/ipc/registry.ts", "main/ipc"],
   ["preload bridge", "src/preload/index.ts", "preload"],
   ["Renderer起動", "src/renderer/src/main.ts", "renderer/app"],
@@ -26,7 +28,7 @@ const entryPoints = [
 ];
 
 const functions = [
-  ["アプリ起動・更新・ウィンドウ", "main/bootstrap", "src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts"],
+  ["アプリ起動・更新・ウィンドウ", "main/bootstrap", "src/main/bootstrap/create-main-runtime.ts, src/main/bootstrap/register-main-lifecycle.ts, src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts"],
   ["初回設定とAsana認証", "main/application/settings", "src/main/setup/, src/main/auth/asana-oauth/"],
   ["タスク取得・同期・順位", "main/application/task-read", "src/main/read-model/, src/main/asana/sync/, src/main/domain/ranking/"],
   ["タスク直接編集", "main/application/gui-edit", "src/main/gui-edit/, src/main/asana/client/task-write-client.ts"],
@@ -55,7 +57,7 @@ const externalAgentResponsibilities = [
 ];
 
 const fileFormats = [
-  ["SQLite", "taskhub.sqlite3", "src/main/index.ts", '"taskhub.sqlite3"', "main/infrastructure/persistence"],
+  ["SQLite", "taskhub.sqlite3", "src/main/bootstrap/create-main-runtime.ts", '"taskhub.sqlite3"', "main/infrastructure/persistence"],
   ["暗号化JSON", "secret-storage.json", "src/main/index.ts", '"secret-storage.json"', "main/infrastructure/persistence"],
   ["初回設定JSON", "setup-checkpoint.json", "src/main/index.ts", '"setup-checkpoint.json"', "main/application/settings"],
   ["ウィンドウJSON", "window-state.json", "src/main/index.ts", '"window-state.json"', "main/bootstrap"],
@@ -371,6 +373,16 @@ function render(revision) {
       destinations.get(method).task,
     ])),
     table(["SQLite table", "利用上のowner候補"], tables.map((name) => [name, sqliteOwners.get(name)])),
+    "## T49で削除する移行経路",
+    "",
+    "旧Main機能の移行後は、次の経路と`check-architecture.mjs`の旧service向け例外を削除します。",
+    "",
+    table(["対象", "削除条件"], [
+      ["src/main/application/service.ts", "未移行機能のworkflow移管完了"],
+      ["src/main/bootstrap/legacy-runtime-port.ts", "旧serviceへの唯一の接続が不要"],
+      ["src/main/storage/database.tsとsrc/main/storage/index.ts", "用途別repositoryへのfacade移管と旧保存形式の移行完了"],
+      ["src/main/bootstrap/main-lifecycle-runtime.ts", "旧serviceの起動・停止処理を新runtimeへ移管"],
+    ]),
   ].join("\n");
 }
 

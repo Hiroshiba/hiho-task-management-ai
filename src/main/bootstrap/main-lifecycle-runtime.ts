@@ -54,7 +54,6 @@ type MainLifecycleDependencies<State extends { readonly kind: string }, Applicat
   readonly stopCodexSession: () => Promise<void>;
   readonly externalBroker: () => { stop(): Promise<void> } | undefined;
   readonly markExternalStopped: () => void;
-  readonly closeDatabase: () => void;
   readonly combineFailures: (errors: unknown[]) => Error;
 };
 
@@ -193,11 +192,6 @@ export class MainLifecycleRuntime<
     this.dependencies.markExternalStopped();
     try {
       this.dependencies.recordDiagnostic("app.stop");
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    try {
-      this.dependencies.closeDatabase();
     } catch (error: unknown) {
       errors.push(error);
     }

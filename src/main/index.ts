@@ -16,7 +16,9 @@ import { autoUpdater } from "electron-updater";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import type { ErrorReportContext } from "./application/common/errors/error-reporter";
 import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
-import { TaskHubApplication } from "./application/service";
+import { createMainRuntime, type MainRuntime } from "./bootstrap/create-main-runtime";
+import type { LegacyRuntimePort } from "./bootstrap/legacy-runtime-port";
+import { registerMainLifecycle } from "./bootstrap/register-main-lifecycle";
 import { createMainWindowReadyWait, type MainWindowReadyWait } from "./bootstrap/main-window-readiness";
 import { openAuthorizedExternalUrl, openObsidianUrl, openResolvedPath } from "./bootstrap/open-external-resource";
 import { configureContentSecurityPolicy, configurePermissionPolicy, resolveRendererUrl } from "./bootstrap/renderer-environment";
@@ -24,7 +26,7 @@ import {
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
   type DiagnosticFailureDisposition,
-} from "./diagnostic-failure";
+} from "./application/common/errors/diagnostic-failure";
 import {
   applicationDiagnosticSchema,
   type ApplicationDiagnostic,
@@ -37,7 +39,7 @@ import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
 import { persistentErrorLogFormatter } from "./persistent-error-log";
 import { createStartupGate, type StartupGate } from "./startup-gate";
-import { JsonlErrorReporter, writeErrorReportFailure } from "./infrastructure/logging";
+import { writeErrorReportFailure } from "./infrastructure/logging";
 import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
@@ -50,11 +52,6 @@ import { WindowStateController, WindowStateStore } from "./window-state";
 const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-type ShutdownState =
-  | { readonly kind: "running" }
-  | { readonly kind: "stopping" }
-  | { readonly kind: "stopped" };
-
 type OnlineMonitorState =
   | { readonly kind: "stopped" }
   | {
@@ -66,46 +63,19 @@ type OnlineMonitorState =
 let mainWindow: BrowserWindow | undefined;
 let mainWindowRegistry: IpcHandlerRegistry | undefined;
 let mainWindowStateController: WindowStateController | undefined;
-let taskHubApplication: TaskHubApplication | undefined;
 let applicationUpdateService: ApplicationUpdateService | undefined;
-let lifecycleController: AbortController | undefined;
 let windowCreationPromise: Promise<void> | undefined;
 let applicationStartPromise: Promise<void> | undefined;
 let backgroundOperations: Promise<void> = Promise.resolve();
-let shutdownState: ShutdownState = { kind: "running" };
 let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
 let foregroundScheduled = false;
 let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
 let versionIpcRegistered = false;
-let persistentErrorLog: JsonlErrorReporter | undefined;
 let uncaughtExceptionMonitorRegistered = false;
 const startupGate = createStartupGate();
 
 registerUncaughtExceptionMonitor();
-const singleInstanceLockAcquired = app.requestSingleInstanceLock();
-
-function createPersistentErrorLog(): JsonlErrorReporter | undefined {
-  try {
-    return new JsonlErrorReporter(app.getPath("logs"), [], persistentErrorLogFormatter);
-  } catch (error) {
-    writeErrorReportFailure(error, [], persistentErrorLogFormatter.redactText);
-    return undefined;
-  }
-}
-
-function getPersistentErrorLog(): JsonlErrorReporter | undefined {
-  const logger = persistentErrorLog;
-  if (logger != null) {
-    return logger;
-  }
-  const createdLogger = createPersistentErrorLog();
-  persistentErrorLog = createdLogger;
-  if (createdLogger != null) {
-    registerUncaughtExceptionMonitor();
-  }
-  return createdLogger;
-}
 
 function recordPersistentError(
   source: ErrorReportContext["source"],
@@ -114,7 +84,7 @@ function recordPersistentError(
   severity: ErrorReportContext["level"],
   error: unknown,
 ): void {
-  const logger = getPersistentErrorLog();
+  const logger = lifecycle.getRuntime()?.reporter;
   if (logger == null) {
     writeErrorReportFailure(error, [], persistentErrorLogFormatter.redactText);
     return;
@@ -130,7 +100,7 @@ function recordPersistentErrorStrict(
   error: unknown,
   operationId: string | undefined,
 ): void {
-  const logger = getPersistentErrorLog();
+  const logger = lifecycle.getRuntime()?.reporter;
   if (logger == null) {
     throw new Error("永続エラーログを初期化できません。", { cause: error });
   }
@@ -177,7 +147,7 @@ function recordDiagnostic(
   } else if (resolvedMetadata.http_status == null && httpStatus != null) {
     resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
   }
-  const application = taskHubApplication;
+  const application = lifecycle.getRuntime()?.legacy;
   if (application == null) {
     console.error("診断情報を記録できませんでした。");
     return;
@@ -208,7 +178,7 @@ function recordDiagnosticStrict(
   } else if (resolvedMetadata.http_status == null && httpStatus != null) {
     resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
   }
-  const application = taskHubApplication;
+  const application = lifecycle.getRuntime()?.legacy;
   if (application == null) {
     throw new Error("診断情報を記録するアプリケーションがありません。", { cause: error });
   }
@@ -361,56 +331,54 @@ function forwardUnhandledError(error: unknown): void {
   });
 }
 
-function createTaskHubApplication(controller: AbortController): TaskHubApplication {
+function createApplicationRuntime(): MainRuntime {
   const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
-  return new TaskHubApplication({
-    user_data_path: userDataPath,
-    database_path: join(userDataPath, "taskhub.sqlite3"),
-    secret_storage_path: join(userDataPath, "secret-storage.json"),
-    checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
-    app_version: app.getVersion(),
-    codex_executable: resolveCodexExecutable(),
-    read_only_vault_paths: [],
-    lifecycle_signal: controller.signal,
-    online_provider: () => net.isOnline(),
-    now_provider: () => new Date(),
-    open_authorization_url: (authorizationUrl, signal) =>
-      openAuthorizedExternalUrl(
-        authorizationUrl,
-        signal,
-        assertAllowedAsanaAuthorizationUrl,
-      ),
-    open_codex_authorization_url: (authorizationUrl, signal) =>
-      openAuthorizedExternalUrl(
-        authorizationUrl,
-        signal,
-        assertAllowedCodexAuthorizationUrl,
-      ),
-    open_obsidian_url: (obsidianUrl, signal) =>
-      openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
-        obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
-      }),
-    open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
-    diagnostic: recordServiceDiagnostic,
-    unhandled_error_forwarder: forwardUnhandledError,
-    open_external_agent_review: async () => {
-      const application = taskHubApplication;
-      if (application == null) {
-        throw new Error("TaskHubアプリケーションが初期化されていません。");
-      }
-      const controller = lifecycleController;
-      if (controller == null) {
-        throw new Error("アプリケーションのライフサイクルが初期化されていません。");
-      }
-      await ensureMainWindow(
-        getRendererUrl(),
-        application,
-        startupGate,
-        controller.signal,
-      );
-      if (!showAndFocusMainWindow()) {
-        throw new Error("TaskHubメインウィンドウを表示できません。");
-      }
+  return createMainRuntime({
+    userDataPath,
+    logsPath: app.getPath("logs"),
+    loggerFormatter: persistentErrorLogFormatter,
+    legacy: {
+      user_data_path: userDataPath,
+      secret_storage_path: join(userDataPath, "secret-storage.json"),
+      checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
+      app_version: app.getVersion(),
+      codex_executable: resolveCodexExecutable(),
+      read_only_vault_paths: [],
+      online_provider: () => net.isOnline(),
+      open_authorization_url: (authorizationUrl, signal) =>
+        openAuthorizedExternalUrl(
+          authorizationUrl,
+          signal,
+          assertAllowedAsanaAuthorizationUrl,
+        ),
+      open_codex_authorization_url: (authorizationUrl, signal) =>
+        openAuthorizedExternalUrl(
+          authorizationUrl,
+          signal,
+          assertAllowedCodexAuthorizationUrl,
+        ),
+      open_obsidian_url: (obsidianUrl, signal) =>
+        openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
+          obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
+        }),
+      open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
+      diagnostic: recordServiceDiagnostic,
+      unhandled_error_forwarder: forwardUnhandledError,
+      open_external_agent_review: async () => {
+        const runtime = lifecycle.getRuntime();
+        if (runtime == null) {
+          throw new Error("TaskHubアプリケーションが初期化されていません。");
+        }
+        await ensureMainWindow(
+          getRendererUrl(),
+          runtime.legacy,
+          startupGate,
+          runtime.signal,
+        );
+        if (!showAndFocusMainWindow()) {
+          throw new Error("TaskHubメインウィンドウを表示できません。");
+        }
+      },
     },
   });
 }
@@ -479,9 +447,9 @@ function enqueueBackgroundOperation(
   failureCode: DiagnosticRecord["code"],
 ): void {
   backgroundOperations = backgroundOperations.then(async () => {
-    const controller = lifecycleController;
+    const controller = lifecycle.getRuntime();
     if (
-      shutdownState.kind !== "running"
+      !lifecycle.isRunning()
       || controller == null
       || controller.signal.aborted
     ) {
@@ -518,7 +486,7 @@ function enqueueBackgroundOperation(
 function scheduleForegroundSync(): void {
   if (
     foregroundScheduled
-    || shutdownState.kind !== "running"
+    || !lifecycle.isRunning()
     || !startupGate.isReady()
   ) {
     return;
@@ -526,8 +494,8 @@ function scheduleForegroundSync(): void {
   foregroundScheduled = true;
   enqueueBackgroundOperation(async () => {
     try {
-      const application = taskHubApplication;
-      const controller = lifecycleController;
+      const application = lifecycle.getRuntime()?.legacy;
+      const controller = lifecycle.getRuntime();
       if (application == null || controller == null) {
         throw new Error("アプリケーションが初期化されていません。");
       }
@@ -561,7 +529,7 @@ function updateOnlineMonitorState(
 function scheduleOnlinePoll(): void {
   if (
     onlinePollScheduled
-    || shutdownState.kind !== "running"
+    || !lifecycle.isRunning()
     || !startupGate.isReady()
   ) {
     return;
@@ -570,7 +538,7 @@ function scheduleOnlinePoll(): void {
   enqueueBackgroundOperation(async () => {
     try {
       const monitor = onlineMonitorState;
-      const application = taskHubApplication;
+      const application = lifecycle.getRuntime()?.legacy;
       if (monitor.kind !== "running" || application == null) {
         return;
       }
@@ -637,7 +605,7 @@ function stopOperationalEventMonitoring(): void {
 }
 
 function showAndFocusMainWindow(): boolean {
-  if (shutdownState.kind !== "running") {
+  if (!lifecycle.isRunning()) {
     return false;
   }
   const window = mainWindow;
@@ -656,11 +624,11 @@ function showAndFocusMainWindow(): boolean {
 
 async function createMainWindow(
   rendererUrl: string,
-  application: TaskHubApplication,
+  application: LegacyRuntimePort,
   gate: StartupGate,
   signal: AbortSignal,
 ): Promise<void> {
-  if (shutdownState.kind !== "running" || signal.aborted) {
+  if (!lifecycle.isRunning() || signal.aborted) {
     return;
   }
   const windowStateStore = new WindowStateStore(
@@ -721,7 +689,7 @@ async function createMainWindow(
     windowStateController.restore(savedWindowState);
     window.on("focus", scheduleForegroundSync);
     window.on("close", (event) => {
-      if (process.platform === "darwin" && shutdownState.kind === "running") {
+      if (process.platform === "darwin" && lifecycle.isRunning()) {
         event.preventDefault();
         window.hide();
         return;
@@ -756,7 +724,7 @@ async function createMainWindow(
     if (!window.isDestroyed()) {
       window.destroy();
     }
-    if (signal.aborted || shutdownState.kind !== "running") {
+    if (signal.aborted || !lifecycle.isRunning()) {
       return;
     }
     throw error;
@@ -765,11 +733,11 @@ async function createMainWindow(
 
 function ensureMainWindow(
   rendererUrl: string,
-  application: TaskHubApplication,
+  application: LegacyRuntimePort,
   gate: StartupGate,
   signal: AbortSignal,
 ): Promise<void> {
-  if (shutdownState.kind !== "running" || signal.aborted) {
+  if (!lifecycle.isRunning() || signal.aborted) {
     return Promise.resolve();
   }
   if (mainWindow != null && !mainWindow.isDestroyed()) {
@@ -796,19 +764,19 @@ function yieldToRenderer(): Promise<void> {
 }
 
 async function startApplication(
-  application: TaskHubApplication,
+  application: LegacyRuntimePort,
   signal: AbortSignal,
 ): Promise<void> {
   try {
     await application.start(signal);
-    if (signal.aborted || shutdownState.kind !== "running") {
+    if (signal.aborted || !lifecycle.isRunning()) {
       startupGate.markStopped();
       return;
     }
     startOperationalEventMonitoring();
     startupGate.markReady();
   } catch (error) {
-    if (signal.aborted || shutdownState.kind !== "running") {
+    if (signal.aborted || !lifecycle.isRunning()) {
       startupGate.markStopped();
       return;
     }
@@ -834,7 +802,8 @@ async function startApplication(
 }
 
 async function stopApplication(): Promise<void> {
-  lifecycleController?.abort();
+  const runtime = lifecycle.getRuntime();
+  runtime?.abort();
   startupGate.markStopped();
   stopOperationalEventMonitoring();
   const registry = mainWindowRegistry;
@@ -850,51 +819,67 @@ async function stopApplication(): Promise<void> {
     }
     versionIpcRegistered = false;
   }
+  const errors: unknown[] = [];
   const startPromise = applicationStartPromise;
   if (startPromise != null) {
-    await startPromise;
-  }
-  await backgroundOperations;
-  const application = taskHubApplication;
-  if (application != null) {
     try {
-      await application.stop();
+      await startPromise;
     } catch (error) {
-      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-        console.error("アプリケーションの停止に失敗しました。");
-        return;
-      }
-      const disposition = diagnosticFailureDispositionFromError(error);
-      switch (disposition.kind) {
-        case "recorded_only":
-          break;
-        case "unrecorded_only":
-        case "recorded_and_unrecorded":
-          recordPersistentError(
-            "main",
-            "app.error",
-            "application_stop",
-            "error",
-            disposition.unrecorded_error,
-          );
-          recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
-          break;
+      errors.push(error);
+    }
+  }
+  try {
+    await backgroundOperations;
+  } catch (error) {
+    errors.push(error);
+  }
+  if (runtime != null) {
+    try {
+      await runtime.dispose();
+    } catch (error) {
+      if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
+        const disposition = diagnosticFailureDispositionFromError(error);
+        switch (disposition.kind) {
+          case "recorded_only":
+            break;
+          case "unrecorded_only":
+          case "recorded_and_unrecorded":
+            recordPersistentError(
+              "main",
+              "app.error",
+              "application_stop",
+              "error",
+              disposition.unrecorded_error,
+            );
+            recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+            break;
+        }
       }
       console.error("アプリケーションの停止に失敗しました。");
     }
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "アプリケーションの終了処理に複数の失敗がありました。", {
+      cause: errors[0],
+    });
   }
 }
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  if (!lifecycle.isRunning()) {
+    return;
+  }
   Menu.setApplicationMenu(null);
   configureContentSecurityPolicy(session.defaultSession, app.isPackaged);
   configurePermissionPolicy(session.defaultSession);
   const rendererUrl = getRendererUrl();
-  const controller = new AbortController();
-  lifecycleController = controller;
-  const application = createTaskHubApplication(controller);
-  taskHubApplication = application;
+  const runtime = createApplicationRuntime();
+  lifecycle.setRuntime(runtime);
+  const application = runtime.legacy;
   const updateService = new ApplicationUpdateService(
     autoUpdater,
     app.getVersion(),
@@ -920,9 +905,9 @@ async function bootstrap(): Promise<void> {
         rendererUrl,
         application,
         startupGate,
-        controller.signal,
+        runtime.signal,
       ).catch((error) => {
-        if (controller.signal.aborted || shutdownState.kind !== "running") {
+        if (runtime.signal.aborted || !lifecycle.isRunning()) {
           return;
         }
         recordPersistentError("main", "app.error", "main_window", "error", error);
@@ -934,58 +919,34 @@ async function bootstrap(): Promise<void> {
     rendererUrl,
     application,
     startupGate,
-    controller.signal,
+    runtime.signal,
   );
   await yieldToRenderer();
-  if (controller.signal.aborted || shutdownState.kind !== "running") {
+  if (runtime.signal.aborted || !lifecycle.isRunning()) {
     return;
   }
   updateService.start();
-  applicationStartPromise = startApplication(application, controller.signal);
+  applicationStartPromise = startApplication(application, runtime.signal);
   await applicationStartPromise;
 }
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
-
-app.on("before-quit", (event) => {
-  if (shutdownState.kind === "stopped") {
-    return;
-  }
-  event.preventDefault();
-  if (shutdownState.kind === "stopping") {
-    return;
-  }
-  mainWindowStateController?.flush();
-  shutdownState = { kind: "stopping" };
-  void stopApplication().then(() => {
-    shutdownState = { kind: "stopped" };
-    const updateService = applicationUpdateService;
-    if (updateService != null && updateService.installOnQuit(() => app.quit())) {
-      return;
-    }
-    app.quit();
-  }).catch((error) => {
+const lifecycle = registerMainLifecycle(app, {
+  bootstrap,
+  stop: stopApplication,
+  flushWindowState: () => mainWindowStateController?.flush(),
+  installUpdateOnQuit: (quit) => applicationUpdateService?.installOnQuit(quit) === true,
+  showSecondInstance: showAndFocusMainWindow,
+  reportStopFailure: (error) => {
     recordPersistentError("main", "app.error", "application_quit", "error", error);
     recordDiagnostic("app.error", "error", undefined, error);
     console.error("アプリケーションの停止に失敗しました。");
-    shutdownState = { kind: "stopped" };
-    app.quit();
-  });
-});
-
-if (!singleInstanceLockAcquired) {
-  shutdownState = { kind: "stopped" };
-  app.quit();
-} else {
-  app.on("second-instance", showAndFocusMainWindow);
-  void bootstrap().catch((error) => {
-    recordPersistentError("main", "app.error", "bootstrap", "error", error);
-    recordDiagnostic("app.error", "error", undefined, error);
+  },
+  reportBootstrapFailure: (error) => {
+    const disposition = mainDiagnosticFailureDisposition(error);
+    if (disposition.kind !== "recorded_only") {
+      recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
+      recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+    }
     console.error("アプリケーションの起動に失敗しました。");
-    app.quit();
-  });
-}
+  },
+});

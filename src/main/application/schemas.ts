@@ -70,7 +70,6 @@ const applicationStateSchema = z.discriminatedUnion("kind", [
 const applicationOptionsSchema = z
   .object({
     user_data_path: applicationPathSchema,
-    database_path: applicationPathSchema,
     secret_storage_path: applicationPathSchema,
     checkpoint_path: applicationPathSchema,
     app_version: identifierSchema,
@@ -82,6 +81,7 @@ const applicationOptionsSchema = z
     ),
     online_provider: functionSchema,
     now_provider: functionSchema,
+    create_id: functionSchema,
     open_authorization_url: functionSchema,
     open_codex_authorization_url: functionSchema,
     open_obsidian_url: functionSchema,
@@ -96,6 +96,7 @@ export type ApplicationState = z.infer<typeof applicationStateSchema>;
 export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
   readonly online_provider: () => boolean;
   readonly now_provider: () => Date;
+  readonly create_id: () => string;
   readonly open_authorization_url: (
     authorizationUrl: string,
     signal: AbortSignal,

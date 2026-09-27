@@ -12,7 +12,6 @@ const sourceExtensions = new Set([".ts", ".tsx", ".vue", ".css", ".html"]);
 const ownerRules = [
   [/^src\/main\/index\.ts$/, "main/bootstrap"],
   [/^src\/main\/(application-update|security|startup-gate)\.ts$/, "main/bootstrap"],
-  [/^src\/main\/diagnostic-failure\.ts$/, "main/application/common"],
   [/^src\/main\/(local-storage-path|window-state)\.ts$/, "main/infrastructure/persistence"],
   [/^src\/main\/(persistent-error-log|redact-sensitive-text)\.ts$/, "main/infrastructure/logging"],
   [/^src\/main\/application\/service\.ts$/, "main/bootstrap"],

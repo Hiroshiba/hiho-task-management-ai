@@ -11,7 +11,7 @@ import { AsanaRequestAbortedError } from "../scheduler";
 import {
   combineDiagnosticFailures,
   DiagnosticFailureDispositionError,
-} from "../../diagnostic-failure";
+} from "../../application/common/errors/diagnostic-failure";
 import {
   AsanaOperationQueue,
   type AsanaOperationPriority,

@@ -73,7 +73,8 @@ interface CleanupItemsCacheRow {
 const legacyProposalConflictMessagePattern =
   /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
 
-function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
+/** 旧形式の要整理項目を現行の識別子へ移行します。 */
+export function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
   const sourceRowCount = readTableRowCount(database, "cleanup_items_cache");
   const rows = database
     .prepare<[], CleanupItemsCacheRow>(
@@ -153,8 +154,8 @@ export class StorageDatabase {
   private readonly diagnosticLogStore: DiagnosticLogStore;
   private readonly externalToolDefinitionStore: ExternalToolDefinitionStore;
 
-  public constructor(dbPath: string) {
-    this.runtime = new PersistenceRuntime(dbPath, migrateLegacyProposalConflictIdentifiers);
+  public constructor(runtime: PersistenceRuntime) {
+    this.runtime = runtime;
     const database = this.runtime.connection;
     this.database = database;
     this.taskCacheStore = new TaskCacheStore(database, this.runtime);
