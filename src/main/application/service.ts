@@ -150,6 +150,7 @@ import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthenticatio
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
+import { OperationalServicesRuntime } from "../bootstrap/operational-services-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -845,12 +846,15 @@ export class TaskHubApplication {
     DeviceSettings,
     OperationalContext["codex"]
   >;
-  private runtime: AsanaSyncRuntime | undefined;
-  private displayOrder: AsanaDisplayOrderService | undefined;
-  private writer: AsanaProposalOperationWriter | undefined;
-  private applicationCoordinator: AsanaProposalApplicationCoordinator | undefined;
-  private guiEdit: AsanaGuiEditService | undefined;
-  private aiSessionsConfigured = false;
+  private readonly operationalServices: OperationalServicesRuntime<
+    OperationalContext,
+    DeviceSettings,
+    AsanaSyncRuntime,
+    AsanaDisplayOrderService,
+    AsanaProposalOperationWriter,
+    AsanaProposalApplicationCoordinator,
+    AsanaGuiEditService
+  >;
   private readonly aiRuntime: AiSessionRuntime<
     CodexWorkspaceInitializationResult,
     CodexSessionService,
@@ -1180,7 +1184,7 @@ export class TaskHubApplication {
       online_provider: () => this.isOnline(),
       get_taskctl_snapshot: () => this.createTaskctlSnapshot(),
       operation_queue: this.operationQueue,
-      get_runtime_state: () => this.runtime?.getState(),
+      get_runtime_state: () => this.operationalServices.getRuntime()?.getState(),
       create_baseline: (signal) => this.createExternalBaseline(signal),
       prepare_approval_input: (input, signal) =>
         this.prepareApprovalInput(input, signal),
@@ -1437,6 +1441,90 @@ export class TaskHubApplication {
       },
       restoreContext: () => this.configureContextFromState(this.setup.getState()),
     });
+    this.operationalServices = new OperationalServicesRuntime<
+      OperationalContext,
+      DeviceSettings,
+      AsanaSyncRuntime,
+      AsanaDisplayOrderService,
+      AsanaProposalOperationWriter,
+      AsanaProposalApplicationCoordinator,
+      AsanaGuiEditService
+    >({
+      assertSetupReady: () => this.assertSetupReady(),
+      requireContext: () => this.requireContext(),
+      getSettings: () => this.operationalContext.getSettings(),
+      contextMatchesSettings,
+      onlineProvider: () => this.options.online_provider(),
+      createRuntime: (context, online) => new AsanaSyncRuntime(
+        this.syncCoordinator,
+        this.database,
+        {
+          project_gid: context.project_gid,
+          section_gids: context.section_gids,
+          device_id: context.device_id,
+          app_version: this.options.app_version,
+          initial_online: online,
+        },
+        this.options.lifecycle_signal,
+        (signal) => this.synchronizationOperations.beforeSynchronization(signal),
+        (error) => this.recordUnexpectedError(error, "sync"),
+        this.options.unhandled_error_forwarder,
+        () => createNowIso(this.options.now_provider),
+        this.operationQueue,
+      ),
+      subscribeRuntime: (runtime) => this.syncStateRuntime.subscribeRuntime(runtime),
+      createDisplayOrder: () => createAsanaDisplayOrderService(
+        this.transport,
+        (error) => this.recordUnexpectedError(error, "display_order"),
+        this.options.lifecycle_signal,
+        this.operationQueue,
+      ),
+      createWriter: () => new AsanaProposalOperationWriter(
+        this.interactiveReadClient,
+        this.interactiveWriteClient,
+      ),
+      createCoordinator: (writer) => new AsanaProposalApplicationCoordinator(
+        this.interactiveReadClient,
+        writer,
+        this.database,
+        randomUUID,
+        () => createNowIso(this.options.now_provider),
+        (requiredTaskGids, signal) =>
+          this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
+        (error, event) => this.options.diagnostic(error, "application_journal", event),
+      ),
+      createGuiEdit: (writer) => new AsanaGuiEditService(
+        writer,
+        (requiredTaskGids, signal) =>
+          this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
+        () => this.isOnline(),
+        (request, signal) => this.validateRelationGraph(request, signal),
+        {
+          getTask: (taskGid, signal) => this.interactiveReadClient.getTask(taskGid, signal),
+        },
+        {
+          addTaskToProject: (taskGid, projectGid, sectionGid, position, signal) =>
+            this.interactiveWriteClient.addTaskToProject(
+              taskGid,
+              projectGid,
+              sectionGid,
+              position,
+              signal,
+            ),
+          addTaskToSection: (taskGid, sectionGid, position, signal) =>
+            this.interactiveWriteClient.addTaskToSection(
+              taskGid,
+              sectionGid,
+              position,
+              signal,
+            ),
+          updateTask: (taskGid, update, signal) =>
+            this.interactiveWriteClient.updateTask(taskGid, update, signal),
+        },
+        randomUUID,
+        (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
+      ),
+    });
     this.lifecycleRuntime = new MainLifecycleRuntime<
       SetupState,
       ApplicationState,
@@ -1500,8 +1588,8 @@ export class TaskHubApplication {
         this.aiStatusListeners.clear();
       },
       closeAiSessions: (errors) => this.aiRuntime.closeAll(errors),
-      displayOrder: () => this.displayOrder,
-      runtime: () => this.runtime,
+      displayOrder: () => this.operationalServices.getDisplayOrder(),
+      runtime: () => this.operationalServices.getRuntime(),
       operationQueue: this.operationQueue,
       stopCodexSession: () => this.codexSession.stop({ kind: "record" }),
       externalBroker: () => this.externalTools.brokerForStop(),
@@ -1606,7 +1694,7 @@ export class TaskHubApplication {
     if (typeof online !== "boolean") {
       throw new TypeError("オンライン状態は真偽値で指定してください。");
     }
-    const runtime = this.runtime;
+    const runtime = this.operationalServices.getRuntime();
     if (runtime == null) {
       return;
     }
@@ -1684,109 +1772,7 @@ export class TaskHubApplication {
   }
 
   private configureOperationalServices(): void {
-    this.assertSetupReady();
-    const context = this.requireContext();
-    const settings = this.operationalContext.getSettings();
-    if (settings == null || !contextMatchesSettings(context, settings)) {
-      throw new Error("設定済み文脈と端末設定が一致しません。");
-    }
-    const fullyConfigured = this.runtime != null
-      && this.displayOrder != null
-      && this.writer != null
-      && this.applicationCoordinator != null
-      && this.guiEdit != null
-      && this.aiSessionsConfigured;
-    if (fullyConfigured) {
-      return;
-    }
-    if (
-      this.runtime != null
-      || this.displayOrder != null
-      || this.writer != null
-      || this.applicationCoordinator != null
-      || this.guiEdit != null
-      || this.aiSessionsConfigured
-    ) {
-      throw new Error("運用サービスの構成状態が一貫していません。");
-    }
-    const online = this.options.online_provider();
-    if (typeof online !== "boolean") {
-      throw new TypeError("オンライン状態関数は真偽値を返してください。");
-    }
-    const runtime = new AsanaSyncRuntime(
-      this.syncCoordinator,
-      this.database,
-      {
-        project_gid: context.project_gid,
-        section_gids: context.section_gids,
-        device_id: context.device_id,
-        app_version: this.options.app_version,
-        initial_online: online,
-      },
-      this.options.lifecycle_signal,
-      (signal) => this.synchronizationOperations.beforeSynchronization(signal),
-      (error) => this.recordUnexpectedError(error, "sync"),
-      this.options.unhandled_error_forwarder,
-      () => createNowIso(this.options.now_provider),
-      this.operationQueue,
-    );
-    this.syncStateRuntime.subscribeRuntime(runtime);
-    const displayOrder = createAsanaDisplayOrderService(
-      this.transport,
-      (error) => this.recordUnexpectedError(error, "display_order"),
-      this.options.lifecycle_signal,
-      this.operationQueue,
-    );
-    const writer = new AsanaProposalOperationWriter(
-      this.interactiveReadClient,
-      this.interactiveWriteClient,
-    );
-    const applicationCoordinator = new AsanaProposalApplicationCoordinator(
-      this.interactiveReadClient,
-      writer,
-      this.database,
-      randomUUID,
-      () => createNowIso(this.options.now_provider),
-      (requiredTaskGids, signal) => this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
-      (error, event) => this.options.diagnostic(error, "application_journal", event),
-    );
-    const guiEdit = new AsanaGuiEditService(
-      writer,
-      (requiredTaskGids, signal) => this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
-      () => this.isOnline(),
-      (request, signal) => this.validateRelationGraph(request, signal),
-      {
-        getTask: (taskGid, signal) =>
-          this.interactiveReadClient.getTask(taskGid, signal),
-      },
-      {
-        addTaskToProject: (taskGid, projectGid, sectionGid, position, signal) =>
-          this.interactiveWriteClient.addTaskToProject(
-            taskGid,
-            projectGid,
-            sectionGid,
-            position,
-            signal,
-          ),
-        addTaskToSection: (taskGid, sectionGid, position, signal) =>
-          this.interactiveWriteClient.addTaskToSection(
-            taskGid,
-            sectionGid,
-            position,
-            signal,
-          ),
-        updateTask: (taskGid, update, signal) =>
-          this.interactiveWriteClient.updateTask(taskGid, update, signal),
-      },
-      randomUUID,
-      (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
-    );
-    this.runtime = runtime;
-    this.displayOrder = displayOrder;
-    this.writer = writer;
-    this.applicationCoordinator = applicationCoordinator;
-    this.guiEdit = guiEdit;
-    this.aiSessionsConfigured = true;
+    this.operationalServices.configure();
   }
 
   private rethrowFeatureAbort(error: unknown, signal: AbortSignal): void {
@@ -2242,11 +2228,7 @@ export class TaskHubApplication {
   }
 
   private requireRuntime(): AsanaSyncRuntime {
-    const runtime = this.runtime;
-    if (runtime == null) {
-      throw new Error("Asana同期ランタイムが設定されていません。");
-    }
-    return runtime;
+    return this.operationalServices.requireRuntime();
   }
 
   private requireContext(): OperationalContext {
@@ -2254,19 +2236,11 @@ export class TaskHubApplication {
   }
 
   private requireWriter(): AsanaProposalOperationWriter {
-    const writer = this.writer;
-    if (writer == null) {
-      throw new Error("Asana変更操作ライターが設定されていません。");
-    }
-    return writer;
+    return this.operationalServices.requireWriter();
   }
 
   private requireApplicationCoordinator(): AsanaProposalApplicationCoordinator {
-    const coordinator = this.applicationCoordinator;
-    if (coordinator == null) {
-      throw new Error("Asana変更適用コーディネータが設定されていません。");
-    }
-    return coordinator;
+    return this.operationalServices.requireCoordinator();
   }
 
   private async initializeExternalAgentBridge(): Promise<void> {
@@ -2321,7 +2295,7 @@ export class TaskHubApplication {
       signal,
     );
     signal.throwIfAborted();
-    const displayOrder = this.displayOrder;
+    const displayOrder = this.operationalServices.getDisplayOrder();
     if (displayOrder == null) {
       return;
     }
@@ -2910,11 +2884,7 @@ export class TaskHubApplication {
   }
 
   private requireGuiEdit(): AsanaGuiEditService {
-    const service = this.guiEdit;
-    if (service == null) {
-      throw new Error("GUI編集サービスが設定されていません。");
-    }
-    return service;
+    return this.operationalServices.requireGuiEdit();
   }
 
   private createGuiPort(): IpcGuiEditPort {
