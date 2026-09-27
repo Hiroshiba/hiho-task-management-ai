@@ -60,7 +60,7 @@ export function assertApprovalInputMatchesStored<TProposal, TTask, TBaseline ext
   readonly tasks: readonly TTask[];
 }, TInput extends {
   readonly approval_input: {
-    readonly proposal: TProposal;
+    readonly proposal: unknown;
     readonly baseline_tasks: readonly unknown[];
     readonly selected_operation_ids: readonly string[];
   };

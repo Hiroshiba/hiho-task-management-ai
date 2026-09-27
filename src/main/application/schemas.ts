@@ -9,7 +9,6 @@ import {
   type SetupState,
 } from "../../shared/setup";
 import { identifierSchema } from "../../shared/domain";
-import type { ApplicationDiagnostic } from "../ai/proposal-application/schemas";
 
 const applicationPathSchema = z
   .string()
@@ -114,7 +113,7 @@ export type ApplicationOptions = z.infer<typeof applicationOptionsSchema> & {
   readonly diagnostic: (
     error: unknown,
     channel: string,
-    diagnostic: ApplicationDiagnostic,
+    diagnostic: { readonly kind: "service"; readonly severity: "warning" | "error" },
   ) => void;
   readonly unhandled_error_forwarder: (error: unknown) => void;
   readonly open_external_agent_review: () => Promise<void> | void;

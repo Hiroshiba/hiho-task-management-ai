@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { LegacyProposalExecutionStep } from "../../application/common/ports/proposal-execution-repository";
+import type { ProposalApplicationHistoryStep } from "../../application/common/ports/proposal-application-history";
 import {
   canonicalizeTaskWriteJson,
   customExternalDataSchema,
@@ -292,7 +292,7 @@ function assertLegacyPlan(row: LegacyRow): void {
 }
 
 /** schema移行後の旧行を読取専用の表示stepへ変換します。 */
-export function parseLegacyStep(value: unknown): LegacyProposalExecutionStep {
+export function parseLegacyStep(value: unknown): Omit<ProposalApplicationHistoryStep, "confirmation_state"> {
   const row = legacyRowSchema.parse(value);
   if (
     Number(row.new_task_uuid != null)
@@ -307,7 +307,7 @@ export function parseLegacyStep(value: unknown): LegacyProposalExecutionStep {
     : row.final_result === "failed" || row.final_result === "not_applied"
       ? "failed"
       : "confirmation_required";
-  let target: LegacyProposalExecutionStep["target"];
+  let target: ProposalApplicationHistoryStep["target"];
   if (row.new_task_uuid != null) {
     target = { kind: "new_task", uuid: row.new_task_uuid };
   } else if (row.target_gid != null) {
@@ -329,7 +329,7 @@ export function parseLegacyStep(value: unknown): LegacyProposalExecutionStep {
 }
 
 /** 履歴の保存済みsnapshotと出所情報を照合して表示用stepを返します。 */
-export function parseLegacyHistoryStep(value: unknown): LegacyProposalExecutionStep {
+export function parseLegacyHistoryStep(value: unknown): ProposalApplicationHistoryStep {
   const history = historyRowSchema.parse(value);
   const hash = createHash("sha256").update(history.snapshot_json, "utf8").digest("hex");
   if (hash !== history.snapshot_sha256) {

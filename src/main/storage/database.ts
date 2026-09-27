@@ -9,16 +9,12 @@ import {
   readTableRowCount,
 } from "../infrastructure/persistence/sqlite-migration";
 import { DiagnosticLogStore } from "./diagnostic-log";
-import { ApplicationJournalStore } from "./application-journal";
 import {
   ExternalToolDefinitionStore,
   type ExternalToolDefinitionRecord,
 } from "./external-tool-definitions";
 import { VaultMappingStore } from "./vault-mappings";
 import type {
-  ApplicationJournal,
-  ApplicationJournalResult,
-  ApplicationJournalStage,
   CleanupItemsCache,
   DiagnosticLogEntry,
   ProjectMetadataCache,
@@ -185,7 +181,6 @@ export class StorageDatabase {
   >;
   public readonly taskReadContracts: ReturnType<typeof createTaskReadPersistenceContracts>;
   private readonly vaultMappingStore: VaultMappingStore;
-  private readonly applicationJournalStore: ApplicationJournalStore;
   private readonly diagnosticLogStore: DiagnosticLogStore;
   private readonly externalToolDefinitionStore: ExternalToolDefinitionStore;
 
@@ -195,7 +190,6 @@ export class StorageDatabase {
     this.taskRead = new TaskReadPersistenceRepository(runtime, this.taskReadContracts);
     const database = this.runtime.connection;
     this.vaultMappingStore = new VaultMappingStore(database);
-    this.applicationJournalStore = new ApplicationJournalStore(database, this.runtime);
     this.diagnosticLogStore = new DiagnosticLogStore(database, this.runtime);
     this.externalToolDefinitionStore = new ExternalToolDefinitionStore(database, this.runtime);
   }
@@ -310,72 +304,6 @@ export class StorageDatabase {
   /** 保存済みVaultマッピングを全件読み出します。 */
   public getVaultMappings(): readonly VaultMapping[] {
     return this.vaultMappingStore.getAll();
-  }
-
-  /** 選択済み操作の復旧計画を一つのトランザクションで保存します。 */
-  public prepareApplicationJournals(entries: readonly ApplicationJournal[]): void {
-    this.applicationJournalStore.prepare(entries);
-  }
-
-  /** 作成済みタスクのGIDを適用ジャーナルへ保存します。 */
-  public recordApplicationJournalTaskCreated(
-    proposalId: string,
-    operationId: string,
-    temporaryRef: string,
-    taskGid: string,
-  ): void {
-    this.applicationJournalStore.recordCreatedTask(
-      proposalId,
-      operationId,
-      temporaryRef,
-      taskGid,
-    );
-  }
-
-  /** 適用ジャーナルの適用段階を更新します。 */
-  public updateApplicationJournalStage(
-    proposalId: string,
-    operationId: string,
-    stage: ApplicationJournalStage,
-  ): void {
-    this.applicationJournalStore.updateStage(proposalId, operationId, stage);
-  }
-
-  /** 適用ジャーナルの最終結果を更新します。 */
-  public completeApplicationJournal(
-    proposalId: string,
-    operationId: string,
-    finalResult: ApplicationJournalResult,
-  ): void {
-    this.applicationJournalStore.complete(proposalId, operationId, finalResult);
-  }
-
-  /** 処理済みジャーナルの破損causeをメモリ上から削除します。 */
-  public clearApplicationJournalRecoveryCause(
-    proposalId: string,
-    operationId: string,
-  ): void {
-    this.applicationJournalStore.clearRecoveryCause(proposalId, operationId);
-  }
-
-  /** 指定された適用ジャーナルを読み出します。 */
-  public getApplicationJournal(
-    proposalId: string,
-    operationId: string,
-  ): ApplicationJournal | undefined {
-    return this.applicationJournalStore.get(proposalId, operationId);
-  }
-
-  /** 指定されたproposalの適用ジャーナルを全件読み出します。 */
-  public getApplicationJournalsByProposal(
-    proposalId: string,
-  ): readonly ApplicationJournal[] {
-    return this.applicationJournalStore.getByProposal(proposalId);
-  }
-
-  /** 未完了の適用ジャーナルを全件読み出します。 */
-  public getIncompleteApplicationJournals(): readonly ApplicationJournal[] {
-    return this.applicationJournalStore.getIncomplete();
   }
 
   /** 構造化診断ログを追加し、保持上限を超えた古い行を削除します。 */

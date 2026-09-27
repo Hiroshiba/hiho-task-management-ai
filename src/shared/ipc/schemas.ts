@@ -187,7 +187,7 @@ const proposalHistoryEntrySchema = z.discriminatedUnion("kind", [
     confirmed_result: z.enum(["applied", "not_applied", "manually_adjusted"]),
   }).strict(),
   z.object({
-    kind: z.literal("migration_failed"),
+    kind: z.literal("history_invalid"),
     proposal_id: identifierSchema,
     operation_id: identifierSchema,
     error_id: identifierSchema,

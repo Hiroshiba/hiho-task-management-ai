@@ -1,6 +1,6 @@
 import { TaskHubApplication, migrateLegacyStorage } from "../application/service";
-import type { LegacyProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import type { PersistenceRuntime } from "../infrastructure/persistence";
+import type { SqliteProposalApplicationHistoryRepository } from "../infrastructure/persistence";
 
 export type LegacyRuntimeOptions = ConstructorParameters<typeof TaskHubApplication>[0];
 
@@ -27,7 +27,7 @@ export function createLegacyRuntime(
   options: LegacyRuntimeOptions,
   persistence: PersistenceRuntime,
   files: ConstructorParameters<typeof TaskHubApplication>[2],
-  legacyRepository: LegacyProposalExecutionRepository,
+  historyRepository: SqliteProposalApplicationHistoryRepository,
 ): LegacyRuntimePort {
-  return new TaskHubApplication(options, persistence, files, legacyRepository);
+  return new TaskHubApplication(options, persistence, files, historyRepository);
 }

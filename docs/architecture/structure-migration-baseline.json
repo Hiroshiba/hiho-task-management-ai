@@ -1003,171 +1003,6 @@
   ],
   "entries": [
     {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "module-mutable",
-      "symbol": "definitiveCreateTaskRejectionStatuses"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/operation-writer.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-application/coordinator.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/coordinator.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/operation-writer.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/task-write-client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/create-read-back.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/task-write-client.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/create-read-back.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/operation-writer.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-application/operation-writer.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
       "path": "src/main/ai/proposal-workspace/index.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/proposal-workspace/service.ts"
@@ -1270,11 +1105,6 @@
     {
       "path": "src/main/ai/workflow/service.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/ai/workflow/service.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/codex/session/index.ts"
     },
     {
@@ -1291,11 +1121,6 @@
       "path": "src/main/ai/workflow/service.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/main/ai/workflow/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
     },
     {
       "path": "src/main/ai/workflow/service.ts",
@@ -1380,11 +1205,6 @@
     {
       "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/obsidian/index.ts"
     },
     {
@@ -1396,11 +1216,6 @@
       "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
     },
     {
       "path": "src/main/application/cleanup-aggregation.ts",
@@ -1485,22 +1300,12 @@
     {
       "path": "src/main/application/schemas.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/application/schemas.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/setup/index.ts"
     },
     {
       "path": "src/main/application/schemas.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/application/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
     },
     {
       "path": "src/main/application/schemas.ts",
@@ -1521,11 +1326,6 @@
       "path": "src/main/application/schemas.ts",
       "rule": "old-path",
       "symbol": "src/main/application/schemas.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -1641,11 +1441,6 @@
       "path": "src/main/application/service.ts",
       "rule": "old-import",
       "symbol": "src/main/external-tools/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -1690,11 +1485,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
       "symbol": "src/main/ai/workflow/index.ts"
     },
     {
@@ -1801,11 +1591,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/external-tools/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/gui-edit/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -3085,11 +2870,6 @@
     {
       "path": "src/main/external-agent/service.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/asana/operation-queue.ts"
     },
     {
@@ -3121,16 +2901,6 @@
       "path": "src/main/external-agent/service.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
     },
     {
       "path": "src/main/external-agent/service.ts",
@@ -3186,11 +2956,6 @@
       "path": "src/main/external-agent/service.ts",
       "rule": "old-import",
       "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/main/external-agent/service.ts",
@@ -3403,141 +3168,6 @@
       "symbol": "src/main/external-tools/status-evidence-collector.ts"
     },
     {
-      "path": "src/main/gui-edit/baseline.ts",
-      "rule": "external-import",
-      "symbol": "node:crypto"
-    },
-    {
-      "path": "src/main/gui-edit/baseline.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/baseline.ts",
-      "rule": "old-path",
-      "symbol": "src/main/gui-edit/baseline.ts"
-    },
-    {
-      "path": "src/main/gui-edit/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/baseline.ts"
-    },
-    {
-      "path": "src/main/gui-edit/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/schemas.ts"
-    },
-    {
-      "path": "src/main/gui-edit/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/service.ts"
-    },
-    {
-      "path": "src/main/gui-edit/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/gui-edit/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/schemas.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/gui-edit/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/gui-edit/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/main/gui-edit/schemas.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/task-write-client.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/scheduler/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/client.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/task-write-client.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/scheduler/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/schemas.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/gui-edit/service.ts",
-      "rule": "old-path",
-      "symbol": "src/main/gui-edit/service.ts"
-    },
-    {
       "path": "src/main/index.ts",
       "rule": "module-mutable",
       "symbol": "applicationStartPromise"
@@ -3610,11 +3240,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "old-import",
-      "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "old-import",
       "symbol": "src/main/application-update.ts"
     },
     {
@@ -3666,11 +3291,6 @@
       "path": "src/main/index.ts",
       "rule": "old-import",
       "symbol": "src/main/window-state.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/ai/proposal-application/index.ts"
     },
     {
       "path": "src/main/index.ts",
@@ -3898,44 +3518,9 @@
       "symbol": "src/main/startup-gate.ts"
     },
     {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/application-journal.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/application-journal.ts"
-    },
-    {
       "path": "src/main/storage/database.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/application-journal.ts"
     },
     {
       "path": "src/main/storage/database.ts",
@@ -4961,11 +4546,6 @@
       "path": "src/shared/external-agent/schemas.ts",
       "rule": "old-import",
       "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/external-agent/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/shared/external-agent/schemas.ts",

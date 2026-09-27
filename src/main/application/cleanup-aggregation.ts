@@ -11,7 +11,7 @@ import {
   asanaProposalRecoveryResultSchema,
   type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
-} from "../ai/proposal-application";
+} from "./common/proposal-application-schemas";
 import {
   ObsidianReadError,
   obsidianResolvedPathResultSchema,

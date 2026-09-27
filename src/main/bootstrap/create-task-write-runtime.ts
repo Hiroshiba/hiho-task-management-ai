@@ -3,10 +3,10 @@ import type { ErrorReporter } from "../application/common/errors/error-reporter"
 import type { TaskWriteAsanaBridge } from "../application/common/ports/asana-task-write";
 import type { TaskWriteExecutorRegistry } from "../application/common/ports/task-write-executor";
 import type {
-  LegacyProposalExecutionRepository,
   ProposalExecution,
   ProposalExecutionRepository,
 } from "../application/common/ports/proposal-execution-repository";
+import type { ProposalApplicationHistoryRepository } from "../application/common/ports/proposal-application-history";
 import { guiTaskWriteResultSchema, type GuiTaskWriteResult } from "../application/common/gui-task-write-result";
 import { TaskWriteSynchronizationError } from "../application/common/task-write-synchronization-error";
 import {
@@ -22,7 +22,7 @@ import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../inf
 
 type TaskWriteRuntimeOptions = {
   readonly bridge: TaskWriteAsanaBridge;
-  readonly legacyRepository: LegacyProposalExecutionRepository;
+  readonly historyRepository: ProposalApplicationHistoryRepository;
   readonly reporter: ErrorReporter;
   readonly createRepository: (
     fingerprint: (canonicalPayload: string) => string,
@@ -107,7 +107,7 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
         getIncomplete: () => repository.getIncomplete()
           .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
       },
-      legacyRepository: options.legacyRepository,
+      historyRepository: options.historyRepository,
       engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },
       createId: options.createId,
       now: () => options.now().toISOString(),

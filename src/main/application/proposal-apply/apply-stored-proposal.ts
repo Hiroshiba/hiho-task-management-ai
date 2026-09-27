@@ -1,8 +1,8 @@
 import type {
-  LegacyProposalExecutionRepository,
   ProposalExecution,
   ProposalExecutionRepository,
 } from "../common/ports/proposal-execution-repository";
+import type { ProposalApplicationHistoryRepository } from "../common/ports/proposal-application-history";
 import type { TaskWritePlan, TaskWritePayloadFingerprint } from "../common/task-write-plan";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
 import { planProposalTaskWrites } from "./proposal-write-plan";
@@ -56,7 +56,7 @@ type ApprovalResult = {
 
 export type StoredProposalExecutionPort = {
   readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal" | "getIncomplete" | "save">;
-  readonly legacyRepository: LegacyProposalExecutionRepository;
+  readonly historyRepository: ProposalApplicationHistoryRepository;
   readonly engine: {
     run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<StoredProposalWriteResult>>;
   };
@@ -129,7 +129,7 @@ export async function applyStoredProposal(
   signal: AbortSignal,
 ): Promise<StoredProposalApplicationResult> {
   signal.throwIfAborted();
-  if (port.legacyRepository.getByProposal(input.proposal_id) != null) {
+  if (port.historyRepository.getByProposal(input.proposal_id) != null) {
     throw new Error("旧適用履歴がある変更案を新しいexecutionとして再実行できません。");
   }
   const proposal = input.approval_input.proposal;

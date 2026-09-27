@@ -34,6 +34,13 @@ export interface DiagnosticLogStoragePort {
 
 export type DiagnosticRecord = Readonly<z.infer<typeof diagnosticRecordSchema>>;
 
+export const applicationDiagnosticSchema = z.object({
+  kind: z.literal("service"),
+  severity: z.enum(["warning", "error"]),
+}).strict();
+
+export type ApplicationDiagnostic = z.infer<typeof applicationDiagnosticSchema>;
+
 function createOccurredAt(nowProvider: () => Date): string {
   const now = nowProvider();
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {

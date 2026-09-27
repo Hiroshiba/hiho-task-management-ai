@@ -34,7 +34,7 @@ import {
   asanaProposalApplicationResultSchema,
   type AsanaProposalApplicationInput,
   type AsanaProposalApplicationResult,
-} from "../ai/proposal-application";
+} from "../application/common/proposal-application-schemas";
 import {
   createWorkflowProposalView,
   eligibleOperationIds,
@@ -56,7 +56,6 @@ import {
   type AsanaOperationKind,
 } from "../asana/operation-queue";
 import type { AsanaSyncRuntimeState } from "../asana/runtime";
-import type { ApplicationJournal } from "../../shared/storage";
 import type {
   ExternalAgentProposalPrepareInput,
   ExternalAgentProposalReadInput,
@@ -176,9 +175,7 @@ import {
 const maximumRequests = 100;
 const externalAgentOperationKind: AsanaOperationKind = "external_apply";
 
-type SavedOperationStatusResult =
-  | { readonly kind: "journal"; readonly journal: ApplicationJournal }
-  | Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" | "legacy_history" }>;
+type SavedOperationStatusResult = Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" | "legacy_history" }>;
 
 export type ExternalAgentBaseline = {
   readonly snapshot: AiWorkflowSnapshot;

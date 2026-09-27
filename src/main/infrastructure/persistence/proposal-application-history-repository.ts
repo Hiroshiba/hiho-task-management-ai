@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 import BetterSqlite3 from "better-sqlite3";
+import { z } from "zod";
+import type { ErrorReporter } from "../../application/common/errors/error-reporter";
+import type {
+  ProposalApplicationHistory,
+  ProposalApplicationHistoryRead,
+  ProposalApplicationHistoryRepository,
+  ProposalApplicationHistoryStep,
+} from "../../application/common/ports/proposal-application-history";
 import {
   historyRowSchema,
   legacyRowSchema,
@@ -23,6 +31,7 @@ export type LegacyMigrationSummary = {
 };
 
 type SourceKey = { readonly proposal_id: string; readonly operation_id: string };
+type ProposalIdRow = { readonly proposal_id: string };
 type ChangeResult = { readonly changes: number };
 type ConfirmedResult = "applied" | "not_applied" | "manually_adjusted";
 
@@ -30,9 +39,92 @@ function fingerprint(snapshot: string): string {
   return createHash("sha256").update(snapshot, "utf8").digest("hex");
 }
 
-/** 旧行を版付き非実行履歴へ1件ずつ原子的かつ冪等に移します。 */
-export class SqliteLegacyProposalHistoryRepository {
-  public constructor(private readonly runtime: PersistenceRuntime) {}
+/** 旧行を版付き非実行履歴へ移し、履歴だけを復旧表示へ読み出します。 */
+export class SqliteProposalApplicationHistoryRepository implements ProposalApplicationHistoryRepository {
+  private readonly rejectionIds = new Map<string, string>();
+
+  public constructor(
+    private readonly runtime: PersistenceRuntime,
+    private readonly reporter: ErrorReporter,
+  ) {}
+
+  private reject(key: SourceKey, cause: unknown): ProposalApplicationHistoryRead {
+    const cacheKey = `${key.proposal_id}\u0000${key.operation_id}`;
+    let errorId = this.rejectionIds.get(cacheKey);
+    if (errorId == null) {
+      errorId = this.reporter.reportErrorOnce(new Error("旧適用履歴を検証できません。", { cause }), {
+        source: "service",
+        diagnosticCode: "proposal.application",
+        context: "diagnostic_storage",
+        level: "error",
+        operationId: key.operation_id,
+      });
+      this.rejectionIds.set(cacheKey, errorId);
+    }
+    return { kind: "rejected", ...key, error_id: errorId };
+  }
+
+  private getHistoryByProposal(proposalId: string): ProposalApplicationHistoryRead | undefined {
+    const rows = this.runtime.connection.prepare<[string], unknown>(
+      "SELECT * FROM legacy_application_history WHERE proposal_id = ? ORDER BY operation_id",
+    ).all(proposalId);
+    if (rows.length === 0) return undefined;
+    const steps: ProposalApplicationHistoryStep[] = [];
+    for (const value of rows) {
+      const key = z.object({ proposal_id: identifierSchema, operation_id: identifierSchema }).parse(value);
+      try {
+        steps.push(parseLegacyHistoryStep(value));
+      } catch (error) {
+        return this.reject(key, error);
+      }
+    }
+    steps.sort((left, right) => {
+      if (left.operation_order == null && right.operation_order != null) return 1;
+      if (left.operation_order != null && right.operation_order == null) return -1;
+      return (left.operation_order ?? 0) - (right.operation_order ?? 0)
+        || left.started_at.localeCompare(right.started_at)
+        || left.operation_id.localeCompare(right.operation_id);
+    });
+    const state: ProposalApplicationHistory["state"] = steps.some(
+      (step) => step.state === "confirmation_required",
+    ) ? "confirmation_required" : steps.some(
+      (step) => step.state === "synchronization_required",
+    ) ? "synchronization_required" : steps.some(
+      (step) => step.state === "failed",
+    ) ? "failed" : "succeeded";
+    return { kind: "history", history: { proposal_id: proposalId, state, steps } };
+  }
+
+  /** 指定proposalの移行済み非実行履歴を読み出します。 */
+  public getByProposal(proposalId: string): ProposalApplicationHistoryRead | undefined {
+    return this.getHistoryByProposal(identifierSchema.parse(proposalId));
+  }
+
+  /** 未確認または破損した非実行履歴を読み出します。 */
+  public getIncomplete(): readonly ProposalApplicationHistoryRead[] {
+    const proposals = this.runtime.connection.prepare<[], ProposalIdRow>(
+      "SELECT DISTINCT proposal_id FROM legacy_application_history ORDER BY proposal_id",
+    ).all();
+    const histories = proposals.map((row) => {
+      const result = this.getHistoryByProposal(row.proposal_id);
+      if (result == null) throw new Error("保存済み旧適用履歴を読み出せません。");
+      return result;
+    });
+    return histories.filter((result) => result.kind === "rejected"
+      || result.history.state === "confirmation_required"
+      || result.history.state === "synchronization_required");
+  }
+
+  /** 移行されていない旧行が残る起動を拒否します。 */
+  public assertNoUnmigratedJournals(): void {
+    const count = this.runtime.connection.prepare<[], { readonly row_count: number }>(
+      "SELECT COUNT(*) AS row_count FROM application_journal",
+    ).get();
+    if (count == null) throw new Error("旧適用ジャーナルの残存件数を読み取れません。");
+    if (count.row_count > 0) {
+      throw new Error(`旧適用ジャーナルが${count.row_count}件残っています。履歴移行を完了できないため起動を停止します。`);
+    }
+  }
 
   /** Asana実状態を確認した対象と結果を旧履歴へ比較更新します。 */
   public confirm(

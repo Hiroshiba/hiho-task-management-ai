@@ -4,17 +4,16 @@ import { setTimeout } from "node:timers/promises";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
-import { migrateLegacyFormat } from "../application/proposal-apply";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
   ApplicationUpdateAttemptStore,
   PersistenceRuntime,
-  SqliteLegacyProposalExecutionRepository,
-  SqliteLegacyProposalHistoryRepository,
+  SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
   WindowStateStore,
+  type LegacyMigrationSummary,
 } from "../infrastructure/persistence";
 import {
   createLegacyRuntime,
@@ -54,6 +53,44 @@ function createFallbackErrorReporter(
       throw new Error("永続エラーログを初期化できません。", { cause: error });
     },
   };
+}
+
+const migrationFailureReasons = {
+  invalid_source: "元の旧行を検証できません。",
+  conflicting_history: "同じIDの履歴と元の旧行が一致しません。",
+  missing_backup: "移行前バックアップがありません。",
+  missing_backup_row: "移行前バックアップに元の旧行がありません。",
+} satisfies Record<LegacyMigrationSummary["failures"][number]["reason"], string>;
+
+function recordLegacyMigration(
+  summary: LegacyMigrationSummary,
+  reporter: ErrorReporter,
+  backupPath: string | undefined,
+): void {
+  for (const failure of summary.failures) {
+    reporter.reportErrorOnce(
+      new Error(`旧適用ジャーナルの履歴移行に失敗しました。proposal ID: ${failure.proposal_id}、操作ID: ${failure.operation_id}。${migrationFailureReasons[failure.reason]}`),
+      {
+        source: "main",
+        diagnosticCode: "proposal.application",
+        context: "bootstrap",
+        level: "error",
+        operationId: failure.operation_id,
+      },
+    );
+  }
+  console.info(JSON.stringify({
+    event: "legacy_application_migration",
+    backup_path: backupPath,
+    source_count: summary.source_count,
+    migrated_count: summary.migrated_count,
+    already_migrated_count: summary.already_migrated_count,
+    failed_count: summary.failures.length,
+    failed_ids: summary.failures.map((failure) => ({
+      proposal_id: failure.proposal_id,
+      operation_id: failure.operation_id,
+    })),
+  }));
 }
 
 /** Mainの単一ランタイムと資源の破棄入口です。 */
@@ -97,21 +134,18 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         openedPersistence.openTextFile(filePath, "外部連携設定"),
     };
     const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
-    migrateLegacyFormat(
-      new SqliteLegacyProposalHistoryRepository(openedPersistence),
-      engineReporter,
-      openedPersistence.migrationBackupPath,
-    );
-    const legacyRepository = new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter);
+    const historyRepository = new SqliteProposalApplicationHistoryRepository(openedPersistence, engineReporter);
+    recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPath);
+    historyRepository.assertNoUnmigratedJournals();
     const legacy = createLegacyRuntime({
       ...options.legacy,
       lifecycle_signal: controller.signal,
       now_provider: nowProvider,
       create_id: createId,
-    }, openedPersistence, files, legacyRepository);
+    }, openedPersistence, files, historyRepository);
     const taskWrite = createTaskWriteRuntime({
       bridge: legacy.getTaskWriteAsanaBridge(),
-      legacyRepository,
+      historyRepository,
       reporter: engineReporter,
       createRepository: (fingerprint) => new SqliteProposalExecutionRepository<TaskWriteExecutionResult>(
         openedPersistence,

@@ -96,12 +96,13 @@ import {
   diagnosticFailureDispositionFromError,
 } from "./common/errors/diagnostic-failure";
 import type { TaskWriteAsanaBridge } from "./common/ports/asana-task-write";
-import type { LegacyProposalExecutionRepository } from "./common/ports/proposal-execution-repository";
+import type { ProposalApplicationHistoryRepository } from "./common/ports/proposal-application-history";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
   DiagnosticLogService,
   type DiagnosticRecord,
+  type ApplicationDiagnostic,
 } from "./diagnostics";
 import {
   AiWorkflowService,
@@ -116,27 +117,17 @@ import {
   type ApprovalPreparationInput,
 } from "../ai/workflow";
 import {
-  AsanaProposalApplicationCoordinator,
-  AsanaProposalOperationWriter,
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,
   asanaProposalRecoveryResultSchema,
   asanaPostWriteSynchronizationResultSchema,
-  type ApplicationDiagnostic,
   type AsanaProposalApplicationInput,
   type AsanaProposalApplicationResult,
   type AsanaProposalRecoveryResult,
   type PostWriteSynchronizationFailureCode,
   type PostWriteSynchronizationResult,
   type PostWriteSynchronizationResultWithCause,
-} from "../ai/proposal-application";
-import {
-  AsanaGuiEditService,
-  hashGuiEditBaseline,
-  type AsanaGuiEditInput,
-  type AsanaGuiEditRelationGraphValidationRequest,
-  type AsanaGuiEditRelationGraphValidationResult,
-} from "../gui-edit";
+} from "./common/proposal-application-schemas";
 import {
   ingestAsanaExternalData,
   normalizeAsanaSnapshot,
@@ -160,10 +151,11 @@ import {
   type StoredProposalExecutionPort,
 } from "./proposal-apply";
 import { customExternalDataSchema } from "../domain/task-write-values";
+import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
 import { buildDisplayOrderInput } from "./task-write";
-import { applyGuiTaskWrite, recoverGuiTaskWrites, validateRelationGraph, type GuiEditExecutionPort } from "./gui-edit";
+import { applyGuiTaskWrite, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecutionPort, type GuiEditInput } from "./gui-edit";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
 import {
@@ -299,10 +291,8 @@ import {
   type IpcAsanaReauthenticationCompleteInput,
 } from "../../shared/ipc";
 import {
-  applicationJournalLegacyCompletedSchema,
   deviceSettingsSchema,
   vaultMappingSchema,
-  type ApplicationJournal,
   type DeviceSettings,
   type TaskCacheEntry,
 } from "../../shared/storage";
@@ -313,7 +303,7 @@ import {
 } from "../storage";
 import {
   SqliteSettingsRepository,
-  SqliteLegacyProposalHistoryRepository,
+  SqliteProposalApplicationHistoryRepository,
   type PersistenceRuntime,
   type PersistentTextFile,
   type SqliteConnection,
@@ -338,6 +328,8 @@ type MutableTokenProviderPort = TokenProvider & {
 };
 
 type BaselineExternalData = AsanaProposalApplicationInput["baseline_external_data"];
+type GuiEditRelationGraphValidationRequest = Parameters<GuiEditDependencies["validateRelation"]>[0];
+type GuiEditRelationGraphValidationResult = Awaited<ReturnType<GuiEditDependencies["validateRelation"]>>;
 
 type AiSessionBaselineStore = RuntimeAiSessionBaselineStore<BaselineExternalData, TaskctlSnapshot>;
 
@@ -811,12 +803,11 @@ function assertNonNullable<T>(value: T | undefined, message: string): asserts va
   if (value == null) throw new Error(message);
 }
 
-function getLegacyProposalOperationStatus(
-  repository: LegacyProposalExecutionRepository,
+function getHistoricalProposalOperationStatus(
+  repository: ProposalApplicationHistoryRepository,
   proposalId: string,
   operationId: string,
 ):
-  | { readonly kind: "journal"; readonly journal: ApplicationJournal }
   | {
       readonly kind: "legacy_history";
       readonly source_stage: string;
@@ -826,57 +817,23 @@ function getLegacyProposalOperationStatus(
     }
   | { readonly kind: "unknown"; readonly reason_code: "journal_result_unknown"; readonly message: string }
   | undefined {
-  const legacy = repository.getByProposal(proposalId);
-  if (legacy == null) return undefined;
-  if (legacy.kind === "rejected") {
+  const result = repository.getByProposal(proposalId);
+  if (result == null) return undefined;
+  if (result.kind === "rejected") {
     return {
       kind: "unknown",
       reason_code: "journal_result_unknown",
-      message: `旧適用ジャーナルを確認できません。エラーID: ${legacy.error_id}`,
+      message: `旧適用履歴を確認できません。エラーID: ${result.error_id}`,
     };
   }
-  const step = legacy.execution.steps.find((item) => item.operation_id === operationId);
+  const step = result.history.steps.find((item) => item.operation_id === operationId);
   if (step == null) return undefined;
-  if (step.confirmation_state != null) {
-    return {
-      kind: "legacy_history",
-      source_stage: step.stage,
-      source_final_result: step.final_result,
-      confirmation_state: step.confirmation_state,
-      confirmed_result: step.confirmed_result ?? null,
-    };
-  }
-  if (step.state === "confirmation_required") {
-    return {
-      kind: "unknown",
-      reason_code: "journal_result_unknown",
-      message: "旧適用ジャーナルの結果を確認してください。",
-    };
-  }
-  if (step.final_result == null || step.final_result === "unknown") {
-    throw new Error("旧適用ジャーナルの確定状態と保存結果が一致しません。");
-  }
-  const completedStages = new Set([
-    "started", "task_created", "attributes_applied", "relations_applied",
-    "read_back", "metadata_verified", "ranking_recalculated",
-  ]);
-  if (!completedStages.has(step.stage)) {
-    return {
-      kind: "unknown",
-      reason_code: "journal_result_unknown",
-      message: "旧適用ジャーナルの完了段階を確認できません。",
-    };
-  }
   return {
-    kind: "journal",
-    journal: applicationJournalLegacyCompletedSchema.parse({
-      proposal_id: legacy.execution.proposal_id,
-      operation_id: step.operation_id,
-      target: step.target,
-      started_at: step.started_at,
-      stage: step.stage,
-      final_result: step.final_result,
-    }),
+    kind: "legacy_history",
+    source_stage: step.stage,
+    source_final_result: step.final_result,
+    confirmation_state: step.confirmation_state,
+    confirmed_result: step.confirmed_result ?? null,
   };
 }
 
@@ -890,7 +847,7 @@ type ApplicationFileStores = {
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
   private readonly database: StorageDatabase;
-  private readonly legacyProposalHistoryRepository: SqliteLegacyProposalHistoryRepository;
+  private readonly proposalApplicationHistoryRepository: SqliteProposalApplicationHistoryRepository;
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
@@ -902,7 +859,6 @@ export class TaskHubApplication {
   private readonly readClient: AsanaReadClient;
   private readonly interactiveReadClient: AsanaReadClient;
   private readonly writeClient: AsanaTaskWriteClient;
-  private readonly interactiveWriteClient: AsanaTaskWriteClient;
   private readonly oauth: AsanaOAuthCoordinator;
   private readonly syncCoordinator: AsanaSyncCoordinator;
   private readonly codexWorkspace: CodexWorkspaceInitializationResult;
@@ -949,10 +905,7 @@ export class TaskHubApplication {
     OperationalContext,
     DeviceSettings,
     AsanaSyncRuntime,
-    AsanaDisplayOrderService,
-    AsanaProposalOperationWriter,
-    AsanaProposalApplicationCoordinator,
-    AsanaGuiEditService
+    AsanaDisplayOrderService
   >;
   private readonly aiRuntime: AiSessionRuntime<
     CodexWorkspaceInitializationResult,
@@ -1002,7 +955,7 @@ export class TaskHubApplication {
     options: ApplicationOptions,
     persistence: PersistenceRuntime,
     files: ApplicationFileStores,
-    private readonly legacyProposalExecutionRepository: LegacyProposalExecutionRepository,
+    historyRepository: SqliteProposalApplicationHistoryRepository,
   ) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
@@ -1014,7 +967,7 @@ export class TaskHubApplication {
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(persistence);
-    this.legacyProposalHistoryRepository = new SqliteLegacyProposalHistoryRepository(persistence);
+    this.proposalApplicationHistoryRepository = historyRepository;
     this.settingsRepository = new SqliteSettingsRepository(
       persistence.connection,
       (value) => deviceSettingsSchema.parse(value),
@@ -1056,7 +1009,6 @@ export class TaskHubApplication {
     this.interactiveReadClient = new AsanaReadClient(this.highPriorityTransport);
     const setupClient = new AsanaSetupClient(normalTransport);
     this.writeClient = new AsanaTaskWriteClient(normalTransport);
-    this.interactiveWriteClient = new AsanaTaskWriteClient(this.highPriorityTransport);
     this.oauth = new AsanaOAuthCoordinator(
       this.secretStorage,
       options.open_authorization_url,
@@ -1486,13 +1438,13 @@ export class TaskHubApplication {
       throwIfAborted,
       hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
       hasPendingJournal: () => this.journalRecovery.hasPending(),
-      hasIncompleteJournal: () => this.getIncompleteLegacyJournals().length > 0
+      hasIncompleteJournal: () => this.proposalApplicationHistoryRepository.getIncomplete().length > 0
         || this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
         || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
       isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
       assertRecoveredSynchronizationReady: (executionId) => {
-        if (this.getIncompleteLegacyJournals().length > 0) {
-          throw new Error("未確定の旧AI適用ジャーナルがあるため後続同期を開始できません。");
+        if (this.proposalApplicationHistoryRepository.getIncomplete().length > 0) {
+          throw new Error("未確認の旧適用履歴があるため後続同期を開始できません。");
         }
         if (this.requireTaskWriteExecution().proposal.repository.getIncomplete()
           .some((execution) => execution.execution_id !== executionId)) {
@@ -1646,10 +1598,7 @@ export class TaskHubApplication {
       OperationalContext,
       DeviceSettings,
       AsanaSyncRuntime,
-      AsanaDisplayOrderService,
-      AsanaProposalOperationWriter,
-      AsanaProposalApplicationCoordinator,
-      AsanaGuiEditService
+      AsanaDisplayOrderService
     >({
       assertSetupReady: () => this.assertSetupReady(),
       requireContext: () => this.requireContext(),
@@ -1679,55 +1628,6 @@ export class TaskHubApplication {
         (error) => this.recordUnexpectedError(error, "display_order"),
         this.options.lifecycle_signal,
         this.operationQueue,
-      ),
-      createWriter: () => new AsanaProposalOperationWriter(
-        this.interactiveReadClient,
-        this.interactiveWriteClient,
-      ),
-      createCoordinator: (writer) => new AsanaProposalApplicationCoordinator(
-        this.interactiveReadClient,
-        writer,
-        this.database,
-        options.create_id,
-        () => createNowIso(this.options.now_provider),
-        (requiredTaskGids, signal) =>
-          this.synchronizationOperations.afterAiApply(
-            requiredTaskGids,
-            { kind: "legacy" },
-            signal,
-          ),
-        (error, event) => this.options.diagnostic(error, "application_journal", event),
-      ),
-      createGuiEdit: (writer) => new AsanaGuiEditService(
-        writer,
-        (requiredTaskGids, signal) =>
-          this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
-        () => this.isOnline(),
-        (request, signal) => this.validateRelationGraph(request, signal),
-        {
-          getTask: (taskGid, signal) => this.interactiveReadClient.getTask(taskGid, signal),
-        },
-        {
-          addTaskToProject: (taskGid, projectGid, sectionGid, position, signal) =>
-            this.interactiveWriteClient.addTaskToProject(
-              taskGid,
-              projectGid,
-              sectionGid,
-              position,
-              signal,
-            ),
-          addTaskToSection: (taskGid, sectionGid, position, signal) =>
-            this.interactiveWriteClient.addTaskToSection(
-              taskGid,
-              sectionGid,
-              position,
-              signal,
-            ),
-          updateTask: (taskGid, update, signal) =>
-            this.interactiveWriteClient.updateTask(taskGid, update, signal),
-        },
-        options.create_id,
-        (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
       ),
     });
     this.lifecycleRuntime = new MainLifecycleRuntime<
@@ -1761,7 +1661,7 @@ export class TaskHubApplication {
       rethrowFeatureAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
       recordJournalRecoveryFailure: (error) => this.recordFeatureFailure(
         error,
-        "application_journal",
+        "proposal_application",
         "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
       ),
       ensureCodexLaunch: (signal) => this.configuredCodexRuntime.ensureLaunchAttempt(signal),
@@ -1882,7 +1782,7 @@ export class TaskHubApplication {
       synchronizeAfterProposalWrite: (requiredTaskGids, executionId, signal) =>
         this.synchronizationOperations.afterAiApply(
           requiredTaskGids,
-          { kind: "stored", executionId },
+          executionId,
           signal,
         ),
       synchronizeAfterGuiWrite: (requiredTaskGids, signal) =>
@@ -2754,9 +2654,9 @@ export class TaskHubApplication {
   }
 
   private validateRelationGraph(
-    request: AsanaGuiEditRelationGraphValidationRequest,
+    request: GuiEditRelationGraphValidationRequest,
     signal: AbortSignal,
-  ): Promise<AsanaGuiEditRelationGraphValidationResult> {
+  ): Promise<GuiEditRelationGraphValidationResult> {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const tasks = parseTaskCache(this.database.getTaskCache())
@@ -2772,49 +2672,24 @@ export class TaskHubApplication {
     return execution;
   }
 
-  private getIncompleteLegacyJournals(): readonly {
-    readonly proposal_id: string;
-    readonly operation_id: string;
-    readonly final_result: null;
-  }[] {
-    return this.legacyProposalExecutionRepository.getIncomplete().flatMap((result) => {
-      if (result.kind === "rejected") {
-        const operationId = result.operation_id;
-        assertNonNullable(operationId, "旧適用ジャーナルの操作IDを読み取れません。");
-        return [{ proposal_id: result.proposal_id, operation_id: operationId, final_result: null }];
-      }
-      return result.execution.steps
-        .filter((step) => step.state === "confirmation_required"
-          || step.state === "synchronization_required")
-        .map((step) => ({
-          proposal_id: result.execution.proposal_id,
-          operation_id: step.operation_id,
-          final_result: null,
-        }));
-    });
-  }
-
   private getProposalHistoryStatus(): IpcProposalHistoryStatus {
-    const entries: IpcProposalHistoryStatus["entries"] = this.legacyProposalExecutionRepository.getIncomplete().flatMap<IpcProposalHistoryStatus["entries"][number]>((result) => {
+    const entries: IpcProposalHistoryStatus["entries"] = this.proposalApplicationHistoryRepository.getIncomplete().flatMap<IpcProposalHistoryStatus["entries"][number]>((result) => {
       if (result.kind === "rejected") {
-        if (result.operation_id == null) {
-          throw new Error("移行できない旧適用ジャーナルの操作IDがありません。");
-        }
         return [{
-          kind: "migration_failed",
+          kind: "history_invalid",
           proposal_id: result.proposal_id,
           operation_id: result.operation_id,
           error_id: result.error_id,
         }];
       }
-      return result.execution.steps.flatMap<IpcProposalHistoryStatus["entries"][number]>((step) => {
+      return result.history.steps.flatMap<IpcProposalHistoryStatus["entries"][number]>((step) => {
         if (step.state === "confirmation_required") {
           if (step.final_result != null && step.final_result !== "unknown") {
             throw new Error("旧適用履歴の未確定結果が元の保存結果と一致しません。");
           }
           return [{
             kind: "confirmation_required",
-            proposal_id: result.execution.proposal_id,
+            proposal_id: result.history.proposal_id,
             operation_id: step.operation_id,
             target_id: step.target.kind === "task" ? step.target.gid
               : step.target.kind === "new_task" ? step.target.uuid : step.target.ref,
@@ -2829,7 +2704,7 @@ export class TaskHubApplication {
           }
           return [{
             kind: "synchronization_required",
-            proposal_id: result.execution.proposal_id,
+            proposal_id: result.history.proposal_id,
             operation_id: step.operation_id,
             target_id: step.target.kind === "task" ? step.target.gid
               : step.target.kind === "new_task" ? step.target.uuid : step.target.ref,
@@ -2848,7 +2723,7 @@ export class TaskHubApplication {
       getStatus: () => this.getProposalHistoryStatus(),
       confirm: (input: IpcProposalHistoryConfirmInput) => {
         const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
-        this.legacyProposalHistoryRepository.confirm(
+        this.proposalApplicationHistoryRepository.confirm(
           checked.proposal_id,
           checked.operation_id,
           checked.checked_target_id,
@@ -2868,14 +2743,14 @@ export class TaskHubApplication {
       throw new Error("オフライン中は旧適用履歴の読取同期を実行できません。");
     }
     const expectedContext = this.requireContext();
-    this.legacyProposalHistoryRepository.assertSynchronizationReady();
+    this.proposalApplicationHistoryRepository.assertSynchronizationReady();
     const result = await this.operationQueue.enqueue({
       priority: "user",
       kind: "synchronization",
       signal,
       beforeStart: () => {
         this.assertContextUnchanged(expectedContext);
-        this.legacyProposalHistoryRepository.assertSynchronizationReady();
+        this.proposalApplicationHistoryRepository.assertSynchronizationReady();
         if (this.journalRecovery.hasPending()) {
           throw new Error("未完了の新しい適用executionがあるため旧履歴を同期できません。");
         }
@@ -2894,7 +2769,7 @@ export class TaskHubApplication {
         context.signal.throwIfAborted();
         this.requireRuntime().acceptReadOnlySynchronization(synchronized.synced_at, context.signal);
         context.signal.throwIfAborted();
-        this.legacyProposalHistoryRepository.completeSynchronization();
+        this.proposalApplicationHistoryRepository.completeSynchronization();
         return synchronized;
       },
     });
@@ -2905,7 +2780,7 @@ export class TaskHubApplication {
     proposalId: string,
     operationId: string,
   ): ReturnType<ExternalAgentServiceOptions["get_saved_operation_result"]> {
-    const legacy = getLegacyProposalOperationStatus(this.legacyProposalExecutionRepository, proposalId, operationId);
+    const legacy = getHistoricalProposalOperationStatus(this.proposalApplicationHistoryRepository, proposalId, operationId);
     if (legacy != null) return legacy;
     const stored = getStoredProposalOperationStatus(
       this.requireTaskWriteExecution().proposal.repository,
@@ -2931,7 +2806,7 @@ export class TaskHubApplication {
     }
     if (
       this.journalRecovery.hasPending()
-      || this.getIncompleteLegacyJournals().length > 0
+      || this.proposalApplicationHistoryRepository.getIncomplete().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで書き込みを開始できません。");
     }
@@ -2974,7 +2849,7 @@ export class TaskHubApplication {
     }
     if (
       this.journalRecovery.hasPending()
-      || this.getIncompleteLegacyJournals().length > 0
+      || this.proposalApplicationHistoryRepository.getIncomplete().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで変更操作を受け付けられません。");
     }
@@ -3083,7 +2958,7 @@ export class TaskHubApplication {
                   "baseline_changed",
                 );
               }
-              const guiInput: AsanaGuiEditInput = {
+              const guiInput: GuiEditInput = {
                 task_gid: request.task_gid,
                 project_gid: context.project_gid,
                 workspace_gid: context.workspace_gid,
@@ -3267,7 +3142,7 @@ export class TaskHubApplication {
         assertApprovalInputMatchesStored: (validated, stored, selected) =>
           assertApprovalInputMatchesStored(validated, stored, selected, {
             canonicalizeJson,
-            createBaselineTaskSnapshots,
+            createBaselineTaskSnapshots: (tasks) => createBaselineTaskSnapshots(z.array(taskSchema).parse(tasks)),
             WorkflowError: AiWorkflowError,
           }),
         apply: (validated, currentSignal) => this.applyProposalApplication(validated, currentSignal),

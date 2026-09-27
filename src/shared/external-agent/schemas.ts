@@ -19,7 +19,6 @@ import {
   proposalWorkspaceEditSchema,
   proposalWorkspaceReadTargetSchema,
 } from "../ai";
-import { applicationJournalReadableSchema } from "../storage";
 import {
   taskctlResponseSchema,
   taskctlSearchQuerySchema,
@@ -431,7 +430,6 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
       results: z.array(z.object({
         operation_id: identifierSchema,
         result: z.discriminatedUnion("kind", [
-          z.object({ kind: z.literal("journal"), journal: applicationJournalReadableSchema }).strict(),
           z.object({
             kind: z.literal("legacy_history"),
             source_stage: z.string(),
@@ -706,23 +704,6 @@ export const externalAgentProposalStatusResponseSchema = z
             code: "custom",
             path: ["result", "results", index, "result", "operation", "operation_id"],
             message: "executionの操作IDが照会結果と一致しません。",
-          });
-        }
-        if (entry.result.kind !== "journal") {
-          return;
-        }
-        if (entry.result.journal.proposal_id !== response.proposal_id) {
-          context.addIssue({
-            code: "custom",
-            path: ["result", "results", index, "result", "journal", "proposal_id"],
-            message: "ジャーナルの提案IDが照会要求と一致しません。",
-          });
-        }
-        if (entry.result.journal.operation_id !== entry.operation_id) {
-          context.addIssue({
-            code: "custom",
-            path: ["result", "results", index, "result", "journal", "operation_id"],
-            message: "ジャーナルの操作IDが照会結果と一致しません。",
           });
         }
       });

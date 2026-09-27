@@ -51,11 +51,8 @@ export async function recoverStoredProposals(
     applications.push(projectExecution(recovered));
   }
   const unresolved: StoredProposalRecoveryResult["unresolved_journals"][number][] = [];
-  for (const legacy of port.legacyRepository.getIncomplete()) {
+  for (const legacy of port.historyRepository.getIncomplete()) {
     if (legacy.kind === "rejected") {
-      if (legacy.operation_id == null) {
-        throw new Error("旧適用ジャーナルの操作IDを復旧表示へ変換できません。");
-      }
       unresolved.push({
         proposal_id: legacy.proposal_id,
         operation_id: legacy.operation_id,
@@ -64,10 +61,10 @@ export async function recoverStoredProposals(
       });
       continue;
     }
-    for (const step of legacy.execution.steps) {
+    for (const step of legacy.history.steps) {
       if (step.state !== "confirmation_required") continue;
       unresolved.push({
-        proposal_id: legacy.execution.proposal_id,
+        proposal_id: legacy.history.proposal_id,
         operation_id: step.operation_id,
         outcome: "unknown",
         reason_code: "recovery_required",

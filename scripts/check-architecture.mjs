@@ -20,8 +20,6 @@ const originBaselineChecksum = "a05c8ca7f4886829bd723cfcd27752aac0ffce88181be7a7
 const sourceSuffixes = [".ts", ".tsx", ".vue", ".css", ".html"];
 const allowedTemporaryPaths = new Set([
   "src/main/bootstrap/legacy-runtime-port.ts",
-  "src/main/infrastructure/persistence/legacy-proposal-execution-repository.ts",
-  "src/main/application/proposal-apply/legacy-format-router.ts",
 ]);
 
 function isFinalPath(path) {

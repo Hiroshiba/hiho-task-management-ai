@@ -1,24 +1,25 @@
 import { z } from "zod";
 import {
-  asanaTaskResponseSchema,
-  createUtf8ByteLimitedStringSchema,
-  customExternalDataMaxBytes,
+  canonicalizeTaskWriteJson,
+  customExternalDataSchema,
   dateSchema,
   externalTaskGidSchema,
   gidSchema,
   identifierSchema,
-  parseCustomExternalData,
-  serializeCustomExternalData,
-  taskSchema,
-} from "../../../shared/domain";
-import {
-  proposalOperationSchema,
-  proposalSchema,
-  type ProposalOperation,
-} from "../../../shared/ai";
-import { applicationJournalStageSchema } from "../../../shared/storage";
+} from "../../domain/task-write-values";
+import { analysisProposalSchema } from "../../domain/proposal-analysis/proposal-projection";
+import { analysisTaskSchema } from "../../domain/proposal-analysis/task-projection";
+import { createUtf8ByteLimitedStringSchema } from "../../domain/proposal-analysis/utf8";
 import { createApprovalConflictSchemas } from "../../domain/proposal-analysis/approval-conflict-schemas";
 import { graphValidationResultSchema } from "../../domain/proposal-analysis/graph";
+
+const customExternalDataMaxBytes = 28 * 1024;
+const proposalSchema = z.custom<z.infer<typeof analysisProposalSchema>>(
+  (value) => analysisProposalSchema.safeParse(value).success,
+);
+const taskSchema = z.custom<z.infer<typeof analysisTaskSchema>>(
+  (value) => analysisTaskSchema.safeParse(value).success,
+);
 
 const { approvalInputSchema: proposalApprovalInputSchema } = createApprovalConflictSchemas({
   gidSchema,
@@ -27,204 +28,6 @@ const { approvalInputSchema: proposalApprovalInputSchema } = createApprovalConfl
   proposalSchema,
   graphValidationResultSchema,
 });
-
-const sectionGidsSchema = z
-  .object({
-    not_started: gidSchema,
-    in_progress: gidSchema,
-    completed: gidSchema,
-    withdrawn: gidSchema,
-  })
-  .strict()
-  .superRefine((sectionGids, context) => {
-    const seen = new Set<string>();
-    for (const [name, gid] of Object.entries(sectionGids)) {
-      if (seen.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [name],
-          message: "状態セクションGIDを重複して指定できません。",
-        });
-      }
-      seen.add(gid);
-    }
-  });
-
-const temporaryRefMappingSchema = z
-  .object({
-    temporary_ref: identifierSchema,
-    task_gid: gidSchema,
-  })
-  .strict();
-
-const temporaryRefMappingsSchema = z
-  .array(temporaryRefMappingSchema)
-  .max(256)
-  .superRefine((mappings, context) => {
-    const temporaryRefs = new Set<string>();
-    const taskGids = new Set<string>();
-    for (const [index, mapping] of mappings.entries()) {
-      if (temporaryRefs.has(mapping.temporary_ref)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "temporary_ref"],
-          message: "temporary_refを重複して指定できません。",
-        });
-      }
-      if (taskGids.has(mapping.task_gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "task_gid"],
-          message: "temporary_ref対応先GIDを重複して指定できません。",
-        });
-      }
-      temporaryRefs.add(mapping.temporary_ref);
-      taskGids.add(mapping.task_gid);
-    }
-  });
-
-const rawExternalDataSchema = z
-  .object({
-    gid: externalTaskGidSchema,
-    data: createUtf8ByteLimitedStringSchema(customExternalDataMaxBytes),
-  })
-  .strict()
-  .superRefine((external, context) => {
-    const parsed = parseCustomExternalData(external.data);
-    if (parsed.kind !== "valid") {
-      context.addIssue({
-        code: "custom",
-        path: ["data"],
-        message: "baselineのCustom external dataがvalidではありません。",
-      });
-      return;
-    }
-    if (
-      external.gid !== `TaskHub:v1:task:${parsed.data.id}`
-      || serializeCustomExternalData(parsed.data) !== external.data
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["data"],
-        message: "baselineのCustom external dataの識別子または形式が不正です。",
-      });
-    }
-  });
-
-const writerInputSchema = z
-  .object({
-    operation: proposalOperationSchema,
-    project_gid: gidSchema,
-    workspace_gid: gidSchema,
-    section_gids: sectionGidsSchema,
-    device_id: identifierSchema,
-    created_via: identifierSchema,
-    activity_date: dateSchema,
-    temporary_ref_to_gid: temporaryRefMappingsSchema,
-    baseline_external_data: rawExternalDataSchema.optional(),
-    create_external_id: z.uuid().optional(),
-    existing_task: asanaTaskResponseSchema.optional(),
-  })
-  .strict()
-  .superRefine((input, context) => {
-    if (input.operation.operation === "create_task") {
-      if (input.create_external_id == null) {
-        context.addIssue({
-          code: "custom",
-          path: ["create_external_id"],
-          message: "create_taskには事前発行UUIDが必要です。",
-        });
-      }
-      if (input.baseline_external_data != null) {
-        context.addIssue({
-          code: "custom",
-          path: ["baseline_external_data"],
-          message: "create_taskにbaseline外部データを指定できません。",
-        });
-      }
-    } else {
-      if (input.create_external_id != null) {
-        context.addIssue({
-          code: "custom",
-          path: ["create_external_id"],
-          message: "create_task以外に作成UUIDを指定できません。",
-        });
-      }
-      if (input.existing_task != null) {
-        context.addIssue({
-          code: "custom",
-          path: ["existing_task"],
-          message: "create_task以外に既存作成タスクを指定できません。",
-        });
-      }
-      const externalOptional =
-        input.operation.operation === "complete"
-        || input.operation.operation === "withdraw";
-      if (!externalOptional && input.baseline_external_data == null) {
-        context.addIssue({
-          code: "custom",
-          path: ["baseline_external_data"],
-          message: "この操作にはbaseline外部データが必要です。",
-        });
-      }
-    }
-  });
-
-const writerConflictReasonCodeSchema = z.enum([
-  "baseline_changed",
-  "read_back_mismatch",
-  "external_unreadable",
-  "external_identity_mismatch",
-  "merge_conflict",
-  "external_capacity_exceeded",
-]);
-
-const writerAppliedResultSchema = z
-  .object({
-    operation_id: identifierSchema,
-    task_gid: gidSchema,
-    outcome: z.literal("applied"),
-    reason_code: z.literal("applied"),
-  })
-  .strict();
-
-const writerAlreadyAppliedResultSchema = z
-  .object({
-    operation_id: identifierSchema,
-    task_gid: gidSchema,
-    outcome: z.literal("already_applied"),
-    reason_code: z.literal("already_applied"),
-  })
-  .strict();
-
-const writerConflictResultSchema = z
-  .object({
-    operation_id: identifierSchema,
-    task_gid: gidSchema,
-    outcome: z.literal("conflict"),
-    reason_code: writerConflictReasonCodeSchema,
-    side_effect: z.enum(["none", "possible"]),
-  })
-  .strict();
-
-const writerResultSchema = z.union([
-  writerAppliedResultSchema,
-  writerAlreadyAppliedResultSchema,
-  writerConflictResultSchema,
-]);
-
-export type AsanaProposalOperationWriterInput = z.infer<typeof writerInputSchema>;
-export type AsanaProposalOperationWriterResult = z.infer<typeof writerResultSchema>;
-export type AsanaProposalWriterSectionGids = z.infer<typeof sectionGidsSchema>;
-export type AsanaProposalWriterTemporaryRefMapping = z.infer<
-  typeof temporaryRefMappingSchema
->;
-
-/** 単一AI変更操作の適用入力を検証するスキーマです。 */
-export const asanaProposalOperationWriterInputSchema = writerInputSchema;
-
-/** 単一AI変更操作の適用結果を検証するスキーマです。 */
-export const asanaProposalOperationWriterResultSchema = writerResultSchema;
 
 const applicationSectionGidsSchema = z
   .object({
@@ -255,8 +58,19 @@ const applicationRawExternalDataSchema = z
   })
   .strict()
   .superRefine((external, context) => {
-    const parsed = parseCustomExternalData(external.data);
-    if (parsed.kind !== "valid") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(external.data);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        path: ["data"],
+        message: "適用基準のCustom external dataがvalidではありません。",
+      });
+      return;
+    }
+    const result = customExternalDataSchema.safeParse(parsed);
+    if (!result.success) {
       context.addIssue({
         code: "custom",
         path: ["data"],
@@ -265,8 +79,8 @@ const applicationRawExternalDataSchema = z
       return;
     }
     if (
-      external.gid !== `TaskHub:v1:task:${parsed.data.id}`
-      || serializeCustomExternalData(parsed.data) !== external.data
+      external.gid !== `TaskHub:v1:task:${result.data.id}`
+      || canonicalizeTaskWriteJson(result.data) !== external.data
     ) {
       context.addIssue({
         code: "custom",
@@ -318,60 +132,6 @@ const applicationInputSchema = z
   })
   .strict();
 
-const recoveryApplicationSchema = z
-  .object({
-    ...applicationContextShape,
-    proposal: proposalSchema,
-  })
-  .strict();
-
-const recoveryProjectGidsSchema = z
-  .array(gidSchema)
-  .max(32)
-  .superRefine((gids, context) => {
-    const seen = new Set<string>();
-    for (const [index, gid] of gids.entries()) {
-      if (seen.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "復旧対象project GIDを重複して指定できません。",
-        });
-      }
-      seen.add(gid);
-    }
-  });
-
-const recoveryInputSchema = z
-  .object({
-    applications: z.array(recoveryApplicationSchema).max(32),
-    project_gids: recoveryProjectGidsSchema.optional(),
-  })
-  .strict()
-  .superRefine((input, context) => {
-    const proposalIds = new Set<string>();
-    for (const [index, application] of input.applications.entries()) {
-      if (proposalIds.has(application.proposal_id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["applications", index, "proposal_id"],
-          message: "同じproposal_idの復旧対象を重複指定できません。",
-        });
-      }
-      proposalIds.add(application.proposal_id);
-    }
-    if (
-      input.applications.length === 0
-      && (input.project_gids == null || input.project_gids.length === 0)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["project_gids"],
-        message: "文脈なし復旧にはproject GIDが必要です。",
-      });
-    }
-  });
-
 const postWriteSynchronizationFailureCodeSchema = z.enum([
   "authentication_required",
   "offline",
@@ -395,77 +155,6 @@ const postWriteSynchronizationResultSchema = z.discriminatedUnion("kind", [
       error_code: postWriteSynchronizationFailureCodeSchema,
     })
     .strict(),
-]);
-
-const proposalOperationKindSchema = z.custom<ProposalOperation["operation"]>(
-  (value) => typeof value === "string"
-    && proposalOperationSchema.options.some(
-      (operation) => operation.shape.operation.value === value,
-    ),
-  "AI変更操作の種別が不正です。",
-);
-
-export const applicationJournalDiagnosticSchema = z
-  .object({
-    kind: z.literal("application_journal"),
-    severity: z.enum(["warning", "error"]),
-    proposal_id: identifierSchema.optional(),
-    operation_id: identifierSchema.optional(),
-    operation_kind: proposalOperationKindSchema.optional(),
-    api_action: z.enum([
-      "read_project_tasks",
-      "read_task",
-      "fetch_workspace_tags",
-      "create_task",
-      "update_task",
-      "add_task_to_project",
-      "add_task_to_section",
-      "add_task_tag",
-      "remove_task_tag",
-      "set_task_parent",
-      "clear_task_parent",
-      "operation_writer",
-      "post_apply",
-      "journal_plan",
-    ]),
-    journal_stage: applicationJournalStageSchema.optional(),
-    effect_certainty: z.enum(["none", "possible", "confirmed"]),
-    task_gid: gidSchema.optional(),
-    reason_code: identifierSchema,
-    recovery_decision: z.enum([
-      "inspect",
-      "resume",
-      "already_applied",
-      "not_applied",
-      "external_id_collision",
-      "unresolved",
-      "local_sync_pending",
-      "failed",
-    ]),
-    attempt: z.number().int().min(1).max(10_000),
-    phase: z.enum([
-      "validation",
-      "preflight",
-      "external_write",
-      "read_back",
-      "recovery",
-      "post_apply",
-      "application",
-      "journal",
-    ]),
-  })
-  .strict();
-
-const serviceDiagnosticSchema = z
-  .object({
-    kind: z.literal("service"),
-    severity: z.enum(["warning", "error"]),
-  })
-  .strict();
-
-export const applicationDiagnosticSchema = z.discriminatedUnion("kind", [
-  applicationJournalDiagnosticSchema,
-  serviceDiagnosticSchema,
 ]);
 
 const applicationReasonCodeSchema = z.enum([
@@ -797,18 +486,16 @@ const recoveryResultSchema = z
 
 export type AsanaProposalApplicationInput = z.infer<typeof applicationInputSchema>;
 export type AsanaProposalApplicationResult = z.infer<typeof applicationResultSchema>;
-export type AsanaProposalRecoveryInput = z.infer<typeof recoveryInputSchema>;
 export type AsanaProposalRecoveryResult = z.infer<typeof recoveryResultSchema>;
-export type ApplicationDiagnostic = z.infer<typeof applicationDiagnosticSchema>;
-export type ApplicationJournalDiagnostic = z.infer<
-  typeof applicationJournalDiagnosticSchema
->;
 export type PostWriteSynchronizationFailureCode = z.infer<
   typeof postWriteSynchronizationFailureCodeSchema
 >;
 export type PostWriteSynchronizationResult = z.infer<
   typeof postWriteSynchronizationResultSchema
 >;
+export type PostWriteSynchronizationResultWithCause = PostWriteSynchronizationResult & {
+  readonly cause?: unknown;
+};
 
 /** 承認済みAI変更案の適用入力を検証するスキーマです。 */
 export const asanaProposalApplicationInputSchema = applicationInputSchema;
@@ -816,10 +503,7 @@ export const asanaProposalApplicationInputSchema = applicationInputSchema;
 /** 承認済みAI変更案の適用結果を検証するスキーマです。 */
 export const asanaProposalApplicationResultSchema = applicationResultSchema;
 
-/** 未完了ジャーナルの復旧入力を検証するスキーマです。 */
-export const asanaProposalRecoveryInputSchema = recoveryInputSchema;
-
-/** 未完了ジャーナルの復旧結果を検証するスキーマです。 */
+/** 保存済み適用実行の復旧結果を検証するスキーマです。 */
 export const asanaProposalRecoveryResultSchema = recoveryResultSchema;
 
 /** Asana書き込み後の同期失敗コードを検証するスキーマです。 */

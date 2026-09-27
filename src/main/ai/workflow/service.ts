@@ -29,7 +29,7 @@ import { validateProposalGraph, type GraphValidationResult } from "../../domain/
 import {
   asanaProposalApplicationInputSchema,
   type AsanaProposalApplicationInput,
-} from "../proposal-application";
+} from "../../application/common/proposal-application-schemas";
 import {
   CodexSessionOutputValidationError, CodexSessionSyncError, type CodexSessionDelta,
   type CodexSessionDeltaListener, type CodexSessionTurnInput,
