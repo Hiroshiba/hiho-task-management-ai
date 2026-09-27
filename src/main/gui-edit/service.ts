@@ -12,10 +12,8 @@ import {
   ingestAsanaExternalData,
   mergeCustomExternalData,
 } from "../domain";
-import {
-  proposalOperationSchema,
-  type ProposalOperation,
-} from "../../shared/ai";
+import { proposalOperationSchema, type ProposalOperation } from "../../shared/ai";
+import { buildProposalOperation } from "../application/gui-edit/build-proposal-operation";
 import {
   AsanaProposalOperationWriter,
   asanaProposalOperationWriterResultSchema,
@@ -78,26 +76,6 @@ type ExternalOperation = Exclude<
   | { readonly kind: "complete" }
   | { readonly kind: "withdraw" }
 >;
-type ProposalGuiOperation = Exclude<
-  AsanaGuiEditOperation,
-  { readonly kind: "mark_activity" }
->;
-type ProposalDependency = Extract<
-  ProposalOperation,
-  { operation: "set_dependencies" }
->["before"][number];
-type ProposalParent = Extract<
-  ProposalOperation,
-  { operation: "set_parent" }
->["before"];
-type ProposalDue = Extract<
-  ProposalOperation,
-  { operation: "set_due" }
->["before"];
-type ProposalDuration = Extract<
-  ProposalOperation,
-  { operation: "set_duration" }
->["before"];
 type AsanaGuiEditReadClient = Pick<AsanaReadClient, "getTask">;
 type AsanaGuiEditStatusWriteClient = Pick<
   AsanaTaskWriteClient,
@@ -123,13 +101,6 @@ export type AsanaGuiEditRelationGraphValidationRequest =
       readonly task_gid: string;
       readonly parent_gid: string | null;
     };
-
-const operationSnapshotHash = "0000000000000000000000000000000000000000000000000000000000000000";
-const operationReason = "GUIによる直接編集";
-const operationEvidenceLocator = "gui-edit";
-const importanceTagPrefix = "TaskHub/重要度/";
-const areaTagPrefix = "TaskHub/領域/";
-const unclassifiedArea = "未分類";
 
 /** オンライン接続状態を提供する関数です。 */
 export type AsanaGuiEditOnlineStateProvider = () => boolean;
@@ -204,328 +175,6 @@ function parsePostWriteSynchronizationResult(
   const { cause, ...result } = value;
   void cause;
   return asanaPostWriteSynchronizationResultSchema.parse(result);
-}
-
-function statusFromTask(
-  task: AsanaTaskResponse,
-  projectGid: string,
-  sectionGids: AsanaGuiEditSectionGids,
-): TaskStatus {
-  const memberships = task.memberships.filter(
-    (membership) => membership.project.gid === projectGid,
-  );
-  if (memberships.length !== 1) {
-    throw new Error("対象タスクの専用プロジェクト所属を一意に確認できません。");
-  }
-  const membership = memberships[0];
-  if (membership == null || membership.section == null) {
-    throw new Error("対象タスクの状態セクションを確認できません。");
-  }
-  const statuses: readonly [TaskStatus, string, boolean][] = [
-    ["not_started", sectionGids.not_started, false],
-    ["in_progress", sectionGids.in_progress, false],
-    ["completed", sectionGids.completed, true],
-    ["withdrawn", sectionGids.withdrawn, true],
-  ];
-  const matched = statuses.find(
-    (status) => status[1] === membership.section?.gid,
-  );
-  if (matched == null) {
-    throw new Error("対象タスクの状態セクションが不正です。");
-  }
-  if (matched[2] !== task.completed) {
-    throw new Error("対象タスクの状態セクションと完了フラグが一致しません。");
-  }
-  return matched[0];
-}
-
-function importanceFromTask(task: AsanaTaskResponse): number {
-  const tags = task.tags.filter((tag) => tag.name.startsWith(importanceTagPrefix));
-  if (tags.length === 0) {
-    return 3;
-  }
-  const values = tags.map((tag) => {
-    const value = Number(tag.name.slice(importanceTagPrefix.length));
-    if (!Number.isInteger(value) || value < 1 || value > 5) {
-      throw new Error("重要度タグ名が不正です。");
-    }
-    return value;
-  });
-  return Math.max(...values);
-}
-
-function areaFromTask(task: AsanaTaskResponse): string {
-  const tags = task.tags.filter((tag) => tag.name.startsWith(areaTagPrefix));
-  if (tags.length !== 1) {
-    return unclassifiedArea;
-  }
-  const tag = tags[0];
-  if (tag == null) {
-    throw new Error("領域タグを取得できません。");
-  }
-  const area = tag.name.slice(areaTagPrefix.length);
-  if (area.trim().length === 0) {
-    throw new Error("領域タグ名が不正です。");
-  }
-  return area;
-}
-
-function dueFromTask(
-  task: AsanaTaskResponse,
-): ProposalDue {
-  if (task.due_on != null && task.due_at != null) {
-    throw new Error("対象タスクの期限形式が不正です。");
-  }
-  if (task.due_on != null) {
-    return { kind: "due_on", due_on: task.due_on };
-  }
-  if (task.due_at != null) {
-    return { kind: "due_at", due_at: task.due_at };
-  }
-  return { kind: "absent" };
-}
-
-function proposalDependencies(
-  dependencies: readonly Dependency[],
-): ProposalDependency[] {
-  return dependencies.map((dependency) => ({
-    target: { kind: "existing", gid: dependency.task_gid },
-    scope: dependency.scope,
-    source: dependency.source,
-  }));
-}
-
-function proposalParent(
-  task: AsanaTaskResponse,
-): ProposalParent {
-  return task.parent == null
-    ? { kind: "absent" }
-    : { kind: "existing", gid: task.parent.gid };
-}
-
-function proposalDuration(
-  external: ParsedBaselineExternal,
-): ProposalDuration {
-  return external.data.duration == null
-    ? { kind: "absent" }
-    : external.data.duration;
-}
-
-function proposalOperationInput(
-  input: AsanaGuiEditInput,
-  operationId: string,
-): Record<string, unknown> {
-  return {
-    operation_id: operationId,
-    baseline_snapshot_hash: operationSnapshotHash,
-    reason: operationReason,
-    basis: "explicit",
-    confidence: 1,
-    evidence_refs: [{ kind: "user_message", locator: operationEvidenceLocator }],
-    target: { kind: "existing", gid: input.task_gid },
-  };
-}
-
-function parseProposalOperation(
-  value: Record<string, unknown>,
-): ProposalOperation {
-  return proposalOperationSchema.parse(value);
-}
-
-function statusOperation(
-  input: AsanaGuiEditInput,
-  operationId: string,
-  before: TaskStatus,
-  after: TaskStatus,
-): ProposalOperation {
-  const common = proposalOperationInput(input, operationId);
-  if (after === "completed") {
-    if (before !== "not_started" && before !== "in_progress") {
-      throw new Error("完了操作の対象状態が不正です。");
-    }
-    return parseProposalOperation({
-      ...common,
-      operation: "complete",
-      before,
-      after: "completed",
-      basis: "explicit",
-      status_evidence: {
-        kind: "user_explicit",
-        reference: { kind: "user_message", locator: operationEvidenceLocator },
-      },
-    });
-  }
-  if (after === "withdrawn") {
-    if (before !== "not_started" && before !== "in_progress") {
-      throw new Error("取り下げ操作の対象状態が不正です。");
-    }
-    return parseProposalOperation({
-      ...common,
-      operation: "withdraw",
-      before,
-      after: "withdrawn",
-      basis: "explicit",
-      status_evidence: {
-        kind: "user_explicit",
-        reference: { kind: "user_message", locator: operationEvidenceLocator },
-      },
-    });
-  }
-  return parseProposalOperation({
-    ...common,
-    operation: "set_status",
-    before,
-    after,
-  });
-}
-
-function buildProposalOperation(
-  input: AsanaGuiEditInput,
-  operationId: string,
-  external: ParsedBaselineExternal | undefined,
-  operation: ProposalGuiOperation,
-): ProposalOperation {
-  const common = proposalOperationInput(input, operationId);
-  const task = input.baseline_task;
-  switch (operation.kind) {
-    case "update_title":
-      return parseProposalOperation({
-        ...common,
-        operation: "update_title",
-        before: task.name,
-        after: operation.value,
-      });
-    case "update_notes":
-      return parseProposalOperation({
-        ...common,
-        operation: "update_notes",
-        before: task.notes,
-        after: operation.value,
-      });
-    case "set_status":
-      return statusOperation(
-        input,
-        operationId,
-        statusFromTask(task, input.project_gid, input.section_gids),
-        operation.value,
-      );
-    case "complete":
-      return statusOperation(
-        input,
-        operationId,
-        statusFromTask(task, input.project_gid, input.section_gids),
-        "completed",
-      );
-    case "withdraw":
-      return statusOperation(
-        input,
-        operationId,
-        statusFromTask(task, input.project_gid, input.section_gids),
-        "withdrawn",
-      );
-    case "restore":
-      return statusOperation(
-        input,
-        operationId,
-        statusFromTask(task, input.project_gid, input.section_gids),
-        operation.value,
-      );
-    case "set_importance":
-      return parseProposalOperation({
-        ...common,
-        operation: "set_importance",
-        before: importanceFromTask(task),
-        after: operation.value,
-      });
-    case "set_due":
-      return parseProposalOperation({
-        ...common,
-        operation: "set_due",
-        before: dueFromTask(task),
-        after: operation.value,
-      });
-    case "clear_due":
-      return parseProposalOperation({
-        ...common,
-        operation: "clear_due",
-        before: dueFromTask(task),
-        after: { kind: "absent" },
-      });
-    case "set_duration":
-      if (external == null) {
-        throw new Error("所要時間操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "set_duration",
-        before: proposalDuration(external),
-        after: operation.value,
-      });
-    case "clear_duration":
-      if (external == null) {
-        throw new Error("所要時間操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "clear_duration",
-        before: proposalDuration(external),
-        after: { kind: "absent" },
-      });
-    case "set_area":
-      return parseProposalOperation({
-        ...common,
-        operation: "set_area",
-        before: areaFromTask(task),
-        after: operation.value,
-      });
-    case "set_dependencies":
-      if (external == null) {
-        throw new Error("依存関係操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "set_dependencies",
-        before: proposalDependencies(external.data.dependencies),
-        after: proposalDependencies(operation.value),
-      });
-    case "set_parent":
-      return parseProposalOperation({
-        ...common,
-        operation: "set_parent",
-        before: proposalParent(task),
-        after: operation.value,
-      });
-    case "set_parent_work_mode":
-      if (external == null) {
-        throw new Error("親作業モード操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "set_parent_work_mode",
-        before: external.data.parent_work_mode,
-        after: operation.value,
-      });
-    case "link_obsidian":
-      if (external == null) {
-        throw new Error("Obsidianリンク操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "link_obsidian",
-        before: { kind: "absent" },
-        after: operation.value,
-      });
-    case "unlink_obsidian":
-      if (external == null) {
-        throw new Error("Obsidianリンク操作にはCustom external dataが必要です。");
-      }
-      return parseProposalOperation({
-        ...common,
-        operation: "unlink_obsidian",
-        before: operation.value,
-        after: { kind: "absent" },
-      });
-  }
 }
 
 function operationUsesExternalData(
@@ -896,11 +545,12 @@ export class AsanaGuiEditService {
         signal,
       );
     }
-    const operation = buildProposalOperation(
+    const operation = buildProposalOperation<ProposalOperation>(
       validatedInput,
       operationId,
-      external,
+      external?.data,
       validatedInput.operation,
+      (value) => proposalOperationSchema.parse(value),
     );
     const writerInput: AsanaProposalOperationWriterInput = {
       operation,
