@@ -148,6 +148,7 @@ import { SyncStateRuntime } from "../bootstrap/sync-state-runtime";
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthentication-runtime";
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
+import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -859,6 +860,16 @@ export class TaskHubApplication {
     TaskctlSnapshot,
     CodexSessionStartResult
   >;
+  private readonly aiInteraction: AiInteractionRuntime<
+    AiSessionRecord,
+    IpcAiTurnInput,
+    z.infer<typeof aiWorkflowTurnRequestSchema>,
+    IpcAiTurnResult,
+    IpcAiApprovalInput,
+    z.infer<typeof aiWorkflowApprovalRequestSchema>,
+    IpcAiApprovalResult,
+    OperationalContext
+  >;
   private vaultMappingSaveInProgress = false;
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
@@ -1080,6 +1091,72 @@ export class TaskHubApplication {
       hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
       linkOwnedSignal: (signal, owner) =>
         this.operationQueue.linkOwnedSignal(signal, owner),
+    });
+    this.aiInteraction = new AiInteractionRuntime<
+      AiSessionRecord,
+      IpcAiTurnInput,
+      z.infer<typeof aiWorkflowTurnRequestSchema>,
+      IpcAiTurnResult,
+      IpcAiApprovalInput,
+      z.infer<typeof aiWorkflowApprovalRequestSchema>,
+      IpcAiApprovalResult,
+      OperationalContext
+    >({
+      assertOperationalReady: () => this.assertOperationalReady(),
+      assertMutationRequestAccepted: () => this.assertMutationRequestAccepted(),
+      assertProposalOperationAvailable: (record) =>
+        this.assertAiProposalOperationAvailable(record),
+      requireSession: (sessionId) => this.aiRuntime.requireSession(sessionId),
+      parseTurnRequest: (input) => aiWorkflowTurnRequestSchema.parse({
+        message: input.message,
+        target_task_gid: input.target_task_gid,
+        base_proposal_id: input.base_proposal_id,
+      }),
+      runTurn: async (record, request, signal) => aiWorkflowTurnResultSchema.parse(
+        await this.aiRuntime.runOperation(
+          record,
+          signal,
+          (operationSignal) => record.workflow.startTurn(request, operationSignal),
+        ),
+      ),
+      classifyTurn: (request, result) => {
+        if (result.kind === "proposal") {
+          return {
+            kind: "proposal",
+            proposalId: result.proposal.proposal_id,
+            baseProposalId: request.base_proposal_id,
+          };
+        }
+        if (request.base_proposal_id != null && result.pending_proposal_action === "discard") {
+          return { kind: "discard", baseProposalId: request.base_proposal_id };
+        }
+        return { kind: "none" };
+      },
+      rejectProposal: (record, proposalId) => record.workflow.rejectProposal(proposalId),
+      rememberProposal: (record, proposalId) => this.aiRuntime.rememberProposal(record, proposalId),
+      forgetProposal: (record, proposalId) => this.aiRuntime.forgetProposal(record, proposalId),
+      releaseCurrentTurnBaselines: (record) =>
+        this.aiRuntime.releaseCurrentTurnBaselines(record),
+      parseApprovalRequest: (input) => aiWorkflowApprovalRequestSchema.parse({
+        proposal_id: input.proposal_id,
+        selection: input.selection,
+      }),
+      requireContext: () => this.requireContext(),
+      enqueueApproval: async (record, request, approvalContext, signal) =>
+        aiWorkflowApprovalResultSchema.parse(await this.operationQueue.enqueue({
+          priority: "user",
+          kind: "ai_apply",
+          signal,
+          beforeStart: () => {
+            this.assertQueuedMutationReady();
+            this.assertContextUnchanged(approvalContext);
+          },
+          run: (context) => this.aiRuntime.runOperation(
+            record,
+            context.signal,
+            (operationSignal) => record.workflow.approve(request, operationSignal),
+          ),
+        })),
     });
     const externalAgentBridge = new ExternalAgentBridge({
       userDataPath: this.codexWorkspace.userDataPath,
@@ -3242,137 +3319,41 @@ export class TaskHubApplication {
         return this.currentAiStatus();
       },
       startNewSession: (signal) => this.aiRuntime.startSession(signal),
-      startTurn: async (input: IpcAiTurnInput, signal): Promise<IpcAiTurnResult> => {
-        this.assertMutationRequestAccepted();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        if (record.turnInFlight) {
-          throw new Error("同じAIセッションで複数のターンを同時に実行できません。");
-        }
-        if (record.approvalInFlight) {
-          throw new Error("同じAIセッションで承認実行中はAIターンを開始できません。");
-        }
-        if (record.baselineStore.currentTurnKeys.size > 0) {
-          throw new Error("前回のAIターンの基準外部データが解放されていません。");
-        }
-        record.turnInFlight = true;
-        try {
-          const request = aiWorkflowTurnRequestSchema.parse({
-            message: input.message,
-            target_task_gid: input.target_task_gid,
-            base_proposal_id: input.base_proposal_id,
-          });
-          const result = aiWorkflowTurnResultSchema.parse(
-            await this.aiRuntime.runOperation(
-              record,
-              signal,
-              (operationSignal) => record.workflow.startTurn(request, operationSignal),
-            ),
-          );
-          if (result.kind === "proposal") {
-            const proposalId = result.proposal.proposal_id;
-            let baselineKey: string | undefined;
-            for (const key of record.baselineStore.currentTurnKeys) {
-              baselineKey = key;
-            }
-            if (baselineKey == null) {
-              record.workflow.rejectProposal(proposalId);
-              throw new Error("AI変更案に対応する基準外部データがありません。");
-            }
-            this.aiRuntime.rememberProposal(record, proposalId);
-            record.baselineStore.proposalKeys.set(proposalId, baselineKey);
-            const baseProposalId = request.base_proposal_id;
-            if (baseProposalId != null) {
-              record.workflow.rejectProposal(baseProposalId);
-              this.aiRuntime.forgetProposal(record, baseProposalId);
-            }
-          } else if (
-            request.base_proposal_id != null
-            && result.pending_proposal_action === "discard"
-          ) {
-            record.workflow.rejectProposal(request.base_proposal_id);
-            this.aiRuntime.forgetProposal(record, request.base_proposal_id);
-          }
-          return result;
-        } finally {
-          this.aiRuntime.releaseCurrentTurnBaselines(record);
-          record.turnInFlight = false;
-        }
-      },
+      startTurn: (input, signal) => this.aiInteraction.startTurn(input, signal),
       getProposal: (input: IpcAiProposalInput) => {
-        this.assertOperationalReady();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        return aiWorkflowProposalViewSchema.parse(
-          record.workflow.getProposal(identifierSchema.parse(input.proposal_id)),
-        );
+        return this.aiInteraction.withProposalRecord(input, false, (record) =>
+          aiWorkflowProposalViewSchema.parse(
+            record.workflow.getProposal(identifierSchema.parse(input.proposal_id)),
+          ));
       },
       select: (input: IpcAiSelectionInput) => {
-        this.assertOperationalReady();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        this.assertAiProposalOperationAvailable(record);
-        return aiWorkflowProposalViewSchema.parse(
-          record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
-            proposal_id: input.proposal_id,
-            selection: input.selection,
-          })),
-        );
+        return this.aiInteraction.withProposalRecord(input, true, (record) =>
+          aiWorkflowProposalViewSchema.parse(
+            record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
+              proposal_id: input.proposal_id,
+              selection: input.selection,
+            })),
+          ));
       },
       editOperation: (input: IpcAiEditInput) => {
-        this.assertOperationalReady();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        this.assertAiProposalOperationAvailable(record);
-        return aiWorkflowProposalViewSchema.parse(
-          record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
-            proposal_id: input.proposal_id,
-            operation_id: input.operation_id,
-            after: input.after,
-            evidence_locator: input.evidence_locator,
-          })),
-        );
+        return this.aiInteraction.withProposalRecord(input, true, (record) =>
+          aiWorkflowProposalViewSchema.parse(
+            record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
+              proposal_id: input.proposal_id,
+              operation_id: input.operation_id,
+              after: input.after,
+              evidence_locator: input.evidence_locator,
+            })),
+          ));
       },
       reject: (input: IpcAiRejectInput) => {
-        this.assertOperationalReady();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        this.assertAiProposalOperationAvailable(record);
-        const validatedProposalId = identifierSchema.parse(input.proposal_id);
-        record.workflow.rejectProposal(validatedProposalId);
-        this.aiRuntime.forgetProposal(record, validatedProposalId);
-      },
-      approve: async (
-        input: IpcAiApprovalInput,
-        signal,
-      ): Promise<IpcAiApprovalResult> => {
-        this.assertMutationRequestAccepted();
-        const record = this.aiRuntime.requireSession(input.session_id);
-        this.assertAiProposalOperationAvailable(record);
-        const request = aiWorkflowApprovalRequestSchema.parse({
-          proposal_id: input.proposal_id,
-          selection: input.selection,
+        this.aiInteraction.withProposalRecord(input, true, (record) => {
+          const validatedProposalId = identifierSchema.parse(input.proposal_id);
+          record.workflow.rejectProposal(validatedProposalId);
+          this.aiRuntime.forgetProposal(record, validatedProposalId);
         });
-        const approvalContext = this.requireContext();
-        record.approvalInFlight = true;
-        try {
-          const result = aiWorkflowApprovalResultSchema.parse(
-            await this.operationQueue.enqueue({
-              priority: "user",
-              kind: "ai_apply",
-              signal,
-              beforeStart: () => {
-                this.assertQueuedMutationReady();
-                this.assertContextUnchanged(approvalContext);
-              },
-              run: (context) => this.aiRuntime.runOperation(
-                record,
-                context.signal,
-                (operationSignal) => record.workflow.approve(request, operationSignal),
-              ),
-            }),
-          );
-          this.aiRuntime.forgetProposal(record, result.proposal_id);
-          return result;
-        } finally {
-          record.approvalInFlight = false;
-        }
       },
+      approve: (input, signal) => this.aiInteraction.approve(input, signal),
       closeSession: async (sessionId) => {
         const record = this.aiRuntime.requireSession(sessionId);
         await this.aiRuntime.closeRecord(record, "explicit");
