@@ -25,7 +25,8 @@ import { asanaSyncTokenSchema } from "../sync-token";
 import { readResponseBody, releaseResponseBody } from "../../infrastructure/asana/response-body";
 import type {
   AsanaRequest,
-  AsanaTransportRequestPort,
+  AsanaSingleAttemptWriteRequest,
+  AsanaTransportPriorityPort,
   TokenProvider,
 } from "./types";
 
@@ -281,19 +282,29 @@ export class AsanaTransport {
       request,
       signal,
       this.scheduler.withPriority("normal"),
+      false,
     );
   }
 
   /** 指定優先度でAsana APIリクエストを実行する範囲を作成します。 */
   public withPriority(
     priority: AsanaRequestPriority,
-  ): AsanaTransportRequestPort {
+  ): AsanaTransportPriorityPort {
     const priorityScope = this.scheduler.withPriority(priority);
     return {
       request: <T>(
         request: AsanaRequest<T>,
         signal: AbortSignal,
-      ): Promise<T> => this.requestAtPriority(request, signal, priorityScope),
+      ): Promise<T> => this.requestAtPriority(request, signal, priorityScope, false),
+      requestSingleAttempt: <T>(
+        request: AsanaSingleAttemptWriteRequest<T>,
+        signal: AbortSignal,
+      ): Promise<T> => this.requestAtPriority(
+        { ...request, retry_safe: false },
+        signal,
+        priorityScope,
+        true,
+      ),
     };
   }
 
@@ -301,6 +312,7 @@ export class AsanaTransport {
     request: AsanaRequest<T>,
     signal: AbortSignal,
     priorityScope: AsanaRequestPriorityScope,
+    singleAttempt: boolean,
   ): Promise<T> {
     validateRequest(request);
     if (signal.aborted) {
@@ -309,7 +321,7 @@ export class AsanaTransport {
 
     const url = buildUrl(request);
     const body = requestBody(request);
-    const retrySafe = isRetrySafe(request);
+    const retrySafe = !singleAttempt && isRetrySafe(request);
     let temporaryRetryCount = 0;
     let authenticationRetried = false;
     let refreshedToken: string | undefined;
@@ -371,6 +383,9 @@ export class AsanaTransport {
                   { cause: result.error },
                 ),
               );
+            }
+            if (singleAttempt) {
+              throw new AsanaAuthenticationError(result.error);
             }
             authenticationRetried = true;
             continue;

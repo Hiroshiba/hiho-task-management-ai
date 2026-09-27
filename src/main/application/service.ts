@@ -13,6 +13,7 @@ import {
   AsanaResponseError,
   AsanaTransport,
   AsanaTransportError,
+  getUniqueAsanaHttpStatus,
   hasRestAsanaHttpError,
   type TokenProvider,
 } from "../asana/transport";
@@ -94,6 +95,7 @@ import {
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
 } from "./common/errors/diagnostic-failure";
+import type { TaskWriteAsanaBridge } from "./common/ports/asana-task-write";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -800,6 +802,7 @@ export class TaskHubApplication {
   private readonly operationQueue: AsanaOperationQueue;
   private readonly tokenProvider: MutableTokenProviderPort;
   private readonly transport: AsanaTransport;
+  private readonly highPriorityTransport: ReturnType<AsanaTransport["withPriority"]>;
   private readonly readClient: AsanaReadClient;
   private readonly interactiveReadClient: AsanaReadClient;
   private readonly writeClient: AsanaTaskWriteClient;
@@ -946,12 +949,12 @@ export class TaskHubApplication {
     this.tokenProvider = createMutableTokenProvider();
     this.transport = new AsanaTransport(this.scheduler, this.tokenProvider);
     const normalTransport = this.transport.withPriority("normal");
-    const highPriorityTransport = this.transport.withPriority("high");
+    this.highPriorityTransport = this.transport.withPriority("high");
     this.readClient = new AsanaReadClient(normalTransport);
-    this.interactiveReadClient = new AsanaReadClient(highPriorityTransport);
+    this.interactiveReadClient = new AsanaReadClient(this.highPriorityTransport);
     const setupClient = new AsanaSetupClient(normalTransport);
     this.writeClient = new AsanaTaskWriteClient(normalTransport);
-    this.interactiveWriteClient = new AsanaTaskWriteClient(highPriorityTransport);
+    this.interactiveWriteClient = new AsanaTaskWriteClient(this.highPriorityTransport);
     this.oauth = new AsanaOAuthCoordinator(
       this.secretStorage,
       options.open_authorization_url,
@@ -1750,6 +1753,19 @@ export class TaskHubApplication {
   /** Electron終了時に全サービスを停止します。 */
   public stop(): Promise<void> {
     return this.lifecycleRuntime.stop();
+  }
+
+  /** 保存済み書き込みstepへ既存のAsana接続と事後同期を渡します。 */
+  public getTaskWriteAsanaBridge(): TaskWriteAsanaBridge {
+    return {
+      transport: this.highPriorityTransport,
+      readClient: this.interactiveReadClient,
+      isNotFound: (error) => getUniqueAsanaHttpStatus(error) === 404,
+      synchronizeAfterProposalWrite: (requiredTaskGids, signal) =>
+        this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
+      synchronizeAfterGuiWrite: (requiredTaskGids, signal) =>
+        this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
+    };
   }
 
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */

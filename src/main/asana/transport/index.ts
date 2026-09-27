@@ -21,6 +21,8 @@ export type {
   AsanaPostRequest,
   AsanaPutRequest,
   AsanaRequest,
+  AsanaSingleAttemptWriteRequest,
+  AsanaTransportPriorityPort,
   AsanaTransportRequestPort,
   TokenProvider,
 } from "./types";

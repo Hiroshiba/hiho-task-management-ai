@@ -33,6 +33,19 @@ export type AsanaRequest<T> =
   | AsanaPostRequest<T>
   | AsanaPutRequest<T>;
 
+export type AsanaSingleAttemptWriteRequest<T> = Omit<
+  AsanaPostRequest<T> | AsanaPutRequest<T>,
+  "retry_safe"
+>;
+
 export interface AsanaTransportRequestPort {
   request<T>(request: AsanaRequest<T>, signal: AbortSignal): Promise<T>;
+}
+
+/** 指定優先度で通常要求と単一送信の書き込みを受け付けます。 */
+export interface AsanaTransportPriorityPort extends AsanaTransportRequestPort {
+  requestSingleAttempt<T>(
+    request: AsanaSingleAttemptWriteRequest<T>,
+    signal: AbortSignal,
+  ): Promise<T>;
 }
