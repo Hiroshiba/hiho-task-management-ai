@@ -9,13 +9,16 @@ import {
   session,
   shell,
 } from "electron";
-import { isAbsolute, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { autoUpdater } from "electron-updater";
 import type { DiagnosticRecord } from "./application/diagnostics";
 import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
 import { TaskHubApplication } from "./application/service";
+import { createMainWindowReadyWait, type MainWindowReadyWait } from "./bootstrap/main-window-readiness";
+import { openAuthorizedExternalUrl, openObsidianUrl, openResolvedPath } from "./bootstrap/open-external-resource";
+import { configureContentSecurityPolicy, configurePermissionPolicy, resolveRendererUrl } from "./bootstrap/renderer-environment";
 import {
   DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
@@ -50,13 +53,6 @@ import { WindowStateController, WindowStateStore } from "./window-state";
 const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-const resolvedAbsolutePathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine(isAbsolute, "解決済みパスは絶対パスでなければなりません。")
-  .refine((value) => !value.includes("\0"), "解決済みパスにNUL文字を指定できません。");
-
 type ShutdownState =
   | { readonly kind: "running" }
   | { readonly kind: "stopping" }
@@ -346,173 +342,12 @@ function mainDiagnosticFailureDisposition(
 }
 
 function getRendererUrl(): string {
-  let rendererUrl: string;
-  if (app.isPackaged) {
-    rendererUrl = pathToFileURL(join(__dirname, "../renderer/index.html")).href;
-  } else {
-    if (developmentRendererUrl == null) {
-      throw new Error("開発用Renderer URLが設定されていません。");
-    }
-
-    let parsedUrl: URL;
-
-    try {
-      parsedUrl = new URL(developmentRendererUrl);
-    } catch (error) {
-      throw new Error("開発用Renderer URLが不正です。", { cause: error });
-    }
-    if (
-      parsedUrl.protocol !== "http:" ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(parsedUrl.hostname)
-    ) {
-      throw new Error("開発用Renderer URLはローカルHTTP URLでなければなりません。");
-    }
-    rendererUrl = parsedUrl.href;
-  }
-
-  return appendMockArgumentToRendererUrl(rendererUrl);
-}
-
-function appendMockArgumentToRendererUrl(rendererUrl: string): string {
-  const mockArgumentPrefix = "--mock=";
-  const mockArguments = process.argv
-    .filter((argument) => argument.startsWith(mockArgumentPrefix))
-    .map((argument) => argument.slice(mockArgumentPrefix.length));
-  if (mockArguments.length === 0) {
-    return rendererUrl;
-  }
-
-  const parsedUrl = new URL(rendererUrl);
-  for (const mockArgument of mockArguments) {
-    parsedUrl.searchParams.append("mock", mockArgument);
-  }
-  return parsedUrl.href;
-}
-
-function getContentSecurityPolicy(): string {
-  if (app.isPackaged) {
-    return [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self'",
-      "img-src 'self' data:",
-      "font-src 'self'",
-      "connect-src 'self'",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "frame-ancestors 'none'",
-    ].join("; ");
-  }
-
-  return [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    "font-src 'self'",
-    "connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* http://[::1]:* ws://[::1]:*",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "frame-ancestors 'none'",
-  ].join("; ");
-}
-
-function configureContentSecurityPolicy(): void {
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        "Content-Security-Policy": [getContentSecurityPolicy()],
-      },
-    });
+  return resolveRendererUrl({
+    packaged: app.isPackaged,
+    rendererIndexPath: join(__dirname, "../renderer/index.html"),
+    developmentUrl: developmentRendererUrl,
+    arguments: process.argv,
   });
-}
-
-function configurePermissionPolicy(): void {
-  const applicationSession = session.defaultSession;
-  applicationSession.setPermissionCheckHandler(() => false);
-  applicationSession.setPermissionRequestHandler(
-    (webContents, permission, callback) => {
-      void webContents;
-      void permission;
-      callback(false);
-    },
-  );
-  applicationSession.setDevicePermissionHandler(() => false);
-}
-
-async function openAuthorizedExternalUrl(
-  rawUrl: string,
-  signal: AbortSignal,
-  validate: (value: string) => URL,
-): Promise<void> {
-  signal.throwIfAborted();
-  const validatedUrl = validate(rawUrl);
-  await shell.openExternal(validatedUrl.href);
-  signal.throwIfAborted();
-}
-
-async function openResolvedPath(
-  rawPath: string,
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  const absolutePath = resolvedAbsolutePathSchema.parse(rawPath);
-  const result = await shell.openPath(absolutePath);
-  if (result !== "") {
-    throw new Error("ローカルパスを開けませんでした。");
-  }
-  signal.throwIfAborted();
-}
-
-function validateObsidianOpenUri(rawUri: string): URL {
-  const parsedUrl = new URL(rawUri);
-  if (
-    parsedUrl.protocol !== "obsidian:"
-    || parsedUrl.host !== "open"
-    || parsedUrl.username !== ""
-    || parsedUrl.password !== ""
-    || parsedUrl.port !== ""
-    || parsedUrl.pathname !== ""
-    || parsedUrl.hash !== ""
-  ) {
-    throw new Error("Obsidian URIが不正です。");
-  }
-  const entries = [...parsedUrl.searchParams.entries()];
-  const keys = new Set(entries.map(([key]) => key));
-  if (
-    entries.length !== 2
-    || keys.size !== 2
-    || !keys.has("vault")
-    || !keys.has("file")
-  ) {
-    throw new Error("Obsidian URIのqueryが不正です。");
-  }
-  const vaultValues = parsedUrl.searchParams.getAll("vault");
-  const fileValues = parsedUrl.searchParams.getAll("file");
-  if (vaultValues.length !== 1 || fileValues.length !== 1) {
-    throw new Error("Obsidian URIのqueryが重複しています。");
-  }
-  const vaultId = vaultValues[0];
-  const relativePath = fileValues[0];
-  if (vaultId == null || relativePath == null) {
-    throw new Error("Obsidian URIのquery値が不正です。");
-  }
-  obsidianOpenUriInputSchema.parse({
-    vault_id: vaultId,
-    relative_path: relativePath,
-  });
-  return parsedUrl;
-}
-
-async function openObsidianUrl(
-  rawUrl: string,
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  const validatedUrl = validateObsidianOpenUri(rawUrl);
-  await shell.openExternal(validatedUrl.href);
-  signal.throwIfAborted();
 }
 
 function forwardUnhandledError(error: unknown): void {
@@ -547,7 +382,9 @@ function createTaskHubApplication(controller: AbortController): TaskHubApplicati
         assertAllowedCodexAuthorizationUrl,
       ),
     open_obsidian_url: (obsidianUrl, signal) =>
-      openObsidianUrl(obsidianUrl, signal),
+      openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
+        obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
+      }),
     open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
     diagnostic: recordServiceDiagnostic,
     unhandled_error_forwarder: forwardUnhandledError,
@@ -812,90 +649,6 @@ function showAndFocusMainWindow(): boolean {
   return true;
 }
 
-type MainWindowReadyWait = {
-  readonly promise: Promise<void>;
-  readonly reject: (error: unknown) => void;
-};
-
-function createMainWindowReadyWait(
-  window: BrowserWindow,
-  signal: AbortSignal,
-): MainWindowReadyWait {
-  let settled = false;
-  let resolvePromise: ((value?: void | PromiseLike<void>) => void) | undefined;
-  let rejectPromise: ((reason?: unknown) => void) | undefined;
-
-  function cleanup(): void {
-    window.removeListener("ready-to-show", onReadyToShow);
-    window.removeListener("closed", onClosed);
-    signal.removeEventListener("abort", onAbort);
-  }
-
-  function rejectReady(error: unknown): void {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    cleanup();
-    if (rejectPromise == null) {
-      throw new Error("メインウィンドウの表示待機を初期化できません。");
-    }
-    rejectPromise(error);
-  }
-
-  function resolveReady(): void {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    cleanup();
-    if (resolvePromise == null) {
-      throw new Error("メインウィンドウの表示待機を初期化できません。");
-    }
-    resolvePromise();
-  }
-
-  function onReadyToShow(): void {
-    try {
-      if (window.isDestroyed()) {
-        rejectReady(new Error("メインウィンドウが破棄されました。"));
-        return;
-      }
-      if (!showAndFocusMainWindow()) {
-        rejectReady(new Error("メインウィンドウを表示できません。"));
-        return;
-      }
-    } catch (error) {
-      rejectReady(error);
-      return;
-    }
-    resolveReady();
-  }
-
-  function onClosed(): void {
-    rejectReady(new Error("メインウィンドウが閉じられました。"));
-  }
-
-  function onAbort(): void {
-    rejectReady(new Error("メインウィンドウの表示待機が中断されました。"));
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
-  }
-
-  const promise = new Promise<void>((resolve, reject) => {
-    resolvePromise = resolve;
-    rejectPromise = reject;
-  });
-  window.once("ready-to-show", onReadyToShow);
-  window.once("closed", onClosed);
-  signal.addEventListener("abort", onAbort, { once: true });
-  if (signal.aborted) {
-    onAbort();
-  }
-  return { promise, reject: rejectReady };
-}
-
 async function createMainWindow(
   rendererUrl: string,
   application: TaskHubApplication,
@@ -978,7 +731,7 @@ async function createMainWindow(
         mainWindow = undefined;
       }
     });
-    readyToShow = createMainWindowReadyWait(window, signal);
+    readyToShow = createMainWindowReadyWait(window, signal, showAndFocusMainWindow);
     const loadPromise = Promise.resolve().then(() => app.isPackaged
       ? window.loadFile(
         fileURLToPath(rendererUrl),
@@ -1130,8 +883,8 @@ async function stopApplication(): Promise<void> {
 async function bootstrap(): Promise<void> {
   await app.whenReady();
   Menu.setApplicationMenu(null);
-  configureContentSecurityPolicy();
-  configurePermissionPolicy();
+  configureContentSecurityPolicy(session.defaultSession, app.isPackaged);
+  configurePermissionPolicy(session.defaultSession);
   const rendererUrl = getRendererUrl();
   const controller = new AbortController();
   lifecycleController = controller;
