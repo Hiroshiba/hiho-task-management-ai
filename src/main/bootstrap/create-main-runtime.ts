@@ -5,6 +5,7 @@ import { DiagnosticFailureDispositionError } from "../application/common/errors/
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
+import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
@@ -101,6 +102,7 @@ export interface MainRuntime {
     readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
     readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
   };
+  readonly tasksHandlers: TasksHandlers;
   readonly signal: AbortSignal;
   createWindowStateStore(): WindowStateStore;
   createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
@@ -157,12 +159,21 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       now: nowProvider,
       wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
     });
-    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, gui: taskWrite.gui });
+    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
+    const tasksHandlers = createTasksHandlers({
+      taskRead: legacy.taskRead,
+      guiEdit: legacy,
+      taskWriteExecution: {
+        getExecution: (executionId) => legacy.getGuiEditExecution(executionId),
+        retryExecution: (executionId, signal) => legacy.retryGuiEditExecution(executionId, signal),
+      },
+    });
     let disposal: Promise<void> | undefined;
     return {
       legacy,
       reporter,
       taskWriteExecution: { repository: taskWrite.repository, engine: taskWrite.engine },
+      tasksHandlers,
       signal: controller.signal,
       createWindowStateStore: () => new WindowStateStore(
         openedPersistence.openLateTextFile(

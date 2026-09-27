@@ -155,7 +155,8 @@ import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
 import { buildDisplayOrderInput } from "./task-write";
-import { applyGuiTaskWrite, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecutionPort, type GuiEditInput } from "./gui-edit";
+import { applyGuiTaskWriteExecution, projectGuiExecutionResult, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
+import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
 import {
@@ -266,8 +267,8 @@ import {
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
   ipcAsanaCancelReauthenticationInputSchema,
-  ipcGuiEditInputSchema,
   ipcGuiEditResultSchema,
+  ipcGuiEditInputSchema,
   ipcReadModelOverviewResponseSchema,
   ipcReadModelTaskDetailResponseSchema,
   ipcSyncInputSchema,
@@ -330,6 +331,10 @@ type MutableTokenProviderPort = TokenProvider & {
 type BaselineExternalData = AsanaProposalApplicationInput["baseline_external_data"];
 type GuiEditRelationGraphValidationRequest = Parameters<GuiEditDependencies["validateRelation"]>[0];
 type GuiEditRelationGraphValidationResult = Awaited<ReturnType<GuiEditDependencies["validateRelation"]>>;
+type GuiEditWorkflowResult = GuiEditStartResult | {
+  readonly kind: "not_started";
+  readonly result: Extract<IpcGuiEditResult, { readonly outcome: "rejected" }>;
+};
 
 type AiSessionBaselineStore = RuntimeAiSessionBaselineStore<BaselineExternalData, TaskctlSnapshot>;
 
@@ -939,6 +944,7 @@ export class TaskHubApplication {
   private taskWriteExecution: {
     readonly proposal: StoredProposalExecutionPort;
     readonly gui: GuiEditExecutionPort;
+    readonly guiWorkflow: GuiEditExecutionWorkflow;
   } | undefined;
   private readonly journalRecovery: JournalRecoveryRuntime<
     { readonly proposal_id: string; readonly operation_id: string; readonly final_result: null },
@@ -1798,6 +1804,7 @@ export class TaskHubApplication {
   public setTaskWriteExecution(ports: {
     readonly proposal: StoredProposalExecutionPort;
     readonly gui: GuiEditExecutionPort;
+    readonly guiWorkflow: GuiEditExecutionWorkflow;
   }): void {
     if (this.taskWriteExecution != null) {
       throw new Error("保存済みplan実行入口を二重に設定できません。");
@@ -2930,66 +2937,132 @@ export class TaskHubApplication {
     }
   }
 
+  /** GUI直接編集の開始前結果または保存済みexecutionを返します。 */
+  public async applyGuiEdit(
+    input: z.output<typeof applyEditRequestSchema>,
+    signal: AbortSignal,
+  ): Promise<GuiEditWorkflowResult> {
+    const request = applyEditRequestSchema.parse(input);
+    const operation = this.toGuiEditOperation(request.operation);
+    return this.runGuiEdit({ task_gid: request.task_gid, expected_task_hash: request.expected_task_hash, operation }, signal);
+  }
+
+  /** 指定IDの保存済みGUI編集executionを取得します。 */
+  public getGuiEditExecution(executionId: string): GuiEditExecution {
+    return this.requireTaskWriteExecution().guiWorkflow.getExecution(executionId);
+  }
+
+  /** GUI編集の実行条件を確認して明示再試行します。 */
+  public async retryGuiEditExecution(executionId: string, signal: AbortSignal): Promise<GuiEditExecution> {
+    this.assertMutationRequestAccepted();
+    const context = this.requireContext();
+    return this.operationQueue.enqueue({
+      priority: "user",
+      kind: "gui_edit",
+      signal,
+      beforeStart: () => {
+        this.assertQueuedMutationReady();
+        this.assertContextUnchanged(context);
+      },
+      run: (operationContext) => this.requireTaskWriteExecution().guiWorkflow.retryExecution(
+        executionId,
+        operationContext.signal,
+      ),
+    });
+  }
+
+  private toGuiEditOperation(operation: z.output<typeof applyEditRequestSchema>["operation"]): GuiEditInput["operation"] {
+    if (operation.kind !== "set_due") {
+      return operation;
+    }
+    switch (operation.value.kind) {
+      case "none":
+        return { kind: "clear_due" };
+      case "on":
+        return { kind: "set_due", value: { kind: "due_on", due_on: operation.value.value } };
+      case "at":
+        return { kind: "set_due", value: { kind: "due_at", due_at: operation.value.value } };
+    }
+  }
+
+  private async runGuiEdit(
+    request: Pick<GuiEditInput, "task_gid" | "operation"> & { readonly expected_task_hash: string },
+    signal: AbortSignal,
+  ): Promise<GuiEditWorkflowResult> {
+    this.assertOperationalReady();
+    this.asanaReauthentication.assertIdle();
+    if (!this.isOnline()) {
+      return { kind: "not_started", result: this.createGuiRejectedResult(request.task_gid, "offline") };
+    }
+    this.assertMutationRequestAccepted();
+    const context = this.requireContext();
+    try {
+      const result = await this.operationQueue.enqueue<GuiEditWorkflowResult>({
+        priority: "user",
+        kind: "gui_edit",
+        signal,
+        beforeStart: () => {
+          if (!this.isOnline()) {
+            throw new AsanaOperationInvalidatedError("offline");
+          }
+          this.assertQueuedMutationReady();
+          this.assertContextUnchanged(context);
+        },
+        run: (operationContext) => {
+          const baseline = this.database.getTaskCacheEntry(request.task_gid);
+          if (baseline == null) {
+            return { kind: "not_started", result: this.createGuiRejectedResult(
+              request.task_gid,
+              "task_missing",
+            ) };
+          }
+          const baselineTask = asanaTaskResponseSchema.parse(
+            baseline.asana_response,
+          );
+          if (hashGuiEditBaseline(baselineTask) !== request.expected_task_hash) {
+            return { kind: "not_started", result: this.createGuiRejectedResult(
+              request.task_gid,
+              "baseline_changed",
+            ) };
+          }
+          const guiInput: GuiEditInput = {
+            task_gid: request.task_gid,
+            project_gid: context.project_gid,
+            workspace_gid: context.workspace_gid,
+            section_gids: context.section_gids,
+            device_id: context.device_id,
+            created_via: "gui",
+            activity_date: todayJst(this.options.now_provider),
+            baseline_task: baselineTask,
+            operation: request.operation,
+          };
+          return applyGuiTaskWriteExecution(guiInput, this.requireTaskWriteExecution().gui, {
+            isOnline: () => this.isOnline(),
+            readTask: (taskGid, requestSignal) => this.interactiveReadClient.getTask(taskGid, requestSignal),
+            validateRelation: (relation, requestSignal) => this.validateRelationGraph(relation, requestSignal),
+          }, operationContext.signal);
+        },
+      });
+      return result;
+    } catch (error: unknown) {
+      if (error instanceof AsanaOperationInvalidatedError) {
+        return { kind: "not_started", result: this.createGuiRejectedResult(
+          request.task_gid,
+          error.reason,
+        ) };
+      }
+      throw error;
+    }
+  }
+
   private createGuiPort(): IpcGuiEditPort {
     return {
       apply: async (input: IpcGuiRequest, signal): Promise<IpcGuiEditResult> => {
         const request = ipcGuiEditInputSchema.parse(input);
-        this.assertMutationRequestAccepted();
-        const context = this.requireContext();
-        try {
-          const result = await this.operationQueue.enqueue({
-            priority: "user",
-            kind: "gui_edit",
-            signal,
-            beforeStart: () => {
-              this.assertQueuedMutationReady();
-              this.assertContextUnchanged(context);
-            },
-            run: (operationContext) => {
-              const baseline = this.database.getTaskCacheEntry(request.task_gid);
-              if (baseline == null) {
-                return this.createGuiRejectedResult(
-                  request.task_gid,
-                  "task_missing",
-                );
-              }
-              const baselineTask = asanaTaskResponseSchema.parse(
-                baseline.asana_response,
-              );
-              if (hashGuiEditBaseline(baselineTask) !== request.expected_task_hash) {
-                return this.createGuiRejectedResult(
-                  request.task_gid,
-                  "baseline_changed",
-                );
-              }
-              const guiInput: GuiEditInput = {
-                task_gid: request.task_gid,
-                project_gid: context.project_gid,
-                workspace_gid: context.workspace_gid,
-                section_gids: context.section_gids,
-                device_id: context.device_id,
-                created_via: "gui",
-                activity_date: todayJst(this.options.now_provider),
-                baseline_task: baselineTask,
-                operation: request.operation,
-              };
-              return applyGuiTaskWrite(guiInput, this.requireTaskWriteExecution().gui, {
-                isOnline: () => this.isOnline(),
-                readTask: (taskGid, requestSignal) => this.interactiveReadClient.getTask(taskGid, requestSignal),
-                validateRelation: (relation, requestSignal) => this.validateRelationGraph(relation, requestSignal),
-              }, operationContext.signal);
-            },
-          });
-          return ipcGuiEditResultSchema.parse(result);
-        } catch (error: unknown) {
-          if (error instanceof AsanaOperationInvalidatedError) {
-            return this.createGuiRejectedResult(
-              request.task_gid,
-              error.reason,
-            );
-          }
-          throw error;
-        }
+        const result = await this.runGuiEdit(request, signal);
+        return ipcGuiEditResultSchema.parse(result.kind === "not_started"
+          ? result.result
+          : projectGuiExecutionResult(result.execution));
       },
     };
   }
@@ -3006,13 +3079,13 @@ export class TaskHubApplication {
       | "task_missing"
       | "synchronization_failed"
       | "context_changed",
-  ): IpcGuiEditResult {
-    return ipcGuiEditResultSchema.parse({
-      operation_id: this.options.create_id(),
+  ): Extract<IpcGuiEditResult, { readonly outcome: "rejected" }> {
+    return {
+      operation_id: identifierSchema.parse(this.options.create_id()),
       task_gid: taskGid,
       outcome: "rejected",
       reason_code: reasonCode,
-    });
+    };
   }
 
   private currentAiStatus(): IpcAiStatus {

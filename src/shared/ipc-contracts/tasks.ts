@@ -97,12 +97,20 @@ const taskEditResultSchema = z
           "external_unreadable",
           "external_identity_mismatch",
           "offline",
+          "task_missing",
+          "context_changed",
+          "synchronization_failed",
         ]),
       })
       .strict(),
   ])
   .refine(
-    (result) => result.kind !== "not_started" || (result.outcome === "rejected") === (result.reason_code === "offline"),
+    (result) => result.kind !== "not_started" || (result.outcome === "conflict") === [
+      "baseline_changed",
+      "relationship_cycle",
+      "external_unreadable",
+      "external_identity_mismatch",
+    ].includes(result.reason_code),
     "開始前の結果と理由が一致しません。",
   );
 const executionRequestSchema = z.object({ execution_id: identifierSchema }).strict();

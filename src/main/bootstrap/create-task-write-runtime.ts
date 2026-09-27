@@ -16,7 +16,7 @@ import {
   type ProposalTaskWriteResult,
   type TaskWriteExecutionResult,
 } from "../application/task-write";
-import type { GuiEditExecutionPort } from "../application/gui-edit";
+import { GuiEditExecutionWorkflow, type GuiEditExecutionPort } from "../application/gui-edit";
 import type { StoredProposalExecutionPort } from "../application/proposal-apply";
 import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
 
@@ -38,6 +38,7 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
   readonly proposal: StoredProposalExecutionPort;
   readonly gui: GuiEditExecutionPort;
+  readonly guiWorkflow: GuiEditExecutionWorkflow;
 } {
   const fingerprint = (canonicalPayload: string): string =>
     createHash("sha256").update(canonicalPayload).digest("hex");
@@ -101,6 +102,23 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
     }
     return execution;
   };
+  const gui: GuiEditExecutionPort = {
+    repository: {
+      save: (input) => repository.save(input),
+      get: (executionId) => {
+        const execution = repository.get(executionId);
+        return execution == null || execution.plan.origin !== "gui-edit"
+          ? undefined
+          : guiExecution(execution);
+      },
+      getIncomplete: () => repository.getIncomplete()
+        .filter((execution) => execution.plan.origin === "gui-edit").map(guiExecution),
+    },
+    engine: { run: async (executionId, signal) => guiExecution(await engine.run(executionId, signal)) },
+    createId: options.createId,
+    now: () => options.now().toISOString(),
+    fingerprint,
+  };
   return {
     repository,
     engine,
@@ -117,16 +135,7 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
       now: () => options.now().toISOString(),
       fingerprint,
     },
-    gui: {
-      repository: {
-        save: (input) => repository.save(input),
-        getIncomplete: () => repository.getIncomplete()
-          .filter((execution) => execution.plan.origin === "gui-edit").map(guiExecution),
-      },
-      engine: { run: async (executionId, signal) => guiExecution(await engine.run(executionId, signal)) },
-      createId: options.createId,
-      now: () => options.now().toISOString(),
-      fingerprint,
-    },
+    gui,
+    guiWorkflow: new GuiEditExecutionWorkflow(gui),
   };
 }

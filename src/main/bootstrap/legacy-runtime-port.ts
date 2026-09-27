@@ -7,6 +7,9 @@ export type LegacyRuntimeOptions = ConstructorParameters<typeof TaskHubApplicati
 export type LegacyRuntimePort = Pick<
   TaskHubApplication,
   | "taskRead"
+  | "applyGuiEdit"
+  | "getGuiEditExecution"
+  | "retryGuiEditExecution"
   | "getIpcPorts"
   | "getState"
   | "getTaskWriteAsanaBridge"

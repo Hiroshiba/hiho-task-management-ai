@@ -47,8 +47,12 @@ export type GuiEditResult =
   | { readonly operation_id: string; readonly task_gid: string; readonly outcome: "rejected"; readonly reason_code: "offline" }
   | { readonly operation_id: string; readonly task_gid: string; readonly outcome: "recovery_required"; readonly reason_code: "local_resync_required"; readonly write_outcome: "applied" | "already_applied"; readonly sync_error_code: TaskWriteSynchronizationFailureCode };
 
+export type GuiEditStartResult =
+  | { readonly kind: "not_started"; readonly result: Extract<GuiEditResult, { readonly outcome: "conflict" | "rejected" }> }
+  | { readonly kind: "execution"; readonly execution: ProposalExecution<GuiTaskWriteResult> };
+
 export type GuiEditExecutionPort = {
-  readonly repository: Pick<ProposalExecutionRepository<GuiTaskWriteResult>, "save" | "getIncomplete">;
+  readonly repository: Pick<ProposalExecutionRepository<GuiTaskWriteResult>, "save" | "get" | "getIncomplete">;
   readonly engine: { run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<GuiTaskWriteResult>> };
   readonly createId: () => string;
   readonly now: () => string;
@@ -87,12 +91,13 @@ function conflict(
   input: GuiEditInput,
   operationId: string,
   reasonCode: "baseline_changed" | "relationship_cycle" | "external_unreadable" | "external_identity_mismatch",
-): GuiEditResult {
+): Extract<GuiEditResult, { readonly outcome: "conflict" }> {
   return { operation_id: operationId, task_gid: input.task_gid,
     outcome: "conflict", reason_code: reasonCode, side_effect: "none" };
 }
 
-function projectExecution(execution: ProposalExecution<GuiTaskWriteResult>): GuiEditResult {
+/** 保存済みGUI編集を従来の操作結果へ投影します。 */
+export function projectGuiExecutionResult(execution: ProposalExecution<GuiTaskWriteResult>): GuiEditResult {
   const context = execution.plan.gui_context;
   if (execution.plan.origin !== "gui-edit" || context == null) {
     throw new Error("GUI編集executionの保存文脈がありません。");
@@ -123,19 +128,20 @@ function projectExecution(execution: ProposalExecution<GuiTaskWriteResult>): Gui
   throw new Error(`GUI編集の保存済みstepが停止しました。エラーID: ${stopped.error_id}`);
 }
 
-/** GUI直接編集を保存済みplanとして同じengineで適用します。 */
-export async function applyGuiTaskWrite(
+/** GUI直接編集の開始前結果または保存済みexecutionを返します。 */
+export async function applyGuiTaskWriteExecution(
   input: GuiEditInput,
   port: GuiEditExecutionPort,
   dependencies: GuiEditDependencies,
   signal: AbortSignal,
-): Promise<GuiEditResult> {
+): Promise<GuiEditStartResult> {
   signal.throwIfAborted();
   inputSchema.parse(input);
   if (input.baseline_task.gid !== input.task_gid) throw new Error("GUI編集の基準タスクGIDが一致しません。");
   const operationId = identifierSchema.parse(port.createId());
   if (!dependencies.isOnline()) {
-    return { operation_id: operationId, task_gid: input.task_gid, outcome: "rejected", reason_code: "offline" };
+    return { kind: "not_started", result: { operation_id: operationId, task_gid: input.task_gid,
+      outcome: "rejected", reason_code: "offline" } };
   }
   const executionId = identifierSchema.parse(port.createId());
   const targetStatus = statusTarget(input);
@@ -143,17 +149,17 @@ export async function applyGuiTaskWrite(
   if (targetStatus != null && guiStatusNeedsRepair(input.baseline_task, input.project_gid, input.section_gids)) {
     const current = taskSchema.parse(await dependencies.readTask(input.task_gid, signal));
     if (current.gid !== input.task_gid || !guiStatusBaselineMatches(input.baseline_task, current, input.project_gid)) {
-      return conflict(input, operationId, "baseline_changed");
+      return { kind: "not_started", result: conflict(input, operationId, "baseline_changed") };
     }
     let repairExternal: Extract<ReturnType<typeof guiExternalBaseline>, { readonly kind: "valid" }> | undefined;
     if (targetStatus === "not_started" || targetStatus === "in_progress") {
       const baselineExternal = guiExternalBaseline(input.baseline_task);
-      if (baselineExternal.kind === "conflict") return conflict(input, operationId, baselineExternal.reason_code);
+      if (baselineExternal.kind === "conflict") return { kind: "not_started", result: conflict(input, operationId, baselineExternal.reason_code) };
       const currentExternal = guiExternalBaseline(current);
-      if (currentExternal.kind === "conflict") return conflict(input, operationId, currentExternal.reason_code);
+      if (currentExternal.kind === "conflict") return { kind: "not_started", result: conflict(input, operationId, currentExternal.reason_code) };
       if (currentExternal.baseline.external_gid !== baselineExternal.baseline.external_gid
         || currentExternal.baseline.data.id !== baselineExternal.baseline.data.id) {
-        return conflict(input, operationId, "external_identity_mismatch");
+        return { kind: "not_started", result: conflict(input, operationId, "external_identity_mismatch") };
       }
       repairExternal = currentExternal;
     }
@@ -166,7 +172,7 @@ export async function applyGuiTaskWrite(
   } else {
     const external = guiExternalBaseline(input.baseline_task);
     if (requiresExternal(input) && external.kind === "conflict") {
-      return conflict(input, operationId, external.reason_code);
+      return { kind: "not_started", result: conflict(input, operationId, external.reason_code) };
     }
     if (input.operation.kind === "set_dependencies" || input.operation.kind === "set_parent") {
       const relation = input.operation.kind === "set_dependencies"
@@ -174,20 +180,20 @@ export async function applyGuiTaskWrite(
         : { kind: "parent" as const, task_gid: input.task_gid,
           parent_gid: input.operation.value.kind === "absent" ? null : input.operation.value.gid };
       const checked = await dependencies.validateRelation(relation, signal);
-      if (checked.kind === "conflict") return conflict(input, operationId, "relationship_cycle");
+      if (checked.kind === "conflict") return { kind: "not_started", result: conflict(input, operationId, "relationship_cycle") };
     }
     if (input.operation.kind === "mark_activity") {
       if (external.kind !== "valid") throw new Error("活動記録にCustom external dataの基準がありません。");
       const current = taskSchema.parse(await dependencies.readTask(input.task_gid, signal));
       if (current.gid !== input.task_gid
         || current.memberships.filter((membership) => membership.project.gid === input.project_gid).length !== 1) {
-        return conflict(input, operationId, "baseline_changed");
+        return { kind: "not_started", result: conflict(input, operationId, "baseline_changed") };
       }
       const currentExternal = guiExternalBaseline(current);
-      if (currentExternal.kind === "conflict") return conflict(input, operationId, currentExternal.reason_code);
+      if (currentExternal.kind === "conflict") return { kind: "not_started", result: conflict(input, operationId, currentExternal.reason_code) };
       if (currentExternal.baseline.external_gid !== external.baseline.external_gid
         || currentExternal.baseline.data.id !== external.baseline.data.id) {
-        return conflict(input, operationId, "external_identity_mismatch");
+        return { kind: "not_started", result: conflict(input, operationId, "external_identity_mismatch") };
       }
       plan = planGuiActivity(input, executionId, operationId, currentExternal, port.fingerprint);
     } else {
@@ -196,7 +202,7 @@ export async function applyGuiTaskWrite(
     }
   }
   port.repository.save({ plan, created_at: port.now() });
-  return projectExecution(await port.engine.run(executionId, signal));
+  return { kind: "execution", execution: await port.engine.run(executionId, signal) };
 }
 
 /** 保存済みGUI編集を同じengineの読戻し経路で再開します。 */
@@ -208,6 +214,6 @@ export async function recoverGuiTaskWrites(port: GuiEditExecutionPort, signal: A
     if (recovered.state === "planned" || recovered.state === "running") {
       throw new Error("GUI編集executionが再開後も未完了です。");
     }
-    if (recovered.state === "succeeded") projectExecution(recovered);
+    if (recovered.state === "succeeded") projectGuiExecutionResult(recovered);
   }
 }
