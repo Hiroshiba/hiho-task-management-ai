@@ -78,6 +78,21 @@ export class AsanaReauthenticationRuntime<
     >,
   ) {}
 
+  /** Asana再認証のIPC操作を公開します。 */
+  public createPort(): {
+    readonly getAuthenticationState: () => AuthenticationState;
+    readonly beginReauthentication: (signal: AbortSignal) => Promise<AuthenticationState>;
+    readonly completeReauthentication: (input: CompleteInput, signal: AbortSignal) => Promise<SyncResult>;
+    readonly cancelReauthentication: (input: CancelInput, signal: AbortSignal) => AuthenticationState;
+  } {
+    return {
+      getAuthenticationState: () => this.getState(),
+      beginReauthentication: (signal) => this.begin(signal),
+      completeReauthentication: (input, signal) => this.complete(input, signal),
+      cancelReauthentication: (input, signal) => this.cancel(input, signal),
+    };
+  }
+
   /** 再認証中の操作競合を拒否します。 */
   public assertIdle(): void {
     if (this.operation.kind !== "idle") {

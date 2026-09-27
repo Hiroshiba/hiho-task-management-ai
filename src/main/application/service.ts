@@ -13,6 +13,7 @@ import {
   AsanaResponseError,
   AsanaTransport,
   AsanaTransportError,
+  hasRestAsanaHttpError,
   type TokenProvider,
 } from "../asana/transport";
 import {
@@ -22,7 +23,10 @@ import {
 } from "../asana/client";
 import {
   AsanaCapabilityCheckService,
+  AsanaCapabilityCheckError,
   AsanaSetupResourceCoordinator,
+  asanaSetupResourceCoordinatorResultSchema,
+  capabilityCheckResultSchema,
 } from "../asana/setup";
 import {
   AsanaDeltaSyncSource,
@@ -148,9 +152,12 @@ import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import {
   AsanaReauthenticationRuntime,
   SetupIpcWorkflow,
+  SetupOrchestrator,
   contextMatchesSettings,
   readSettingsState,
   resolveDeviceId,
+  type SetupExternalToolConfigurationResult,
+  type SetupFullSyncInput,
 } from "./settings";
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
@@ -189,12 +196,6 @@ import {
   type ApplicationState,
 } from "./schemas";
 import {
-  SetupOrchestrator,
-  setupFullSyncInputSchema,
-  type SetupExternalToolConfigurationResult,
-  type SetupFullSyncInput,
-} from "../setup";
-import {
   asanaTaskResponseSchema,
   canonicalizeJson,
   dateSchema,
@@ -227,6 +228,8 @@ import {
   setupDiscordExternalToolConfigurationInputSchema,
   setupCodexAvailabilitySchema,
   setupExternalToolSelectionSchema,
+  setupFullSyncInputSchema,
+  setupSchemas,
   type SetupDiscordExternalToolConfigurationInput,
   type SetupCodexAvailability,
   type SetupState,
@@ -234,7 +237,6 @@ import {
 } from "../../shared/setup";
 import {
   type IpcAiPort,
-  type IpcAsanaPort,
   type IpcGuiEditPort,
   type IpcExternalAgentPort,
   type IpcObsidianPort,
@@ -778,19 +780,15 @@ export class TaskHubApplication {
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
-  private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
   private readonly operationQueue: AsanaOperationQueue;
   private readonly tokenProvider: MutableTokenProviderPort;
   private readonly transport: AsanaTransport;
   private readonly readClient: AsanaReadClient;
   private readonly interactiveReadClient: AsanaReadClient;
-  private readonly setupClient: AsanaSetupClient;
   private readonly writeClient: AsanaTaskWriteClient;
   private readonly interactiveWriteClient: AsanaTaskWriteClient;
   private readonly oauth: AsanaOAuthCoordinator;
-  private readonly resources: AsanaSetupResourceCoordinator;
-  private readonly capability: AsanaCapabilityCheckService;
   private readonly syncCoordinator: AsanaSyncCoordinator;
   private readonly codexWorkspace: CodexWorkspaceInitializationResult;
   private readonly aiSessionWorkspaceParentPath: string;
@@ -920,7 +918,7 @@ export class TaskHubApplication {
       diagnosticLogRetentionLimit,
     );
     this.secretStorage = new SecretStorage(options.secret_storage_path);
-    this.checkpoint = new SetupCheckpointStore(options.checkpoint_path);
+    const checkpoint = new SetupCheckpointStore(options.checkpoint_path);
     this.scheduler = new AsanaRequestScheduler();
     this.tokenProvider = createMutableTokenProvider();
     this.transport = new AsanaTransport(this.scheduler, this.tokenProvider);
@@ -928,18 +926,18 @@ export class TaskHubApplication {
     const highPriorityTransport = this.transport.withPriority("high");
     this.readClient = new AsanaReadClient(normalTransport);
     this.interactiveReadClient = new AsanaReadClient(highPriorityTransport);
-    this.setupClient = new AsanaSetupClient(normalTransport);
+    const setupClient = new AsanaSetupClient(normalTransport);
     this.writeClient = new AsanaTaskWriteClient(normalTransport);
     this.interactiveWriteClient = new AsanaTaskWriteClient(highPriorityTransport);
     this.oauth = new AsanaOAuthCoordinator(
       this.secretStorage,
       options.open_authorization_url,
     );
-    this.resources = new AsanaSetupResourceCoordinator(
-      this.setupClient,
+    const resources = new AsanaSetupResourceCoordinator(
+      setupClient,
       this.readClient,
     );
-    this.capability = new AsanaCapabilityCheckService(
+    const capability = new AsanaCapabilityCheckService(
       this.readClient,
       this.writeClient,
       options.now_provider,
@@ -1212,7 +1210,7 @@ export class TaskHubApplication {
     this.setup = new SetupOrchestrator({
       device_id: resolveDeviceId({
         settings: this.settingsRepository,
-        loadCheckpoint: () => this.checkpoint.load(),
+        loadCheckpoint: () => checkpoint.load(),
         parseState: (value) => setupStateSchema.parse(value),
         contextFromState,
         createId: this.options.create_id,
@@ -1244,9 +1242,9 @@ export class TaskHubApplication {
           this.oauth.cancelOutOfBandAuthorization(input),
         getOutOfBandState: () => this.oauth.getOutOfBandState(),
       },
-      asana: this.setupClient,
-      resources: this.resources,
-      capability: this.capability,
+      asana: setupClient,
+      resources: resources,
+      capability: capability,
       reportCapabilityFailure: (error) =>
         this.options.diagnostic(error, "setup", serviceErrorDiagnostic),
       database: {
@@ -1256,8 +1254,8 @@ export class TaskHubApplication {
         getVaultMappings: () => this.database.getVaultMappings(),
       },
       checkpoint: {
-        load: () => this.checkpoint.load(),
-        save: (value) => this.checkpoint.save(value),
+        load: () => checkpoint.load(),
+        save: (value) => checkpoint.save(value),
       },
       externalTool: {
         configureDiscord: (input, signal) =>
@@ -1266,6 +1264,21 @@ export class TaskHubApplication {
           this.externalTools.deactivate(signal),
       },
       fullSync: (input, signal) => this.runSetupFullSync(input, signal),
+      contracts: {
+        validation: setupSchemas.validation,
+        parseDeviceSettings: (value) => deviceSettingsSchema.parse(value),
+        parseVaultMapping: (value) => vaultMappingSchema.parse(value),
+        parseOAuthBeginResult: (value) => oauthOutOfBandBeginResultSchema.parse(value),
+        parseOAuthCompleteResult: (value) => asanaOAuthCoordinatorResultSchema.parse(value),
+        parseOAuthState: (value) => oauthOutOfBandStateSchema.parse(value),
+        createOAuthInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
+        createOAuthIdMismatchError: () => new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
+        parseResourceResult: (value) => asanaSetupResourceCoordinatorResultSchema.parse(value),
+        parseCapabilityResult: (value) => capabilityCheckResultSchema.parse(value),
+        isCapabilityError: (error): error is AsanaCapabilityCheckError => error instanceof AsanaCapabilityCheckError,
+        hasRestAsanaHttpError,
+        validateVaultPath: validateVaultMappingPath,
+      },
     });
     this.operationalContext = new OperationalContextRuntime<
       SetupState,
@@ -1392,7 +1405,7 @@ export class TaskHubApplication {
     this.taskRead = new TaskReadWorkflow(taskReadIndex, syncStateRuntime, {
       projectGid: () => this.requireContext().project_gid,
       assertReady: () => this.assertOperationalReady(),
-      assertReauthenticationIdle: () => this.assertAsanaReauthenticationIdle(),
+      assertReauthenticationIdle: () => this.asanaReauthentication.assertIdle(),
       asana: new AsanaTaskReadAdapter(() => this.requireRuntime()),
       parseSyncInput: (value) => ipcSyncInputSchema.parse(value),
       toSyncState: (state) => state,
@@ -1432,7 +1445,7 @@ export class TaskHubApplication {
       IpcAsanaAuthenticationState,
       AsanaSyncCoordinatorResult
     >({
-      requireSettings: () => this.requireConfiguredDeviceSettings(),
+      requireSettings: () => this.operationalContext.requireConfiguredSettings(),
       validateAbortSignal,
       throwIfAborted,
       parseCompleteInput: (input) => ipcAsanaCompleteReauthenticationInputSchema.parse(input),
@@ -1461,7 +1474,7 @@ export class TaskHubApplication {
         signal,
         run: (context) => run(context.signal),
       }),
-      configureAsana: (settings) => this.configureAsanaFromSettings(settings),
+      configureAsana: (settings) => this.operationalContext.configureAsanaFromSettings(settings),
       synchronize: async (signal) => {
         const synchronized = await this.synchronizationOperations.requireSynchronizedResult(
           this.requireRuntime().onOnline(signal),
@@ -1469,7 +1482,7 @@ export class TaskHubApplication {
         await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
         return synchronized.result;
       },
-      restoreContext: () => this.configureContextFromState(this.setup.getState()),
+      restoreContext: () => this.operationalContext.configureFromState(this.setup.getState()),
     });
     this.operationalServices = new OperationalServicesRuntime<
       OperationalContext,
@@ -1580,17 +1593,17 @@ export class TaskHubApplication {
       reconcileExternalTools: (signal) => this.externalTools.reconcileAtStartup(signal),
       getSetupState: () => this.setup.getState(),
       isOnline: () => this.isOnline(),
-      restoreReadyDeviceSettings: () => this.configureAsanaFromSettings(
+      restoreReadyDeviceSettings: () => this.operationalContext.configureAsanaFromSettings(
         this.setup.restoreReadyDeviceSettings(),
       ),
       startSetup: (signal) => this.setup.start(signal),
       restoreCodexSession: (signal) => this.restorePersistedCodexSession(signal),
       isContextState,
       resumeSetup: (state, signal) => this.resumeSetupAtStartup(state, signal),
-      configureAsanaFromStoredSettings: () => this.configureAsanaFromSettings(
+      configureAsanaFromStoredSettings: () => this.operationalContext.configureAsanaFromSettings(
         this.settingsRepository.get(),
       ),
-      configureContextFromState: (state) => this.configureContextFromState(state),
+      configureContextFromState: (state) => this.operationalContext.configureFromState(state),
       getApplicationState: () => this.getState(),
       configureOperationalServices: () => this.configureOperationalServices(),
       requireRuntime: () => this.requireRuntime(),
@@ -1631,8 +1644,8 @@ export class TaskHubApplication {
       parseState: (value) => setupStateSchema.parse(value),
       afterTransition: (state) => {
         const validatedState = setupStateSchema.parse(state);
-        this.configureAsanaFromSettings(this.settingsRepository.get());
-        this.configureContextFromState(validatedState);
+        this.operationalContext.configureAsanaFromSettings(this.settingsRepository.get());
+        this.operationalContext.configureFromState(validatedState);
         this.aiStartResult = this.codexAdapter.getStartResult() ?? this.aiStartResult;
         this.codexAuthenticationRequired = validatedState.kind === "codex_authentication_required"
           || this.aiStartResult?.state === "authentication_required";
@@ -1674,8 +1687,8 @@ export class TaskHubApplication {
       afterCodexCapability: (signal) => this.lifecycleRuntime.activateReady(signal),
     }).createPort();
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
-    this.configureAsanaFromSettings(this.operationalContext.getSettings());
-    this.configureContextFromState(this.setup.getState());
+    this.operationalContext.configureAsanaFromSettings(this.operationalContext.getSettings());
+    this.operationalContext.configureFromState(this.setup.getState());
   }
 
   /** 現在の設定済みまたは未設定状態を取得します。 */
@@ -1714,7 +1727,7 @@ export class TaskHubApplication {
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
   public getIpcPorts(): IpcServicePorts {
     return {
-      asana: this.createAsanaPort(),
+      asana: this.asanaReauthentication.createPort(),
       setup: this.setupIpc,
       gui: this.createGuiPort(),
       externalAgent: this.createExternalAgentPort(),
@@ -1727,7 +1740,7 @@ export class TaskHubApplication {
   public async onForeground(signal: AbortSignal): Promise<void> {
     validateAbortSignal(signal);
     this.assertOperationalReady();
-    this.assertAsanaReauthenticationIdle();
+    this.asanaReauthentication.assertIdle();
     const runtime = this.requireRuntime();
     const result = await this.synchronizationOperations.requireSynchronizedResult(runtime.onForeground(signal));
     await this.synchronizationOperations.afterSynchronizedState(result, signal);
@@ -1736,7 +1749,7 @@ export class TaskHubApplication {
   /** Electronのオンライン復帰を同期へ渡します。 */
   public async onOnline(): Promise<void> {
     this.assertOperationalReady();
-    this.assertAsanaReauthenticationIdle();
+    this.asanaReauthentication.assertIdle();
     const runtime = this.requireRuntime();
     const result = await runtime.onOnline(this.options.lifecycle_signal);
     if (result.kind === "synchronized") {
@@ -1768,10 +1781,6 @@ export class TaskHubApplication {
     runtime.setOnline(online);
   }
 
-  private configureAsanaFromSettings(settings: DeviceSettings | undefined): void {
-    this.operationalContext.configureAsanaFromSettings(settings);
-  }
-
   private readOnlyVaultPaths(): readonly string[] {
     const paths = new Set<string>(this.options.read_only_vault_paths);
     for (const mapping of this.database.getVaultMappings()) {
@@ -1791,10 +1800,6 @@ export class TaskHubApplication {
       return;
     }
     this.codexSession.setReadOnlyVaultPaths(this.readOnlyVaultPaths());
-  }
-
-  private configureContextFromState(state: SetupState): void {
-    this.operationalContext.configureFromState(state);
   }
 
   private configureOperationalServices(): void {
@@ -2211,7 +2216,7 @@ export class TaskHubApplication {
   ): Promise<void> {
     validateAbortSignal(signal);
     const validatedInput = setupFullSyncInputSchema.parse(input);
-    this.configureContextFromState(this.setup.getState());
+    this.operationalContext.configureFromState(this.setup.getState());
     this.recordDiagnostic("sync.started", "info");
     const result = await this.operationQueue.enqueue({
       priority: "user",
@@ -2234,10 +2239,6 @@ export class TaskHubApplication {
     }
     await this.afterLocalStateRefresh(signal);
     this.recordDiagnostic("sync.completed", "info");
-  }
-
-  private requireConfiguredDeviceSettings(): DeviceSettings {
-    return this.operationalContext.requireConfiguredSettings();
   }
 
   private assertSetupReady(): void {
@@ -2419,7 +2420,7 @@ export class TaskHubApplication {
       signal,
       beforeStart: () => {
         this.assertOperationalReady();
-        this.assertAsanaReauthenticationIdle();
+        this.asanaReauthentication.assertIdle();
         if (!this.isOnline()) {
           throw new Error("オフライン中は外部提案の基準値を取得できません。");
         }
@@ -2614,7 +2615,7 @@ export class TaskHubApplication {
 
   private assertWritesAllowed(): void {
     this.assertOperationalReady();
-    this.assertAsanaReauthenticationIdle();
+    this.asanaReauthentication.assertIdle();
     const synchronizationState = this.requireRuntime().getState();
     if (
       synchronizationState.kind !== "online"
@@ -2647,7 +2648,7 @@ export class TaskHubApplication {
 
   private assertMutationRequestAccepted(): void {
     this.assertOperationalReady();
-    this.assertAsanaReauthenticationIdle();
+    this.asanaReauthentication.assertIdle();
     if (!this.isOnline()) {
       throw new Error("オフライン中はAsana変更操作を受け付けられません。");
     }
@@ -2699,19 +2700,6 @@ export class TaskHubApplication {
     if (asanaOperationContextKey(current) !== asanaOperationContextKey(expected)) {
       throw new AsanaOperationInvalidatedError("context_changed");
     }
-  }
-
-  private assertAsanaReauthenticationIdle(): void {
-    this.asanaReauthentication.assertIdle();
-  }
-
-  private createAsanaPort(): IpcAsanaPort {
-    return {
-      getAuthenticationState: () => this.asanaReauthentication.getState(),
-      beginReauthentication: (signal) => this.asanaReauthentication.begin(signal),
-      completeReauthentication: (input, signal) => this.asanaReauthentication.complete(input, signal),
-      cancelReauthentication: (input, signal) => this.asanaReauthentication.cancel(input, signal),
-    };
   }
 
   private resetAiSessionWithdrawConfirmations(): void {

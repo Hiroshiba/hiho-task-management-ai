@@ -32,7 +32,7 @@ type TagGids = {
   readonly block_full: string;
 };
 
-type ResourceResult =
+export type ResourceResult =
   | {
       readonly kind: "requires_action";
       readonly reconciliation: {

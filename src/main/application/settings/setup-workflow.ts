@@ -1,20 +1,19 @@
 import { z } from "zod";
-
 import {
   assertStateKindTyped,
   requiresContextRevalidation,
   sameSectionGids,
   validateAbortSignal,
   validateSetupPorts,
-} from "../application/settings/setup-validation";
+} from "./setup-validation";
 import {
   chooseSetupExternalTool,
   externalToolSelectionFromState,
-} from "../application/settings/setup-external-tool";
+} from "./setup-external-tool";
 import {
   stateCodexAvailability,
   updateStateCodexAvailability,
-} from "../application/settings/setup-codex-state";
+} from "./setup-codex-state";
 import {
   configuredSectionGidsFor,
   coordinateSetupResources,
@@ -22,304 +21,68 @@ import {
   resolveSetupProject,
   revalidateSetupResources,
   selectSetupWorkspace,
-} from "../application/settings/setup-asana-resources";
-import { assessSetupCapability } from "../application/settings/setup-capability";
-import { SetupAsanaAuthorization } from "../application/settings/setup-asana-authorization";
+  type ResourceResult,
+} from "./setup-asana-resources";
+import { assessSetupCapability } from "./setup-capability";
+import { SetupAsanaAuthorization } from "./setup-asana-authorization";
 import {
   chooseSetupVault,
   completeSetupCodexCapability,
   runSetupFullSync,
-} from "../application/settings/setup-completion";
-
-import {
-  AsanaOAuthOutOfBandAuthenticationInProgressError,
-  AsanaOAuthOutOfBandAuthorizationIdMismatchError,
-  asanaOAuthCoordinatorResultSchema,
-  oauthOutOfBandBeginResultSchema,
-  oauthOutOfBandStateSchema,
-  type AsanaOAuthCoordinator,
-} from "../auth/asana-oauth";
-import {
-  AsanaCapabilityCheckError,
-  type AsanaCapabilityCheckInput,
-  type AsanaCapabilityCheckService,
-  AsanaSetupResourceCoordinator,
-  asanaSetupResourceCoordinatorResultSchema,
-  capabilityCheckResultSchema,
-  type AsanaSetupResourceCoordinatorResult,
-} from "../asana/setup";
-import type { AsanaSetupClient } from "../asana/client/setup-client";
-import { hasRestAsanaHttpError } from "../asana/transport";
-import { validateVaultMappingPath } from "../obsidian";
-import type { StorageDatabase } from "../storage";
-import type { DeviceSettings } from "../../shared/storage";
-import {
-  configuredTagGidsSchema,
-  codexUnavailableReasonSchema,
-  setupAsanaAuthorizationBeginInputSchema,
-  setupAsanaAuthorizationCancelInputSchema,
-  setupAsanaAuthorizationCompleteInputSchema,
-  setupCodexAvailabilitySchema,
-  setupDiscordExternalToolConfigurationInputSchema,
-  setupExternalToolChoiceInputSchema,
-  setupExternalToolSelectionSchema,
-  setupExternalToolUnavailableReasonSchema,
-  setupProjectSchema,
-  setupProjectSelectionInputSchema,
-  setupStateSchema,
-  setupVaultChoiceInputSchema,
-  setupWorkspaceSchema,
-  setupWorkspaceSelectionInputSchema,
-  type SetupAsanaAuthorizationBeginInput,
-  type SetupAsanaAuthorizationCancelInput,
-  type SetupAsanaAuthorizationCompleteInput,
-  type SetupCodexAvailability,
-  type SetupDiscordExternalToolConfigurationInput,
-  type SetupExternalToolChoiceInput,
-  type SetupExternalToolSelection,
-  type SetupExternalToolUnavailableReason,
-  type SetupProject,
-  type SetupProjectSelectionInput,
-  type SetupState,
-  type SetupVaultChoiceInput,
-  type SetupWorkspace,
-  type SetupWorkspaceSelectionInput,
-} from "../../shared/setup";
-import {
-  deviceSectionGidsSchema,
-  deviceSettingsSchema,
-  vaultMappingSchema,
-} from "../../shared/storage";
-import { gidSchema, identifierSchema } from "../../shared/domain";
-
-type SetupCodexAuthenticationState =
-  | { readonly kind: "authenticated" }
-  | { readonly kind: "required" }
-  | Extract<SetupCodexAvailability, { kind: "unavailable" }>;
-const setupCodexAuthenticationStateSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("authenticated") }).strict(),
-  z.object({ kind: z.literal("required") }).strict(),
-  z
-    .object({
-      kind: z.literal("unavailable"),
-      reason_code: codexUnavailableReasonSchema,
-    })
-    .strict(),
-]);
-
-export type SetupCodexPort = {
-  readonly detectCli: (signal: AbortSignal) => Promise<SetupCodexAvailability>;
-  readonly getAuthenticationState: (
-    signal: AbortSignal,
-  ) => Promise<SetupCodexAuthenticationState>;
-  readonly completeAuthentication: (
-    signal: AbortSignal,
-  ) => Promise<SetupCodexAuthenticationState>;
-  readonly checkCapabilities: (
-    signal: AbortSignal,
-  ) => Promise<SetupCodexAvailability>;
-};
-
-export type SetupOAuthPort = Pick<
-  AsanaOAuthCoordinator,
-  | "beginInitialOutOfBandAuthorization"
-  | "completeOutOfBandAuthorization"
-  | "cancelOutOfBandAuthorization"
-  | "getOutOfBandState"
->;
-
-export type SetupAsanaPort = Pick<
-  AsanaSetupClient,
-  | "listCurrentUserWorkspaces"
-  | "listWorkspaceProjects"
-  | "createProject"
->;
-
-export type SetupResourcePort = Pick<
-  AsanaSetupResourceCoordinator,
-  "coordinate"
->;
-
-export type SetupCapabilityPort = Pick<
-  AsanaCapabilityCheckService,
-  "check"
->;
-
-export type SetupCapabilityFailureReporter = (error: unknown) => void;
-
-export type SetupDatabasePort = {
-  readonly saveDeviceSettings: (settings: DeviceSettings) => void;
-  readonly getDeviceSettings: () => DeviceSettings | undefined;
-  readonly saveVaultMapping: StorageDatabase["saveVaultMapping"];
-  readonly getVaultMappings: StorageDatabase["getVaultMappings"];
-};
-
-export type SetupCheckpointPort = {
-  readonly load: () => SetupState | undefined;
-  readonly save: (state: SetupState) => void;
-};
-
-export type SetupExternalToolConfigurationResult =
-  | {
-      readonly kind: "configured";
-      readonly tool_id: "discord-context";
-      readonly allowed_channel_ids: readonly string[];
-    }
-  | {
-      readonly kind: "unavailable";
-      readonly reason_code: SetupExternalToolUnavailableReason;
-    };
-
-export type SetupExternalToolDeactivationResult =
-  | { readonly kind: "deactivated" }
-  | {
-      readonly kind: "unavailable";
-      readonly reason_code: SetupExternalToolUnavailableReason;
-    };
-
-export type SetupExternalToolPort = {
-  readonly configureDiscord: (
-    input: SetupDiscordExternalToolConfigurationInput,
-    signal: AbortSignal,
-  ) => Promise<SetupExternalToolConfigurationResult>;
-  readonly deactivateDiscord: (
-    signal: AbortSignal,
-  ) => Promise<SetupExternalToolDeactivationResult>;
-};
-
-const setupExternalToolConfigurationResultSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("configured"),
-      tool_id: z.literal("discord-context"),
-      allowed_channel_ids:
-        setupDiscordExternalToolConfigurationInputSchema.shape.allowed_channel_ids,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("unavailable"),
-      reason_code: setupExternalToolUnavailableReasonSchema,
-    })
-    .strict(),
-]);
-
-const setupExternalToolDeactivationResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("deactivated") }).strict(),
-  z
-    .object({
-      kind: z.literal("unavailable"),
-      reason_code: setupExternalToolUnavailableReasonSchema,
-    })
-    .strict(),
-]);
-
-export type SetupFullSyncInput = {
-  readonly device_id: string;
-  readonly client_id: string;
-  readonly workspace_gid: string;
-  readonly project_gid: string;
-  readonly section_gids: z.infer<typeof deviceSectionGidsSchema>;
-};
-
-export type SetupFullSyncPort = (
-  input: SetupFullSyncInput,
-  signal: AbortSignal,
-) => Promise<void>;
-
-export const setupFullSyncInputSchema = z
-  .object({
-    device_id: identifierSchema,
-    client_id: identifierSchema,
-    workspace_gid: gidSchema,
-    project_gid: gidSchema,
-    section_gids: deviceSectionGidsSchema,
-  })
-  .strict();
-
-export type SetupOrchestratorOptions = {
-  readonly device_id: string;
-  readonly codex: SetupCodexPort;
-  readonly oauth: SetupOAuthPort;
-  readonly asana: SetupAsanaPort;
-  readonly resources: SetupResourcePort;
-  readonly capability: SetupCapabilityPort;
-  readonly reportCapabilityFailure: SetupCapabilityFailureReporter;
-  readonly database: SetupDatabasePort;
-  readonly checkpoint: SetupCheckpointPort;
-  readonly externalTool: SetupExternalToolPort;
-  readonly fullSync: SetupFullSyncPort;
-};
-
-const setupOrchestratorOptionsSchema = z
-  .object({
-    device_id: identifierSchema,
-    codex: z.unknown(),
-    oauth: z.unknown(),
-    asana: z.unknown(),
-    resources: z.unknown(),
-    capability: z.unknown(),
-    reportCapabilityFailure: z.unknown(),
-    database: z.unknown(),
-    checkpoint: z.unknown(),
-    externalTool: z.unknown(),
-    fullSync: z.unknown(),
-  })
-  .strict();
-
-function parseProjectReference(value: unknown): SetupProject {
-  const parsed = z
-    .object({ gid: gidSchema, name: z.string().min(1) })
-    .strip()
-    .parse(value);
-  return setupProjectSchema.parse(parsed);
-}
-
-function parseState(state: SetupState): SetupState {
-  return setupStateSchema.parse(state);
-}
-
-type AsanaAuthorizationPendingState = Extract<
+} from "./setup-completion";
+import type {
+  SetupAsanaAuthorizationBeginInput,
+  SetupAsanaAuthorizationCancelInput,
+  SetupAsanaAuthorizationCompleteInput,
+  SetupCodexAvailability,
+  SetupExternalToolChoiceInput,
+  SetupExternalToolSelection,
+  SetupExternalToolUnavailableReason,
+  SetupProject,
+  SetupProjectSelectionInput,
   SetupState,
-  { kind: "asana_authorization_pending" }
->;
+  SetupVaultChoiceInput,
+  SetupWorkspace,
+  SetupWorkspaceSelectionInput,
+} from "../../domain/setup-state";
+import type { DeviceSettingsRecord } from "../common/ports/settings-repository";
+import { createSetupStateTools } from "./setup-state-tools";
+import type {
+  SetupAsanaPort,
+  SetupCapabilityFailureReporter,
+  SetupCapabilityPort,
+  SetupCheckpointPort,
+  SetupCodexPort,
+  SetupDatabasePort,
+  SetupExternalToolPort,
+  SetupFullSyncPort,
+  SetupOrchestratorOptions,
+  SetupResourcePort,
+  SetupRuntimeContracts,
+} from "./setup-ports";
 
-function credentialsRequiredState(
-  codex: SetupCodexAvailability,
-): Extract<SetupState, { kind: "credentials_required" }> {
-  const state = setupStateSchema.parse({
-    kind: "credentials_required",
-    step: "credentials",
-    codex,
-  });
-  if (state.kind !== "credentials_required") {
-    throw new Error("Client ID入力状態を生成できません。");
-  }
-  return state;
-}
+const setupOrchestratorOptionsSchema = z.object({
+  device_id: z.string(),
+  codex: z.unknown(),
+  oauth: z.unknown(),
+  asana: z.unknown(),
+  resources: z.unknown(),
+  capability: z.unknown(),
+  reportCapabilityFailure: z.unknown(),
+  database: z.unknown(),
+  checkpoint: z.unknown(),
+  externalTool: z.unknown(),
+  fullSync: z.unknown(),
+  contracts: z.unknown(),
+}).strict();
 
-function requireCodexAvailability(
-  availability: SetupCodexAvailability | undefined,
-): SetupCodexAvailability {
-  if (availability == null) {
-    throw new Error("Codex状態が確定していません。");
-  }
-  return setupCodexAvailabilitySchema.parse(availability);
-}
-
-function requireCodexAvailable(
-  availability: SetupCodexAvailability | undefined,
-): Extract<SetupCodexAvailability, { kind: "available" }> {
-  const parsed = requireCodexAvailability(availability);
-  if (parsed.kind !== "available") {
-    throw new Error("Codex CLIの利用可能状態が確定していません。");
-  }
-  return parsed;
-}
+type AsanaAuthorizationPendingState = Extract<SetupState, { kind: "asana_authorization_pending" }>;
 
 /** 初回設定の順序付き状態機械を調整します。 */
 export class SetupOrchestrator {
   private readonly deviceId: string;
+  private readonly contracts: SetupRuntimeContracts;
+  private readonly stateTools: ReturnType<typeof createSetupStateTools>;
   private readonly codex: SetupCodexPort;
   private readonly asanaAuthorization: SetupAsanaAuthorization<
     SetupState,
@@ -342,27 +105,29 @@ export class SetupOrchestrator {
 
   public constructor(options: SetupOrchestratorOptions) {
     setupOrchestratorOptionsSchema.parse(options);
-    this.deviceId = identifierSchema.parse(options.device_id);
+    this.contracts = options.contracts;
+    this.stateTools = createSetupStateTools(this.contracts.validation);
+    this.deviceId = this.contracts.validation.parseId(options.device_id);
     validateSetupPorts(options);
     this.codex = options.codex;
     this.asanaAuthorization = new SetupAsanaAuthorization({
       begin: (input, signal) => options.oauth.beginInitialOutOfBandAuthorization(input, signal),
-      parseBeginResult: (value) => oauthOutOfBandBeginResultSchema.parse(value),
+      parseBeginResult: (value) => this.contracts.parseOAuthBeginResult(value),
       complete: (input, signal) => options.oauth.completeOutOfBandAuthorization(input, signal),
-      parseCompleteResult: (value) => asanaOAuthCoordinatorResultSchema.parse(value),
+      parseCompleteResult: (value) => this.contracts.parseOAuthCompleteResult(value),
       cancel: (input) => options.oauth.cancelOutOfBandAuthorization(input),
       cancelByAuthorizationId: (authorizationId) =>
         options.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId }),
       getOutOfBandState: () => options.oauth.getOutOfBandState(),
-      parseOutOfBandState: (value) => oauthOutOfBandStateSchema.parse(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseOutOfBandState: (value) => this.contracts.parseOAuthState(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
       commitState: (state) => {
         this.state = state;
         return this.getState();
       },
       resetPendingState: (state) => this.resetAsanaAuthorizationPendingState(state),
-      createInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
-      createIdMismatchError: () => new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
+      createInProgressError: () => this.contracts.createOAuthInProgressError(),
+      createIdMismatchError: () => this.contracts.createOAuthIdMismatchError(),
     });
     this.asana = options.asana;
     this.resources = options.resources;
@@ -372,7 +137,7 @@ export class SetupOrchestrator {
     this.checkpoint = options.checkpoint;
     this.externalTool = options.externalTool;
     this.fullSync = options.fullSync;
-    const initialState = parseState({
+    const initialState = this.stateTools.parseState({
       kind: "created",
       step: "codex_cli",
     });
@@ -383,10 +148,10 @@ export class SetupOrchestrator {
       this.state = initialState;
       this.checkpoint.save(initialState);
     } else {
-      const restoredState = parseState(savedState);
+      const restoredState = this.stateTools.parseState(savedState);
       this.state = restoredState;
       this.codexAvailability = stateCodexAvailability(
-        restoredState, (value) => setupCodexAvailabilitySchema.parse(value),
+        restoredState, (value) => this.contracts.validation.parseCodexAvailability(value),
       );
       this.resumeRequired = requiresContextRevalidation(restoredState);
     }
@@ -394,7 +159,7 @@ export class SetupOrchestrator {
 
   /** 現在の初回設定状態を取得します。 */
   public getState(): SetupState {
-    const state = parseState(this.state);
+    const state = this.stateTools.parseState(this.state);
     if (state.kind === "asana_authorization_pending") {
       return this.asanaAuthorization.currentPendingState(state);
     }
@@ -405,17 +170,17 @@ export class SetupOrchestrator {
   private resetAsanaAuthorizationPendingState(
     state: AsanaAuthorizationPendingState,
   ): Extract<SetupState, { kind: "credentials_required" }> {
-    const nextState = credentialsRequiredState(state.codex);
+    const nextState = this.stateTools.credentialsRequiredState(state.codex);
     this.state = nextState;
     this.checkpoint.save(nextState);
     return nextState;
   }
 
   /** readyチェックポイントから非秘密の端末設定を復元します。 */
-  public restoreReadyDeviceSettings(): DeviceSettings {
+  public restoreReadyDeviceSettings(): DeviceSettingsRecord {
     const state = this.state;
     assertStateKindTyped(state, ["ready"]);
-    const checkpointSettings = deviceSettingsSchema.parse({
+    const checkpointSettings = this.contracts.parseDeviceSettings({
       device_id: state.context.device_id,
       client_id: state.context.client_id,
       workspace_gid: state.context.workspace_gid,
@@ -427,7 +192,7 @@ export class SetupOrchestrator {
       this.database.saveDeviceSettings(checkpointSettings);
       return checkpointSettings;
     }
-    const settings = deviceSettingsSchema.parse(savedSettings);
+    const settings = this.contracts.parseDeviceSettings(savedSettings);
     if (
       settings.device_id !== checkpointSettings.device_id
       || settings.client_id !== checkpointSettings.client_id
@@ -457,7 +222,7 @@ export class SetupOrchestrator {
     const revalidation = await revalidateSetupResources(state.context, signal, {
       coordinate: (input, operationSignal) => this.resources.coordinate(input, operationSignal),
       parseResourceResult: (value) => this.parseResourceResult(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     if (revalidation.kind === "requires_action") {
       this.state = revalidation.state;
@@ -476,9 +241,9 @@ export class SetupOrchestrator {
   public async recheckPersistedCodex(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);
     signal.throwIfAborted();
-    const state = parseState(this.state);
+    const state = this.stateTools.parseState(this.state);
     const availability = stateCodexAvailability(
-      state, (value) => setupCodexAvailabilitySchema.parse(value),
+      state, (value) => this.contracts.validation.parseCodexAvailability(value),
     );
     if (
       availability == null
@@ -487,33 +252,33 @@ export class SetupOrchestrator {
     ) {
       return state;
     }
-    const detected = setupCodexAvailabilitySchema.parse(
+    const detected = this.contracts.validation.parseCodexAvailability(
       await this.codex.detectCli(signal),
     );
     signal.throwIfAborted();
     const nextState = updateStateCodexAvailability(state, detected, {
-      parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseAvailability: (value) => this.contracts.validation.parseCodexAvailability(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     this.checkpoint.save(nextState);
     this.state = nextState;
     this.codexAvailability = detected;
-    return parseState(nextState);
+    return this.stateTools.parseState(nextState);
   }
 
   /** 現在のCodex利用状態を保存済み初回設定へ反映します。 */
   public updateCodexAvailability(
     availability: SetupCodexAvailability,
   ): SetupState {
-    const validatedAvailability = setupCodexAvailabilitySchema.parse(availability);
+    const validatedAvailability = this.contracts.validation.parseCodexAvailability(availability);
     const nextState = updateStateCodexAvailability(this.state, validatedAvailability, {
-      parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseAvailability: (value) => this.contracts.validation.parseCodexAvailability(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     this.checkpoint.save(nextState);
     this.state = nextState;
     this.codexAvailability = validatedAvailability;
-    return parseState(nextState);
+    return this.stateTools.parseState(nextState);
   }
 
   /** Codex CLIとChatGPTログイン状態を確認します。 */
@@ -521,31 +286,31 @@ export class SetupOrchestrator {
     validateAbortSignal(signal);
     assertStateKindTyped(this.state, ["created", "codex_cli_ready"]);
     if (this.state.kind === "created") {
-      const availability = setupCodexAvailabilitySchema.parse(
+      const availability = this.contracts.validation.parseCodexAvailability(
         await this.codex.detectCli(signal),
       );
       this.codexAvailability = availability;
       if (availability.kind === "unavailable") {
-        this.state = parseState({
+        this.state = this.stateTools.parseState({
           kind: "credentials_required",
           step: "credentials",
           codex: availability,
         });
         return this.getState();
       }
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "codex_cli_ready",
         step: "codex_authentication",
         codex: availability,
       });
       this.checkpoint.save(this.state);
     }
-    const authenticationState = setupCodexAuthenticationStateSchema.parse(
+    const authenticationState = this.contracts.validation.parseCodexAuthenticationState(
       await this.codex.getAuthenticationState(signal),
     );
     if (authenticationState.kind === "unavailable") {
       this.codexAvailability = authenticationState;
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "credentials_required",
         step: "credentials",
         codex: authenticationState,
@@ -553,20 +318,20 @@ export class SetupOrchestrator {
       return this.getState();
     }
     if (authenticationState.kind === "required") {
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "codex_authentication_required",
         step: "codex_authentication",
-        codex: requireCodexAvailable(this.codexAvailability),
+        codex: this.stateTools.requireCodexAvailable(this.codexAvailability),
       });
       return this.getState();
     }
     if (authenticationState.kind !== "authenticated") {
       throw new Error("Codexの認証状態が不正です。");
     }
-    this.state = parseState({
+    this.state = this.stateTools.parseState({
       kind: "credentials_required",
       step: "credentials",
-      codex: requireCodexAvailability(this.codexAvailability),
+      codex: this.stateTools.requireCodexAvailability(this.codexAvailability),
     });
     return this.getState();
   }
@@ -577,34 +342,34 @@ export class SetupOrchestrator {
     if (this.state.kind === "created" || this.state.kind === "codex_cli_ready") {
       throw new Error("現在の初回設定状態ではCodex認証を完了できません。");
     }
-    const authenticationState = setupCodexAuthenticationStateSchema.parse(
+    const authenticationState = this.contracts.validation.parseCodexAuthenticationState(
       await this.codex.completeAuthentication(signal),
     );
     if (authenticationState.kind === "required") {
-      const availability = requireCodexAvailable(
-        setupCodexAvailabilitySchema.parse({ kind: "available" }),
+      const availability = this.stateTools.requireCodexAvailable(
+        this.contracts.validation.parseCodexAvailability({ kind: "available" }),
       );
       this.codexAvailability = availability;
       if (this.state.kind === "codex_authentication_required") {
-        this.state = parseState({
+        this.state = this.stateTools.parseState({
           ...this.state,
           codex: availability,
         });
       } else {
         this.state = updateStateCodexAvailability(this.state, availability, {
-          parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
-          parseState: (value) => setupStateSchema.parse(value),
+          parseAvailability: (value) => this.contracts.validation.parseCodexAvailability(value),
+          parseState: (value) => this.contracts.validation.parseState(value),
         });
       }
       return this.getState();
     }
     const availability = authenticationState.kind === "authenticated"
-      ? setupCodexAvailabilitySchema.parse({ kind: "available" })
+      ? this.contracts.validation.parseCodexAvailability({ kind: "available" })
       : authenticationState;
     this.codexAvailability = availability;
     this.state = updateStateCodexAvailability(this.state, availability, {
-          parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
-          parseState: (value) => setupStateSchema.parse(value),
+          parseAvailability: (value) => this.contracts.validation.parseCodexAvailability(value),
+          parseState: (value) => this.contracts.validation.parseState(value),
         });
     return this.getState();
   }
@@ -615,11 +380,11 @@ export class SetupOrchestrator {
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
-    const validatedInput = setupAsanaAuthorizationBeginInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseAsanaAuthorizationBeginInput(input);
     assertStateKindTyped(this.state, ["credentials_required"]);
     return this.asanaAuthorization.begin(
       validatedInput,
-      () => requireCodexAvailability(this.codexAvailability),
+      () => this.stateTools.requireCodexAvailability(this.codexAvailability),
       signal,
     );
   }
@@ -630,7 +395,7 @@ export class SetupOrchestrator {
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
-    const validatedInput = setupAsanaAuthorizationCompleteInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseAsanaAuthorizationCompleteInput(input);
     assertStateKindTyped(this.state, ["asana_authorization_pending"]);
     return this.asanaAuthorization.complete(this.state, validatedInput, signal);
   }
@@ -642,7 +407,7 @@ export class SetupOrchestrator {
   ): SetupState {
     validateAbortSignal(signal);
     signal.throwIfAborted();
-    const validatedInput = setupAsanaAuthorizationCancelInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseAsanaAuthorizationCancelInput(input);
     assertStateKindTyped(this.state, ["asana_authorization_pending"]);
     return this.asanaAuthorization.cancel(this.state, validatedInput);
   }
@@ -653,12 +418,12 @@ export class SetupOrchestrator {
     assertStateKindTyped(this.state, ["workspace_listing_required"]);
     this.state = await listSetupWorkspaces(
       this.state.client_id,
-      requireCodexAvailability(this.codexAvailability),
+      this.stateTools.requireCodexAvailability(this.codexAvailability),
       signal,
       {
         listWorkspaces: (operationSignal) => this.asana.listCurrentUserWorkspaces(operationSignal),
-        parseWorkspace: (value) => setupWorkspaceSchema.parse(value),
-        parseState: (value) => setupStateSchema.parse(value),
+        parseWorkspace: (value) => this.contracts.validation.parseWorkspace(value),
+        parseState: (value) => this.contracts.validation.parseState(value),
       },
     );
     return this.getState();
@@ -670,13 +435,13 @@ export class SetupOrchestrator {
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
-    const validatedInput = setupWorkspaceSelectionInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseWorkspaceSelectionInput(input);
     assertStateKindTyped(this.state, ["workspace_selection_required"]);
     this.state = await selectSetupWorkspace(this.state, validatedInput.workspace_gid, signal, {
       listProjects: (workspaceGid, operationSignal) =>
         this.asana.listWorkspaceProjects(workspaceGid, operationSignal),
-      parseProject: parseProjectReference,
-      parseState: (value) => setupStateSchema.parse(value),
+      parseProject: this.stateTools.parseProjectReference,
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     return this.getState();
   }
@@ -687,14 +452,14 @@ export class SetupOrchestrator {
     signal: AbortSignal,
   ): Promise<SetupState> {
     validateAbortSignal(signal);
-    const validatedInput = setupProjectSelectionInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseProjectSelectionInput(input);
     assertStateKindTyped(this.state, ["project_selection_required", "project_requires_action"]);
     const projectState = this.state;
     if (
       validatedInput.kind === "create"
       && projectState.projects.some((candidate) => candidate.name === validatedInput.name)
     ) {
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "project_requires_action",
         step: "project",
         client_id: projectState.client_id,
@@ -709,12 +474,12 @@ export class SetupOrchestrator {
     const project = await resolveSetupProject(projectState, validatedInput, signal, {
       createProject: (workspaceGid, name, operationSignal) =>
         this.asana.createProject(workspaceGid, name, operationSignal),
-      parseProject: (value) => setupProjectSchema.parse(value),
+      parseProject: (value) => this.contracts.validation.parseProject(value),
     });
     const configuredSectionGids = validatedInput.kind === "existing"
       ? configuredSectionGidsFor(projectState.client_id, projectState.workspace, project, {
           getDeviceSettings: () => this.database.getDeviceSettings(),
-          parseDeviceSettings: (value) => deviceSettingsSchema.parse(value),
+          parseDeviceSettings: (value) => this.contracts.parseDeviceSettings(value),
         })
       : undefined;
     return this.coordinateResources(
@@ -740,7 +505,7 @@ export class SetupOrchestrator {
         project: state.project,
         configured_section_gids: configuredSectionGidsFor(state.client_id, state.workspace, state.project, {
           getDeviceSettings: () => this.database.getDeviceSettings(),
-          parseDeviceSettings: (value) => deviceSettingsSchema.parse(value),
+          parseDeviceSettings: (value) => this.contracts.parseDeviceSettings(value),
         }),
       },
       signal,
@@ -753,7 +518,7 @@ export class SetupOrchestrator {
     this.assertResumeCompleted();
     assertStateKindTyped(this.state, ["resources_ready", "asana_capability_failed"]);
     const state = this.state;
-    const capabilityInput: AsanaCapabilityCheckInput = {
+    const capabilityInput: Parameters<SetupCapabilityPort["check"]>[0] = {
       project_gid: state.context.project_gid,
       section_gids: {
         not_started: state.context.section_gids.not_started,
@@ -764,14 +529,13 @@ export class SetupOrchestrator {
     };
     const result = await assessSetupCapability(capabilityInput, signal, {
       check: (input, operationSignal) => this.capability.check(input, operationSignal),
-      parseResult: (value) => capabilityCheckResultSchema.parse(value),
-      isCapabilityError: (error): error is AsanaCapabilityCheckError =>
-        error instanceof AsanaCapabilityCheckError,
-      hasRestAsanaHttpError,
+      parseResult: (value) => this.contracts.parseCapabilityResult(value),
+      isCapabilityError: this.contracts.isCapabilityError,
+      hasRestAsanaHttpError: this.contracts.hasRestAsanaHttpError,
       reportCapabilityFailure: (error) => this.reportCapabilityFailure(error),
     });
     if (result.kind === "failed") {
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "asana_capability_failed",
         step: "asana_capability",
         context: state.context,
@@ -791,7 +555,7 @@ export class SetupOrchestrator {
     }
     const taskVaultMapping = taskVaultMappings[0];
     if (taskVaultMapping != null) {
-      this.state = parseState({
+      this.state = this.stateTools.parseState({
         kind: "vault_configured",
         step: "external_tool",
         context,
@@ -799,7 +563,7 @@ export class SetupOrchestrator {
       });
       return this.chooseExternalTool({ kind: "skip" }, signal);
     }
-    this.state = parseState({
+    this.state = this.stateTools.parseState({
       kind: "vault_choice_required",
       step: "vault",
       context,
@@ -815,13 +579,13 @@ export class SetupOrchestrator {
     validateAbortSignal(signal);
     signal.throwIfAborted();
     this.assertResumeCompleted();
-    const validatedInput = setupVaultChoiceInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseVaultChoiceInput(input);
     assertStateKindTyped(this.state, ["vault_choice_required"]);
     this.state = await chooseSetupVault(validatedInput, this.state.context, signal, {
-      validatePath: validateVaultMappingPath,
-      parseMapping: (value) => vaultMappingSchema.parse(value),
+      validatePath: this.contracts.validateVaultPath,
+      parseMapping: (value) => this.contracts.parseVaultMapping(value),
       saveMapping: (mapping) => this.database.saveVaultMapping(mapping),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     return this.chooseExternalTool({ kind: "skip" }, signal);
   }
@@ -834,19 +598,19 @@ export class SetupOrchestrator {
     validateAbortSignal(signal);
     signal.throwIfAborted();
     this.assertResumeCompleted();
-    const validatedInput = setupExternalToolChoiceInputSchema.parse(input);
+    const validatedInput = this.contracts.validation.parseExternalToolChoiceInput(input);
     assertStateKindTyped(this.state, ["vault_skipped", "vault_configured"]);
     this.state = await chooseSetupExternalTool(this.state, validatedInput, signal, {
-      parseConfiguration: (value) => setupDiscordExternalToolConfigurationInputSchema.parse(value),
+      parseConfiguration: (value) => this.contracts.validation.parseDiscordConfigurationInput(value),
       configureDiscord: (configuration, operationSignal) =>
         this.externalTool.configureDiscord(configuration, operationSignal),
-      parseConfigurationResult: (value) => setupExternalToolConfigurationResultSchema.parse(value),
+      parseConfigurationResult: (value) => this.contracts.validation.parseExternalToolConfigurationResult(value),
       deactivateDiscord: (operationSignal) => this.externalTool.deactivateDiscord(operationSignal),
-      parseDeactivationResult: (value) => setupExternalToolDeactivationResultSchema.parse(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseDeactivationResult: (value) => this.contracts.validation.parseExternalToolDeactivationResult(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
       saveCheckpoint: (state) => this.checkpoint.save(state),
     });
-    return parseState(this.state);
+    return this.stateTools.parseState(this.state);
   }
 
   /** 保存済み外部ツール選択を取得します。 */
@@ -859,7 +623,7 @@ export class SetupOrchestrator {
       case "codex_capability_required":
       case "ready":
         return externalToolSelectionFromState(
-          this.state, (value) => setupExternalToolSelectionSchema.parse(value),
+          this.state, (value) => this.contracts.validation.parseExternalToolSelection(value),
         );
       default:
         return undefined;
@@ -870,14 +634,14 @@ export class SetupOrchestrator {
   public markExternalToolUnavailable(
     reasonCode: SetupExternalToolUnavailableReason,
   ): SetupState {
-    const reason = setupExternalToolUnavailableReasonSchema.parse(reasonCode);
+    const reason = this.contracts.validation.parseExternalToolUnavailableReason(reasonCode);
     const state = this.state;
     let nextState: SetupState;
     switch (state.kind) {
       case "external_tool_configured":
       case "external_tool_skipped":
       case "external_tool_unavailable":
-        nextState = parseState({
+        nextState = this.stateTools.parseState({
           kind: "external_tool_unavailable",
           step: "full_sync",
           context: state.context,
@@ -887,7 +651,7 @@ export class SetupOrchestrator {
       case "full_sync_required":
       case "codex_capability_required":
       case "ready":
-        nextState = parseState({
+        nextState = this.stateTools.parseState({
           ...state,
           external_tool: {
             kind: "unavailable",
@@ -900,7 +664,7 @@ export class SetupOrchestrator {
     }
     this.checkpoint.save(nextState);
     this.state = nextState;
-    return parseState(nextState);
+    return this.stateTools.parseState(nextState);
   }
 
   /** 初回設定用のフル同期を完了します。 */
@@ -915,12 +679,12 @@ export class SetupOrchestrator {
     ]);
     return runSetupFullSync(this.state, signal, {
       selectExternalTool: (state) => externalToolSelectionFromState(
-        state, (value) => setupExternalToolSelectionSchema.parse(value),
+        state, (value) => this.contracts.validation.parseExternalToolSelection(value),
       ),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
       setState: (state) => { this.state = state; },
       saveCheckpoint: (state) => this.checkpoint.save(state),
-      parseFullSyncInput: (value) => setupFullSyncInputSchema.parse(value),
+      parseFullSyncInput: (value) => this.contracts.validation.parseFullSyncInput(value),
       fullSync: (input, operationSignal) => this.fullSync(input, operationSignal),
       getState: () => this.getState(),
     });
@@ -933,9 +697,9 @@ export class SetupOrchestrator {
     assertStateKindTyped(this.state, ["codex_capability_required"]);
     this.state = await completeSetupCodexCapability(this.state, signal, {
       checkCapabilities: (operationSignal) => this.codex.checkCapabilities(operationSignal),
-      parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
+      parseAvailability: (value) => this.contracts.validation.parseCodexAvailability(value),
       saveDeviceSettings: (settings) => this.database.saveDeviceSettings(settings),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     return this.getState();
   }
@@ -945,25 +709,25 @@ export class SetupOrchestrator {
       readonly client_id: string;
       readonly workspace: SetupWorkspace;
       readonly project: SetupProject;
-      readonly configured_section_gids: z.infer<typeof deviceSectionGidsSchema> | undefined;
+      readonly configured_section_gids: DeviceSettingsRecord["section_gids"] | undefined;
     },
     signal: AbortSignal,
   ): Promise<SetupState> {
     this.state = await coordinateSetupResources(input, signal, {
       deviceId: this.deviceId,
-      codexAvailability: requireCodexAvailability(this.codexAvailability),
+      codexAvailability: this.stateTools.requireCodexAvailability(this.codexAvailability),
       coordinate: (resourceInput, operationSignal) =>
         this.resources.coordinate(resourceInput, operationSignal),
       parseResourceResult: (value) => this.parseResourceResult(value),
-      parseState: (value) => setupStateSchema.parse(value),
+      parseState: (value) => this.contracts.validation.parseState(value),
     });
     return this.getState();
   }
 
   private parseResourceResult(
-    result: AsanaSetupResourceCoordinatorResult,
-  ): AsanaSetupResourceCoordinatorResult {
-    const parsed = asanaSetupResourceCoordinatorResultSchema.parse(result);
+    result: ResourceResult,
+  ): ResourceResult {
+    const parsed = this.contracts.parseResourceResult(result);
     if (parsed.kind === "requires_action") {
       return parsed;
     }
@@ -973,7 +737,7 @@ export class SetupOrchestrator {
       completed: parsed.section_gids.completed,
       withdrawn: parsed.section_gids.withdrawn,
     };
-    const tagGids = configuredTagGidsSchema.parse({
+    const tagGids = this.contracts.validation.parseTagGids({
       importance_1: parsed.tag_gids.importance_1,
       importance_2: parsed.tag_gids.importance_2,
       importance_3: parsed.tag_gids.importance_3,

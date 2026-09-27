@@ -1805,11 +1805,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/setup/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/main/storage/index.ts"
     },
     {
@@ -1976,11 +1971,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/obsidian/tasks-vault-discovery.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/setup/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -4171,106 +4161,6 @@
       "path": "src/main/security.ts",
       "rule": "old-path",
       "symbol": "src/main/security.ts"
-    },
-    {
-      "path": "src/main/setup/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/setup/service.ts"
-    },
-    {
-      "path": "src/main/setup/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/setup/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/client/setup-client.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/setup/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/setup/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/client/setup-client.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/setup/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/setup/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/setup/service.ts",
-      "rule": "old-path",
-      "symbol": "src/main/setup/service.ts"
     },
     {
       "path": "src/main/startup-gate.ts",
