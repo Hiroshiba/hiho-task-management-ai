@@ -26,6 +26,8 @@
 
 `create-main-runtime.ts`は保存用repository、単回送信のAsana transport、read client、404判定、読戻しadapter、全Asana step executor、後続同期executor、実行engineを一度だけ組み立てます。transportとread clientは既存Asana接続を共有します。clock、ID生成器、error reporterもMainRuntimeの既存資源を共有し、別のownerを作りません。保存済みstepの`kind`と`executor_version`は登録済みexecutorへ一意に対応させます。
 
+通常適用はAI画面と外部agentの共有入口で承認直前の現在値を分類し、実行可能な操作を一つのexecutionへまとめます。承認競合とatomic groupの保留は書き込み対象から除き、既存の操作・グループ結果へ反映します。関係グラフは実行対象だけで再検証します。実行結果は保存済みstepとreceiptから投影し、途中成功と未確定操作を区別します。後続同期が失敗した操作は`local_resync_required`の`unknown`として返し、成功扱いしません。
+
 ## 保存するwrite step
 
 各stepは`step_id`、`scope`、`kind`、`executor_version`、`payload`、`payload_fingerprint`、`retry_class`を持つimmutableな値です。対象参照は`payload.target`または同期用の`payload.targets`に保存し、既存GIDと作成タスクの一時参照を区別します。`retry_class`は`read_back_verifiable`、`idempotent`、`non_retryable`のいずれかです。作成は非再送、Asana属性は読み戻しで再送可否を判定し、ローカル同期は冪等です。実行関数、SDK object、資格情報は永続化しません。保存した`kind`と`executor_version`からexecutor registryで解決します。意味を変える場合はversionを上げ、旧versionの保存済みstepを移行し終えるまで旧executorを保持します。

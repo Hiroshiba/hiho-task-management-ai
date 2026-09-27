@@ -27,6 +27,8 @@ import {
   type LegacyRuntimePort,
 } from "./legacy-runtime-port";
 
+const USE_NEW_WRITE_EXECUTION_ENGINE: boolean = false;
+
 type MainRuntimeOptions = {
   readonly userDataPath: string;
   readonly secretStoragePath: string;
@@ -150,6 +152,15 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       { now: () => nowProvider().toISOString() },
       engineReporter,
     );
+    if (USE_NEW_WRITE_EXECUTION_ENGINE) {
+      legacy.setProposalWriteExecution({
+        repository,
+        engine,
+        createId,
+        now: () => nowProvider().toISOString(),
+        fingerprint,
+      });
+    }
     let disposal: Promise<void> | undefined;
     return {
       legacy,

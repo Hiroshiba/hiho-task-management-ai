@@ -144,12 +144,16 @@ import {
   createBaselineTaskSnapshots,
 } from "./proposal-generate";
 import {
+  applyStoredProposal,
   approveStoredProposal,
   collectApprovalProjectTasks,
   createApplicationSummary,
   createApprovalPreparationInput,
   assertApprovalInputMatchesStored,
+  type StoredProposalExecutionPort,
 } from "./proposal-apply";
+import { customExternalDataSchema } from "../domain/task-write-values";
+import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
 import { buildDisplayOrderInput } from "./task-write";
 import { validateRelationGraph } from "./gui-edit";
@@ -214,6 +218,7 @@ import {
   gidSchema,
   identifierSchema,
   isoDateTimeSchema,
+  parseCustomExternalData,
   serializeCustomExternalData,
   taskSchema,
   type AsanaTaskResponse,
@@ -887,6 +892,9 @@ export class TaskHubApplication {
     PostWriteSynchronizationResultWithCause,
     PostWriteSynchronizationFailureCode
   >;
+  private proposalWriteExecution:
+    | { readonly kind: "legacy" }
+    | { readonly kind: "stored_plan"; readonly port: StoredProposalExecutionPort } = { kind: "legacy" };
   private readonly journalRecovery: JournalRecoveryRuntime<
     ReturnType<StorageDatabase["getIncompleteApplicationJournals"]>[number],
     AsanaProposalRecoveryResult
@@ -1766,6 +1774,14 @@ export class TaskHubApplication {
       synchronizeAfterGuiWrite: (requiredTaskGids, signal) =>
         this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
     };
+  }
+
+  /** 通常適用の保存済みplan実行入口を一度だけ受け取ります。 */
+  public setProposalWriteExecution(port: StoredProposalExecutionPort): void {
+    if (this.proposalWriteExecution.kind !== "legacy") {
+      throw new Error("保存済みplan実行入口を二重に設定できません。");
+    }
+    this.proposalWriteExecution = { kind: "stored_plan", port };
   }
 
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
@@ -3029,12 +3045,49 @@ export class TaskHubApplication {
     applicationCoordinator: AsanaProposalApplicationCoordinator,
     input: AsanaProposalApplicationInput,
     signal: AbortSignal,
-  ): Promise<Awaited<ReturnType<AsanaProposalApplicationCoordinator["apply"]>>> {
+  ): Promise<AsanaProposalApplicationResult> {
     return this.synchronizationOperations.applyProposal(
       signal,
-      () => applicationCoordinator.apply(input, signal),
+      () => this.proposalWriteExecution.kind === "stored_plan"
+        ? this.applyStoredProposalApplication(
+          applicationCoordinator,
+          input,
+          this.proposalWriteExecution.port,
+          signal,
+        )
+        : applicationCoordinator.apply(input, signal),
       (result) => this.cleanupAggregation.replaceProposalConflictsFromApplication(result),
     );
+  }
+
+  private applyStoredProposalApplication(
+    applicationCoordinator: AsanaProposalApplicationCoordinator,
+    input: AsanaProposalApplicationInput,
+    port: StoredProposalExecutionPort,
+    signal: AbortSignal,
+  ): Promise<AsanaProposalApplicationResult> {
+    const validated = asanaProposalApplicationInputSchema.parse(input);
+    if (this.database.getApplicationJournalsByProposal(validated.proposal_id).length > 0) {
+      throw new Error("旧適用ジャーナルがある変更案を新しいexecutionとして再実行できません。");
+    }
+    const baselines = validated.baseline_external_data.map((item) => {
+      const parsed = parseCustomExternalData(item.external.data);
+      if (parsed.kind !== "valid") {
+        throw new Error("承認時のCustom external dataを読み取れません。");
+      }
+      const baseline = {
+        kind: "stored",
+        external_gid: item.external.gid,
+        data: customExternalDataSchema.parse(parsed.data),
+      } satisfies Extract<TaskWriteExternalBaseline, { readonly kind: "stored" }>;
+      return { task_gid: item.task_gid, baseline };
+    });
+    const result = applyStoredProposal({
+      ...validated,
+      baseline_external_data: baselines,
+    }, applicationCoordinator.classifyApprovedOperations(validated), (operationIds) =>
+      applicationCoordinator.assertSelectedGraphSafe(validated, operationIds), port, signal);
+    return result.then((value) => asanaProposalApplicationResultSchema.parse(value));
   }
 
   private applyExternalProposal(
