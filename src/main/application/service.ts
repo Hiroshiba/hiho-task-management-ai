@@ -142,6 +142,11 @@ import {
   normalizeAsanaSnapshot,
   normalizeTaskGraph,
 } from "../domain";
+import {
+  classifyProposalConflicts,
+  proposalApprovalResultSchema,
+} from "../domain/proposal-analysis/conflict-classifier";
+import { validateSelectedProposalGraph } from "../domain/proposal-analysis/graph";
 import { createBaselineTaskSnapshots } from "./proposal-generate";
 import {
   applyStoredProposal,
@@ -2414,14 +2419,6 @@ export class TaskHubApplication {
     return this.operationalContext.requireContext();
   }
 
-  private requireWriter(): AsanaProposalOperationWriter {
-    return this.operationalServices.requireWriter();
-  }
-
-  private requireApplicationCoordinator(): AsanaProposalApplicationCoordinator {
-    return this.operationalServices.requireCoordinator();
-  }
-
   private async initializeExternalAgentBridge(): Promise<void> {
     try {
       await this.externalAgentBridge.init(process.execPath);
@@ -3237,7 +3234,6 @@ export class TaskHubApplication {
     baselineStore: AiSessionBaselineStore,
     sessionId: string,
   ): AiWorkflowService {
-    const applicationCoordinator = this.requireApplicationCoordinator();
     return new AiWorkflowService({
       sessionId,
       session,
@@ -3274,11 +3270,7 @@ export class TaskHubApplication {
             createBaselineTaskSnapshots,
             WorkflowError: AiWorkflowError,
           }),
-        apply: (validated, currentSignal) => this.applyProposalApplication(
-          applicationCoordinator,
-          validated,
-          currentSignal,
-        ),
+        apply: (validated, currentSignal) => this.applyProposalApplication(validated, currentSignal),
         parseApplication: (value) => asanaProposalApplicationResultSchema.parse(value),
         createResult: (stored, application) => aiWorkflowApprovalResultSchema.parse({
           proposal_id: stored.proposal_id,
@@ -3309,14 +3301,12 @@ export class TaskHubApplication {
   }
 
   private async applyProposalApplication(
-    applicationCoordinator: AsanaProposalApplicationCoordinator,
     input: AsanaProposalApplicationInput,
     signal: AbortSignal,
   ): Promise<AsanaProposalApplicationResult> {
     return this.synchronizationOperations.applyProposal(
       signal,
       () => this.applyStoredProposalApplication(
-        applicationCoordinator,
         input,
         this.requireTaskWriteExecution().proposal,
         signal,
@@ -3326,7 +3316,6 @@ export class TaskHubApplication {
   }
 
   private applyStoredProposalApplication(
-    applicationCoordinator: AsanaProposalApplicationCoordinator,
     input: AsanaProposalApplicationInput,
     port: StoredProposalExecutionPort,
     signal: AbortSignal,
@@ -3347,8 +3336,17 @@ export class TaskHubApplication {
     const result = applyStoredProposal({
       ...validated,
       baseline_external_data: baselines,
-    }, applicationCoordinator.classifyApprovedOperations(validated), (operationIds) =>
-      applicationCoordinator.assertSelectedGraphSafe(validated, operationIds), port, signal);
+    }, proposalApprovalResultSchema.parse(classifyProposalConflicts(validated.approval_input)), (operationIds) => {
+      const graph = validateSelectedProposalGraph({
+        proposal: validated.approval_input.proposal,
+        managed_tasks: validated.approval_input.current_tasks,
+        selected_operation_ids: [...operationIds],
+        temporary_ref_mappings: validated.approval_input.journal_task_mappings,
+      });
+      if (graph.kind === "unsafe") {
+        throw new Error("適用操作に新しい依存関係または親子関係の循環があります。");
+      }
+    }, port, signal);
     return result.then((value) => asanaProposalApplicationResultSchema.parse(value));
   }
 
@@ -3356,11 +3354,7 @@ export class TaskHubApplication {
     input: AsanaProposalApplicationInput,
     signal: AbortSignal,
   ): Promise<AsanaProposalApplicationResult> {
-    return this.applyProposalApplication(
-      this.requireApplicationCoordinator(),
-      input,
-      signal,
-    );
+    return this.applyProposalApplication(input, signal);
   }
 
   private createAiPort(): IpcAiPort {

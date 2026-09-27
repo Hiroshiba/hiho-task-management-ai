@@ -24,12 +24,11 @@ import {
 } from "../../shared/ai-workflow";
 import {
   validateProposal,
-  validateProposalGraph,
   type ExplicitSplitRequestReference,
   type TrustedStatusEvidenceReference,
-  type GraphValidationResult,
   type ProposalValidationResult,
-} from "../ai/proposal-validation";
+} from "../domain/proposal-analysis/basic";
+import { validateProposalGraph, type GraphValidationResult } from "../domain/proposal-analysis/graph";
 import {
   asanaProposalApplicationInputSchema,
   asanaProposalApplicationResultSchema,

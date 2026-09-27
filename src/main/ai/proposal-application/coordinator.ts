@@ -40,8 +40,8 @@ import {
 import {
   proposalApprovalResultSchema,
   classifyProposalConflicts,
-} from "../proposal-approval";
-import { validateSelectedProposalGraph } from "../proposal-validation";
+} from "../../domain/proposal-analysis/conflict-classifier";
+import { validateSelectedProposalGraph } from "../../domain/proposal-analysis/graph";
 import {
   proposalOperationSchema,
   type Proposal,
@@ -522,29 +522,6 @@ export class AsanaProposalApplicationCoordinator {
     this.timestampProvider = timestampProvider;
     this.postApply = postApply;
     this.diagnostic = diagnostic;
-  }
-
-  /** 通常適用に使う承認競合を現行の分類規則で判定します。 */
-  public classifyApprovedOperations(
-    input: AsanaProposalApplicationInput,
-  ): ReturnType<typeof classifyProposalConflicts> {
-    return proposalApprovalResultSchema.parse(classifyProposalConflicts(input.approval_input));
-  }
-
-  /** 承認後に実行する操作だけの関係グラフを検証します。 */
-  public assertSelectedGraphSafe(
-    input: AsanaProposalApplicationInput,
-    operationIds: readonly string[],
-  ): void {
-    const graph = validateSelectedProposalGraph({
-      proposal: input.approval_input.proposal,
-      managed_tasks: input.approval_input.current_tasks,
-      selected_operation_ids: [...operationIds],
-      temporary_ref_mappings: input.approval_input.journal_task_mappings,
-    });
-    if (graph.kind === "unsafe") {
-      throw new Error("適用操作に新しい依存関係または親子関係の循環があります。");
-    }
   }
 
   /** 承認済み変更案を作成・属性・関係の順で適用します。 */

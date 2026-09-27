@@ -22,9 +22,10 @@ import { hashBaselineSnapshot } from "../../domain/snapshot-hash";
 import { normalizeTaskGraph } from "../../domain/normalization";
 import {
   createChildrenOnlyEvidenceLocator, trustedStatusEvidenceReferencesSchema, validateProposal,
-  validateProposalGraph, type ExplicitSplitRequestReference, type GraphValidationResult,
-  type ProposalValidationResult, type TrustedStatusEvidenceReference,
-} from "../proposal-validation";
+  type ExplicitSplitRequestReference, type ProposalValidationResult,
+  type TrustedStatusEvidenceReference,
+} from "../../domain/proposal-analysis/basic";
+import { validateProposalGraph, type GraphValidationResult } from "../../domain/proposal-analysis/graph";
 import {
   asanaProposalApplicationInputSchema,
   type AsanaProposalApplicationInput,

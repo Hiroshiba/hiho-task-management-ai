@@ -1005,16 +1005,6 @@
     {
       "path": "src/main/ai/proposal-application/coordinator.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-approval/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "import-boundary",
       "symbol": "src/main/asana/client/client.ts"
     },
     {
@@ -1041,16 +1031,6 @@
       "path": "src/main/ai/proposal-application/coordinator.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-approval/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
     },
     {
       "path": "src/main/ai/proposal-application/coordinator.ts",
@@ -1165,17 +1145,7 @@
     {
       "path": "src/main/ai/proposal-application/schemas.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/ai/proposal-approval/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-application/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-approval/index.ts"
     },
     {
       "path": "src/main/ai/proposal-application/schemas.ts",
@@ -1196,86 +1166,6 @@
       "path": "src/main/ai/proposal-application/schemas.ts",
       "rule": "old-path",
       "symbol": "src/main/ai/proposal-application/schemas.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/conflict-classifier.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/conflict-classifier.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/conflict-classifier.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/conflict-classifier.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-approval/conflict-classifier.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-approval/conflict-classifier.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-approval/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-approval/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/basic.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/basic.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/basic.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-validation/basic.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/graph.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/basic.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/graph.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/graph.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/graph.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-validation/graph.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/basic.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/graph.ts"
-    },
-    {
-      "path": "src/main/ai/proposal-validation/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
     },
     {
       "path": "src/main/ai/proposal-workspace/index.ts",
@@ -1355,11 +1245,6 @@
     {
       "path": "src/main/ai/workflow/selection.ts",
       "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
-    },
-    {
-      "path": "src/main/ai/workflow/selection.ts",
-      "rule": "old-import",
       "symbol": "src/main/ai/workflow/errors.ts"
     },
     {
@@ -1411,11 +1296,6 @@
       "path": "src/main/ai/workflow/service.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/ai/workflow/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
     },
     {
       "path": "src/main/ai/workflow/service.ts",
@@ -3251,11 +3131,6 @@
       "path": "src/main/external-agent/service.ts",
       "rule": "old-import",
       "symbol": "src/main/ai/proposal-application/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ai/proposal-validation/index.ts"
     },
     {
       "path": "src/main/external-agent/service.ts",

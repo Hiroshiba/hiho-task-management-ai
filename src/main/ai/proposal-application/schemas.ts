@@ -9,6 +9,7 @@ import {
   identifierSchema,
   parseCustomExternalData,
   serializeCustomExternalData,
+  taskSchema,
 } from "../../../shared/domain";
 import {
   proposalOperationSchema,
@@ -16,9 +17,16 @@ import {
   type ProposalOperation,
 } from "../../../shared/ai";
 import { applicationJournalStageSchema } from "../../../shared/storage";
-import {
-  proposalApprovalInputSchema,
-} from "../proposal-approval";
+import { createApprovalConflictSchemas } from "../../domain/proposal-analysis/approval-conflict-schemas";
+import { graphValidationResultSchema } from "../../domain/proposal-analysis/graph";
+
+const { approvalInputSchema: proposalApprovalInputSchema } = createApprovalConflictSchemas({
+  gidSchema,
+  identifierSchema,
+  taskSchema,
+  proposalSchema,
+  graphValidationResultSchema,
+});
 
 const sectionGidsSchema = z
   .object({

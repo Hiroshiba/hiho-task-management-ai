@@ -40,6 +40,8 @@
 
 AI変更案の保持、会話根拠、取り下げ確認、生成世代は`ProposalGenerationState`がセッション単位で管理します。Codexターンは`application/common/ports/proposal-generation-session.ts`のportから呼び出し、AI応答の構造検証と訂正再試行を外部書き込みより先に完了します。承認時の再取得、基準値の照合、適用、保持値の削除は`proposal-apply`が順に実行します。AI状態と差分のMain側購読は`AiEventRuntime`、IPCからの提案操作の配送は`main/ipc/handlers/ai.ts`が管理します。
 
+変更案とタスクは公開入力のスキーマで完全に検証してから、`main/domain/proposal-analysis`の非永続投影を基本検証、関係グラフ検証、承認競合分類に渡します。投影を公開入力の受理判定や保存形式に使用しません。承認後の関係グラフは、競合分類で実行可能と判定した操作だけを検証します。
+
 ## 依存方向
 
 | import元 | 許可する内部依存 | 禁止する依存 |

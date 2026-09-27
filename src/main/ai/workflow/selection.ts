@@ -1,15 +1,17 @@
-import type {
-  Proposal,
-  ProposalOperation,
+import {
+  proposalSchema,
+  type Proposal,
+  type ProposalOperation,
 } from "../../../shared/ai";
-import type {
-  AiWorkflowSelection,
-  AiWorkflowSnapshot,
+import {
+  aiWorkflowSnapshotSchema,
+  type AiWorkflowSelection,
+  type AiWorkflowSnapshot,
 } from "../../../shared/ai-workflow";
 import {
   validateSelectedProposalGraph,
   type GraphValidationResult,
-} from "../proposal-validation";
+} from "../../domain/proposal-analysis/graph";
 import { AiWorkflowSelectionError } from "./errors";
 
 type SelectionStoredProposal = {
@@ -197,8 +199,8 @@ export function assertSelectedProposalGraphIsSafe(
   selectedOperationIds: readonly string[],
 ): void {
   const result = validateSelectedProposalGraph({
-    proposal: stored.proposal,
-    managed_tasks: stored.snapshot.tasks,
+    proposal: proposalSchema.parse(stored.proposal),
+    managed_tasks: aiWorkflowSnapshotSchema.shape.tasks.parse(stored.snapshot.tasks),
     selected_operation_ids: [...selectedOperationIds],
     temporary_ref_mappings: [],
   });
