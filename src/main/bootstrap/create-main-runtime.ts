@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
@@ -13,6 +14,7 @@ import { createProposalsHandlers, type ProposalsHandlers } from "../ipc/handlers
 import { createSettingsHandlers, type SettingsHandlers } from "../ipc/handlers/settings";
 import { createSystemHandlers, type SystemHandlers, type SystemHandlerWorkflow } from "../ipc/handlers/system";
 import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
+import { FeatureIpcRegistry } from "../ipc/register-ipc";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import type { GuiEditExecution } from "../application/gui-edit";
 import type { StoredProposalExecution } from "../application/proposal-apply";
@@ -40,6 +42,10 @@ type MainRuntimeOptions = {
   readonly logsPath: string;
   readonly loggerFormatter: ConstructorParameters<typeof JsonlErrorReporter>[2];
   readonly system: SystemHandlerWorkflow;
+  readonly ipcSecurity: {
+    readonly assertTrustedSender: (event: IpcMainInvokeEvent, webContents: WebContents, rendererUrl: string) => void;
+    readonly isApplicationUrl: (url: string, rendererUrl: string) => boolean;
+  };
   readonly legacy: Omit<LegacyRuntimeOptions, "lifecycle_signal" | "now_provider" | "create_id">;
 };
 
@@ -122,6 +128,8 @@ export interface MainRuntime {
   readonly obsidianIntegrationHandlers: ObsidianIntegrationHandlers;
   readonly diagnosticsHandlers: DiagnosticsHandlers;
   readonly signal: AbortSignal;
+  attachWindow(ipcMain: IpcMain, webContents: WebContents, rendererUrl: string): void;
+  detachWindow(webContents: WebContents): void;
   createWindowStateStore(): WindowStateStore;
   createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
   abort(): void;
@@ -193,6 +201,45 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus });
     const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(legacy.getObsidianHandlerWorkflow());
     const diagnosticsHandlers = createDiagnosticsHandlers(engineReporter);
+    const legacyIpcPorts = legacy.getIpcPorts();
+    const aiEvents = legacyIpcPorts.ai;
+    const externalEvents = legacyIpcPorts.externalAgent;
+    if (aiEvents?.onStatus == null || aiEvents.onDelta == null || externalEvents?.onChanged == null) {
+      throw new Error("最終IPCのイベント源を取得できません。");
+    }
+    const onAiStatus = aiEvents.onStatus.bind(aiEvents);
+    const onAiDelta = aiEvents.onDelta.bind(aiEvents);
+    const onExternalChanged = externalEvents.onChanged.bind(externalEvents);
+    const featureIpc = new FeatureIpcRegistry({
+      signal: controller.signal,
+      ...options.ipcSecurity,
+      record: (error) => {
+        engineReporter.reportErrorOnce(error, {
+          source: "ipc",
+          diagnosticCode: "ipc.error",
+          context: "ipc_diagnostic",
+          level: "error",
+        });
+      },
+      handlers: {
+        system: systemHandlers,
+        tasks: tasksHandlers,
+        settings: settingsHandlers,
+        proposals: proposalsHandlers,
+        githubIntegration: githubIntegrationHandlers,
+        obsidianIntegration: obsidianIntegrationHandlers,
+        diagnostics: diagnosticsHandlers,
+      },
+      events: {
+        updateState: (listener) => options.system.onUpdateState(listener),
+        syncState: (listener) => legacy.taskRead.onState(listener),
+        guiExecution: taskWrite.onGuiChanged,
+        aiStatus: (listener) => onAiStatus(listener),
+        aiDelta: (listener) => onAiDelta(listener),
+        externalState: (listener) => onExternalChanged((state) => listener(state)),
+        proposalExecution: taskWrite.onProposalChanged,
+      },
+    });
     let disposal: Promise<void> | undefined;
     return {
       legacy,
@@ -211,6 +258,8 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       obsidianIntegrationHandlers,
       diagnosticsHandlers,
       signal: controller.signal,
+      attachWindow: (ipcMain, webContents, rendererUrl) => featureIpc.attach(ipcMain, webContents, rendererUrl),
+      detachWindow: (webContents) => featureIpc.detach(webContents),
       createWindowStateStore: () => new WindowStateStore(
         openedPersistence.openLateTextFile(
           join(options.userDataPath, "window-state.json"),
@@ -223,7 +272,10 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
           "アプリ本体の更新試行",
         ),
       ),
-      abort: () => controller.abort(),
+      abort: () => {
+        controller.abort();
+        featureIpc.stop();
+      },
       dispose: () => {
         if (disposal != null) {
           return disposal;
@@ -231,6 +283,11 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         disposal = (async () => {
           controller.abort();
           const errors: unknown[] = [];
+          try {
+            featureIpc.stop();
+          } catch (error) {
+            errors.push(error);
+          }
           try {
             await legacy.stop();
           } catch (error) {

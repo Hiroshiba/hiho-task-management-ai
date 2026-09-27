@@ -19,7 +19,7 @@
 | proposal execution、plan、journal | proposal execution repository | 承認後、外部書き込み前。MainRuntimeが既存SQLite接続からrepositoryを一度だけ生成 | terminal stateまで永続化。復旧は保存済みplanを読む |
 | proposal実行中lock | proposal engine | execution開始時 | terminalまたは例外時のfinallyで解放。永続状態とも照合 |
 | task write plan | 呼び出し単位のimmutable value | proposal handlerまたはGUI編集 | 実行完了後に破棄。実行開始前にjournalへ保存 |
-| IPC handlerとsubscription | 各IPC handler | register時 | unregister関数で解除 |
+| 最終IPC handlerとsubscription | MainRuntimeが保持する`FeatureIpcRegistry` | 最初のウィンドウ接続時に登録。購読IDはウィンドウごとに保持 | 最後のウィンドウ切断時に登録を解除。MainRuntime停止時にも全購読と登録を解除 |
 | errorとwarningのsink | Main logging adapter | MainRuntime生成時 | MainRuntime dispose。JSONLへ保存 |
 | Rendererの起動状態と配色 | `renderer/app` | app mount | media listenerをunmountで解除。配色初期値はOS設定 |
 | タスク一覧、選択、filter、sort、編集進捗 | `renderer/features/tasks` | feature mount | timerとlistenerをunmountで解除。sortは再起動で初期値へ戻す |

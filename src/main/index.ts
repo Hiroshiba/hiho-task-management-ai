@@ -8,6 +8,7 @@ import {
   screen,
   session,
   shell,
+  type WebContents,
 } from "electron";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -210,6 +211,10 @@ function createApplicationRuntime(): MainRuntime {
     checkpointPath: join(userDataPath, "setup-checkpoint.json"),
     logsPath: app.getPath("logs"),
     loggerFormatter: persistentErrorLogFormatter,
+    ipcSecurity: {
+      assertTrustedSender: assertTrustedIpcSender,
+      isApplicationUrl,
+    },
     system: {
       getVersion: () => app.getVersion(),
       waitForStartup: (signal) => startupGate.waitForStartup(signal),
@@ -314,7 +319,13 @@ function registerVersionIpcHandler(rendererUrl: string): void {
   versionIpcRegistered = true;
 }
 
-function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
+function disposeMainWindowRegistry(registry: IpcHandlerRegistry, runtime: MainRuntime, webContents: WebContents): void {
+  try {
+    runtime.detachWindow(webContents);
+  } catch (error) {
+    recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
+    recordDiagnostic("ipc.error", "error", undefined, error);
+  }
   try {
     registry.dispose();
   } catch (error) {
@@ -531,6 +542,7 @@ async function createMainWindow(
       preload: join(__dirname, "../preload/index.cjs"),
     },
   });
+  const windowWebContents = window.webContents;
   const windowStateController = new WindowStateController(
     window,
     windowStateStore,
@@ -545,7 +557,7 @@ async function createMainWindow(
   );
   const updateService = requireApplicationUpdateService();
   const registry = new IpcHandlerRegistry({
-    rendererWebContents: window.webContents,
+    rendererWebContents: windowWebContents,
     rendererUrl,
     ports: {
       ...runtime.legacy.getIpcPorts(),
@@ -568,6 +580,7 @@ async function createMainWindow(
   let readyToShow: MainWindowReadyWait | undefined;
   try {
     configureWindowSecurity(window, rendererUrl);
+    runtime.attachWindow(ipcMain, windowWebContents, rendererUrl);
     registry.register(ipcMain);
     windowStateController.attach();
     windowStateController.restore(savedWindowState);
@@ -578,9 +591,10 @@ async function createMainWindow(
         window.hide();
         return;
       }
-      disposeMainWindowRegistry(registry);
+      disposeMainWindowRegistry(registry, runtime, windowWebContents);
     });
     window.once("closed", () => {
+      disposeMainWindowRegistry(registry, runtime, windowWebContents);
       if (mainWindowStateController === windowStateController) {
         mainWindowStateController = undefined;
       }
@@ -598,7 +612,7 @@ async function createMainWindow(
     await Promise.all([loadPromise, readyToShow.promise]);
   } catch (error) {
     readyToShow?.reject(error);
-    disposeMainWindowRegistry(registry);
+    disposeMainWindowRegistry(registry, runtime, windowWebContents);
     if (mainWindowStateController === windowStateController) {
       mainWindowStateController = undefined;
     }
@@ -691,7 +705,14 @@ async function stopApplication(): Promise<void> {
   stopOperationalEventMonitoring();
   const registry = mainWindowRegistry;
   if (registry != null) {
-    disposeMainWindowRegistry(registry);
+    if (runtime == null) {
+      throw new Error("IPC登録中のMainRuntimeがありません。");
+    }
+    const window = mainWindow;
+    if (window == null) {
+      throw new Error("IPC登録中のメインウィンドウがありません。");
+    }
+    disposeMainWindowRegistry(registry, runtime, window.webContents);
   }
   if (versionIpcRegistered) {
     try {
