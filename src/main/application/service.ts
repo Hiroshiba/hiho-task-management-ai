@@ -74,7 +74,6 @@ import {
   installContextctlClientScript,
   installDisabledExternalToolsSkill,
   removeCodexSessionWorkspace,
-  type ContextctlInstallationResult,
   type CodexWorkspaceInitializationResult,
 } from "../codex/workspace";
 import {
@@ -138,6 +137,7 @@ import {
   createCodexObsidianReadPort,
   createObsidianPort,
 } from "../bootstrap/obsidian-ports";
+import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -155,7 +155,6 @@ import {
   createDiscordExternalToolDefinition,
   discordExternalToolCredentialReferenceName,
   type ExternalToolDefinition,
-  type ExternalToolDisabledReason,
 } from "../external-tools";
 import {
   ExternalAgentService,
@@ -174,7 +173,6 @@ import {
 import {
   SetupOrchestrator,
   setupFullSyncInputSchema,
-  type SetupExternalToolDeactivationResult,
   type SetupExternalToolConfigurationResult,
   type SetupFullSyncInput,
 } from "../setup";
@@ -213,8 +211,6 @@ import {
   setupExternalToolSelectionSchema,
   type SetupDiscordExternalToolConfigurationInput,
   type SetupCodexAvailability,
-  type SetupExternalToolUnavailableReason,
-  type SetupExternalToolSelection,
   type SetupState,
   setupStateSchema,
 } from "../../shared/setup";
@@ -377,43 +373,6 @@ type ConfiguredCodexLaunchState =
     }
   | { readonly kind: "settled" };
 
-type ExternalToolsDisabledReason = Extract<
-  ContextctlInstallationResult,
-  { readonly kind: "disabled" }
->["reason"];
-
-type ExternalToolRecoveryBrokerState =
-  | { readonly kind: "none" }
-  | { readonly kind: "retained"; readonly value: ExternalToolBroker };
-
-type ExternalToolLifecycleState =
-  | { readonly kind: "uninitialized" }
-  | { readonly kind: "starting"; readonly broker: ExternalToolBroker }
-  | {
-      readonly kind: "ready";
-      readonly broker: ExternalToolBroker;
-      readonly endpoint: string;
-    }
-  | {
-      readonly kind: "disabled";
-      readonly reason: ExternalToolsDisabledReason;
-    }
-  | {
-      readonly kind: "recovery_required";
-      readonly reason: SetupExternalToolUnavailableReason;
-      readonly broker: ExternalToolRecoveryBrokerState;
-      readonly errors: readonly unknown[];
-    }
-  | { readonly kind: "stopped" };
-
-type ExternalToolConfigurationOperationState =
-  | { readonly kind: "idle" }
-  | {
-      readonly kind: "running";
-      readonly controller: AbortController;
-      readonly operation: Promise<unknown>;
-    };
-
 type ExternalToolPersistenceResult =
   | { readonly kind: "saved" }
   | {
@@ -428,10 +387,6 @@ type ExternalToolPersistenceResult =
       readonly kind: "recovery_required";
       readonly error: unknown;
     };
-
-type ExternalToolConfigurationStopReason = {
-  readonly kind: "application_stop";
-};
 
 const diagnosticLogRetentionLimit = 1_000;
 const serviceErrorDiagnostic = {
@@ -521,45 +476,6 @@ function createExternalToolDefinitionRecord(
   };
 }
 
-function setupReasonFromBrokerDisabledReason(
-  reason: ExternalToolDisabledReason,
-): SetupExternalToolUnavailableReason {
-  switch (reason) {
-    case "unsupported_platform":
-      return "unsupported_platform";
-    case "ipc_unavailable":
-    case "permission_denied":
-      return "safe_execution_boundary_unavailable";
-  }
-}
-
-function externalToolsDisabledReasonFromSetupReason(
-  reason: SetupExternalToolUnavailableReason,
-): ExternalToolsDisabledReason {
-  switch (reason) {
-    case "unsupported_platform":
-    case "safe_execution_boundary_unavailable":
-    case "credential_storage_unavailable":
-    case "startup_failed":
-      return reason;
-  }
-}
-
-function errorHasCause(error: unknown, expectedCause: unknown): boolean {
-  let current = error;
-  const seen = new Set<unknown>();
-  while (true) {
-    if (current === expectedCause) {
-      return true;
-    }
-    if (!(current instanceof Error) || seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    current = current.cause;
-  }
-}
-
 function isAiSessionAbortError(error: unknown): boolean {
   const seen = new Set<unknown>();
   let current = error;
@@ -589,19 +505,6 @@ function settleAiSessionPromise(
     () => ({ kind: "completed" }),
     (error: unknown) => ({ kind: "rejected", error }),
   );
-}
-
-function throwExternalToolConfigurationIfAborted(signal: AbortSignal): void {
-  validateAbortSignal(signal);
-  if (!signal.aborted) {
-    return;
-  }
-  if (signal.reason instanceof Error) {
-    throw signal.reason;
-  }
-  throw new Error("外部ツール設定が中断されました。", {
-    cause: signal.reason,
-  });
 }
 
 function validateAbortSignal(signal: AbortSignal): void {
@@ -1046,14 +949,12 @@ export class TaskHubApplication {
   private readonly externalAgentInstanceId = identifierSchema.parse(randomUUID());
   private readonly externalAgent: ExternalAgentService;
   private readonly externalAgentBridge: ExternalAgentBridge;
-  private externalToolRegistry: ExternalToolRegistry | undefined;
+  private readonly externalTools: ExternalToolRuntime<
+    ExternalToolBroker,
+    ExternalToolRegistry,
+    ExternalToolDefinition
+  >;
   private asanaReauthenticationOperation: AsanaReauthenticationOperation = {
-    kind: "idle",
-  };
-  private externalToolLifecycle: ExternalToolLifecycleState = {
-    kind: "uninitialized",
-  };
-  private externalToolConfigurationOperation: ExternalToolConfigurationOperationState = {
     kind: "idle",
   };
   private context: OperationalContext | undefined;
@@ -1145,10 +1046,6 @@ export class TaskHubApplication {
     this.aiSessionWorkspaceParentPath = initializeCodexSessionWorkspaceParent(
       join(this.codexWorkspace.userDataPath, "ai-sessions"),
     );
-    this.externalToolLifecycle = {
-      kind: "disabled",
-      reason: "no_registered_tools",
-    };
     const codexEnvironment = createCodexProcessEnvironment(
       this.codexWorkspace.codexHomePath,
       process.execPath,
@@ -1194,6 +1091,62 @@ export class TaskHubApplication {
       this.obsidian,
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
+    this.externalTools = new ExternalToolRuntime({
+      lifecycleSignal: this.options.lifecycle_signal,
+      isStopped: () => this.stopped,
+      platform: process.platform,
+      validateAbortSignal,
+      throwIfAborted,
+      installDisabledSkill: (reason) => installDisabledExternalToolsSkill(
+        this.codexWorkspace.workspacePath,
+        reason,
+      ),
+      installClient: (registry, connectionInfoPath) => installContextctlClientScript({
+        workspacePath: this.codexWorkspace.workspacePath,
+        connectionInfoPath,
+        toolDefinitions: [...registry.list()],
+      }),
+      setCodexSocketPaths: (paths) => this.setCodexExternalSocketPaths(paths),
+      recordStatus: () => this.recordDiagnostic("external_tools.status", "info"),
+      recordFeatureFailure: (error, message) =>
+        this.recordFeatureFailure(error, "external_tools", message),
+      recordRecoveryDiagnostic: (message, cause) => this.options.diagnostic(
+        new Error(message, { cause }),
+        "external_tools",
+        serviceErrorDiagnostic,
+      ),
+      combineFailures: (errors) => combineDiagnosticFailures(errors),
+      disableCodexForSafety: (errors) => this.disableCodexForExternalToolSafety(errors),
+      createDefinition: createDiscordExternalToolDefinition,
+      createRegistry: createExternalToolRegistry,
+      assertPersistedDefinition: (expectedDefinition) => {
+        const records = this.database.getExternalToolDefinitions();
+        const storedRecord = findPersistedDiscordExternalToolRecord(records);
+        if (storedRecord == null) {
+          throw new Error("保存済み固定Discord定義がありません。");
+        }
+        const {
+          credential_reference_names: _credentialReferenceNames,
+          ...storedDefinition
+        } = storedRecord;
+        void _credentialReferenceNames;
+        if (canonicalizeJson(storedDefinition) !== canonicalizeJson(expectedDefinition)) {
+          throw new Error("保存済み固定Discord定義がcheckpointと一致しません。");
+        }
+      },
+      hasBotToken: () =>
+        new SecretStorageDiscordCredentialProvider(this.secretStorage).hasBotToken(),
+      createBroker: (registry) => this.createExternalToolBroker(
+        registry,
+        this.codexWorkspace.tmpDirectoryPath,
+        this.externalStatusEvidenceCollector,
+      ),
+      persistConfiguration: (definition, botToken) =>
+        this.persistDiscordExternalToolConfiguration(definition, botToken),
+      getSelection: () => this.setup.getExternalToolSelection(),
+      markUnavailable: (reason) => this.setup.markExternalToolUnavailable(reason),
+      rethrowFeatureAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
+    });
     const externalAgentBridge = new ExternalAgentBridge({
       userDataPath: this.codexWorkspace.userDataPath,
       handleRequest: (input, signal) => {
@@ -1274,7 +1227,7 @@ export class TaskHubApplication {
         configureDiscord: (input, signal) =>
           this.configureDiscordExternalTool(input, signal),
         deactivateDiscord: (signal) =>
-          this.deactivateDiscordExternalTool(signal),
+          this.externalTools.deactivate(signal),
       },
       fullSync: (input, signal) => this.runSetupFullSync(input, signal),
     });
@@ -1335,7 +1288,7 @@ export class TaskHubApplication {
       }
     }
     this.recordDiagnostic("app.start", "info");
-    await this.reconcileExternalToolsAtStartup(signal);
+    await this.externalTools.reconcileAtStartup(signal);
     let state = this.setup.getState();
     const readyCheckpointOffline = state.kind === "ready" && !this.isOnline();
     if (state.kind === "ready") {
@@ -1371,7 +1324,7 @@ export class TaskHubApplication {
     } catch (error: unknown) {
       errors.push(error);
     }
-    await this.stopExternalToolConfiguration(errors);
+    await this.externalTools.stopConfiguration(errors);
     await this.stopAsyncService(this.externalAgent, errors);
     await this.stopAsyncService(this.externalAgentBridge, errors);
     this.removeRuntimeSubscription?.();
@@ -1388,8 +1341,8 @@ export class TaskHubApplication {
     } catch (error: unknown) {
       errors.push(error);
     }
-    await this.stopAsyncService(this.externalToolBrokerForStop(), errors);
-    this.externalToolLifecycle = { kind: "stopped" };
+    await this.stopAsyncService(this.externalTools.brokerForStop(), errors);
+    this.externalTools.markStopped();
     try {
       this.recordDiagnostic("app.stop", "info");
     } catch (error: unknown) {
@@ -1858,7 +1811,7 @@ export class TaskHubApplication {
   private async detectCodexSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
-    if (this.codexDisabledByExternalToolSafety()) {
+    if (this.externalTools.codexDisabledBySafety()) {
       return setupCodexAvailabilitySchema.parse({
         kind: "unavailable",
         reason_code: "disabled",
@@ -1899,7 +1852,7 @@ export class TaskHubApplication {
   private async getCodexAuthenticationStateSafely(
     signal: AbortSignal,
   ): Promise<CodexAuthenticationState> {
-    if (this.codexDisabledByExternalToolSafety()) {
+    if (this.externalTools.codexDisabledBySafety()) {
       return codexAuthenticationStateSchema.parse({
         kind: "unavailable",
         reason_code: "disabled",
@@ -1940,7 +1893,7 @@ export class TaskHubApplication {
   private async completeCodexAuthenticationSafely(
     signal: AbortSignal,
   ): Promise<CodexAuthenticationState> {
-    if (this.codexDisabledByExternalToolSafety()) {
+    if (this.externalTools.codexDisabledBySafety()) {
       return codexAuthenticationStateSchema.parse({
         kind: "unavailable",
         reason_code: "disabled",
@@ -1981,7 +1934,7 @@ export class TaskHubApplication {
   private async checkCodexCapabilitiesSafely(
     signal: AbortSignal,
   ): Promise<SetupCodexAvailability> {
-    if (this.codexDisabledByExternalToolSafety()) {
+    if (this.externalTools.codexDisabledBySafety()) {
       return setupCodexAvailabilitySchema.parse({
         kind: "unavailable",
         reason_code: "disabled",
@@ -2094,22 +2047,6 @@ export class TaskHubApplication {
     }
   }
 
-  private externalToolBrokerForStop(): ExternalToolBroker | undefined {
-    switch (this.externalToolLifecycle.kind) {
-      case "starting":
-      case "ready":
-        return this.externalToolLifecycle.broker;
-      case "recovery_required":
-        return this.externalToolLifecycle.broker.kind === "retained"
-          ? this.externalToolLifecycle.broker.value
-          : undefined;
-      case "uninitialized":
-      case "disabled":
-      case "stopped":
-        return undefined;
-    }
-  }
-
   private setCodexExternalSocketPaths(paths: readonly string[]): void {
     switch (this.codexSession.getState()) {
       case "created":
@@ -2127,39 +2064,6 @@ export class TaskHubApplication {
       case "stopping":
         throw new Error("Codex処理中は外部ツールIPC許可を変更できません。");
     }
-  }
-
-  private applyExternalToolsDisabledBoundary(
-    reason: ExternalToolsDisabledReason,
-  ): void {
-    const result = installDisabledExternalToolsSkill(
-      this.codexWorkspace.workspacePath,
-      reason,
-    );
-    if (result.kind !== "disabled" || result.reason !== reason) {
-      throw new Error("外部ツール無効Skillの導入結果が一致しません。");
-    }
-    this.externalToolRegistry = undefined;
-    this.setCodexExternalSocketPaths([]);
-  }
-
-  private setExternalToolsDisabled(): void {
-    this.externalToolRegistry = undefined;
-    this.externalToolLifecycle = {
-      kind: "disabled",
-      reason: "no_registered_tools",
-    };
-    this.setCodexExternalSocketPaths([]);
-  }
-
-  private codexDisabledByExternalToolSafety(): boolean {
-    return this.externalToolLifecycle.kind === "recovery_required";
-  }
-
-  private currentExternalToolRecoveryBroker(): ExternalToolRecoveryBrokerState {
-    return this.externalToolLifecycle.kind === "recovery_required"
-      ? this.externalToolLifecycle.broker
-      : { kind: "none" };
   }
 
   private async disableCodexForExternalToolSafety(
@@ -2187,61 +2091,6 @@ export class TaskHubApplication {
     }
   }
 
-  private async enterExternalToolRecovery(
-    reason: SetupExternalToolUnavailableReason,
-    broker: ExternalToolRecoveryBrokerState,
-    sourceErrors: readonly unknown[],
-    message: string,
-  ): Promise<void> {
-    const errors = [...sourceErrors];
-    this.externalToolLifecycle = {
-      kind: "recovery_required",
-      reason,
-      broker,
-      errors,
-    };
-    try {
-      const disposition = combineDiagnosticFailures(sourceErrors).disposition;
-      switch (disposition.kind) {
-        case "recorded_only":
-          break;
-        case "unrecorded_only":
-        case "recorded_and_unrecorded":
-          this.options.diagnostic(
-            new Error(message, { cause: disposition.unrecorded_error }),
-            "external_tools",
-            serviceErrorDiagnostic,
-          );
-          break;
-      }
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    await this.disableCodexForExternalToolSafety(errors);
-    this.externalToolLifecycle = {
-      kind: "recovery_required",
-      reason,
-      broker,
-      errors,
-    };
-  }
-
-  private async recordExternalToolFailure(
-    error: unknown,
-    message: string,
-  ): Promise<void> {
-    try {
-      this.recordFeatureFailure(error, "external_tools", message);
-    } catch (diagnosticError: unknown) {
-      await this.enterExternalToolRecovery(
-        "startup_failed",
-        this.currentExternalToolRecoveryBroker(),
-        [error, diagnosticError],
-        "外部ツール失敗の診断記録を完了できませんでした。",
-      );
-    }
-  }
-
   private createExternalToolBroker(
     registry: ExternalToolRegistry,
     tmpDirectoryPath: string,
@@ -2254,30 +2103,6 @@ export class TaskHubApplication {
         new SecretStorageDiscordCredentialProvider(this.secretStorage),
       status_evidence_collector: statusEvidenceCollector,
     });
-  }
-
-  private activateExternalTools(
-    broker: ExternalToolBroker,
-    registry: ExternalToolRegistry,
-    endpoint: string,
-    connectionInfoPath: string,
-  ): void {
-    const installation = installContextctlClientScript({
-      workspacePath: this.codexWorkspace.workspacePath,
-      connectionInfoPath,
-      toolDefinitions: [...registry.list()],
-    });
-    if (installation.kind !== "ready") {
-      throw new Error("起動済み外部ツールのCodex連携を有効化できませんでした。");
-    }
-    this.setCodexExternalSocketPaths([endpoint]);
-    this.externalToolRegistry = registry;
-    this.recordDiagnostic("external_tools.status", "info");
-    this.externalToolLifecycle = {
-      kind: "ready",
-      broker,
-      endpoint,
-    };
   }
 
   private persistDiscordExternalToolConfiguration(
@@ -2323,539 +2148,13 @@ export class TaskHubApplication {
     return { kind: "saved" };
   }
 
-  private async rollbackExternalToolActivation(
-    broker: ExternalToolBroker,
-    reason: ExternalToolsDisabledReason,
-    error: unknown,
-  ): Promise<boolean> {
-    const cleanupErrors: unknown[] = [];
-    let brokerState: ExternalToolRecoveryBrokerState = {
-      kind: "retained",
-      value: broker,
-    };
-    try {
-      await broker.stop();
-      brokerState = { kind: "none" };
-    } catch (stopError: unknown) {
-      cleanupErrors.push(stopError);
-    }
-    try {
-      this.applyExternalToolsDisabledBoundary(reason);
-    } catch (disableError: unknown) {
-      cleanupErrors.push(disableError);
-    }
-    if (cleanupErrors.length > 0) {
-      await this.enterExternalToolRecovery(
-        reason === "credential_storage_unavailable"
-          ? "credential_storage_unavailable"
-          : "startup_failed",
-        brokerState,
-        [error, ...cleanupErrors],
-        "外部ツール有効化の失敗後に安全な状態へ復元できませんでした。",
-      );
-      return false;
-    }
-    this.externalToolLifecycle = { kind: "disabled", reason };
-    return true;
-  }
-
-  private async runExternalToolConfigurationOperation<Result>(
-    signal: AbortSignal,
-    execute: (operationSignal: AbortSignal) => Promise<Result>,
-  ): Promise<Result> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    throwIfAborted(this.options.lifecycle_signal);
-    if (this.stopped) {
-      throw new Error("停止中は外部ツール設定を変更できません。");
-    }
-    if (this.externalToolConfigurationOperation.kind === "running") {
-      throw new Error("別の外部ツール設定処理が進行中です。");
-    }
-    const controller = new AbortController();
-    const operationSignal = AbortSignal.any([
-      signal,
-      this.options.lifecycle_signal,
-      controller.signal,
-    ]);
-    const operation = Promise.resolve().then(() => execute(operationSignal));
-    this.externalToolConfigurationOperation = {
-      kind: "running",
-      controller,
-      operation,
-    };
-    try {
-      return await operation;
-    } finally {
-      const current = this.externalToolConfigurationOperation;
-      if (current.kind === "running" && current.operation === operation) {
-        this.externalToolConfigurationOperation = { kind: "idle" };
-      }
-    }
-  }
-
-  private externalToolStopCompensationCompleted(): boolean {
-    switch (this.externalToolLifecycle.kind) {
-      case "uninitialized":
-      case "disabled":
-      case "stopped":
-        return true;
-      case "starting":
-      case "ready":
-      case "recovery_required":
-        return false;
-    }
-  }
-
-  private async stopExternalToolConfiguration(errors: unknown[]): Promise<void> {
-    const operationState = this.externalToolConfigurationOperation;
-    if (operationState.kind === "idle") {
-      return;
-    }
-    const stopReason: ExternalToolConfigurationStopReason = {
-      kind: "application_stop",
-    };
-    operationState.controller.abort(stopReason);
-    try {
-      await operationState.operation;
-    } catch (error: unknown) {
-      if (
-        !errorHasCause(error, stopReason)
-        || !this.externalToolStopCompensationCompleted()
-      ) {
-        errors.push(error);
-      }
-    }
-    if (this.externalToolLifecycle.kind === "recovery_required") {
-      errors.push(new AggregateError(
-        this.externalToolLifecycle.errors,
-        "外部ツール設定の停止補償が完了していません。",
-        { cause: this.externalToolLifecycle.errors[0] },
-      ));
-    }
-  }
-
-  private async deactivateDiscordExternalTool(
-    signal: AbortSignal,
-  ): Promise<SetupExternalToolDeactivationResult> {
-    return this.deactivateDiscordExternalToolInternal(
-      "no_registered_tools",
-      signal,
-    );
-  }
-
-  private async deactivateDiscordExternalToolInternal(
-    reason: ExternalToolsDisabledReason,
-    signal: AbortSignal,
-  ): Promise<SetupExternalToolDeactivationResult> {
-    validateAbortSignal(signal);
-    throwExternalToolConfigurationIfAborted(signal);
-    const errors: unknown[] = [];
-    let brokerState: ExternalToolRecoveryBrokerState = { kind: "none" };
-    const broker = this.externalToolBrokerForStop();
-    if (broker != null) {
-      brokerState = { kind: "retained", value: broker };
-      try {
-        await broker.stop();
-        brokerState = { kind: "none" };
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-    }
-    try {
-      this.applyExternalToolsDisabledBoundary(reason);
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    if (errors.length > 0) {
-      await this.enterExternalToolRecovery(
-        "safe_execution_boundary_unavailable",
-        brokerState,
-        errors,
-        "Discord外部ツール連携を安全に無効化できませんでした。",
-      );
-      return {
-        kind: "unavailable",
-        reason_code: "safe_execution_boundary_unavailable",
-      };
-    }
-    this.externalToolLifecycle = {
-      kind: "disabled",
-      reason,
-    };
-    try {
-      this.recordDiagnostic("external_tools.status", "info");
-    } catch (error: unknown) {
-      await this.enterExternalToolRecovery(
-        "startup_failed",
-        { kind: "none" },
-        [error],
-        "外部ツール無効状態の診断記録を完了できませんでした。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    throwExternalToolConfigurationIfAborted(signal);
-    return { kind: "deactivated" };
-  }
-
-  private async reconcileExternalToolsAtStartup(
-    signal: AbortSignal,
-  ): Promise<void> {
-    const selection = this.setup.getExternalToolSelection();
-    if (
-      selection == null
-      || selection.kind === "skipped"
-      || selection.kind === "unavailable"
-    ) {
-      this.setExternalToolsDisabled();
-      return;
-    }
-    const result = await this.runExternalToolConfigurationOperation(
-      signal,
-      (operationSignal) =>
-        this.initializeExternalTools(selection, operationSignal),
-    );
-    if (result.kind === "configured") {
-      return;
-    }
-    const deactivation = await this.runExternalToolConfigurationOperation(
-      signal,
-      (operationSignal) =>
-        this.deactivateDiscordExternalToolInternal(
-          externalToolsDisabledReasonFromSetupReason(result.reason_code),
-          operationSignal,
-        ),
-    );
-    const reason = deactivation.kind === "unavailable"
-      ? deactivation.reason_code
-      : result.reason_code;
-    await this.markExternalToolUnavailableSafely(
-      reason,
-      new Error("保存済み固定Discord連携を起動できませんでした。"),
-    );
-  }
-
-  private async markExternalToolUnavailableSafely(
-    reason: SetupExternalToolUnavailableReason,
-    error: unknown,
-  ): Promise<void> {
-    try {
-      this.setup.markExternalToolUnavailable(reason);
-    } catch (checkpointError: unknown) {
-      await this.enterExternalToolRecovery(
-        reason,
-        this.currentExternalToolRecoveryBroker(),
-        [error, checkpointError],
-        "外部ツール安全停止状態を初回設定checkpointへ保存できませんでした。",
-      );
-    }
-  }
-
-  private async initializeExternalTools(
-    selection: Extract<SetupExternalToolSelection, { kind: "configured" }>,
-    signal: AbortSignal,
-  ): Promise<SetupExternalToolConfigurationResult> {
-    validateAbortSignal(signal);
-    throwExternalToolConfigurationIfAborted(signal);
-    switch (this.externalToolLifecycle.kind) {
-      case "ready":
-        return {
-          kind: "configured",
-          tool_id: selection.tool_id,
-          allowed_channel_ids: selection.allowed_channel_ids,
-        };
-      case "starting":
-        throw new Error("外部ツールブローカーは起動処理中です。");
-      case "stopped":
-        throw new Error("停止済みの外部ツールブローカーは起動できません。");
-      case "recovery_required": {
-        const deactivation = await this.deactivateDiscordExternalToolInternal(
-          externalToolsDisabledReasonFromSetupReason(
-            this.externalToolLifecycle.reason,
-          ),
-          signal,
-        );
-        if (deactivation.kind === "unavailable") {
-          return deactivation;
-        }
-        break;
-      }
-      case "uninitialized":
-      case "disabled":
-        break;
-    }
-    if (process.platform === "win32") {
-      const deactivation = await this.deactivateDiscordExternalToolInternal(
-        "unsupported_platform",
-        signal,
-      );
-      if (deactivation.kind === "unavailable") {
-        return deactivation;
-      }
-      return { kind: "unavailable", reason_code: "unsupported_platform" };
-    }
-
-    const expectedDefinition = createDiscordExternalToolDefinition(
-      selection.allowed_channel_ids,
-    );
-    try {
-      const records = this.database.getExternalToolDefinitions();
-      const storedRecord = findPersistedDiscordExternalToolRecord(records);
-      if (storedRecord == null) {
-        throw new Error("保存済み固定Discord定義がありません。");
-      }
-      const {
-        credential_reference_names: _credentialReferenceNames,
-        ...storedDefinition
-      } = storedRecord;
-      void _credentialReferenceNames;
-      if (canonicalizeJson(storedDefinition) !== canonicalizeJson(expectedDefinition)) {
-        throw new Error("保存済み固定Discord定義がcheckpointと一致しません。");
-      }
-    } catch (error: unknown) {
-      await this.recordExternalToolFailure(
-        error,
-        "保存済み固定Discord設定を確認できないため連携を無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-
-    const credentialProvider =
-      new SecretStorageDiscordCredentialProvider(this.secretStorage);
-    try {
-      if (!credentialProvider.hasBotToken()) {
-        return {
-          kind: "unavailable",
-          reason_code: "credential_storage_unavailable",
-        };
-      }
-    } catch (error: unknown) {
-      await this.recordExternalToolFailure(
-        error,
-        "Discord資格情報を安全に確認できないため連携を無効にしました。",
-      );
-      return {
-        kind: "unavailable",
-        reason_code: "credential_storage_unavailable",
-      };
-    }
-
-    let registry: ExternalToolRegistry;
-    let broker: ExternalToolBroker;
-    try {
-      registry = createExternalToolRegistry(expectedDefinition);
-      broker = this.createExternalToolBroker(
-        registry,
-        this.codexWorkspace.tmpDirectoryPath,
-        this.externalStatusEvidenceCollector,
-      );
-    } catch (error: unknown) {
-      await this.recordExternalToolFailure(
-        error,
-        "外部ツールブローカーを構築できないため連携を無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    this.externalToolLifecycle = { kind: "starting", broker };
-    let startResult;
-    try {
-      startResult = await broker.start(signal);
-    } catch (error: unknown) {
-      await this.rollbackExternalToolActivation(
-        broker,
-        "startup_failed",
-        error,
-      );
-      this.rethrowFeatureAbort(error, signal);
-      await this.recordExternalToolFailure(
-        error,
-        "外部ツールブローカーを起動できないため連携を無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    if (startResult.kind === "disabled") {
-      const reason = setupReasonFromBrokerDisabledReason(startResult.reason);
-      await this.rollbackExternalToolActivation(
-        broker,
-        reason === "unsupported_platform"
-          ? "unsupported_platform"
-          : "safe_execution_boundary_unavailable",
-        new Error("外部ツールブローカーの安全な起動境界を利用できません。"),
-      );
-      return { kind: "unavailable", reason_code: reason };
-    }
-    try {
-      throwExternalToolConfigurationIfAborted(signal);
-      this.activateExternalTools(
-        broker,
-        registry,
-        startResult.endpoint,
-        startResult.connection_info_path,
-      );
-    } catch (error: unknown) {
-      await this.rollbackExternalToolActivation(
-        broker,
-        "startup_failed",
-        error,
-      );
-      this.rethrowFeatureAbort(error, signal);
-      await this.recordExternalToolFailure(
-        error,
-        "外部ツールのCodex連携を有効化できないため無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    return {
-      kind: "configured",
-      tool_id: selection.tool_id,
-      allowed_channel_ids: selection.allowed_channel_ids,
-    };
-  }
-
   private async configureDiscordExternalTool(
     input: SetupDiscordExternalToolConfigurationInput,
     signal: AbortSignal,
   ): Promise<SetupExternalToolConfigurationResult> {
     const configuration =
       setupDiscordExternalToolConfigurationInputSchema.parse(input);
-    return this.configureDiscordExternalToolInternal(configuration, signal);
-  }
-
-  private async configureDiscordExternalToolInternal(
-    configuration: SetupDiscordExternalToolConfigurationInput,
-    signal: AbortSignal,
-  ): Promise<SetupExternalToolConfigurationResult> {
-    switch (this.externalToolLifecycle.kind) {
-      case "uninitialized":
-      case "disabled":
-        break;
-      case "recovery_required": {
-        const deactivation = await this.deactivateDiscordExternalToolInternal(
-          externalToolsDisabledReasonFromSetupReason(
-            this.externalToolLifecycle.reason,
-          ),
-          signal,
-        );
-        if (deactivation.kind === "unavailable") {
-          return deactivation;
-        }
-        break;
-      }
-      case "starting":
-        throw new Error("外部ツールブローカーは起動処理中です。");
-      case "ready":
-        throw new Error("外部ツールは設定済みです。");
-      case "stopped":
-        throw new Error("停止済みの外部ツールブローカーは設定できません。");
-    }
-    if (process.platform === "win32") {
-      const deactivation = await this.deactivateDiscordExternalToolInternal(
-        "unsupported_platform",
-        signal,
-      );
-      if (deactivation.kind === "unavailable") {
-        return deactivation;
-      }
-      return { kind: "unavailable", reason_code: "unsupported_platform" };
-    }
-
-    let definition: ExternalToolDefinition;
-    let registry: ExternalToolRegistry;
-    let broker: ExternalToolBroker;
-    try {
-      definition = createDiscordExternalToolDefinition(
-        configuration.allowed_channel_ids,
-      );
-      registry = createExternalToolRegistry(definition);
-      broker = this.createExternalToolBroker(
-        registry,
-        this.codexWorkspace.tmpDirectoryPath,
-        this.externalStatusEvidenceCollector,
-      );
-    } catch (error: unknown) {
-      await this.recordExternalToolFailure(
-        error,
-        "固定Discord連携を構築できないため無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    this.externalToolLifecycle = { kind: "starting", broker };
-    let startResult;
-    try {
-      startResult = await broker.start(signal);
-    } catch (error: unknown) {
-      await this.rollbackExternalToolActivation(
-        broker,
-        "startup_failed",
-        error,
-      );
-      this.rethrowFeatureAbort(error, signal);
-      await this.recordExternalToolFailure(
-        error,
-        "外部ツールブローカーを起動できないためDiscord連携を無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    if (startResult.kind === "disabled") {
-      const reason = setupReasonFromBrokerDisabledReason(startResult.reason);
-      await this.rollbackExternalToolActivation(
-        broker,
-        reason === "unsupported_platform"
-          ? "unsupported_platform"
-          : "safe_execution_boundary_unavailable",
-        new Error("外部ツールブローカーの安全な起動境界を利用できません。"),
-      );
-      return { kind: "unavailable", reason_code: reason };
-    }
-
-    const persistence = this.persistDiscordExternalToolConfiguration(
-      definition,
-      configuration.bot_token,
-    );
-    if (persistence.kind !== "saved") {
-      const unavailableReason = persistence.kind === "credential_storage_unavailable"
-        ? "credential_storage_unavailable"
-        : "startup_failed";
-      const rollbackCompleted = await this.rollbackExternalToolActivation(
-        broker,
-        unavailableReason,
-        persistence.error,
-      );
-      if (persistence.kind === "recovery_required") {
-        if (rollbackCompleted) {
-          await this.enterExternalToolRecovery(
-            "startup_failed",
-            { kind: "none" },
-            [persistence.error],
-            "既存Discord Tokenの復元に失敗したため外部ツール連携を停止しました。",
-          );
-        }
-        throwExternalToolConfigurationIfAborted(signal);
-        return { kind: "unavailable", reason_code: "startup_failed" };
-      }
-      throwExternalToolConfigurationIfAborted(signal);
-      await this.recordExternalToolFailure(
-        persistence.error,
-        persistence.kind === "credential_storage_unavailable"
-          ? "Discord資格情報を安全に保存できないため連携を無効にしました。"
-          : "固定Discord設定を保存できないため連携を無効にしました。",
-      );
-      return { kind: "unavailable", reason_code: unavailableReason };
-    }
-    const staged = await this.rollbackExternalToolActivation(
-      broker,
-      "no_registered_tools",
-      new Error("固定Discord設定をcheckpoint確定まで待機状態へ移します。"),
-    );
-    if (!staged) {
-      return { kind: "unavailable", reason_code: "startup_failed" };
-    }
-    throwExternalToolConfigurationIfAborted(signal);
-    return {
-      kind: "configured",
-      tool_id: "discord-context",
-      allowed_channel_ids: definition.allowed_channel_ids,
-    };
+    return this.externalTools.configureDiscord(configuration, signal);
   }
 
   private isOnline(): boolean {
@@ -4004,7 +3303,7 @@ export class TaskHubApplication {
     } catch (error: unknown) {
       const errors: unknown[] = [error];
       try {
-        const deactivation = await this.deactivateDiscordExternalToolInternal(
+        const deactivation = await this.externalTools.deactivateInternal(
           "startup_failed",
           new AbortController().signal,
         );
@@ -4014,9 +3313,9 @@ export class TaskHubApplication {
       } catch (deactivationError: unknown) {
         errors.push(deactivationError);
       }
-      await this.enterExternalToolRecovery(
+      await this.externalTools.enterRecovery(
         "startup_failed",
-        this.currentExternalToolRecoveryBroker(),
+        this.externalTools.currentRecoveryBroker(),
         errors,
         "確定済み外部ツール設定のCodex反映に失敗したためAI機能を無効にしました。",
       );
@@ -4079,7 +3378,7 @@ export class TaskHubApplication {
         return state;
       },
       chooseExternalTool: (input, signal) =>
-        this.runExternalToolConfigurationOperation(
+        this.externalTools.runConfigurationOperation(
           signal,
           async (operationSignal) => {
             const state = this.configureAfterSetupTransition(
@@ -4094,12 +3393,12 @@ export class TaskHubApplication {
               if (selection.kind !== "configured") {
                 throw new Error("確定済み固定Discord選択を取得できません。");
               }
-              const activation = await this.initializeExternalTools(
+              const activation = await this.externalTools.initialize(
                 selection,
                 operationSignal,
               );
               if (activation.kind === "unavailable") {
-                await this.markExternalToolUnavailableSafely(
+                await this.externalTools.markUnavailableSafely(
                   activation.reason_code,
                   new Error("確定済み固定Discord連携を有効化できませんでした。"),
                 );
@@ -4209,7 +3508,7 @@ export class TaskHubApplication {
       throw new ObsidianVaultMappingConflictError();
     }
     if (
-      this.externalToolConfigurationOperation.kind === "running"
+      this.externalTools.isConfigurationRunning()
       || this.aiSessionStarts.size > 0
       || this.aiSessions.size > 0
     ) {
@@ -4402,12 +3701,9 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<AiSessionExternalToolResources> {
     const collector = new ExternalToolStatusEvidenceCollector();
-    if (this.externalToolLifecycle.kind !== "ready") {
-      return { broker: undefined, collector, endpoint: undefined };
-    }
-    const registry = this.externalToolRegistry;
+    const registry = this.externalTools.readyRegistry();
     if (registry == null) {
-      throw new Error("外部ツールレジストリが設定されていません。");
+      return { broker: undefined, collector, endpoint: undefined };
     }
     const broker = this.createExternalToolBroker(
       registry,
