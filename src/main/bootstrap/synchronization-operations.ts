@@ -18,12 +18,12 @@ type SynchronizationDependencies<
   readonly hasPendingJournal: () => boolean;
   readonly hasIncompleteJournal: () => boolean;
   readonly isJournalRecoveryRunning: () => boolean;
-  readonly assertRecoveredSynchronizationReady: (executionId: string) => void;
+  readonly assertPostWriteSynchronizationReady: (executionId: string) => void;
   readonly recoverJournal: (signal: AbortSignal) => Promise<void>;
   readonly afterLocalStateRefresh: (signal: AbortSignal) => Promise<void>;
   readonly synchronizeCodexAfterAsana: (signal: AbortSignal) => Promise<void>;
-  readonly afterGuiEdit: (requiredTaskGids: readonly string[], signal: AbortSignal) => Promise<Result>;
-  readonly afterAiApply: (requiredTaskGids: readonly string[], signal: AbortSignal) => Promise<Result>;
+  readonly afterGuiEdit: (requiredTaskGids: readonly string[], executionId: string, signal: AbortSignal) => Promise<Result>;
+  readonly afterAiApply: (requiredTaskGids: readonly string[], executionId: string, signal: AbortSignal) => Promise<Result>;
   readonly beforeAiTurn: (signal: AbortSignal) => Promise<Result>;
   readonly prepareRecoveredSynchronization: (
     requiredTaskGids: readonly string[],
@@ -85,14 +85,21 @@ export class SynchronizationOperations<
   }
 
   /** AI適用とジャーナル復旧の状態を確認して同期開始を許可します。 */
-  public async beforeSynchronization(signal: AbortSignal): Promise<void> {
+  public async beforeSynchronization(signal: AbortSignal, executionId?: string): Promise<void> {
     this.dependencies.validateAbortSignal(signal);
     this.dependencies.throwIfAborted(signal);
-    if (this.applicationState === "synchronizing") {
+    if (executionId != null) {
+      if (!this.dependencies.hasOperationOwner(signal)) {
+        throw new Error("書き込み後同期の実行権を所有していません。");
+      }
+      this.dependencies.assertPostWriteSynchronizationReady(executionId);
       return;
     }
     if (this.applicationState === "applying") {
       throw new Error("AI変更案の適用完了前に別の同期を開始できません。");
+    }
+    if (this.applicationState === "synchronizing") {
+      throw new Error("書き込み後の同期中に別の同期を開始できません。");
     }
     await this.dependencies.recoverJournal(signal);
     this.dependencies.throwIfAborted(signal);
@@ -148,12 +155,17 @@ export class SynchronizationOperations<
   }
 
   /** GUI編集後の同期結果を適用側へ返します。 */
-  public afterGuiEdit(
+  public async afterGuiEdit(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<PostResult> {
+    if (this.dependencies.isJournalRecoveryRunning()) {
+      this.dependencies.assertPostWriteSynchronizationReady(executionId);
+      return this.synchronizeRecoveredExecutions(requiredTaskGids, signal);
+    }
     return this.resolvePostWriteSynchronization(
-      this.dependencies.afterGuiEdit(requiredTaskGids, signal),
+      this.dependencies.afterGuiEdit(requiredTaskGids, executionId, signal),
       signal,
     );
   }
@@ -165,7 +177,7 @@ export class SynchronizationOperations<
     signal: AbortSignal,
   ): Promise<PostResult> {
     if (this.dependencies.isJournalRecoveryRunning()) {
-      this.dependencies.assertRecoveredSynchronizationReady(executionId);
+      this.dependencies.assertPostWriteSynchronizationReady(executionId);
       return this.synchronizeRecoveredExecutions(requiredTaskGids, signal);
     }
     if (this.applicationState !== "applying") {
@@ -175,7 +187,7 @@ export class SynchronizationOperations<
     this.failureDiagnosticSuppressionCount += 1;
     try {
       return await this.resolvePostWriteSynchronization(
-        this.dependencies.afterAiApply(requiredTaskGids, signal),
+        this.dependencies.afterAiApply(requiredTaskGids, executionId, signal),
         signal,
       );
     } finally {

@@ -1,4 +1,4 @@
-import type { TaskWriteStepDraft } from "../common/task-write-step";
+import type { TaskWriteExternalBaseline, TaskWriteExternalChange, TaskWriteStepDraft } from "../common/task-write-step";
 
 export type GuiStatus = "not_started" | "in_progress" | "completed" | "withdrawn";
 
@@ -64,6 +64,9 @@ export function planGuiStatusRepair(
   targetStatus: GuiStatus,
   taskGid: string,
   operationId: string,
+  external: Extract<TaskWriteExternalBaseline, { readonly kind: "stored" }> | undefined,
+  activityDate: string,
+  deviceId: string,
 ): readonly TaskWriteStepDraft[] {
   const state = snapshot(task, projectGid);
   const sectionGid = sectionGids[targetStatus];
@@ -89,6 +92,22 @@ export function planGuiStatusRepair(
     steps.push({
       kind: "asana_update_task",
       payload: { target, update: { kind: "completed", before: state.completed, after: completed } },
+      step_id: `${operationId}:${steps.length + 1}`,
+      scope: { kind: "operation", operation_id: operationId },
+    });
+  }
+  if (targetStatus === "not_started" || targetStatus === "in_progress") {
+    if (external == null) throw new Error("状態修復にCustom external dataの基準がありません。");
+    const changes: TaskWriteExternalChange[] = [{ kind: "last_active_status", after: targetStatus }];
+    if (state.completed) changes.push({ kind: "activity_anchor_on", after: activityDate });
+    steps.push({
+      kind: "asana_merge_external_data",
+      payload: {
+        target,
+        baseline: external,
+        changes,
+        device_id: deviceId,
+      },
       step_id: `${operationId}:${steps.length + 1}`,
       scope: { kind: "operation", operation_id: operationId },
     });

@@ -65,7 +65,7 @@ const migrationFailureReasons = {
 function recordLegacyMigration(
   summary: LegacyMigrationSummary,
   reporter: ErrorReporter,
-  backupPath: string | undefined,
+  backupPaths: PersistenceRuntime["migrationBackupPaths"],
 ): void {
   for (const failure of summary.failures) {
     reporter.reportErrorOnce(
@@ -81,7 +81,7 @@ function recordLegacyMigration(
   }
   console.info(JSON.stringify({
     event: "legacy_application_migration",
-    backup_path: backupPath,
+    backup_paths: backupPaths,
     source_count: summary.source_count,
     migrated_count: summary.migrated_count,
     already_migrated_count: summary.already_migrated_count,
@@ -135,7 +135,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     };
     const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
     const historyRepository = new SqliteProposalApplicationHistoryRepository(openedPersistence, engineReporter);
-    recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPath);
+    recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPaths);
     historyRepository.assertNoUnmigratedJournals();
     const legacy = createLegacyRuntime({
       ...options.legacy,

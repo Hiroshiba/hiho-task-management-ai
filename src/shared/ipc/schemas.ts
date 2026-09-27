@@ -326,6 +326,7 @@ const guiResultSchema = z.discriminatedUnion("outcome", [
         "events_reset",
         "request_aborted",
         "sync_in_progress",
+        "unexpected_error",
       ]),
     })
     .strict(),

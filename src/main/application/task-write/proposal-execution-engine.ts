@@ -120,8 +120,9 @@ export class ProposalExecutionEngine<Result extends object> {
       expected_attempt: attempt,
       settled_at: this.clock.now(),
       outcome: { state, error_id: errorId,
-        ...(execution.plan.origin === "gui-edit" && error instanceof TaskWriteSynchronizationError
-          ? { sync_error_code: error.code } : {}) },
+        ...(execution.plan.origin === "gui-edit" && step.descriptor.kind === "local_synchronize"
+          ? { sync_error_code: error instanceof TaskWriteSynchronizationError ? error.code : "unexpected_error" }
+          : {}) },
     });
   }
 

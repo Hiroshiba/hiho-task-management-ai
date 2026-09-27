@@ -44,6 +44,7 @@ export const taskWriteSynchronizationFailureCodeSchema = schema.enum([
   "events_reset",
   "request_aborted",
   "sync_in_progress",
+  "unexpected_error",
 ]);
 
 export type TaskWriteSynchronizationFailureCode = z.infer<typeof taskWriteSynchronizationFailureCodeSchema>;
@@ -68,6 +69,7 @@ export interface TaskWriteAsanaBridge {
   ): Promise<TaskWritePostSynchronizationResult>;
   synchronizeAfterGuiWrite(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<TaskWritePostSynchronizationResult>;
 }

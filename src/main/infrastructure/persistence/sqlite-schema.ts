@@ -31,7 +31,7 @@ CREATE TABLE legacy_application_history (
   proposal_id TEXT NOT NULL,
   operation_id TEXT NOT NULL,
   format_version INTEGER NOT NULL CHECK (format_version = 1),
-  source_schema_version INTEGER NOT NULL CHECK (source_schema_version BETWEEN 3 AND 7),
+  source_schema_version INTEGER NOT NULL CHECK (source_schema_version BETWEEN 3 AND 8),
   source_stage TEXT NOT NULL,
   source_final_result TEXT,
   source_recovery_reason TEXT,

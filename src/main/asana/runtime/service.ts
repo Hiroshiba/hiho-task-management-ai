@@ -59,6 +59,7 @@ type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
 type SyncStateRepository = { getSyncState(projectGid: string): SyncState | undefined };
 type BeforeSynchronization = (
   signal: AbortSignal,
+  executionId?: string,
 ) => void | PromiseLike<void>;
 type OnlineReadiness =
   | { readonly kind: "ready" }
@@ -251,25 +252,27 @@ export class AsanaSyncRuntime {
   /** GUI変更後の同期と後処理を実行します。 */
   public async afterGuiEdit(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (!this.operationQueueHasOwner(signal)) {
       throw new Error("GUI事後同期の実行権を所有していません。");
     }
-    return this.runOwnedAfterApply(requiredTaskGids, signal);
+    return this.runOwnedAfterApply(requiredTaskGids, executionId, signal);
   }
 
   /** AI変更適用後の同期と後処理を実行します。 */
   public async afterAiApply(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     validateAbortSignal(signal);
     if (!this.operationQueueHasOwner(signal)) {
       throw new Error("AI適用後同期の実行権を所有していません。");
     }
-    return this.runOwnedAfterApply(requiredTaskGids, signal);
+    return this.runOwnedAfterApply(requiredTaskGids, executionId, signal);
   }
 
   /** 通常の手動同期を実行します。 */
@@ -398,6 +401,7 @@ export class AsanaSyncRuntime {
 
   private async runOwnedAfterApply(
     requiredTaskGids: readonly string[],
+    executionId: string,
     signal: AbortSignal,
   ): Promise<AsanaSyncRuntimeInternalResult> {
     if (signal.aborted) {
@@ -407,7 +411,7 @@ export class AsanaSyncRuntime {
     }
     try {
       return await this.operationQueue.runOwned(signal, async (context) => {
-        const readiness = await this.preflightSynchronization(context.signal);
+        const readiness = await this.preflightSynchronization(context.signal, executionId);
         if (readiness.kind === "unavailable") {
           this.operationQueue.invalidatePendingMutations("synchronization_failed");
           return readiness.result;
@@ -463,13 +467,14 @@ export class AsanaSyncRuntime {
 
   private async preflightSynchronization(
     signal: AbortSignal,
+    executionId?: string,
   ): Promise<OnlineReadiness> {
     const readiness = this.ensureOnline(signal);
     if (readiness.kind === "unavailable") {
       return readiness;
     }
     try {
-      await this.beforeSynchronization(signal);
+      await this.beforeSynchronization(signal, executionId);
     } catch (error: unknown) {
       if (signal.aborted || error instanceof AsanaRequestAbortedError) {
         this.operationQueue.invalidatePendingMutations("synchronization_failed");

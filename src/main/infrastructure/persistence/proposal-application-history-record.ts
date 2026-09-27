@@ -143,7 +143,7 @@ export function parseOriginalLegacyRow(value: unknown, version: number): Origina
       source_recovery_reason: null,
     };
   }
-  if (version !== 5 && version !== 6 && version !== 7) {
+  if (version !== 5 && version !== 6 && version !== 7 && version !== 8) {
     throw new Error("旧適用履歴の出所schema versionが未対応です。");
   }
   const original = legacyRowSchema.parse(value);
@@ -159,7 +159,7 @@ export const historyRowSchema = z.object({
   proposal_id: identifierSchema,
   operation_id: identifierSchema,
   format_version: z.literal(1),
-  source_schema_version: z.number().int().min(3).max(7),
+  source_schema_version: z.number().int().min(3).max(8),
   source_stage: z.string(),
   source_final_result: z.enum(["applied", "not_applied", "unknown", "failed"]).nullable(),
   source_recovery_reason: z.string().nullable(),

@@ -1442,7 +1442,7 @@ export class TaskHubApplication {
         || this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
         || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
       isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
-      assertRecoveredSynchronizationReady: (executionId) => {
+      assertPostWriteSynchronizationReady: (executionId) => {
         if (this.proposalApplicationHistoryRepository.getIncomplete().length > 0) {
           throw new Error("未確認の旧適用履歴があるため後続同期を開始できません。");
         }
@@ -1450,15 +1450,19 @@ export class TaskHubApplication {
           .some((execution) => execution.execution_id !== executionId)) {
           throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
         }
+        if (this.requireTaskWriteExecution().gui.repository.getIncomplete()
+          .some((execution) => execution.execution_id !== executionId)) {
+          throw new Error("別の未完了GUI編集executionがあるため後続同期を開始できません。");
+        }
       },
       recoverJournal: (signal) => this.journalRecovery.recover(signal),
       afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
       synchronizeCodexAfterAsana: (signal) =>
         this.configuredCodexRuntime.synchronizeAfterAsana(signal),
-      afterGuiEdit: (requiredTaskGids, signal) =>
-        this.requireRuntime().afterGuiEdit(requiredTaskGids, signal),
-      afterAiApply: (requiredTaskGids, signal) =>
-        this.requireRuntime().afterAiApply(requiredTaskGids, signal),
+      afterGuiEdit: (requiredTaskGids, executionId, signal) =>
+        this.requireRuntime().afterGuiEdit(requiredTaskGids, executionId, signal),
+      afterAiApply: (requiredTaskGids, executionId, signal) =>
+        this.requireRuntime().afterAiApply(requiredTaskGids, executionId, signal),
       beforeAiTurn: (signal) => this.requireRuntime().beforeAiTurn(signal),
       prepareRecoveredSynchronization: (requiredTaskGids, signal) => {
         const context = this.requireContext();
@@ -1616,7 +1620,7 @@ export class TaskHubApplication {
           initial_online: online,
         },
         this.options.lifecycle_signal,
-        (signal) => this.synchronizationOperations.beforeSynchronization(signal),
+        (signal, executionId) => this.synchronizationOperations.beforeSynchronization(signal, executionId),
         (error) => this.recordUnexpectedError(error, "sync"),
         this.options.unhandled_error_forwarder,
         () => createNowIso(this.options.now_provider),
@@ -1785,8 +1789,8 @@ export class TaskHubApplication {
           executionId,
           signal,
         ),
-      synchronizeAfterGuiWrite: (requiredTaskGids, signal) =>
-        this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
+      synchronizeAfterGuiWrite: (requiredTaskGids, executionId, signal) =>
+        this.synchronizationOperations.afterGuiEdit(requiredTaskGids, executionId, signal),
     };
   }
 

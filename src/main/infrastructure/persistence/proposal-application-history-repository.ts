@@ -39,6 +39,35 @@ function fingerprint(snapshot: string): string {
   return createHash("sha256").update(snapshot, "utf8").digest("hex");
 }
 
+type BackupRow =
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid" }
+  | {
+      readonly kind: "valid";
+      readonly original: ReturnType<typeof parseOriginalLegacyRow>;
+      readonly snapshot: string;
+      readonly version: number;
+    };
+
+function readBackupRow(
+  backup: BetterSqlite3.Database | undefined,
+  version: number | undefined,
+  key: SourceKey,
+): BackupRow {
+  if (backup == null || version == null) return { kind: "missing" };
+  const value = backup.prepare<[string, string], unknown>(
+    "SELECT * FROM application_journal WHERE proposal_id = ? AND operation_id = ?",
+  ).get(key.proposal_id, key.operation_id);
+  if (value == null) return { kind: "missing" };
+  try {
+    const original = parseOriginalLegacyRow(value, version);
+    parseLegacyStep(original.normalized);
+    return { kind: "valid", original, snapshot: JSON.stringify(value), version };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
 /** 旧行を版付き非実行履歴へ移し、履歴だけを復旧表示へ読み出します。 */
 export class SqliteProposalApplicationHistoryRepository implements ProposalApplicationHistoryRepository {
   private readonly rejectionIds = new Map<string, string>();
@@ -241,8 +270,8 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
     if (keys.length === 0) {
       return { source_count: 0, migrated_count: 0, already_migrated_count: 0, failures: [] };
     }
-    const backupPath = this.runtime.migrationBackupPath;
-    if (backupPath == null) {
+    const backupPaths = this.runtime.migrationBackupPaths;
+    if (backupPaths.preV8Path == null && backupPaths.preV9Path == null) {
       return {
         source_count: keys.length,
         migrated_count: 0,
@@ -250,12 +279,19 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
         failures: keys.map((key) => ({ ...key, reason: "missing_backup" })),
       };
     }
-    const backup = new BetterSqlite3(backupPath, { readonly: true, fileMustExist: true });
+    const preV8 = backupPaths.preV8Path == null
+      ? undefined : new BetterSqlite3(backupPaths.preV8Path, { readonly: true, fileMustExist: true });
+    let preV9: BetterSqlite3.Database | undefined;
     try {
-      const backupVersion = backup.pragma("user_version", { simple: true });
-      if (typeof backupVersion !== "number" || !Number.isInteger(backupVersion)
-        || backupVersion < 3 || backupVersion > 7) {
-        throw new Error("旧適用履歴の移行前バックアップの版が未対応です。");
+      preV9 = backupPaths.preV9Path == null
+        ? undefined : new BetterSqlite3(backupPaths.preV9Path, { readonly: true, fileMustExist: true });
+      const preV8Version = preV8?.pragma("user_version", { simple: true });
+      const preV9Version = preV9?.pragma("user_version", { simple: true });
+      if (preV8 != null && (typeof preV8Version !== "number" || preV8Version < 3 || preV8Version > 7)) {
+        throw new Error("旧適用履歴のv8移行前バックアップの版が未対応です。");
+      }
+      if (preV9 != null && preV9Version !== 8) {
+        throw new Error("旧適用履歴のv9移行前バックアップの版が未対応です。");
       }
       let migratedCount = 0;
       let alreadyMigratedCount = 0;
@@ -267,35 +303,25 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
         if (source == null) {
           throw new Error("移行対象の旧適用ジャーナルが消失しました。");
         }
-        const backupSource = backup.prepare<[string, string], unknown>(
-          "SELECT * FROM application_journal WHERE proposal_id = ? AND operation_id = ?",
-        ).get(key.proposal_id, key.operation_id);
-        if (backupSource == null) {
-          failures.push({ ...key, reason: "missing_backup_row" });
-          continue;
-        }
         const currentValidation = legacyRowSchema.safeParse(source);
         if (!currentValidation.success) {
           failures.push({ ...key, reason: "invalid_source" });
           continue;
         }
-        let original: ReturnType<typeof parseOriginalLegacyRow>;
-        try {
-          original = parseOriginalLegacyRow(backupSource, backupVersion);
-          parseLegacyStep(original.normalized);
-        } catch {
-          failures.push({ ...key, reason: "invalid_source" });
-          continue;
-        }
-        if (JSON.stringify(currentValidation.data) !== JSON.stringify(original.normalized)) {
-          const existing = this.runtime.connection.prepare<[string, string], SourceKey>(
-            "SELECT proposal_id, operation_id FROM legacy_application_history WHERE proposal_id = ? AND operation_id = ?",
-          ).get(key.proposal_id, key.operation_id);
-          failures.push({ ...key, reason: existing == null ? "invalid_source" : "conflicting_history" });
+        const currentNormalized = JSON.stringify(currentValidation.data);
+        const oldRow = readBackupRow(preV8, typeof preV8Version === "number" ? preV8Version : undefined, key);
+        const v8Row = readBackupRow(preV9, typeof preV9Version === "number" ? preV9Version : undefined, key);
+        const selected = oldRow.kind === "valid" && JSON.stringify(oldRow.original.normalized) === currentNormalized
+          ? oldRow
+          : v8Row.kind === "valid" && JSON.stringify(v8Row.original.normalized) === currentNormalized
+            ? v8Row : undefined;
+        if (selected == null) {
+          failures.push({ ...key, reason: oldRow.kind === "missing" && v8Row.kind === "missing"
+            ? "missing_backup_row" : "invalid_source" });
           continue;
         }
         const currentSnapshot = JSON.stringify(source);
-        const snapshot = JSON.stringify(backupSource);
+        const snapshot = selected.snapshot;
         const hash = fingerprint(snapshot);
         const migrateOne = this.runtime.transaction(() => {
           const current = this.runtime.connection.prepare<[string, string], unknown>(
@@ -309,7 +335,7 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
           ).get(key.proposal_id, key.operation_id);
           if (existing != null) {
             const history = historyRowSchema.safeParse(existing);
-            if (!history.success || history.data.source_schema_version !== backupVersion
+            if (!history.success || history.data.source_schema_version !== selected.version
               || history.data.snapshot_sha256 !== hash
               || history.data.snapshot_json !== snapshot) {
               return "conflicting_history";
@@ -329,11 +355,11 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
             ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, NULL, ?, ?)`).run(
               key.proposal_id,
               key.operation_id,
-              backupVersion,
-              original.source_stage,
-              original.source_final_result,
-              original.source_recovery_reason,
-              original.source_final_result == null || original.source_final_result === "unknown"
+              selected.version,
+              selected.original.source_stage,
+              selected.original.source_final_result,
+              selected.original.source_recovery_reason,
+              selected.original.source_final_result == null || selected.original.source_final_result === "unknown"
                 ? "required" : "not_required",
               snapshot,
               hash,
@@ -343,7 +369,7 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
             "SELECT * FROM legacy_application_history WHERE proposal_id = ? AND operation_id = ?",
           ).get(key.proposal_id, key.operation_id);
           const history = historyRowSchema.parse(reread);
-          if (history.source_schema_version !== backupVersion
+          if (history.source_schema_version !== selected.version
             || history.snapshot_json !== snapshot || history.snapshot_sha256 !== hash) {
             throw new Error("旧適用履歴の再読込内容が元データと一致しません。");
           }
@@ -381,7 +407,8 @@ export class SqliteProposalApplicationHistoryRepository implements ProposalAppli
         failures,
       };
     } finally {
-      backup.close();
+      preV8?.close();
+      preV9?.close();
     }
   }
 }

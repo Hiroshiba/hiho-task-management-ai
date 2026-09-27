@@ -145,8 +145,23 @@ export async function applyGuiTaskWrite(
     if (current.gid !== input.task_gid || !guiStatusBaselineMatches(input.baseline_task, current, input.project_gid)) {
       return conflict(input, operationId, "baseline_changed");
     }
+    let repairExternal: Extract<ReturnType<typeof guiExternalBaseline>, { readonly kind: "valid" }> | undefined;
+    if (targetStatus === "not_started" || targetStatus === "in_progress") {
+      const baselineExternal = guiExternalBaseline(input.baseline_task);
+      if (baselineExternal.kind === "conflict") return conflict(input, operationId, baselineExternal.reason_code);
+      const currentExternal = guiExternalBaseline(current);
+      if (currentExternal.kind === "conflict") return conflict(input, operationId, currentExternal.reason_code);
+      if (currentExternal.baseline.external_gid !== baselineExternal.baseline.external_gid
+        || currentExternal.baseline.data.id !== baselineExternal.baseline.data.id) {
+        return conflict(input, operationId, "external_identity_mismatch");
+      }
+      repairExternal = currentExternal;
+    }
+    const activityDate = repairExternal == null || repairExternal.baseline.data.activity_anchor_on <= input.activity_date
+      ? input.activity_date
+      : repairExternal.baseline.data.activity_anchor_on;
     const steps = planGuiStatusRepair(current, input.project_gid, input.section_gids,
-      targetStatus, input.task_gid, operationId);
+      targetStatus, input.task_gid, operationId, repairExternal?.baseline, activityDate, input.device_id);
     plan = planGuiRepair(input, executionId, operationId, steps, port.fingerprint);
   } else {
     const external = guiExternalBaseline(input.baseline_task);

@@ -62,7 +62,11 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
               context.execution_id,
               signal,
             )
-            : await options.bridge.synchronizeAfterGuiWrite(context.synchronization_task_gids, signal);
+            : await options.bridge.synchronizeAfterGuiWrite(
+              context.synchronization_task_gids,
+              context.execution_id,
+              signal,
+            );
           if (result.kind === "recovery_required") {
             throw new TaskWriteSynchronizationError(result.error_code, result.cause);
           }

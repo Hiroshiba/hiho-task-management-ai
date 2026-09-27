@@ -406,17 +406,21 @@ function migrateSchemaFromV8(
     assertTableColumns(database, "application_journal", applicationJournalV5Columns);
     assertExecutionTableColumns(database);
     assertHistoryTableColumns(database);
-    const sourceCount = readTableRowCount(database, "legacy_application_history");
-    database.exec("ALTER TABLE legacy_application_history RENAME TO legacy_application_history_v8");
-    createHistoryTable(database);
-    database.exec(`INSERT INTO legacy_application_history
-      SELECT * FROM legacy_application_history_v8`);
-    assertTableRowCount(database, "legacy_application_history", sourceCount);
-    database.exec("DROP TABLE legacy_application_history_v8");
+    rebuildHistoryTable(database);
     assertStorageTableNames(readTableNames(database), storageTableNames);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
   migrate();
+}
+
+function rebuildHistoryTable(database: SqliteDatabase): void {
+  const sourceCount = readTableRowCount(database, "legacy_application_history");
+  database.exec("ALTER TABLE legacy_application_history RENAME TO legacy_application_history_previous");
+  createHistoryTable(database);
+  database.exec(`INSERT INTO legacy_application_history
+    SELECT * FROM legacy_application_history_previous`);
+  assertTableRowCount(database, "legacy_application_history", sourceCount);
+  database.exec("DROP TABLE legacy_application_history_previous");
 }
 
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
@@ -490,4 +494,16 @@ export function initializeSqliteSchema(
   assertTableColumns(database, "application_journal", applicationJournalV5Columns);
   assertExecutionTableColumns(database);
   assertHistoryTableColumns(database);
+  const historyTable = database.prepare<[], { readonly sql: string | null }>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'legacy_application_history'",
+  ).get();
+  if (historyTable?.sql == null) {
+    throw new Error("旧適用履歴テーブルの定義を読み取れません。");
+  }
+  if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 8")) {
+    if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 7")) {
+      throw new Error("旧適用履歴テーブルの出所版制約が未対応です。");
+    }
+    transaction(() => rebuildHistoryTable(database))();
+  }
 }
