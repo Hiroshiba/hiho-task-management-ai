@@ -35,6 +35,8 @@ import { SecretStorageEncryptionUnavailableError } from "../auth/secret-storage"
 import { ExternalAgentServiceError } from "../external-agent";
 import { ObsidianVaultMappingConflictError } from "../obsidian";
 import { AsanaSyncRuntimeAlreadyReportedError } from "../asana/runtime";
+import { IpcEventSubscriptions } from "./handlers/event-subscriptions";
+import { ipcFailureMessages } from "./handlers/failure-messages";
 import {
   ipcAiApprovalInputSchema,
   ipcAiApprovalResponseSchema,
@@ -325,27 +327,6 @@ class IpcCapabilityUnavailableError extends Error {
 
 type HandlerRemover = () => void;
 
-const failureMessages: Record<IpcFailure["code"], string> = {
-  invalid_request: "IPC入力が不正です。",
-  invalid_response: "IPC応答が不正です。",
-  sender_untrusted: "IPC送信元が信頼できません。",
-  not_configured: "この機能は設定されていません。",
-  operation_failed: "IPC操作に失敗しました。",
-  oauth_invalid_client: "Client ID、Client Secret、OAuthアプリ設定を確認して認証を最初からやり直してください。",
-  oauth_invalid_grant: "認可コードが期限切れ、使用済み、または別アプリの可能性があるため認証を最初からやり直してください。",
-  oauth_token_endpoint_rejected: "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。",
-  oauth_network_error: "Asanaとの通信に失敗しました。ネットワークを確認して最初からやり直してください。",
-  oauth_http_rejected: "Asanaが認証要求を拒否しました。Client ID、Client Secret、Redirect URLを確認し、新しいコードで再認証してください。",
-  oauth_service_unavailable: "Asana認証サービスを一時利用できません。待ってから最初からやり直してください。",
-  oauth_response_invalid: "Asanaの認証応答形式を確認できません。最初からやり直し、続く場合はこの表示文を共有してください。",
-  secure_storage_unavailable: "OS保護ストレージが使えず秘密情報を保存できません。Windows版またはキーチェーン対応環境で起動してください。",
-  oauth_session_error: "認証セッションを最初からやり直してください。",
-  aborted: "IPC操作が中断されました。",
-  conflict: "操作が競合しました。",
-  not_found: "指定された対象が見つかりません。",
-  authentication_required: "認証が必要です。",
-  unavailable: "この機能は現在利用できません。",
-};
 
 type IpcOperationFailure =
   | {
@@ -509,18 +490,25 @@ function validateEventSender(
 export class IpcHandlerRegistry {
   private readonly options: IpcHandlerRegistryOptions;
   private readonly cleanup: HandlerRemover[] = [];
-  private readonly syncSubscribers = new Set<WebContents>();
-  private readonly appUpdateSubscribers = new Set<WebContents>();
-  private readonly aiSubscribers = new Set<WebContents>();
-  private readonly aiStatusSubscribers = new Set<WebContents>();
-  private readonly externalAgentSubscribers = new Set<WebContents>();
+  private readonly eventSubscriptions: IpcEventSubscriptions;
   private readonly activeAbortControllers = new Set<AbortController>();
   private registeredIpcMain: IpcMain | undefined;
-  private disposed = false;
 
   public constructor(options: IpcHandlerRegistryOptions) {
     validateOptions(options);
     this.options = options;
+    this.eventSubscriptions = new IpcEventSubscriptions({
+      validateChannel: (channel) => ipcChannelSchema.parse(channel),
+      validateSender: (event) => validateEventSender(
+        event,
+        options.rendererWebContents,
+        options.rendererUrl,
+      ),
+      validateRequest: (payload) => {
+        ipcEmptyRequestSchema.parse(payload);
+      },
+      record: (error, channel) => options.diagnostic.record(error, channel),
+    });
   }
 
   /** 固定チャンネルのIPCハンドラーを登録します。 */
@@ -528,16 +516,15 @@ export class IpcHandlerRegistry {
     if (this.registeredIpcMain != null) {
       throw new Error("IPCハンドラーは重複登録できません。");
     }
-    this.disposed = false;
     this.registeredIpcMain = ipcMain;
     this.registerInvokeHandlers(ipcMain);
-    this.registerEventHandlers(ipcMain);
+    this.eventSubscriptions.register(ipcMain);
     this.registerServiceEvents();
   }
 
   /** 登録済みIPCハンドラーと購読を解放します。 */
   public dispose(): void {
-    this.disposed = true;
+    this.eventSubscriptions.stopSending();
     for (const controller of this.activeAbortControllers) {
       controller.abort();
     }
@@ -549,16 +536,12 @@ export class IpcHandlerRegistry {
     for (const remove of this.cleanup.splice(0)) {
       remove();
     }
-    this.syncSubscribers.clear();
-    this.appUpdateSubscribers.clear();
-    this.aiSubscribers.clear();
-    this.aiStatusSubscribers.clear();
-    this.externalAgentSubscribers.clear();
+    this.eventSubscriptions.dispose();
     this.registeredIpcMain = undefined;
   }
 
   private registerInvokeHandlers(ipcMain: IpcMain): void {
-    this.registerHandleBeforeStartup(
+    this.registerHandleWithStartupGate(
       ipcMain,
       "app:wait-for-startup",
       ipcEmptyRequestSchema,
@@ -567,8 +550,9 @@ export class IpcHandlerRegistry {
         await this.options.startupGate.waitForStartup(signal);
         return createCompletedValue();
       },
+      false,
     );
-    this.registerHandleBeforeStartup(
+    this.registerHandleWithStartupGate(
       ipcMain,
       "app-update:get-state",
       ipcEmptyRequestSchema,
@@ -580,613 +564,236 @@ export class IpcHandlerRegistry {
         }
         return port.getState();
       },
+      false,
     );
-    this.registerHandle(
-      ipcMain,
-      "asana:get-authentication-state",
-      ipcAsanaGetAuthenticationStateInputSchema,
-      ipcAsanaAuthenticationStateResponseSchema,
-      async () => {
-        const port = this.options.ports.asana;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getAuthenticationState();
-      },
+    this.registerPortHandle(
+      ipcMain, "asana:get-authentication-state", ipcAsanaGetAuthenticationStateInputSchema, ipcAsanaAuthenticationStateResponseSchema, "asana",
+      async (port) => port.getAuthenticationState(),
     );
-    this.registerHandle(
-      ipcMain,
-      "asana:begin-reauthentication",
-      ipcAsanaBeginReauthenticationInputSchema,
-      ipcAsanaAuthenticationStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.asana;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.beginReauthentication(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "asana:begin-reauthentication", ipcAsanaBeginReauthenticationInputSchema, ipcAsanaAuthenticationStateResponseSchema, "asana",
+      async (port, _input, signal) => port.beginReauthentication(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "asana:complete-reauthentication",
-      ipcAsanaCompleteReauthenticationInputSchema,
-      ipcAsanaCompleteReauthenticationResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.asana;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.completeReauthentication(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "asana:complete-reauthentication", ipcAsanaCompleteReauthenticationInputSchema, ipcAsanaCompleteReauthenticationResponseSchema, "asana",
+      async (port, input, signal) => port.completeReauthentication(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "asana:cancel-reauthentication",
-      ipcAsanaCancelReauthenticationInputSchema,
-      ipcAsanaCancelReauthenticationResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.asana;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.cancelReauthentication(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "asana:cancel-reauthentication", ipcAsanaCancelReauthenticationInputSchema, ipcAsanaCancelReauthenticationResponseSchema, "asana",
+      async (port, input, signal) => port.cancelReauthentication(input, signal),
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "read-model:get-overview",
       ipcReadModelOverviewInputSchema,
       ipcReadModelOverviewResponseSchema,
-      async (input) => {
-        const port = this.options.ports.readModel;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "readModel",
+      async (port, input) => {
         ipcEmptyRequestSchema.parse(input);
         return port.getOverview();
       },
     );
-    this.registerHandle(
-      ipcMain,
-      "read-model:get-task-detail",
-      ipcReadModelTaskDetailInputSchema,
-      ipcReadModelTaskDetailResponseSchema,
-      async (input) => {
-        const port = this.options.ports.readModel;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getTaskDetail(input.task_gid);
-      },
+    this.registerPortHandle(
+      ipcMain, "read-model:get-task-detail", ipcReadModelTaskDetailInputSchema, ipcReadModelTaskDetailResponseSchema, "readModel",
+      async (port, input) => port.getTaskDetail(input.task_gid),
     );
-    this.registerHandle(
-      ipcMain,
-      "sync:run",
-      ipcSyncInputSchema,
-      ipcSyncResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.sync;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.run(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "sync:run", ipcSyncInputSchema, ipcSyncResponseSchema, "sync",
+      async (port, input, signal) => port.run(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "sync:get-state",
-      ipcSyncGetStateInputSchema,
-      ipcSyncGetStateResponseSchema,
-      async () => {
-        const port = this.options.ports.sync;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getState();
-      },
+    this.registerPortHandle(
+      ipcMain, "sync:get-state", ipcSyncGetStateInputSchema, ipcSyncGetStateResponseSchema, "sync",
+      async (port) => port.getState(),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:get-state",
-      ipcEmptyRequestSchema,
-      ipcSetupStateResponseSchema,
-      async () => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getState();
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:get-state", ipcEmptyRequestSchema, ipcSetupStateResponseSchema, "setup",
+      async (port) => port.getState(),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:start",
-      ipcSetupStartInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.start(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:start", ipcSetupStartInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.start(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:complete-codex-authentication",
-      ipcSetupCompleteCodexAuthenticationInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.completeCodexAuthentication(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:complete-codex-authentication", ipcSetupCompleteCodexAuthenticationInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.completeCodexAuthentication(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:begin-asana-authorization",
-      ipcSetupBeginAsanaAuthorizationInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.beginAsanaAuthorization(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:begin-asana-authorization", ipcSetupBeginAsanaAuthorizationInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.beginAsanaAuthorization(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:complete-asana-authorization",
-      ipcSetupCompleteAsanaAuthorizationInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.completeAsanaAuthorization(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:complete-asana-authorization", ipcSetupCompleteAsanaAuthorizationInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.completeAsanaAuthorization(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:cancel-asana-authorization",
-      ipcSetupCancelAsanaAuthorizationInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.cancelAsanaAuthorization(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:cancel-asana-authorization", ipcSetupCancelAsanaAuthorizationInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.cancelAsanaAuthorization(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:list-workspaces",
-      ipcSetupListWorkspacesInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.listWorkspaces(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:list-workspaces", ipcSetupListWorkspacesInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.listWorkspaces(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:select-workspace",
-      ipcSetupSelectWorkspaceInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.selectWorkspace(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:select-workspace", ipcSetupSelectWorkspaceInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.selectWorkspace(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:select-project",
-      ipcSetupSelectProjectInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.selectProject(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:select-project", ipcSetupSelectProjectInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.selectProject(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:retry-resources",
-      ipcSetupRetryResourcesInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.retryResources(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:retry-resources", ipcSetupRetryResourcesInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.retryResources(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:run-capability",
-      ipcSetupRunCapabilityInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.runCapability(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:run-capability", ipcSetupRunCapabilityInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.runCapability(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:choose-vault",
-      ipcSetupChooseVaultInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.chooseVault(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:choose-vault", ipcSetupChooseVaultInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.chooseVault(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:choose-external-tool",
-      ipcSetupChooseExternalToolInputSchema,
-      ipcSetupStateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.chooseExternalTool(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:choose-external-tool", ipcSetupChooseExternalToolInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, input, signal) => port.chooseExternalTool(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:run-full-sync",
-      ipcSetupRunFullSyncInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.runFullSync(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:run-full-sync", ipcSetupRunFullSyncInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.runFullSync(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "setup:run-codex-capability",
-      ipcSetupRunCodexCapabilityInputSchema,
-      ipcSetupStateResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.setup;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.runCodexCapability(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "setup:run-codex-capability", ipcSetupRunCodexCapabilityInputSchema, ipcSetupStateResponseSchema, "setup",
+      async (port, _input, signal) => port.runCodexCapability(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "gui:apply",
-      ipcGuiEditInputSchema,
-      ipcGuiEditResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.gui;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.apply(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "gui:apply", ipcGuiEditInputSchema, ipcGuiEditResponseSchema, "gui",
+      async (port, input, signal) => port.apply(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:get-state",
-      ipcExternalAgentGetStateInputSchema,
-      ipcExternalAgentGetStateResponseSchema,
-      async () => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getState();
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:get-state", ipcExternalAgentGetStateInputSchema, ipcExternalAgentGetStateResponseSchema, "externalAgent",
+      async (port) => port.getState(),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:set-enabled",
-      ipcExternalAgentSetEnabledInputSchema,
-      ipcExternalAgentSetEnabledResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.setEnabled(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:set-enabled", ipcExternalAgentSetEnabledInputSchema, ipcExternalAgentSetEnabledResponseSchema, "externalAgent",
+      async (port, input, signal) => port.setEnabled(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:edit",
-      ipcExternalAgentEditInputSchema,
-      ipcExternalAgentEditResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.edit(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:edit", ipcExternalAgentEditInputSchema, ipcExternalAgentEditResponseSchema, "externalAgent",
+      async (port, input, signal) => port.edit(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:select",
-      ipcExternalAgentSelectInputSchema,
-      ipcExternalAgentSelectResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.select(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:select", ipcExternalAgentSelectInputSchema, ipcExternalAgentSelectResponseSchema, "externalAgent",
+      async (port, input, signal) => port.select(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:approve",
-      ipcExternalAgentApproveInputSchema,
-      ipcExternalAgentApproveResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.approve(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:approve", ipcExternalAgentApproveInputSchema, ipcExternalAgentApproveResponseSchema, "externalAgent",
+      async (port, input, signal) => port.approve(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "external-agent:reject",
-      ipcExternalAgentRejectInputSchema,
-      ipcExternalAgentRejectResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.externalAgent;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.reject(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "external-agent:reject", ipcExternalAgentRejectInputSchema, ipcExternalAgentRejectResponseSchema, "externalAgent",
+      async (port, input, signal) => port.reject(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:start-turn",
-      ipcAiTurnInputSchema,
-      ipcAiTurnResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.startTurn(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:start-turn", ipcAiTurnInputSchema, ipcAiTurnResponseSchema, "ai",
+      async (port, input, signal) => port.startTurn(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:start-new-session",
-      ipcAiStartNewSessionInputSchema,
-      ipcAiStartNewSessionResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.startNewSession(signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:start-new-session", ipcAiStartNewSessionInputSchema, ipcAiStartNewSessionResponseSchema, "ai",
+      async (port, _input, signal) => port.startNewSession(signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:get-status",
-      ipcAiGetStatusInputSchema,
-      ipcAiGetStatusResponseSchema,
-      async () => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getStatus();
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:get-status", ipcAiGetStatusInputSchema, ipcAiGetStatusResponseSchema, "ai",
+      async (port) => port.getStatus(),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:get-proposal",
-      ipcAiProposalInputSchema,
-      ipcAiProposalResponseSchema,
-      (input) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.getProposal(input);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:get-proposal", ipcAiProposalInputSchema, ipcAiProposalResponseSchema, "ai",
+      (port, input) => port.getProposal(input),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:select",
-      ipcAiSelectionInputSchema,
-      ipcAiSelectionResponseSchema,
-      (input) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.select(input);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:select", ipcAiSelectionInputSchema, ipcAiSelectionResponseSchema, "ai",
+      (port, input) => port.select(input),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:edit-operation",
-      ipcAiEditInputSchema,
-      ipcAiEditResponseSchema,
-      (input) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.editOperation(input);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:edit-operation", ipcAiEditInputSchema, ipcAiEditResponseSchema, "ai",
+      (port, input) => port.editOperation(input),
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "ai:reject",
       ipcAiRejectInputSchema,
       ipcAiRejectResponseSchema,
-      async (input) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "ai",
+      async (port, input) => {
         await port.reject(input);
         return createCompletedValue();
       },
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:approve",
-      ipcAiApprovalInputSchema,
-      ipcAiApprovalResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.approve(input, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:approve", ipcAiApprovalInputSchema, ipcAiApprovalResponseSchema, "ai",
+      async (port, input, signal) => port.approve(input, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "ai:close-session",
-      ipcAiCloseSessionInputSchema,
-      ipcAiCloseSessionResponseSchema,
-      async (sessionId) => {
-        const port = this.options.ports.ai;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.closeSession(sessionId);
-      },
+    this.registerPortHandle(
+      ipcMain, "ai:close-session", ipcAiCloseSessionInputSchema, ipcAiCloseSessionResponseSchema, "ai",
+      async (port, sessionId) => port.closeSession(sessionId),
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "obsidian:list-vaults",
       ipcObsidianListVaultsInputSchema,
       ipcObsidianListVaultsResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "obsidian",
+      async (port, _input, signal) => {
         const vaultIds = [...await port.listVaults(signal)].sort(compareStrings);
         return { vault_ids: vaultIds };
       },
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "obsidian:list-vault-mappings",
       ipcObsidianListVaultMappingsInputSchema,
       ipcObsidianListVaultMappingsResponseSchema,
-      async (_input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "obsidian",
+      async (port, _input, signal) => {
         return [...await port.listVaultMappings(signal)];
       },
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "obsidian:save-vault-mapping",
       ipcObsidianSaveVaultMappingInputSchema,
       ipcObsidianSaveVaultMappingResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "obsidian",
+      async (port, input, signal) => {
         return [...await port.saveVaultMapping(input, signal)];
       },
     );
-    this.registerHandle(
-      ipcMain,
-      "obsidian:validate-vault",
-      ipcObsidianValidateInputSchema,
-      ipcObsidianValidateResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.validateVault(input.vault_id, signal);
-      },
+    this.registerPortHandle(
+      ipcMain, "obsidian:validate-vault", ipcObsidianValidateInputSchema, ipcObsidianValidateResponseSchema, "obsidian",
+      async (port, input, signal) => port.validateVault(input.vault_id, signal),
     );
-    this.registerHandle(
-      ipcMain,
-      "obsidian:resolve-path",
-      ipcObsidianPathInputSchema,
-      ipcObsidianPathResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.resolvePath(
+    this.registerPortHandle(
+      ipcMain, "obsidian:resolve-path", ipcObsidianPathInputSchema, ipcObsidianPathResponseSchema, "obsidian",
+      async (port, input, signal) => port.resolvePath(
           input.vault_id,
           input.relative_path,
           signal,
-        );
-      },
+        ),
     );
-    this.registerHandle(
-      ipcMain,
-      "obsidian:note-exists",
-      ipcObsidianPathInputSchema,
-      ipcObsidianPathResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
-        return port.noteExists(
+    this.registerPortHandle(
+      ipcMain, "obsidian:note-exists", ipcObsidianPathInputSchema, ipcObsidianPathResponseSchema, "obsidian",
+      async (port, input, signal) => port.noteExists(
           input.vault_id,
           input.relative_path,
           signal,
-        );
-      },
+        ),
     );
-    this.registerHandle(
+    this.registerPortHandle(
       ipcMain,
       "obsidian:open-note",
       ipcObsidianOpenNoteInputSchema,
       ipcObsidianOpenNoteResponseSchema,
-      async (input, signal) => {
-        const port = this.options.ports.obsidian;
-        if (port == null) {
-          throw new IpcCapabilityUnavailableError();
-        }
+      "obsidian",
+      async (port, input, signal) => {
         await port.openNote(input.vault_id, input.relative_path, signal);
         return createCompletedValue();
       },
@@ -1210,21 +817,25 @@ export class IpcHandlerRegistry {
     );
   }
 
-  private registerHandleBeforeStartup<TInput, TOutput>(
+  private registerPortHandle<K extends keyof IpcServicePorts, TInput, TOutput>(
     ipcMain: IpcMain,
     channel: string,
     inputSchema: z.ZodType<TInput>,
     responseSchema: z.ZodType<IpcResponse<TOutput>>,
-    operation: (input: TInput, signal: AbortSignal) => MaybePromise<TOutput>,
+    portKey: K,
+    operation: (
+      port: NonNullable<IpcServicePorts[K]>,
+      input: TInput,
+      signal: AbortSignal,
+    ) => MaybePromise<TOutput>,
   ): void {
-    this.registerHandleWithStartupGate(
-      ipcMain,
-      channel,
-      inputSchema,
-      responseSchema,
-      operation,
-      false,
-    );
+    this.registerHandle(ipcMain, channel, inputSchema, responseSchema, (input, signal) => {
+      const port = this.options.ports[portKey];
+      if (port == null) {
+        throw new IpcCapabilityUnavailableError();
+      }
+      return operation(port, input, signal);
+    });
   }
 
   private registerHandleWithStartupGate<TInput, TOutput>(
@@ -1352,185 +963,30 @@ export class IpcHandlerRegistry {
     return ipcFailureSchema.parse({
       kind: "error",
       code,
-      message: failureMessages[code],
-    });
-  }
-
-  private registerEventHandlers(ipcMain: IpcMain): void {
-    this.registerSubscription(
-      ipcMain,
-      "app-update:state:subscribe",
-      this.appUpdateSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "app-update:state:unsubscribe",
-      this.appUpdateSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "sync:state:subscribe",
-      this.syncSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "sync:state:unsubscribe",
-      this.syncSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "ai:delta:subscribe",
-      this.aiSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "ai:delta:unsubscribe",
-      this.aiSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "ai:status:subscribe",
-      this.aiStatusSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "ai:status:unsubscribe",
-      this.aiStatusSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "external-agent:state:subscribe",
-      this.externalAgentSubscribers,
-    );
-    this.registerSubscription(
-      ipcMain,
-      "external-agent:state:unsubscribe",
-      this.externalAgentSubscribers,
-    );
-  }
-
-  private registerSubscription(
-    ipcMain: IpcMain,
-    channel: string,
-    subscribers: Set<WebContents>,
-  ): void {
-    const validatedChannel = ipcChannelSchema.parse(channel);
-    const listener = (event: IpcMainEvent, payload: unknown): void => {
-      try {
-        validateEventSender(
-          event,
-          this.options.rendererWebContents,
-          this.options.rendererUrl,
-        );
-        ipcEmptyRequestSchema.parse(payload);
-        if (validatedChannel.endsWith(":subscribe")) {
-          subscribers.add(event.sender);
-        } else {
-          subscribers.delete(event.sender);
-        }
-      } catch (error: unknown) {
-        this.options.diagnostic.record(error, validatedChannel);
-      }
-    };
-    ipcMain.on(validatedChannel, listener);
-    this.cleanup.push(() => {
-      ipcMain.removeListener(validatedChannel, listener);
+      message: ipcFailureMessages[code],
     });
   }
 
   private registerServiceEvents(): void {
-    const appUpdate = this.options.ports.appUpdate;
-    if (appUpdate != null) {
-      const remove = appUpdate.onState((state) => {
-        this.sendServiceEvent(
-          ipcAppUpdateStateSchema,
-          state,
-          this.appUpdateSubscribers,
-          "app-update:state",
-        );
-      });
-      this.cleanup.push(remove);
-    }
-    const sync = this.options.ports.sync;
-    if (sync?.onState != null) {
-      const remove = sync.onState((state) => {
-        this.sendServiceEvent(
-          ipcSyncStateEventSchema,
-          state,
-          this.syncSubscribers,
-          "sync:state",
-        );
-      });
-      this.cleanup.push(remove);
-    }
-    const ai = this.options.ports.ai;
-    if (ai?.onDelta != null) {
-      const remove = ai.onDelta((delta) => {
-        this.sendServiceEvent(
-          ipcAiDeltaEventSchema,
-          delta,
-          this.aiSubscribers,
-          "ai:delta",
-        );
-      });
-      this.cleanup.push(remove);
-    }
-    if (ai?.onStatus != null) {
-      const remove = ai.onStatus((status) => {
-        this.sendServiceEvent(
-          ipcAiStatusEventSchema,
-          status,
-          this.aiStatusSubscribers,
-          "ai:status",
-        );
-      });
-      this.cleanup.push(remove);
-    }
-    const externalAgent = this.options.ports.externalAgent;
-    if (externalAgent?.onChanged != null) {
-      const remove = externalAgent.onChanged((state) => {
-        this.sendServiceEvent(
-          ipcExternalAgentStateEventSchema,
-          state,
-          this.externalAgentSubscribers,
-          "external-agent:state",
-        );
-      });
-      this.cleanup.push(remove);
-    }
+    const { appUpdate, sync, ai, externalAgent } = this.options.ports;
+    this.eventSubscriptions.bind(
+      "app-update:state", ipcAppUpdateStateSchema, appUpdate?.onState.bind(appUpdate),
+    );
+    this.eventSubscriptions.bind(
+      "sync:state", ipcSyncStateEventSchema, sync?.onState?.bind(sync),
+    );
+    this.eventSubscriptions.bind(
+      "ai:delta", ipcAiDeltaEventSchema, ai?.onDelta?.bind(ai),
+    );
+    this.eventSubscriptions.bind(
+      "ai:status", ipcAiStatusEventSchema, ai?.onStatus?.bind(ai),
+    );
+    this.eventSubscriptions.bind(
+      "external-agent:state", ipcExternalAgentStateEventSchema,
+      externalAgent?.onChanged?.bind(externalAgent),
+    );
   }
 
-  private sendServiceEvent<T>(
-    schema: z.ZodType<T>,
-    value: unknown,
-    subscribers: ReadonlySet<WebContents>,
-    channel: string,
-  ): void {
-    if (this.disposed) {
-      return;
-    }
-    try {
-      const parsed = schema.parse(value);
-      this.sendToSubscribers(subscribers, channel, parsed);
-    } catch (error: unknown) {
-      this.options.diagnostic.record(error, channel);
-    }
-  }
-
-  private sendToSubscribers<T>(
-    subscribers: ReadonlySet<WebContents>,
-    channel: string,
-    payload: T,
-  ): void {
-    if (this.disposed) {
-      return;
-    }
-    for (const webContents of subscribers) {
-      if (!webContents.isDestroyed()) {
-        webContents.send(channel, payload);
-      }
-    }
-  }
 }
 
 /** IPCレジストリを作成して固定チャンネルへ登録します。 */
