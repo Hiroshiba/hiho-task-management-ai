@@ -45,6 +45,7 @@ function referencedTargets(step: TaskWriteStep): readonly TaskWriteTarget[] {
     case "asana_create_task":
       return step.payload.initial_external.dependencies.map((dependency) => dependency.target);
     case "asana_update_task":
+    case "asana_add_to_project":
     case "asana_add_to_section":
       return [step.payload.target];
     case "asana_clear_parent":
@@ -75,6 +76,7 @@ const taskWritePlanSchema = z.object({
   format_version: z.literal(1),
   execution_id: identifierSchema,
   origin: z.enum(["proposal", "gui-edit"]),
+  gui_context: z.object({ operation_id: identifierSchema, task_gid: gidSchema, project_gid: gidSchema }).strict().optional(),
   plan_fingerprint: snapshotHashSchema,
   known_references: z.array(z.object({
     temporary_ref: identifierSchema,
@@ -82,6 +84,9 @@ const taskWritePlanSchema = z.object({
   }).strict()),
   steps: z.array(taskWriteStepSchema).min(1),
 }).strict().superRefine((plan, context) => {
+  if ((plan.origin === "gui-edit") !== (plan.gui_context != null)) {
+    context.addIssue({ code: "custom", path: ["gui_context"], message: "GUI編集の保存文脈が実行元と一致しません。" });
+  }
   const stepIds = new Set<string>();
   const temporaryRefs = new Set<string>();
   const taskGids = new Set<string>();
@@ -135,7 +140,7 @@ const taskWritePlanSchema = z.object({
     if (step.kind === "proposal_operation_check") {
       nonCreateStarted = true;
       const operation = step.payload.operation;
-      if (plan.origin !== "proposal" || step.scope.kind !== "operation"
+      if (step.scope.kind !== "operation"
         || step.scope.operation_id !== operation.operation_id
         || checkedOperations.has(operation.operation_id) || createdOperations.has(operation.operation_id)) {
         context.addIssue({ code: "custom", path: ["steps", index], message: "非作成操作の照合stepと操作IDが一致しません。" });
@@ -162,6 +167,9 @@ const taskWritePlanSchema = z.object({
       }
     }
     if (step.kind === "asana_create_task") {
+      if (plan.origin === "gui-edit") {
+        context.addIssue({ code: "custom", path: ["steps", index], message: "GUI編集でタスク作成stepを指定できません。" });
+      }
       const temporaryRef = step.payload.target.ref;
       if (nonCreateStarted || step.scope.kind !== "operation" || checkedOperations.has(step.scope.operation_id)
         || createdOperations.has(step.scope.operation_id)) {
@@ -214,6 +222,10 @@ const taskWritePlanSchema = z.object({
   if (plan.origin === "proposal" && checkedOperations.size + createdOperations.size === 0) {
     context.addIssue({ code: "custom", path: ["steps"], message: "変更案には操作の作成または照合stepが必要です。" });
   }
+  if (plan.origin === "gui-edit" && plan.gui_context != null && plan.steps.some((step) =>
+    step.scope.kind === "operation" && step.scope.operation_id !== plan.gui_context?.operation_id)) {
+    context.addIssue({ code: "custom", path: ["steps"], message: "GUI編集の操作IDが保存文脈と一致しません。" });
+  }
   const createSteps = plan.steps.filter((step) => step.kind === "asana_create_task");
   const readyReferences = new Set(plan.known_references.map((reference) => reference.temporary_ref));
   for (const [index, step] of createSteps.entries()) {
@@ -256,6 +268,7 @@ export const taskWriteReceiptSchema = z.discriminatedUnion("kind", [
     ...asanaReceiptShape,
     kind: z.literal("asana_write"),
     task_gid: gidSchema,
+    write_performed: z.boolean().optional(),
     verification_step_id: identifierSchema.optional(),
   }).strict(),
   z.object({
@@ -335,6 +348,7 @@ export function createTaskWritePlan(
   input: {
     readonly execution_id: string;
     readonly origin: TaskWritePlan["origin"];
+    readonly gui_context?: TaskWritePlan["gui_context"];
     readonly known_references: TaskWritePlan["known_references"];
     readonly steps: readonly TaskWriteStepDraft[];
   },
@@ -353,6 +367,7 @@ export function createTaskWritePlan(
     format_version: 1,
     execution_id: input.execution_id,
     origin: input.origin,
+    ...(input.gui_context == null ? {} : { gui_context: input.gui_context }),
     known_references: input.known_references,
     steps,
   };

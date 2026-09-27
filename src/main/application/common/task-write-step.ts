@@ -130,8 +130,14 @@ const updateTaskPayloadSchema = z.object({
 
 const sectionPayloadSchema = z.object({
   target: taskWriteTargetSchema,
-  before_section_gid: gidSchema,
+  before_section_gid: gidSchema.nullable(),
   after_section_gid: gidSchema,
+}).strict();
+
+const projectPayloadSchema = z.object({
+  target: taskWriteTargetSchema,
+  project_gid: gidSchema,
+  section_gid: gidSchema,
 }).strict();
 
 const tagIdentitySchema = z.discriminatedUnion("category", [
@@ -224,6 +230,7 @@ export const taskWriteStepSchema = z.discriminatedUnion("kind", [
   z.object({ ...stepShape, kind: z.literal("proposal_operation_check"), payload: proposalOperationCheckPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_create_task"), payload: createTaskPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_update_task"), payload: updateTaskPayloadSchema }).strict(),
+  z.object({ ...stepShape, kind: z.literal("asana_add_to_project"), payload: projectPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_add_to_section"), payload: sectionPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_add_tag"), payload: addTagPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_remove_tag"), payload: removeTagPayloadSchema }).strict(),

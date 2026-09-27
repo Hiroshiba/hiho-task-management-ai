@@ -9,6 +9,7 @@ import type {
   ProposalExecutionStep,
 } from "../../application/common/ports/proposal-execution-repository";
 import { canonicalizeTaskWriteJson } from "../../domain/task-write-values";
+import { taskWriteSynchronizationFailureCodeSchema } from "../../application/common/ports/asana-task-write";
 
 const identifierSchema = z.string().min(1).regex(/^\S+$/u);
 const timestampSchema = z.iso.datetime({ offset: true });
@@ -49,6 +50,7 @@ export const executionStepRowSchema = z.object({
   attempt: z.number().int().nonnegative(),
   receipt_json: z.string().nullable(),
   error_id: errorIdSchema.nullable(),
+  sync_error_code: taskWriteSynchronizationFailureCodeSchema.nullable(),
   updated_at: timestampSchema,
 }).strict();
 
@@ -118,11 +120,11 @@ function parseStep(
     ? undefined
     : parseReceipt(parseExecutionJson(row.receipt_json));
   if (row.state === "planned") {
-    if (row.attempt !== 0 || receipt != null || row.error_id != null) {
+    if (row.attempt !== 0 || receipt != null || row.error_id != null || row.sync_error_code != null) {
       throw new Error("未開始stepの保存状態が不正です。");
     }
   } else if (row.state === "running") {
-    if (row.attempt === 0 || receipt != null || row.error_id != null) {
+    if (row.attempt === 0 || receipt != null || row.error_id != null || row.sync_error_code != null) {
       throw new Error("実行中stepの保存状態が不正です。");
     }
   } else if (row.state === "succeeded") {
@@ -134,7 +136,7 @@ function parseStep(
           ? "proposal_operation_check"
           : "asana_write";
     if (
-      row.attempt === 0 || receipt == null || row.error_id != null
+      row.attempt === 0 || receipt == null || row.error_id != null || row.sync_error_code != null
       || receipt.step_id !== descriptor.step_id
       || receipt.planned_payload_fingerprint !== descriptor.payload_fingerprint
       || receipt.kind !== expectedReceiptKind
@@ -144,7 +146,8 @@ function parseStep(
     ) {
       throw new Error("成功stepのreceiptがplanと一致しません。");
     }
-  } else if (row.attempt === 0 || receipt != null || row.error_id == null) {
+  } else if (row.attempt === 0 || receipt != null || row.error_id == null
+    || (row.sync_error_code != null && descriptor.kind !== "local_synchronize")) {
     throw new Error("停止stepのerror IDが不正です。");
   }
   const base = { descriptor, attempt: row.attempt, updated_at: row.updated_at };
@@ -158,7 +161,8 @@ function parseStep(
     if (row.error_id == null) {
       throw new Error("停止stepのerror IDがありません。");
     }
-    return { ...base, state: row.state, error_id: row.error_id };
+    return { ...base, state: row.state, error_id: row.error_id,
+      ...(row.sync_error_code == null ? {} : { sync_error_code: row.sync_error_code }) };
   }
   return { ...base, state: row.state };
 }
@@ -198,6 +202,10 @@ export function parseExecutionRecord<Result extends object>(
     }
     return parseStep(value, descriptor, row.execution_id, index, parseReceipt);
   });
+  if (plan.origin === "gui-edit" && steps.some((step) => step.state === "succeeded"
+    && step.receipt.kind === "asana_write" && step.receipt.write_performed == null)) {
+    throw new Error("GUI編集の保存済み書き込みreceiptに送信結果がありません。");
+  }
   for (const [index, step] of steps.entries()) {
     if (step.state !== "succeeded" || step.receipt.kind !== "asana_write"
       || step.receipt.verification_step_id == null) continue;

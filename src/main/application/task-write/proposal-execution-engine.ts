@@ -12,6 +12,7 @@ import type {
 } from "../common/ports/task-write-read-back";
 import type { TaskWriteReceipt } from "../common/task-write-plan";
 import type { TaskWriteStep } from "../common/task-write-step";
+import { TaskWriteSynchronizationError } from "../common/task-write-synchronization-error";
 import { executionContext, firstIncompleteStep, priorCheckReceipt } from "./proposal-execution-state";
 
 type AsanaStep = Exclude<TaskWriteStep,
@@ -118,7 +119,9 @@ export class ProposalExecutionEngine<Result extends object> {
       step_id: step.descriptor.step_id,
       expected_attempt: attempt,
       settled_at: this.clock.now(),
-      outcome: { state, error_id: errorId },
+      outcome: { state, error_id: errorId,
+        ...(execution.plan.origin === "gui-edit" && error instanceof TaskWriteSynchronizationError
+          ? { sync_error_code: error.code } : {}) },
     });
   }
 
@@ -149,6 +152,7 @@ export class ProposalExecutionEngine<Result extends object> {
         applied_payload_fingerprint: step.descriptor.payload_fingerprint,
         observed_state_fingerprint: check.observed_state_fingerprint,
         task_gid: check.task_gid,
+        write_performed: false,
         verification_step_id: check.step_id,
       });
     }
@@ -254,7 +258,7 @@ export class ProposalExecutionEngine<Result extends object> {
       return this.stop(execution, step, attempt, "confirmation_required", error);
     }
     if (observation.state === "applied") {
-      return this.settle(execution, step, attempt, this.asanaReceipt(descriptor, observation));
+      return this.settle(execution, step, attempt, this.asanaReceipt(descriptor, observation, false));
     }
     if (observation.state === "unknown" || (step.state === "running" && descriptor.retry_class === "non_retryable")) {
       return this.stop(execution, step, attempt, "confirmation_required",
@@ -281,7 +285,7 @@ export class ProposalExecutionEngine<Result extends object> {
       return this.stop(execution, step, writeAttempt, "confirmation_required", error);
     }
     if (observed.state === "applied") {
-      return this.settle(execution, step, writeAttempt, this.asanaReceipt(descriptor, observed));
+      return this.settle(execution, step, writeAttempt, this.asanaReceipt(descriptor, observed, true));
     }
     return this.stop(execution, step, writeAttempt, "confirmation_required",
       new Error("Asana書き込み後の読戻しで適用を確認できません。"));
@@ -311,7 +315,7 @@ export class ProposalExecutionEngine<Result extends object> {
         level: "warning",
         operationId: descriptor.scope.kind === "operation" ? descriptor.scope.operation_id : execution.execution_id,
       });
-      return this.settle(execution, step, attempt, this.asanaReceipt(descriptor, observation));
+      return this.settle(execution, step, attempt, this.asanaReceipt(descriptor, observation, true));
     }
     if (observation.state === "not_applied"
       && descriptor.retry_class !== "non_retryable"
@@ -334,7 +338,7 @@ export class ProposalExecutionEngine<Result extends object> {
       observation.state === "not_applied" ? "failed" : "confirmation_required", error);
   }
 
-  private asanaReceipt(step: AsanaStep, observation: Extract<TaskWriteAsanaObservation, { readonly state: "applied" }>): TaskWriteReceipt {
+  private asanaReceipt(step: AsanaStep, observation: Extract<TaskWriteAsanaObservation, { readonly state: "applied" }>, writePerformed: boolean): TaskWriteReceipt {
     const common = {
       step_id: step.step_id,
       recorded_at: this.clock.now(),
@@ -346,7 +350,7 @@ export class ProposalExecutionEngine<Result extends object> {
     if (step.kind === "asana_create_task") {
       return { ...common, kind: "created_task", temporary_ref: step.payload.target.ref };
     }
-    return { ...common, kind: "asana_write" };
+    return { ...common, kind: "asana_write", write_performed: writePerformed };
   }
 
   private executeAsana(
@@ -357,6 +361,7 @@ export class ProposalExecutionEngine<Result extends object> {
     switch (step.kind) {
       case "asana_create_task": return this.executors.asana_create_task[step.executor_version].execute(step, context, signal);
       case "asana_update_task": return this.executors.asana_update_task[step.executor_version].execute(step, context, signal);
+      case "asana_add_to_project": return this.executors.asana_add_to_project[step.executor_version].execute(step, context, signal);
       case "asana_add_to_section": return this.executors.asana_add_to_section[step.executor_version].execute(step, context, signal);
       case "asana_add_tag": return this.executors.asana_add_tag[step.executor_version].execute(step, context, signal);
       case "asana_remove_tag": return this.executors.asana_remove_tag[step.executor_version].execute(step, context, signal);

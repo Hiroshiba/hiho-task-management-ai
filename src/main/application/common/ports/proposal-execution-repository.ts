@@ -1,6 +1,7 @@
 import type { ErrorId } from "../errors/error-reporter";
 import type { TaskWritePlan, TaskWriteReceipt } from "../task-write-plan";
 import type { ProposalExecutionContext } from "./proposal-execution-context";
+import type { TaskWriteSynchronizationFailureCode } from "./asana-task-write";
 
 export type ProposalExecutionState =
   | "planned"
@@ -20,7 +21,7 @@ type ProposalExecutionStepBase = {
 export type ProposalExecutionStep = ProposalExecutionStepBase & (
   | { readonly state: "planned" | "running"; readonly receipt?: never; readonly error_id?: never }
   | { readonly state: "succeeded"; readonly receipt: TaskWriteReceipt; readonly error_id?: never }
-  | { readonly state: "failed" | "confirmation_required"; readonly receipt?: never; readonly error_id: ErrorId }
+  | { readonly state: "failed" | "confirmation_required"; readonly receipt?: never; readonly error_id: ErrorId; readonly sync_error_code?: TaskWriteSynchronizationFailureCode }
 );
 
 type ProposalExecutionBase = {
@@ -63,7 +64,7 @@ export type SettleProposalExecutionStep = {
   readonly settled_at: string;
   readonly outcome:
     | { readonly state: "succeeded"; readonly receipt: TaskWriteReceipt }
-    | { readonly state: "failed" | "confirmation_required"; readonly error_id: ErrorId };
+    | { readonly state: "failed" | "confirmation_required"; readonly error_id: ErrorId; readonly sync_error_code?: TaskWriteSynchronizationFailureCode };
 };
 
 export type CompleteProposalExecution<Result extends object> = {

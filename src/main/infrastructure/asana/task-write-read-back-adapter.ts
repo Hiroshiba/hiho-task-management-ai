@@ -136,9 +136,17 @@ function classifyStep(
 ): FieldState {
   switch (step.kind) {
     case "asana_update_task": return updateState(step, task);
+    case "asana_add_to_project": {
+      const memberships = task.memberships.filter((membership) => membership.project.gid === step.payload.project_gid);
+      if (memberships.length === 0) return "before";
+      if (memberships.length !== 1) return "conflict";
+      return memberships[0]?.section?.gid === step.payload.section_gid ? "after" : "conflict";
+    }
     case "asana_add_to_section": {
-      const section = projectSection(task, projectGid(step, context));
-      return section == null ? "conflict" : compare(section,
+      const memberships = task.memberships.filter((membership) => membership.project.gid === projectGid(step, context));
+      if (memberships.length !== 1) return "conflict";
+      const section = memberships[0]?.section?.gid ?? null;
+      return compare(section,
         step.payload.before_section_gid, step.payload.after_section_gid);
     }
     case "asana_add_tag": {
@@ -251,7 +259,8 @@ export class AsanaTaskWriteReadBackAdapter implements TaskWriteReadBackPort {
     if (step.kind === "asana_create_task") return this.inspectCreate(step, context, hint, signal);
     const gid = resolveTarget(stepTarget(step), context);
     const task = parseReadBackAsanaTask(await this.readClient.getTask(gid, signal));
-    if (task.gid !== gid || projectSection(task, projectGid(step, context)) == null) return { state: "unknown" };
+    if (task.gid !== gid || (step.kind !== "asana_add_to_project" && step.kind !== "asana_add_to_section"
+      && projectSection(task, projectGid(step, context)) == null)) return { state: "unknown" };
     const workspaceGid = step.kind === "asana_add_tag" || step.kind === "asana_remove_tag"
       ? step.payload.tag.workspace_gid
       : undefined;

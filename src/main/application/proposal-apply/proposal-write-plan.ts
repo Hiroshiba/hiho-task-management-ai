@@ -6,7 +6,7 @@ import {
   type TaskWritePlan,
 } from "../common/task-write-plan";
 import { type TaskWriteStepDraft, type TaskWriteTarget } from "../common/task-write-step";
-import { planProposalOperation, type ProposalOperationPlanningContext } from "./operation-manifest";
+import { planProposalOperation, type ProposalOperationPlanningContext } from "../common/task-write-operation-manifest";
 import { orderApplicableContexts } from "./operation-order";
 import { createTaskTemporaryReferences } from "./recovery-references";
 

@@ -5,3 +5,8 @@ export {
   proposalTaskWriteResultSchema,
   type ProposalTaskWriteResult,
 } from "./proposal-execution-result";
+export {
+  buildTaskWriteExecutionResult,
+  taskWriteExecutionResultSchema,
+  type TaskWriteExecutionResult,
+} from "./task-write-execution-result";

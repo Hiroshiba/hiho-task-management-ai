@@ -158,7 +158,7 @@ import { customExternalDataSchema } from "../domain/task-write-values";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
 import { buildDisplayOrderInput } from "./task-write";
-import { validateRelationGraph } from "./gui-edit";
+import { applyGuiTaskWrite, recoverGuiTaskWrites, validateRelationGraph, type GuiEditExecutionPort } from "./gui-edit";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
 import {
@@ -897,6 +897,9 @@ export class TaskHubApplication {
   private proposalWriteExecution:
     | { readonly kind: "legacy" }
     | { readonly kind: "stored_plan"; readonly port: StoredProposalExecutionPort } = { kind: "legacy" };
+  private guiWriteExecution:
+    | { readonly kind: "legacy" }
+    | { readonly kind: "stored_plan"; readonly port: GuiEditExecutionPort } = { kind: "legacy" };
   private readonly journalRecovery: JournalRecoveryRuntime<
     ReturnType<StorageDatabase["getIncompleteApplicationJournals"]>[number],
     AsanaProposalRecoveryResult
@@ -1374,17 +1377,23 @@ export class TaskHubApplication {
       }),
       getIncompleteJournals: () => this.database.getIncompleteApplicationJournals(),
       hasAdditionalIncomplete: () => this.proposalWriteExecution.kind === "stored_plan"
-        && this.proposalWriteExecution.port.repository.getIncomplete().length > 0,
-      recover: (signal) => this.proposalWriteExecution.kind === "stored_plan"
-        ? recoverStoredProposals(this.proposalWriteExecution.port, signal)
-          .then((result) => asanaProposalRecoveryResultSchema.parse(result))
-        : this.requireApplicationCoordinator().recover(
-          {
-            applications: [],
-            project_gids: [this.requireContext().project_gid],
-          },
-          signal,
-        ),
+        && this.proposalWriteExecution.port.repository.getIncomplete().length > 0
+        || this.guiWriteExecution.kind === "stored_plan"
+        && this.guiWriteExecution.port.repository.getIncomplete().length > 0,
+      recover: async (signal) => {
+        if (this.guiWriteExecution.kind === "stored_plan") {
+          await recoverGuiTaskWrites(this.guiWriteExecution.port, signal);
+        }
+        return this.proposalWriteExecution.kind === "stored_plan"
+          ? asanaProposalRecoveryResultSchema.parse(await recoverStoredProposals(this.proposalWriteExecution.port, signal))
+          : this.requireApplicationCoordinator().recover(
+            {
+              applications: [],
+              project_gids: [this.requireContext().project_gid],
+            },
+            signal,
+          );
+      },
       afterRecovery: (result) => this.cleanupAggregation.replaceProposalConflictsFromRecovery(
         result,
         this.proposalWriteExecution.kind === "stored_plan",
@@ -1401,7 +1410,9 @@ export class TaskHubApplication {
       hasPendingJournal: () => this.journalRecovery.hasPending(),
       hasIncompleteJournal: () => this.database.getIncompleteApplicationJournals().length > 0
         || (this.proposalWriteExecution.kind === "stored_plan"
-          && this.proposalWriteExecution.port.repository.getIncomplete().length > 0),
+          && this.proposalWriteExecution.port.repository.getIncomplete().length > 0)
+        || (this.guiWriteExecution.kind === "stored_plan"
+          && this.guiWriteExecution.port.repository.getIncomplete().length > 0),
       isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
       assertRecoveredSynchronizationReady: (executionId) => {
         if (this.database.getIncompleteApplicationJournals().length > 0) {
@@ -1812,6 +1823,14 @@ export class TaskHubApplication {
       throw new Error("保存済みplan実行入口を二重に設定できません。");
     }
     this.proposalWriteExecution = { kind: "stored_plan", port };
+  }
+
+  /** GUI編集の保存済みplan実行入口を一度だけ受け取ります。 */
+  public setGuiWriteExecution(port: GuiEditExecutionPort): void {
+    if (this.guiWriteExecution.kind !== "legacy") {
+      throw new Error("GUI編集の保存済みplan実行入口を二重に設定できません。");
+    }
+    this.guiWriteExecution = { kind: "stored_plan", port };
   }
 
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
@@ -2861,10 +2880,13 @@ export class TaskHubApplication {
                 baseline_task: baselineTask,
                 operation: request.operation,
               };
-              return this.requireGuiEdit().apply(
-                guiInput,
-                operationContext.signal,
-              );
+              return this.guiWriteExecution.kind === "stored_plan"
+                ? applyGuiTaskWrite(guiInput, this.guiWriteExecution.port, {
+                    isOnline: () => this.isOnline(),
+                    readTask: (taskGid, requestSignal) => this.interactiveReadClient.getTask(taskGid, requestSignal),
+                    validateRelation: (relation, requestSignal) => this.validateRelationGraph(relation, requestSignal),
+                  }, operationContext.signal)
+                : this.requireGuiEdit().apply(guiInput, operationContext.signal);
             },
           });
           return ipcGuiEditResultSchema.parse(result);

@@ -3,6 +3,7 @@ import {
   proposalExecutionColumns,
   proposalExecutionStepColumns,
   proposalExecutionTablesSql,
+  proposalExecutionV6StepColumns,
 } from "./proposal-execution-schema";
 import {
   applicationJournalTableSql,
@@ -350,6 +351,22 @@ function migrateSchemaFromV5(
   migrate();
 }
 
+function migrateSchemaFromV6(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    assertTableColumns(database, "proposal_executions", proposalExecutionColumns);
+    assertTableColumns(database, "proposal_execution_steps", proposalExecutionV6StepColumns);
+    database.exec("ALTER TABLE proposal_execution_steps ADD COLUMN sync_error_code TEXT");
+    assertExecutionTableColumns(database);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
 export function initializeSqliteSchema(
   database: SqliteDatabase,
@@ -394,6 +411,11 @@ export function initializeSqliteSchema(
 
   if (userVersion === 5) {
     migrateSchemaFromV5(database, transaction);
+    return;
+  }
+
+  if (userVersion === 6) {
+    migrateSchemaFromV6(database, transaction);
     return;
   }
 

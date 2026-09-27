@@ -38,6 +38,7 @@ CREATE TABLE proposal_execution_steps (
   receipt_json TEXT,
   error_id TEXT,
   updated_at TEXT NOT NULL,
+  sync_error_code TEXT,
   PRIMARY KEY (execution_id, step_id),
   UNIQUE (execution_id, step_order),
   CHECK ((state = 'planned' AND attempt = 0 AND receipt_json IS NULL AND error_id IS NULL)
@@ -65,6 +66,21 @@ export const proposalExecutionColumns = [
 ] as const;
 
 export const proposalExecutionStepColumns = [
+  { name: "execution_id", type: "TEXT", notnull: 1, pk: 1 },
+  { name: "step_id", type: "TEXT", notnull: 1, pk: 2 },
+  { name: "step_order", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "kind", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "executor_version", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "payload_fingerprint", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "state", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "attempt", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "receipt_json", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "error_id", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "updated_at", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "sync_error_code", type: "TEXT", notnull: 0, pk: 0 },
+] as const;
+
+export const proposalExecutionV6StepColumns = [
   { name: "execution_id", type: "TEXT", notnull: 1, pk: 1 },
   { name: "step_id", type: "TEXT", notnull: 1, pk: 2 },
   { name: "step_order", type: "INTEGER", notnull: 1, pk: 0 },

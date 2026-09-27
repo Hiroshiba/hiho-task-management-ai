@@ -10,6 +10,7 @@ import {
   serializeTaskWriteExternalData,
 } from "./task-write-call-external";
 import {
+  addProjectBodySchema,
   clearDueBodySchema,
   clearParentBodySchema,
   createTaskBodySchema,
@@ -59,11 +60,12 @@ export class AsanaTaskWriteCallAdapter {
     private readonly readClient: AsanaTaskWriteReadClientPort,
   ) {}
 
-  /** kindとexecutor versionに対応する8種のexecutorを公開します。 */
+  /** kindとexecutor versionに対応するexecutorを公開します。 */
   public getExecutors(): AsanaExecutors {
     return {
       asana_create_task: { 1: { execute: (step, context, signal) => this.createTask(step, context, signal) } },
       asana_update_task: { 1: { execute: (step, context, signal) => this.updateTask(step, context, signal) } },
+      asana_add_to_project: { 1: { execute: (step, context, signal) => this.addToProject(step, context, signal) } },
       asana_add_to_section: { 1: { execute: (step, context, signal) => this.addToSection(step, context, signal) } },
       asana_add_tag: { 1: { execute: (step, context, signal) => this.writeTag(step, context, "addTag", signal) } },
       asana_remove_tag: { 1: { execute: (step, context, signal) => this.writeTag(step, context, "removeTag", signal) } },
@@ -130,6 +132,24 @@ export class AsanaTaskWriteCallAdapter {
       method: "POST",
       path: ["sections", step.payload.after_section_gid, "addTask"],
       body: sectionBodySchema.parse({ data: { task: taskGid } }),
+      response_schema: emptyActionResponseSchema,
+    }, signal);
+    return { kind: "written" };
+  }
+
+  private async addToProject(
+    step: Step<"asana_add_to_project">,
+    context: TaskWriteExecutionContext,
+    signal: AbortSignal,
+  ): Promise<{ readonly kind: "written" }> {
+    const taskGid = resolveTaskWriteTarget(step.payload.target, context);
+    await this.transport.requestSingleAttempt({
+      method: "POST",
+      path: ["tasks", taskGid, "addProject"],
+      body: addProjectBodySchema.parse({ data: {
+        project: step.payload.project_gid,
+        section: step.payload.section_gid,
+      } }),
       response_schema: emptyActionResponseSchema,
     }, signal);
     return { kind: "written" };

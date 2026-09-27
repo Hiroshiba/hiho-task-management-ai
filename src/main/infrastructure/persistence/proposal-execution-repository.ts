@@ -8,6 +8,7 @@ import type {
   StartProposalExecutionStep,
 } from "../../application/common/ports/proposal-execution-repository";
 import { isTaskWriteJsonValue } from "../../domain/task-write-values";
+import { taskWriteSynchronizationFailureCodeSchema } from "../../application/common/ports/asana-task-write";
 import type { PersistenceRuntime } from "./persistence-runtime";
 import {
   fingerprintProposalExecutionContext,
@@ -123,7 +124,7 @@ implements ProposalExecutionRepository<Result> {
     }
     const steps = this.runtime.connection.prepare<[string], ExecutionStepRow>(
       `SELECT execution_id, step_id, step_order, kind, executor_version,
-        payload_fingerprint, state, attempt, receipt_json, error_id, updated_at
+        payload_fingerprint, state, attempt, receipt_json, error_id, updated_at, sync_error_code
        FROM proposal_execution_steps WHERE execution_id = ? ORDER BY step_order`,
     ).all(validatedId);
     return parseExecutionRecord(
@@ -235,6 +236,9 @@ implements ProposalExecutionRepository<Result> {
     const errorId = outcome.state === "succeeded"
       ? null
       : errorIdSchema.parse(outcome.error_id);
+    const syncErrorCode = outcome.state === "succeeded" || outcome.sync_error_code == null
+      ? null
+      : taskWriteSynchronizationFailureCodeSchema.parse(outcome.sync_error_code);
     const settle = this.runtime.transaction(() => {
       const execution = this.get(executionId);
       if (execution == null) {
@@ -251,16 +255,20 @@ implements ProposalExecutionRepository<Result> {
       ) {
         return false;
       }
+      if (syncErrorCode != null && (execution.plan.origin !== "gui-edit" || step.descriptor.kind !== "local_synchronize")) {
+        throw new Error("同期失敗コードをGUI編集の後続同期以外へ保存できません。");
+      }
       const changed = this.runtime.connection.prepare<
-        [string, string | null, string | null, string, string, string, number],
+        [string, string | null, string | null, string | null, string, string, string, number],
         ChangeResult
       >(`UPDATE proposal_execution_steps
-          SET state = ?, receipt_json = ?, error_id = ?, updated_at = ?
+          SET state = ?, receipt_json = ?, error_id = ?, sync_error_code = ?, updated_at = ?
           WHERE execution_id = ? AND step_id = ?
             AND state = 'running' AND attempt = ?`).run(
         outcome.state,
         receipt == null ? null : JSON.stringify(receipt),
         errorId,
+        syncErrorCode,
         settledAt,
         executionId,
         stepId,

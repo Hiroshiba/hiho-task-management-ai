@@ -2,7 +2,7 @@ type TaskStatus = "not_started" | "in_progress" | "completed" | "withdrawn";
 
 type ProposalDependencyInput = {
   readonly task_gid: string;
-  readonly scope: string;
+  readonly scope: "full" | "partial";
   readonly source: string;
 };
 
@@ -36,6 +36,7 @@ type ProposalInput = {
 type ProposalGuiOperation =
   | { readonly kind: "set_status" | "restore"; readonly value: TaskStatus }
   | { readonly kind: "set_dependencies"; readonly value: readonly ProposalDependencyInput[] }
+  | { readonly kind: "set_parent"; readonly value: ProposalParent }
   | {
       readonly kind:
         | "update_title"
@@ -44,7 +45,6 @@ type ProposalGuiOperation =
         | "set_due"
         | "set_duration"
         | "set_area"
-        | "set_parent"
         | "set_parent_work_mode"
         | "link_obsidian"
         | "unlink_obsidian";

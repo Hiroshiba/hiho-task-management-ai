@@ -10,6 +10,7 @@ export type LegacyRuntimePort = Pick<
   | "getState"
   | "getTaskWriteAsanaBridge"
   | "setProposalWriteExecution"
+  | "setGuiWriteExecution"
   | "onForeground"
   | "onOnline"
   | "recordDiagnostic"

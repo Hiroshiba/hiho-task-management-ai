@@ -6,7 +6,7 @@ import type {
 import type { TaskWritePlan, TaskWritePayloadFingerprint } from "../common/task-write-plan";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
 import { planProposalTaskWrites } from "./proposal-write-plan";
-import type { ProposalOperationPlanningContext } from "./operation-manifest";
+import type { ProposalOperationPlanningContext } from "../common/task-write-operation-manifest";
 import { orderApplicableContexts } from "./operation-order";
 import { createTaskTemporaryReferences } from "./recovery-references";
 import { createOperationResult } from "./operation-result";

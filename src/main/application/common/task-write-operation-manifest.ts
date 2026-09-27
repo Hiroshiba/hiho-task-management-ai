@@ -14,7 +14,7 @@ import {
   type TaskWriteStepDraft,
   type TaskWriteTarget,
   taskWriteExternalBaselineSchema,
-} from "../common/task-write-step";
+} from "./task-write-step";
 
 type OperationKind = ProposalWriteOperation["operation"];
 type OperationEffect = TaskWriteStepDraft extends infer T

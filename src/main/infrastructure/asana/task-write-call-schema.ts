@@ -70,6 +70,10 @@ export const sectionBodySchema = z.object({
   data: z.object({ task: gidSchema }).strict(),
 }).strict();
 
+export const addProjectBodySchema = z.object({
+  data: z.object({ project: gidSchema, section: gidSchema }).strict(),
+}).strict();
+
 export const setParentBodySchema = z.object({
   data: z.object({ parent: gidSchema }).strict(),
 }).strict();

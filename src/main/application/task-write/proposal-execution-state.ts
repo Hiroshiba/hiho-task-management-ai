@@ -25,6 +25,12 @@ export function executionContext(
     if (step.kind === "asana_create_task" && step.scope.kind === "operation") {
       operationProjectGids.set(step.scope.operation_id, step.payload.project_gid);
     }
+    if (step.kind === "asana_add_to_project" && step.scope.kind === "operation") {
+      operationProjectGids.set(step.scope.operation_id, step.payload.project_gid);
+    }
+  }
+  if (execution.plan.gui_context != null) {
+    operationProjectGids.set(execution.plan.gui_context.operation_id, execution.plan.gui_context.project_gid);
   }
   for (const step of execution.steps) {
     if (step.state !== "succeeded" || step.descriptor.scope.kind !== "operation") continue;

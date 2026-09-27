@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { z as schema } from "zod";
 
 type AsanaWriteJsonValue =
   | string
@@ -30,19 +31,22 @@ export interface AsanaTaskWriteReadClientPort {
   listWorkspaceTags(workspaceGid: string, signal: AbortSignal): Promise<unknown>;
 }
 
-export type TaskWriteSynchronizationFailureCode =
-  | "authentication_required"
-  | "offline"
-  | "aborted"
-  | "stopped"
-  | "payment_required"
-  | "rate_limited"
-  | "http_error"
-  | "transport_error"
-  | "response_error"
-  | "events_reset"
-  | "request_aborted"
-  | "sync_in_progress";
+export const taskWriteSynchronizationFailureCodeSchema = schema.enum([
+  "authentication_required",
+  "offline",
+  "aborted",
+  "stopped",
+  "payment_required",
+  "rate_limited",
+  "http_error",
+  "transport_error",
+  "response_error",
+  "events_reset",
+  "request_aborted",
+  "sync_in_progress",
+]);
+
+export type TaskWriteSynchronizationFailureCode = z.infer<typeof taskWriteSynchronizationFailureCodeSchema>;
 
 export type TaskWritePostSynchronizationResult =
   | { readonly kind: "synchronized" }

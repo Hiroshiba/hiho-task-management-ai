@@ -1,6 +1,6 @@
 import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageSchemaVersion = 6;
+export const storageSchemaVersion = 7;
 
 export const storageLegacyTableNames = [
   "task_cache",

@@ -4,13 +4,17 @@ import { setTimeout } from "node:timers/promises";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import type { TaskWriteExecutorRegistry } from "../application/common/ports/task-write-executor";
-import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
+import type { ProposalExecution, ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
+import { guiTaskWriteResultSchema, type GuiTaskWriteResult } from "../application/common/gui-task-write-result";
+import { TaskWriteSynchronizationError } from "../application/common/task-write-synchronization-error";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import {
-  buildProposalExecutionResult,
+  buildTaskWriteExecutionResult,
   ProposalExecutionEngine,
   proposalTaskWriteResultSchema,
   type ProposalTaskWriteResult,
+  taskWriteExecutionResultSchema,
+  type TaskWriteExecutionResult,
 } from "../application/task-write";
 import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
@@ -29,6 +33,26 @@ import {
 } from "./legacy-runtime-port";
 
 const USE_NEW_WRITE_EXECUTION_ENGINE: boolean = false;
+
+function proposalExecution(
+  execution: ProposalExecution<TaskWriteExecutionResult>,
+): ProposalExecution<ProposalTaskWriteResult> {
+  if (execution.plan.origin !== "proposal") throw new Error("proposal以外のexecutionを読み出しました。");
+  if (execution.state === "succeeded") {
+    return { ...execution, result: proposalTaskWriteResultSchema.parse(execution.result) };
+  }
+  return execution;
+}
+
+function guiExecution(
+  execution: ProposalExecution<TaskWriteExecutionResult>,
+): ProposalExecution<GuiTaskWriteResult> {
+  if (execution.plan.origin !== "gui-edit") throw new Error("GUI編集以外のexecutionを読み出しました。");
+  if (execution.state === "succeeded") {
+    return { ...execution, result: guiTaskWriteResultSchema.parse(execution.result) };
+  }
+  return execution;
+}
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
@@ -67,8 +91,8 @@ export interface MainRuntime {
   readonly legacy: LegacyRuntimePort;
   readonly reporter: ErrorReporter | undefined;
   readonly taskWriteExecution: {
-    readonly repository: ProposalExecutionRepository<ProposalTaskWriteResult>;
-    readonly engine: ProposalExecutionEngine<ProposalTaskWriteResult>;
+    readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
+    readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
   };
   readonly signal: AbortSignal;
   createWindowStateStore(): WindowStateStore;
@@ -111,11 +135,11 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const bridge = legacy.getTaskWriteAsanaBridge();
     const fingerprint = (canonicalPayload: string) =>
       createHash("sha256").update(canonicalPayload).digest("hex");
-    const repository = new SqliteProposalExecutionRepository<ProposalTaskWriteResult>(
+    const repository = new SqliteProposalExecutionRepository<TaskWriteExecutionResult>(
       openedPersistence,
       (value) => parseTaskWritePlan(value, fingerprint),
       (value) => taskWriteReceiptSchema.parse(value),
-      proposalTaskWriteResultSchema,
+      taskWriteExecutionResultSchema,
     );
     const readBack = new AsanaTaskWriteReadBackAdapter(
       bridge.readClient,
@@ -139,9 +163,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
               )
               : await bridge.synchronizeAfterGuiWrite(context.synchronization_task_gids, signal);
             if (result.kind === "recovery_required") {
-              throw new Error(`書き込み後のAsana同期が完了しませんでした。エラーコード: ${result.error_code}`, {
-                cause: result.cause,
-              });
+              throw new TaskWriteSynchronizationError(result.error_code, result.cause);
             }
             return { kind: "synchronized", task_gids: context.synchronization_task_gids };
           },
@@ -153,15 +175,32 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       repository,
       executors,
       readBack,
-      buildProposalExecutionResult,
+      buildTaskWriteExecutionResult,
       { now: () => nowProvider().toISOString() },
       engineReporter,
     );
     if (USE_NEW_WRITE_EXECUTION_ENGINE) {
+      const proposalRepository = {
+        save: (input) => repository.save(input),
+        getByProposal: (proposalId) => repository.getByProposal(proposalId).map(proposalExecution),
+        getIncomplete: () => repository.getIncomplete()
+          .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
+      } satisfies Pick<ProposalExecutionRepository<ProposalTaskWriteResult>, "save" | "getByProposal" | "getIncomplete">;
       legacy.setProposalWriteExecution({
-        repository,
+        repository: proposalRepository,
         legacyRepository: new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter),
-        engine,
+        engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },
+        createId,
+        now: () => nowProvider().toISOString(),
+        fingerprint,
+      });
+      legacy.setGuiWriteExecution({
+        repository: {
+          save: (input) => repository.save(input),
+          getIncomplete: () => repository.getIncomplete()
+            .filter((execution) => execution.plan.origin === "gui-edit").map(guiExecution),
+        },
+        engine: { run: async (executionId, signal) => guiExecution(await engine.run(executionId, signal)) },
         createId,
         now: () => nowProvider().toISOString(),
         fingerprint,
