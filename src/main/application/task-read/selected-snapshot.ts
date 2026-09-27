@@ -13,12 +13,12 @@ type CachedEntry<TTask extends CachedTask> = {
   };
 };
 
-type SnapshotStorage = {
-  readonly getTaskCache: () => unknown;
-  readonly getProjectMetadataCache: (projectGid: string) => unknown;
-  readonly getSyncState: (projectGid: string) => unknown;
-  readonly getCleanupItems: () => unknown;
-  readonly getRankingCache: () => unknown;
+type SnapshotStorage<TEntry, TMetadata, TRanking, TSync, TCleanup> = {
+  readonly getTaskCache: () => readonly TEntry[];
+  readonly getProjectMetadataCache: (projectGid: string) => TMetadata | undefined;
+  readonly getSyncState: (projectGid: string) => TSync | undefined;
+  readonly getCleanupItems: () => TCleanup | undefined;
+  readonly getRankingCache: () => TRanking | undefined;
 };
 
 type SnapshotParsers<
@@ -146,7 +146,7 @@ export function loadSelectedSnapshot<
   },
   TCleanup,
 >(
-  storage: SnapshotStorage,
+  storage: SnapshotStorage<TEntry, TMetadata, TRanking, TSync, TCleanup>,
   projectGid: string,
   parsers: SnapshotParsers<TEntry, TMetadata, TRanking, TSync, TCleanup>,
 ): {

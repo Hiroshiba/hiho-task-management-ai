@@ -1,26 +1,19 @@
+import { z } from "zod";
 import {
   PersistenceRuntime,
   storageBusyTimeoutMilliseconds,
 } from "../infrastructure/persistence/persistence-runtime";
+import { TaskReadPersistenceRepository } from "../infrastructure/persistence";
 import {
   assertTableRowCount,
   readTableRowCount,
 } from "../infrastructure/persistence/sqlite-migration";
-import {
-  aggregateCleanupItems,
-  CleanupItemsCacheStore,
-  replaceCleanupItemsByKinds as createCleanupItemsReplacement,
-} from "./cleanup-items-cache";
 import { DiagnosticLogStore } from "./diagnostic-log";
 import { ApplicationJournalStore } from "./application-journal";
 import {
   ExternalToolDefinitionStore,
   type ExternalToolDefinitionRecord,
 } from "./external-tool-definitions";
-import { ProjectMetadataCacheStore } from "./project-metadata-cache";
-import { RankingCacheStore } from "./ranking-cache";
-import { SyncStateStore } from "./sync-state";
-import { TaskCacheStore } from "./task-cache";
 import { DeviceSettingsStore } from "./device-settings";
 import { VaultMappingStore } from "./vault-mappings";
 import type {
@@ -42,11 +35,17 @@ import {
   projectMetadataCacheSchema,
   rankingCacheSchema,
   syncStateSchema,
+  taskCacheDiffSchema,
   taskCacheEntriesSchema,
+  taskCacheEntrySchema,
 } from "../../shared/storage";
 import {
+  canonicalizeJson,
+  cleanupItemKindSchema,
   cleanupItemSchema,
   cleanupItemsSchema,
+  gidSchema,
+  parseCustomExternalData,
   type CleanupItemKind,
 } from "../../shared/domain";
 import type { SqliteDatabase } from "./types";
@@ -56,15 +55,6 @@ export { storageSchemaVersion } from "../infrastructure/persistence/sqlite-schem
 
 export { storageBusyTimeoutMilliseconds };
 
-const localAsynchronousCleanupItemKinds: readonly CleanupItemKind[] = [
-  "proposal_conflict",
-  "broken_vault_link",
-];
-
-const localAsynchronousCleanupItemKindSet = new Set(
-  localAsynchronousCleanupItemKinds,
-);
-
 interface CleanupItemsCacheRow {
   readonly cache_key: number;
   readonly cleanup_items_json: string;
@@ -72,6 +62,51 @@ interface CleanupItemsCacheRow {
 
 const legacyProposalConflictMessagePattern =
   /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
+
+function createTaskReadPersistenceContracts() {
+  const cleanupKindsSchema = z.array(cleanupItemKindSchema)
+    .min(1, "置換対象の要整理種別を一つ以上指定してください。")
+    .superRefine((kinds, context) => {
+      const seen = new Set<string>();
+      kinds.forEach((kind, index) => {
+        if (seen.has(kind)) {
+          context.addIssue({
+            code: "custom",
+            path: [index],
+            message: "同じ要整理種別を重複して指定できません。",
+          });
+        }
+        seen.add(kind);
+      });
+    });
+  const parseEntry = (value: unknown): TaskCacheEntry => {
+    const entry = taskCacheEntrySchema.parse(value);
+    const externalData = entry.custom_external_data;
+    if (externalData != null) {
+      const parsed = parseCustomExternalData(externalData.raw);
+      if (parsed.status !== externalData.status) {
+        throw new Error("Custom external dataのキャッシュ状態がrawの解析結果と一致しません。");
+      }
+      if (externalData.status === "unknown_version"
+        && (parsed.kind !== "unknown_version" || parsed.schema !== externalData.schema)) {
+        throw new Error("Custom external dataのschema versionがrawの解析結果と一致しません。");
+      }
+    }
+    return entry;
+  };
+  return {
+    parseGid: (value: string) => gidSchema.parse(value),
+    parseEntry,
+    parseEntries: (value: unknown) => taskCacheEntriesSchema.parse(value),
+    parseDiff: (value: unknown) => taskCacheDiffSchema.parse(value),
+    parseMetadata: (value: unknown) => projectMetadataCacheSchema.parse(value),
+    parseRanking: (value: unknown) => rankingCacheSchema.parse(value),
+    parseSyncState: (value: unknown) => syncStateSchema.parse(value),
+    parseCleanupItems: (value: unknown) => cleanupItemsSchema.parse(value),
+    parseCleanupKinds: (value: unknown) => cleanupKindsSchema.parse(value),
+    canonicalize: canonicalizeJson,
+  };
+}
 
 /** 旧形式の要整理項目を現行の識別子へ移行します。 */
 export function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
@@ -142,12 +177,15 @@ export function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabas
 /** SQLite永続化層を開き、対象スキーマを初期化します。 */
 export class StorageDatabase {
   private readonly runtime: PersistenceRuntime;
-  private readonly database: SqliteDatabase;
-  private readonly taskCacheStore: TaskCacheStore;
-  private readonly projectMetadataCacheStore: ProjectMetadataCacheStore;
-  private readonly rankingCacheStore: RankingCacheStore;
-  private readonly cleanupItemsCacheStore: CleanupItemsCacheStore;
-  private readonly syncStateStore: SyncStateStore;
+  public readonly taskRead: TaskReadPersistenceRepository<
+    TaskCacheEntry,
+    ProjectMetadataCache,
+    RankingCache,
+    SyncState,
+    CleanupItemsCache,
+    TaskCacheDiff
+  >;
+  public readonly taskReadContracts: ReturnType<typeof createTaskReadPersistenceContracts>;
   private readonly deviceSettingsStore: DeviceSettingsStore;
   private readonly vaultMappingStore: VaultMappingStore;
   private readonly applicationJournalStore: ApplicationJournalStore;
@@ -156,13 +194,9 @@ export class StorageDatabase {
 
   public constructor(runtime: PersistenceRuntime) {
     this.runtime = runtime;
+    this.taskReadContracts = createTaskReadPersistenceContracts();
+    this.taskRead = new TaskReadPersistenceRepository(runtime, this.taskReadContracts);
     const database = this.runtime.connection;
-    this.database = database;
-    this.taskCacheStore = new TaskCacheStore(database, this.runtime);
-    this.projectMetadataCacheStore = new ProjectMetadataCacheStore(database);
-    this.rankingCacheStore = new RankingCacheStore(database);
-    this.cleanupItemsCacheStore = new CleanupItemsCacheStore(database);
-    this.syncStateStore = new SyncStateStore(database);
     this.deviceSettingsStore = new DeviceSettingsStore(database);
     this.vaultMappingStore = new VaultMappingStore(database);
     this.applicationJournalStore = new ApplicationJournalStore(database, this.runtime);
@@ -177,17 +211,17 @@ export class StorageDatabase {
 
   /** タスクキャッシュを一つのトランザクションで全件置換します。 */
   public replaceTaskCache(entries: readonly TaskCacheEntry[]): void {
-    this.taskCacheStore.replace(entries);
+    this.taskRead.replaceTaskCache(entries);
   }
 
   /** タスクキャッシュの差分を一つのトランザクションで適用します。 */
   public applyTaskCacheDiff(diff: TaskCacheDiff): void {
-    this.taskCacheStore.applyDiff(diff);
+    this.taskRead.applyTaskCacheDiff(diff);
   }
 
   /** タスクキャッシュを全件読み出します。 */
   public getTaskCache(): readonly TaskCacheEntry[] {
-    return this.taskCacheStore.getAll();
+    return this.taskRead.getTaskCache();
   }
 
   /** 同期済みタスク・メタデータ・順位・同期状態を一つのトランザクションで保存します。 */
@@ -198,68 +232,42 @@ export class StorageDatabase {
     syncState: SyncState,
     cleanupItems: CleanupItemsCache,
   ): void {
-    const validatedEntries = taskCacheEntriesSchema.parse(entries);
-    const validatedMetadata = projectMetadataCacheSchema.parse(metadata);
-    const validatedRanking = rankingCacheSchema.parse(ranking);
-    const validatedSyncState = syncStateSchema.parse(syncState);
-    const validatedCleanupItems = cleanupItemsCacheSchema.parse(cleanupItems);
-    if (validatedMetadata.project.gid !== validatedSyncState.project_gid) {
-      throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
-    }
-    const save = this.runtime.transaction(() => {
-      const storedCleanupItems = this.cleanupItemsCacheStore.get();
-      const existingCleanupItems = storedCleanupItems == null
-        ? cleanupItemsSchema.parse([])
-        : storedCleanupItems;
-      const localCleanupItems = existingCleanupItems.filter((item) =>
-        localAsynchronousCleanupItemKindSet.has(item.kind),
-      );
-      const aggregatedCleanupItems = aggregateCleanupItems([
-        ...validatedCleanupItems,
-        ...localCleanupItems,
-      ]);
-      this.taskCacheStore.replace(validatedEntries);
-      this.projectMetadataCacheStore.save(validatedMetadata);
-      this.rankingCacheStore.save(validatedRanking);
-      this.cleanupItemsCacheStore.save(aggregatedCleanupItems);
-      this.syncStateStore.save(validatedSyncState);
-    });
-    save();
+    this.taskRead.saveSyncSnapshot(entries, metadata, ranking, syncState, cleanupItems);
   }
 
   /** GIDでタスクキャッシュを一件読み出します。 */
   public getTaskCacheEntry(gid: string): TaskCacheEntry | undefined {
-    return this.taskCacheStore.get(gid);
+    return this.taskRead.getTaskCacheEntry(gid);
   }
 
   /** プロジェクトメタデータキャッシュを保存します。 */
   public saveProjectMetadataCache(cache: ProjectMetadataCache): void {
-    this.projectMetadataCacheStore.save(cache);
+    this.taskRead.saveProjectMetadataCache(cache);
   }
 
   /** プロジェクトメタデータキャッシュを読み出します。 */
   public getProjectMetadataCache(projectGid: string): ProjectMetadataCache | undefined {
-    return this.projectMetadataCacheStore.get(projectGid);
+    return this.taskRead.getProjectMetadataCache(projectGid);
   }
 
   /** 保存済みプロジェクトメタデータキャッシュを全件読み出します。 */
   public getProjectMetadataCaches(): readonly ProjectMetadataCache[] {
-    return this.projectMetadataCacheStore.getAll();
+    return this.taskRead.getProjectMetadataCaches();
   }
 
   /** 算出済み順位キャッシュを保存します。 */
   public saveRankingCache(cache: RankingCache): void {
-    this.rankingCacheStore.save(cache);
+    this.taskRead.saveRankingCache(cache);
   }
 
   /** 算出済み順位キャッシュを読み出します。 */
   public getRankingCache(): RankingCache | undefined {
-    return this.rankingCacheStore.get();
+    return this.taskRead.getRankingCache();
   }
 
   /** 要整理項目キャッシュを読み出します。 */
   public getCleanupItems(): CleanupItemsCache | undefined {
-    return this.cleanupItemsCacheStore.get();
+    return this.taskRead.getCleanupItems();
   }
 
   /** 指定種別の要整理項目を一つのトランザクションで置き換えます。 */
@@ -267,20 +275,7 @@ export class StorageDatabase {
     kinds: readonly CleanupItemKind[],
     replacementItems: CleanupItemsCache,
   ): CleanupItemsCache {
-    const replace = this.runtime.transaction(() => {
-      const storedItems = this.cleanupItemsCacheStore.get();
-      const existingItems = storedItems == null
-        ? cleanupItemsSchema.parse([])
-        : storedItems;
-      const aggregatedItems = createCleanupItemsReplacement(
-        existingItems,
-        kinds,
-        replacementItems,
-      );
-      this.cleanupItemsCacheStore.save(aggregatedItems);
-      return aggregatedItems;
-    });
-    return replace();
+    return this.taskRead.replaceCleanupItemsByKinds(kinds, replacementItems);
   }
 
   /** 指定種別の要整理項目を一つのトランザクションで既存項目へ統合します。 */
@@ -288,35 +283,22 @@ export class StorageDatabase {
     kinds: readonly CleanupItemKind[],
     items: CleanupItemsCache,
   ): CleanupItemsCache {
-    const merge = this.runtime.transaction(() => {
-      const storedItems = this.cleanupItemsCacheStore.get();
-      const existingItems = storedItems == null
-        ? cleanupItemsSchema.parse([])
-        : storedItems;
-      const validatedItems = createCleanupItemsReplacement([], kinds, items);
-      const aggregatedItems = aggregateCleanupItems([
-        ...existingItems,
-        ...validatedItems,
-      ]);
-      this.cleanupItemsCacheStore.save(aggregatedItems);
-      return aggregatedItems;
-    });
-    return merge();
+    return this.taskRead.mergeCleanupItemsByKinds(kinds, items);
   }
 
   /** プロジェクトの同期状態を保存します。 */
   public saveSyncState(state: SyncState): void {
-    this.syncStateStore.save(state);
+    this.taskRead.saveSyncState(state);
   }
 
   /** プロジェクトの同期状態を読み出します。 */
   public getSyncState(projectGid: string): SyncState | undefined {
-    return this.syncStateStore.get(projectGid);
+    return this.taskRead.getSyncState(projectGid);
   }
 
   /** 保存済み同期状態を全件読み出します。 */
   public getSyncStates(): readonly SyncState[] {
-    return this.syncStateStore.getAll();
+    return this.taskRead.getSyncStates();
   }
 
   /** 秘密情報を含まない端末設定を保存します。 */
@@ -449,11 +431,6 @@ export class StorageDatabase {
 
   /** 再構築可能なキャッシュだけを全消去します。 */
   public clearCaches(): void {
-    const clear = this.runtime.transaction(() => {
-      this.database.exec(
-        "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM cleanup_items_cache; DELETE FROM sync_state; DELETE FROM diagnostic_log;",
-      );
-    });
-    clear();
+    this.taskRead.clearCaches();
   }
 }

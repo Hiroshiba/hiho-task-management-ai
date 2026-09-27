@@ -1,73 +1,85 @@
 import {
-  cleanupItemsSchema,
-  gidSchema,
-  type CleanupItem,
-  type Dependency,
-  type Task,
-  type TaskStatus,
-} from "../../shared/domain";
-import {
-  projectMetadataCacheSchema,
-  rankingCacheSchema,
-  syncStateSchema,
-  taskCacheEntriesSchema,
-  type CleanupItemsCache,
-  type ProjectMetadataCache,
-  type RankingCache,
-  type SyncState,
-  type TaskCacheEntry,
-} from "../../shared/storage";
-import {
-  viewModelCleanupItemSchema,
-  viewModelOverviewSchema,
-  viewModelTaskDetailSchema,
-  type ViewModelBlockReason,
-  type ViewModelCleanupItem,
-  type ViewModelDependencyReference,
-  type ViewModelOverview,
-  type ViewModelTaskDetail,
-  type ViewModelTaskRanking,
-  type ViewModelTaskReference,
-  type ViewModelTaskRow,
-  type ViewModelUnavailableReasonCode,
-} from "../../shared/view-model";
-import {
   normalizeTaskGraph,
   type BlockStateResult,
-} from "../domain";
-import { hashGuiEditBaseline } from "../gui-edit";
-import { createTaskMap, loadSelectedSnapshot } from "../application/task-read/selected-snapshot";
-import type { StorageDatabase } from "../storage";
+} from "../../domain";
+import type {
+  TaskReadCleanupItem,
+  TaskReadEntry,
+  TaskReadMetadata,
+  TaskReadRanking,
+  TaskReadRepository,
+  TaskReadSyncState,
+  TaskReadTask,
+} from "../common/ports/task-read-repository";
+import { createTaskMap, loadSelectedSnapshot } from "./selected-snapshot";
 
 const projectAreaPrefix = "TaskHub/領域/";
 const dayMilliseconds = 24 * 60 * 60 * 1_000;
 const jstOffsetMilliseconds = 9 * 60 * 60 * 1_000;
-const statusOrder: Readonly<Record<TaskStatus, number>> = {
+const statusOrder: Readonly<Record<TaskReadTask["status"], number>> = {
   not_started: 0,
   in_progress: 1,
   completed: 2,
   withdrawn: 3,
 };
 
-type ReadModelStorage = Pick<
-  StorageDatabase,
-  | "getTaskCache"
-  | "getProjectMetadataCache"
-  | "getRankingCache"
-  | "getSyncState"
-  | "getCleanupItems"
+type TaskReadCleanupView = {
+  readonly kind: string;
+  readonly message: string;
+  readonly scope:
+    | { readonly scope: "global"; readonly related_task_gids?: readonly string[] | undefined }
+    | {
+        readonly scope: "task";
+        readonly task_gid: string;
+        readonly related_task_gids?: readonly string[] | undefined;
+      };
+};
+
+type TaskReadRow =
+  | { readonly kind: "ranked"; readonly gid: string; readonly status: TaskReadTask["status"]; readonly rank: number }
+  | {
+      readonly kind: "excluded" | "unavailable";
+      readonly gid: string;
+      readonly status: TaskReadTask["status"];
+      readonly unavailable_reasons?: readonly string[];
+      readonly exclusion_reasons?: readonly { readonly code: string }[];
+    };
+
+type TaskReadBlockReason = { readonly code: string; readonly summary: string };
+type TaskReadTaskReference = { readonly gid: string; readonly kind: "found" | "missing"; readonly title?: string; readonly status?: TaskReadTask["status"] };
+type TaskReadDependencyReference = TaskReadTaskReference & { readonly scope: string; readonly source: string };
+
+/** 旧共有スキーマを実行時に一か所から注入する契約です。 */
+export type TaskReadContracts<Overview, Detail> = {
+  readonly parseGid: (value: string) => string;
+  readonly parseEntries: (value: unknown) => readonly TaskReadEntry[];
+  readonly parseMetadata: (value: unknown) => TaskReadMetadata;
+  readonly parseRanking: (value: unknown) => TaskReadRanking;
+  readonly parseSyncState: (value: unknown) => TaskReadSyncState;
+  readonly parseCleanupItems: (value: unknown) => readonly TaskReadCleanupItem[];
+  readonly parseOverview: (value: unknown) => Overview;
+  readonly parseDetail: (value: unknown) => Detail;
+  readonly hashBaseline: (entry: TaskReadEntry) => string;
+};
+
+type ReadModelStorage = TaskReadRepository<
+  TaskReadEntry,
+  TaskReadMetadata,
+  TaskReadRanking,
+  TaskReadSyncState,
+  TaskReadCleanupItem
 >;
 
 type SelectedSnapshot = {
   readonly projectGid: string;
-  readonly entries: readonly TaskCacheEntry[];
-  readonly tasks: readonly Task[];
-  readonly taskByGid: ReadonlyMap<string, Task>;
-  readonly entryByGid: ReadonlyMap<string, TaskCacheEntry>;
-  readonly metadata: ProjectMetadataCache;
-  readonly ranking: RankingCache | undefined;
-  readonly syncState: SyncState;
-  readonly cleanupItems: CleanupItemsCache;
+  readonly entries: readonly TaskReadEntry[];
+  readonly tasks: readonly TaskReadTask[];
+  readonly taskByGid: ReadonlyMap<string, TaskReadTask>;
+  readonly entryByGid: ReadonlyMap<string, TaskReadEntry>;
+  readonly metadata: TaskReadMetadata;
+  readonly ranking: TaskReadRanking | undefined;
+  readonly syncState: TaskReadSyncState;
+  readonly cleanupItems: readonly TaskReadCleanupItem[];
 };
 
 type RankingProjection =
@@ -75,11 +87,11 @@ type RankingProjection =
       readonly kind: "unavailable";
       readonly rankedByGid: ReadonlyMap<
         string,
-        RankingCache["ranked_tasks"][number]
+        TaskReadRanking["ranked_tasks"][number]
       >;
       readonly excludedByGid: ReadonlyMap<
         string,
-        RankingCache["excluded_tasks"][number]
+        TaskReadRanking["excluded_tasks"][number]
       >;
     }
   | {
@@ -87,11 +99,11 @@ type RankingProjection =
       readonly calculatedAt: string;
       readonly rankedByGid: ReadonlyMap<
         string,
-        RankingCache["ranked_tasks"][number]
+        TaskReadRanking["ranked_tasks"][number]
       >;
       readonly excludedByGid: ReadonlyMap<
         string,
-        RankingCache["excluded_tasks"][number]
+        TaskReadRanking["excluded_tasks"][number]
       >;
     };
 
@@ -105,7 +117,7 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
-function taskStatusOrderValue(status: TaskStatus): number {
+function taskStatusOrderValue(status: TaskReadTask["status"]): number {
   const value = statusOrder[status];
   if (value == null) {
     throw new Error("タスク状態の並び順を解決できません。");
@@ -113,7 +125,7 @@ function taskStatusOrderValue(status: TaskStatus): number {
   return value;
 }
 
-function createAreas(metadata: ProjectMetadataCache): readonly string[] {
+function createAreas(metadata: TaskReadMetadata): readonly string[] {
   const areas = new Set<string>(["未分類"]);
   metadata.tags.forEach((tag) => {
     if (!tag.name.startsWith(projectAreaPrefix)) {
@@ -128,25 +140,25 @@ function createAreas(metadata: ProjectMetadataCache): readonly string[] {
   return [...areas].sort(compareStrings);
 }
 
-function createCleanupView(item: CleanupItem): ViewModelCleanupItem {
+function createCleanupView(item: TaskReadCleanupItem): TaskReadCleanupView {
   const relatedTaskGids = item.related_task_gids == null
     ? {}
     : { related_task_gids: [...item.related_task_gids].sort(compareStrings) };
   if (item.task_gid == null) {
-    return viewModelCleanupItemSchema.parse({
+    return {
       kind: item.kind,
       message: item.message,
       scope: { scope: "global", ...relatedTaskGids },
-    });
+    };
   }
-  return viewModelCleanupItemSchema.parse({
+  return {
     kind: item.kind,
     message: item.message,
     scope: { scope: "task", task_gid: item.task_gid, ...relatedTaskGids },
-  });
+  };
 }
 
-function cleanupViewSortKey(item: ViewModelCleanupItem): readonly string[] {
+function cleanupViewSortKey(item: TaskReadCleanupView): readonly string[] {
   const taskGid = item.scope.scope === "task" ? item.scope.task_gid : "";
   const related = item.scope.related_task_gids == null
     ? []
@@ -155,8 +167,8 @@ function cleanupViewSortKey(item: ViewModelCleanupItem): readonly string[] {
 }
 
 function compareCleanupViews(
-  left: ViewModelCleanupItem,
-  right: ViewModelCleanupItem,
+  left: TaskReadCleanupView,
+  right: TaskReadCleanupView,
 ): number {
   const leftKey = cleanupViewSortKey(left);
   const rightKey = cleanupViewSortKey(right);
@@ -175,14 +187,14 @@ function compareCleanupViews(
   return leftKey.length - rightKey.length;
 }
 
-function createCleanupViews(items: readonly CleanupItem[]): readonly ViewModelCleanupItem[] {
+function createCleanupViews(items: readonly TaskReadCleanupItem[]): readonly TaskReadCleanupView[] {
   return items.map(createCleanupView).sort(compareCleanupViews);
 }
 
 function createTaskCleanupViews(
   taskGid: string,
-  cleanupItems: readonly ViewModelCleanupItem[],
-): readonly ViewModelCleanupItem[] {
+  cleanupItems: readonly TaskReadCleanupView[],
+): readonly TaskReadCleanupView[] {
   return cleanupItems.filter((item) => {
     if (item.scope.scope === "task" && item.scope.task_gid === taskGid) {
       return true;
@@ -192,8 +204,8 @@ function createTaskCleanupViews(
 }
 
 function createRankingProjection(
-  tasks: readonly Task[],
-  ranking: RankingCache | undefined,
+  tasks: readonly TaskReadTask[],
+  ranking: TaskReadRanking | undefined,
 ): RankingProjection {
   if (ranking == null) {
     return {
@@ -203,14 +215,14 @@ function createRankingProjection(
     };
   }
   const taskGids = new Set(tasks.map((task) => task.gid));
-  const rankedByGid = new Map<string, RankingCache["ranked_tasks"][number]>();
+  const rankedByGid = new Map<string, TaskReadRanking["ranked_tasks"][number]>();
   ranking.ranked_tasks.forEach((rankedTask) => {
     if (!taskGids.has(rankedTask.gid) || rankedByGid.has(rankedTask.gid)) {
       throw new Error("順位キャッシュがタスク集合と一致しません。");
     }
     rankedByGid.set(rankedTask.gid, rankedTask);
   });
-  const excludedByGid = new Map<string, RankingCache["excluded_tasks"][number]>();
+  const excludedByGid = new Map<string, TaskReadRanking["excluded_tasks"][number]>();
   ranking.excluded_tasks.forEach((excludedTask) => {
     if (
       !taskGids.has(excludedTask.gid) ||
@@ -237,7 +249,9 @@ function createRankingProjection(
   };
 }
 
-function createDue(task: Task): ViewModelTaskRow["due"] {
+function createDue(task: TaskReadTask):
+  | { readonly kind: "on" | "at"; readonly value: string }
+  | { readonly kind: "none" } {
   if (task.due_on != null) {
     return { kind: "on", value: task.due_on };
   }
@@ -248,8 +262,8 @@ function createDue(task: Task): ViewModelTaskRow["due"] {
 }
 
 function addUnavailableReason(
-  reasons: ViewModelUnavailableReasonCode[],
-  reason: ViewModelUnavailableReasonCode,
+  reasons: string[],
+  reason: string,
 ): void {
   if (!reasons.includes(reason)) {
     reasons.push(reason);
@@ -257,8 +271,8 @@ function addUnavailableReason(
 }
 
 function unavailableReasonForCleanupKind(
-  kind: CleanupItem["kind"],
-): ViewModelUnavailableReasonCode | undefined {
+  kind: TaskReadCleanupItem["kind"],
+): string | undefined {
   if (kind === "custom_external_data_broken") {
     return "custom_external_data_broken";
   }
@@ -286,9 +300,9 @@ function unavailableReasonForCleanupKind(
 function createUnavailableReasons(
   taskGid: string,
   exclusionReasons: readonly { readonly code: string }[],
-  cleanupItems: readonly ViewModelCleanupItem[],
-): readonly ViewModelUnavailableReasonCode[] {
-  const reasons: ViewModelUnavailableReasonCode[] = [];
+  cleanupItems: readonly TaskReadCleanupView[],
+): readonly string[] {
+  const reasons: string[] = [];
   cleanupItems
     .filter((item) => {
       if (item.scope.scope === "task" && item.scope.task_gid === taskGid) {
@@ -321,7 +335,7 @@ function createUnavailableReasons(
 
 function hasUnavailableCleanup(
   taskGid: string,
-  cleanupItems: readonly ViewModelCleanupItem[],
+  cleanupItems: readonly TaskReadCleanupView[],
 ): boolean {
   return cleanupItems.some((item) => {
     const appliesToTask = item.scope.scope === "task"
@@ -341,7 +355,7 @@ function hasUnavailableCleanup(
 }
 
 function createBlockStateProjection(
-  tasks: readonly Task[],
+  tasks: readonly TaskReadTask[],
 ): ReadonlyMap<string, BlockStateResult> {
   const normalized = normalizeTaskGraph({
     tasks: tasks.map((task) => ({
@@ -375,9 +389,9 @@ function createBlockStateProjection(
 }
 
 function createBlockReason(
-  task: Task,
+  task: TaskReadTask,
   blockState: BlockStateResult,
-): ViewModelBlockReason | undefined {
+): TaskReadBlockReason | undefined {
   if (task.gid !== blockState.gid || task.block_state !== blockState.block_state) {
     throw new Error("タスクと構造化ブロック理由が一致しません。");
   }
@@ -438,8 +452,8 @@ function createBlockReason(
 }
 
 function createChildProgress(
-  task: Task,
-  taskByGid: ReadonlyMap<string, Task>,
+  task: TaskReadTask,
+  taskByGid: ReadonlyMap<string, TaskReadTask>,
 ): { readonly completed_count: number; readonly total_count: number } {
   const completedCount = task.child_gids.reduce((count, childGid) => {
     const child = taskByGid.get(childGid);
@@ -455,12 +469,12 @@ function createChildProgress(
 }
 
 function createCommonTaskRow(
-  task: Task,
+  task: TaskReadTask,
   childProgress: { readonly completed_count: number; readonly total_count: number },
   warningCount: number,
   reasonChips: readonly string[],
-  blockReason: ViewModelBlockReason | undefined,
-): Omit<Extract<ViewModelTaskRow, { kind: "ranked" }>, "kind" | "rank"> {
+  blockReason: TaskReadBlockReason | undefined,
+) {
   return {
     gid: task.gid,
     title: task.title,
@@ -480,12 +494,12 @@ function createCommonTaskRow(
 }
 
 function createTaskRow(
-  task: Task,
+  task: TaskReadTask,
   projection: RankingProjection,
   blockStateByGid: ReadonlyMap<string, BlockStateResult>,
-  cleanupItems: readonly ViewModelCleanupItem[],
-  taskByGid: ReadonlyMap<string, Task>,
-): ViewModelTaskRow {
+  cleanupItems: readonly TaskReadCleanupView[],
+  taskByGid: ReadonlyMap<string, TaskReadTask>,
+): TaskReadRow {
   const taskWarnings = createTaskCleanupViews(task.gid, cleanupItems);
   const childProgress = createChildProgress(task, taskByGid);
   const blockState = blockStateByGid.get(task.gid);
@@ -494,7 +508,7 @@ function createTaskRow(
   }
   const ranked = projection.rankedByGid.get(task.gid);
   if (ranked != null) {
-    return viewModelOverviewSchema.shape.tasks.element.parse({
+    return {
       kind: "ranked",
       rank: ranked.rank,
       ...createCommonTaskRow(
@@ -504,11 +518,11 @@ function createTaskRow(
         ranked.reason_chips,
         createBlockReason(task, blockState),
       ),
-    });
+    };
   }
   const excluded = projection.excludedByGid.get(task.gid);
   if (excluded == null) {
-    return viewModelOverviewSchema.shape.tasks.element.parse({
+    return {
       kind: "unavailable",
       unavailable_reasons: ["ranking_unavailable"],
       ...createCommonTaskRow(
@@ -518,7 +532,7 @@ function createTaskRow(
         [],
         createBlockReason(task, blockState),
       ),
-    });
+    };
   }
   const unavailableReasons = createUnavailableReasons(
     task.gid,
@@ -529,7 +543,7 @@ function createTaskRow(
     excluded.exclusion_reasons.some((reason) => reason.code === "critical_error") ||
     hasUnavailableCleanup(task.gid, cleanupItems)
   ) {
-    return viewModelOverviewSchema.shape.tasks.element.parse({
+    return {
       kind: "unavailable",
       unavailable_reasons: unavailableReasons,
       ...createCommonTaskRow(
@@ -539,9 +553,9 @@ function createTaskRow(
         excluded.reason_chips,
         createBlockReason(task, blockState),
       ),
-    });
+    };
   }
-  return viewModelOverviewSchema.shape.tasks.element.parse({
+  return {
     kind: "excluded",
     exclusion_reasons: excluded.exclusion_reasons,
     ...createCommonTaskRow(
@@ -551,10 +565,10 @@ function createTaskRow(
       excluded.reason_chips,
       createBlockReason(task, blockState),
     ),
-  });
+  };
 }
 
-function taskRowKindOrder(row: ViewModelTaskRow): number {
+function taskRowKindOrder(row: TaskReadRow): number {
   if (row.kind === "ranked") {
     return 0;
   }
@@ -564,7 +578,7 @@ function taskRowKindOrder(row: ViewModelTaskRow): number {
   return 2;
 }
 
-function compareTaskRows(left: ViewModelTaskRow, right: ViewModelTaskRow): number {
+function compareTaskRows(left: TaskReadRow, right: TaskReadRow): number {
   const kindComparison = taskRowKindOrder(left) - taskRowKindOrder(right);
   if (kindComparison !== 0) {
     return kindComparison;
@@ -605,15 +619,15 @@ function calculateActivityElapsedDays(
 }
 
 function createDetailRanking(
-  task: Task,
+  task: TaskReadTask,
   projection: RankingProjection,
-  cleanupItems: readonly ViewModelCleanupItem[],
-): ViewModelTaskRanking {
+  cleanupItems: readonly TaskReadCleanupView[],
+) {
   if (projection.kind === "unavailable") {
-    return viewModelTaskDetailSchema.shape.ranking.parse({
+    return {
       kind: "unavailable",
       reason_codes: ["ranking_unavailable"],
-    });
+    };
   }
   const rankingTiming = {
     calculated_at: projection.calculatedAt,
@@ -624,7 +638,7 @@ function createDetailRanking(
   };
   const ranked = projection.rankedByGid.get(task.gid);
   if (ranked != null) {
-    return viewModelTaskDetailSchema.shape.ranking.parse({
+    return {
       kind: "ranked",
       rank: ranked.rank,
       ...rankingTiming,
@@ -634,7 +648,7 @@ function createDetailRanking(
       reason_chips: ranked.reason_chips,
       tie_break: ranked.tie_break,
       exclusion_reasons: ranked.detail.exclusion_reasons,
-    });
+    };
   }
   const excluded = projection.excludedByGid.get(task.gid);
   if (excluded == null) {
@@ -649,7 +663,7 @@ function createDetailRanking(
     excluded.exclusion_reasons.some((reason) => reason.code === "critical_error") ||
     hasUnavailableCleanup(task.gid, cleanupItems)
   ) {
-    return viewModelTaskDetailSchema.shape.ranking.parse({
+    return {
       kind: "unavailable",
       reason_codes: unavailableReasons,
       ...rankingTiming,
@@ -661,9 +675,9 @@ function createDetailRanking(
       reason_chips: excluded.reason_chips,
       tie_break: excluded.tie_break,
       exclusion_reasons: excluded.exclusion_reasons,
-    });
+    };
   }
-  return viewModelTaskDetailSchema.shape.ranking.parse({
+  return {
     kind: "excluded",
     ...rankingTiming,
     detail_text: excluded.detail.text,
@@ -674,13 +688,13 @@ function createDetailRanking(
     reason_chips: excluded.reason_chips,
     tie_break: excluded.tie_break,
     exclusion_reasons: excluded.exclusion_reasons,
-  });
+  };
 }
 
 function createTaskReference(
   gid: string,
-  taskByGid: ReadonlyMap<string, Task>,
-): ViewModelTaskReference {
+  taskByGid: ReadonlyMap<string, TaskReadTask>,
+): TaskReadTaskReference {
   const task = taskByGid.get(gid);
   if (task == null) {
     return { kind: "missing", gid };
@@ -694,9 +708,9 @@ function createTaskReference(
 }
 
 function createDependencyReference(
-  dependency: Dependency,
-  taskByGid: ReadonlyMap<string, Task>,
-): ViewModelDependencyReference {
+  dependency: TaskReadTask["dependencies"][number],
+  taskByGid: ReadonlyMap<string, TaskReadTask>,
+): TaskReadDependencyReference {
   const task = taskByGid.get(dependency.task_gid);
   if (task == null) {
     return {
@@ -717,8 +731,8 @@ function createDependencyReference(
 }
 
 function compareDependencyReferences(
-  left: ViewModelDependencyReference,
-  right: ViewModelDependencyReference,
+  left: TaskReadDependencyReference,
+  right: TaskReadDependencyReference,
 ): number {
   const gidComparison = compareStrings(left.gid, right.gid);
   if (gidComparison !== 0) {
@@ -732,18 +746,18 @@ function compareDependencyReferences(
 }
 
 function compareTaskReferences(
-  left: ViewModelTaskReference,
-  right: ViewModelTaskReference,
+  left: TaskReadTaskReference,
+  right: TaskReadTaskReference,
 ): number {
   return compareStrings(left.gid, right.gid);
 }
 
 function createDependents(
   taskGid: string,
-  tasks: readonly Task[],
-  taskByGid: ReadonlyMap<string, Task>,
-): readonly ViewModelDependencyReference[] {
-  const dependents: ViewModelDependencyReference[] = [];
+  tasks: readonly TaskReadTask[],
+  taskByGid: ReadonlyMap<string, TaskReadTask>,
+): readonly TaskReadDependencyReference[] {
+  const dependents: TaskReadDependencyReference[] = [];
   tasks.forEach((task) => {
     task.dependencies
       .filter((dependency) => dependency.task_gid === taskGid)
@@ -758,13 +772,15 @@ function createDependents(
   return dependents.sort(compareDependencyReferences);
 }
 
-function createTaskDetail(
+function createTaskDetail<Detail>(
   snapshot: SelectedSnapshot,
-  task: Task,
+  task: TaskReadTask,
   projection: RankingProjection,
   blockStateByGid: ReadonlyMap<string, BlockStateResult>,
-  cleanupItems: readonly ViewModelCleanupItem[],
-): ViewModelTaskDetail {
+  cleanupItems: readonly TaskReadCleanupView[],
+  parseDetail: (value: unknown) => Detail,
+  hashBaseline: (entry: TaskReadEntry) => string,
+): Detail {
   const taskWarnings = createTaskCleanupViews(task.gid, cleanupItems);
   const entry = snapshot.entryByGid.get(task.gid);
   if (entry == null) {
@@ -784,10 +800,10 @@ function createTaskDetail(
     throw new Error("タスクの構造化ブロック状態がありません。");
   }
   const blockReason = createBlockReason(task, blockState);
-  return viewModelTaskDetailSchema.parse({
+  return parseDetail({
     project_gid: snapshot.projectGid,
     gid: task.gid,
-    edit_baseline_hash: hashGuiEditBaseline(entry.asana_response),
+    edit_baseline_hash: hashBaseline(entry),
     title: task.title,
     notes: task.notes,
     status: task.status,
@@ -816,23 +832,34 @@ function createTaskDetail(
   });
 }
 
-/** StorageDatabaseから安全な読み取りDTOを生成します。 */
-export class ReadModelService {
-  public constructor(private readonly storage: ReadModelStorage) {}
+/** 保存済みスナップショットから安全な読み取りDTOを生成します。 */
+export class TaskReadIndex<Overview, Detail> {
+  public constructor(
+    private readonly storage: ReadModelStorage,
+    private readonly contracts: TaskReadContracts<Overview, Detail>,
+  ) {}
 
-  /** プロジェクト概要を取得します。 */
-  public getOverview(projectGid: string): ViewModelOverview {
-    const snapshot = loadSelectedSnapshot<
-      TaskCacheEntry, ProjectMetadataCache, RankingCache, SyncState, CleanupItemsCache
+  private loadSnapshot(projectGid: string): SelectedSnapshot {
+    return loadSelectedSnapshot<
+      TaskReadEntry,
+      TaskReadMetadata,
+      TaskReadRanking,
+      TaskReadSyncState,
+      readonly TaskReadCleanupItem[]
     >(this.storage, projectGid, {
-      projectGid: (value) => gidSchema.parse(value),
-      entries: (value) => taskCacheEntriesSchema.parse(value),
-      metadata: (value) => projectMetadataCacheSchema.parse(value),
-      ranking: (value) => rankingCacheSchema.parse(value),
-      syncState: (value) => syncStateSchema.parse(value),
-      cleanupItems: (value) => cleanupItemsSchema.parse(value),
+      projectGid: this.contracts.parseGid,
+      entries: this.contracts.parseEntries,
+      metadata: this.contracts.parseMetadata,
+      ranking: this.contracts.parseRanking,
+      syncState: this.contracts.parseSyncState,
+      cleanupItems: this.contracts.parseCleanupItems,
       compareStrings,
     });
+  }
+
+  /** プロジェクト概要を取得します。 */
+  public getOverview(projectGid: string): Overview {
+    const snapshot = this.loadSnapshot(projectGid);
     const cleanupItems = createCleanupViews(snapshot.cleanupItems);
     const projection = createRankingProjection(snapshot.tasks, snapshot.ranking);
     const blockStateByGid = createBlockStateProjection(snapshot.tasks);
@@ -847,7 +874,7 @@ export class ReadModelService {
         ),
       )
       .sort(compareTaskRows);
-    return viewModelOverviewSchema.parse({
+    return this.contracts.parseOverview({
       project_gid: snapshot.projectGid,
       last_successful_sync_at: snapshot.syncState.last_successful_sync_at,
       ...(snapshot.syncState.last_full_sync_at == null
@@ -869,19 +896,9 @@ export class ReadModelService {
   }
 
   /** タスク詳細を取得します。 */
-  public getTaskDetail(projectGid: string, taskGid: string): ViewModelTaskDetail {
-    const snapshot = loadSelectedSnapshot<
-      TaskCacheEntry, ProjectMetadataCache, RankingCache, SyncState, CleanupItemsCache
-    >(this.storage, projectGid, {
-      projectGid: (value) => gidSchema.parse(value),
-      entries: (value) => taskCacheEntriesSchema.parse(value),
-      metadata: (value) => projectMetadataCacheSchema.parse(value),
-      ranking: (value) => rankingCacheSchema.parse(value),
-      syncState: (value) => syncStateSchema.parse(value),
-      cleanupItems: (value) => cleanupItemsSchema.parse(value),
-      compareStrings,
-    });
-    const validatedTaskGid = gidSchema.parse(taskGid);
+  public getTaskDetail(projectGid: string, taskGid: string): Detail {
+    const snapshot = this.loadSnapshot(projectGid);
+    const validatedTaskGid = this.contracts.parseGid(taskGid);
     const task = snapshot.taskByGid.get(validatedTaskGid);
     if (task == null) {
       throw new Error("指定タスクがキャッシュにありません。");
@@ -895,8 +912,8 @@ export class ReadModelService {
       projection,
       blockStateByGid,
       cleanupItems,
+      this.contracts.parseDetail,
+      this.contracts.hashBaseline,
     );
   }
 }
-
-export type { ReadModelStorage };

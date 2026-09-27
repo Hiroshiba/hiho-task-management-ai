@@ -22,9 +22,8 @@ import {
   asanaSyncCoordinatorInputSchema,
   asanaSyncCoordinatorResultSchema,
 } from "../sync";
-import { StorageDatabase } from "../../storage";
 import { isoDateTimeSchema } from "../../../shared/domain";
-import { syncStateSchema } from "../../../shared/storage";
+import { syncStateSchema, type SyncState } from "../../../shared/storage";
 import { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 import {
   createCombinedSignal,
@@ -57,7 +56,7 @@ const fullSyncIntervalMilliseconds = 24 * 60 * 60 * 1000;
 const onlineSyncIntervalMilliseconds = 60 * 1000;
 
 type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
-type StorageDatabasePort = Pick<StorageDatabase, "getSyncState">;
+type SyncStateRepository = { getSyncState(projectGid: string): SyncState | undefined };
 type BeforeSynchronization = (
   signal: AbortSignal,
 ) => void | PromiseLike<void>;
@@ -154,7 +153,7 @@ function classifyKnownError(error: unknown): AsanaSyncRuntimeErrorCode | undefin
 /** Asana同期の起動契機とライフサイクルを調整します。 */
 export class AsanaSyncRuntime {
   private readonly coordinator: AsanaSyncCoordinatorPort;
-  private readonly database: StorageDatabasePort;
+  private readonly stateRepository: SyncStateRepository;
   private readonly configuration: AsanaSyncRuntimeConfiguration;
   private readonly lifecycleSignal: AbortSignal;
   private readonly beforeSynchronization: BeforeSynchronization;
@@ -180,7 +179,7 @@ export class AsanaSyncRuntime {
 
   public constructor(
     coordinator: AsanaSyncCoordinatorPort,
-    database: StorageDatabasePort,
+    stateRepository: SyncStateRepository,
     configuration: AsanaSyncRuntimeConfiguration,
     lifecycleSignal: AbortSignal,
     beforeSynchronization: BeforeSynchronization,
@@ -190,7 +189,10 @@ export class AsanaSyncRuntime {
     operationQueue: AsanaOperationQueue,
   ) {
     validateFunction(coordinator?.coordinate, "Asana同期コーディネーターが必要です。");
-    validateFunction(database?.getSyncState, "同期状態の保存先が必要です。");
+    validateFunction(
+      stateRepository == null ? undefined : stateRepository.getSyncState.bind(stateRepository),
+      "同期状態の保存先が必要です。",
+    );
     validateAbortSignal(lifecycleSignal);
     validateFunction(beforeSynchronization, "同期前フックが必要です。");
     validateFunction(notifyUnexpectedError, "予期しないエラー通知関数が必要です。");
@@ -201,7 +203,7 @@ export class AsanaSyncRuntime {
     }
     this.configuration = asanaSyncRuntimeConfigurationSchema.parse(configuration);
     this.coordinator = coordinator;
-    this.database = database;
+    this.stateRepository = stateRepository;
     this.lifecycleSignal = lifecycleSignal;
     this.beforeSynchronization = beforeSynchronization;
     this.notifyUnexpectedError = notifyUnexpectedError;
@@ -500,8 +502,8 @@ export class AsanaSyncRuntime {
     return "delta";
   }
 
-  private readSyncState(): ReturnType<StorageDatabase["getSyncState"]> {
-    const state = this.database.getSyncState(this.configuration.project_gid);
+  private readSyncState(): SyncState | undefined {
+    const state = this.stateRepository.getSyncState(this.configuration.project_gid);
     if (state == null) {
       return undefined;
     }

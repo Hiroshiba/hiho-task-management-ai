@@ -30,6 +30,7 @@ import {
   AsanaNormalizationPlanApplier,
   AsanaSyncCoordinator,
   AsanaSyncInProgressError,
+  type AsanaSyncCoordinatorResult,
 } from "../asana/sync";
 import {
   AsanaSyncRuntime,
@@ -143,14 +144,13 @@ import {
 } from "../bootstrap/ai-session-runtime";
 import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
 import { SynchronizationOperations } from "../bootstrap/synchronization-operations";
-import { SyncStateRuntime } from "../bootstrap/sync-state-runtime";
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthentication-runtime";
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
 import { OperationalServicesRuntime } from "../bootstrap/operational-services-runtime";
-import { ReadModelService } from "../read-model";
+import { SyncStateRuntime, TaskReadIndex, TaskReadWorkflow } from "./task-read";
 import {
   createObsidianOpenUri,
   ObsidianReadService,
@@ -232,10 +232,8 @@ import {
   type IpcGuiEditPort,
   type IpcExternalAgentPort,
   type IpcObsidianPort,
-  type IpcReadModelPort,
   type IpcServicePorts,
   type IpcSetupPort,
-  type IpcSyncPort,
 } from "../ipc";
 import {
   ipcAiDeltaEventSchema,
@@ -245,13 +243,11 @@ import {
   ipcAsanaCancelReauthenticationInputSchema,
   ipcGuiEditInputSchema,
   ipcGuiEditResultSchema,
+  ipcReadModelOverviewResponseSchema,
+  ipcReadModelTaskDetailResponseSchema,
   ipcSyncInputSchema,
-  ipcSyncResultSchema,
-  ipcSyncStateEventSchema,
   type IpcAiStatus,
   type IpcCodexDelta,
-  type IpcSyncResult,
-  type IpcSyncStateEvent,
   type IpcGuiEditInput as IpcGuiRequest,
   type IpcGuiEditResult,
   type IpcAiTurnInput,
@@ -279,7 +275,9 @@ import {
   migrateLegacyProposalConflictIdentifiers,
   type ExternalToolDefinitionRecord,
 } from "../storage";
-import type { PersistenceRuntime, SqliteConnection } from "../infrastructure/persistence";
+import { type PersistenceRuntime, type SqliteConnection } from "../infrastructure/persistence";
+import { AsanaTaskReadAdapter } from "../infrastructure/asana";
+import type { TaskReadEntry } from "./common/ports/task-read-repository";
 
 type OperationalContext = {
   readonly device_id: string;
@@ -776,22 +774,7 @@ function externalDataIsValid(task: AsanaTaskResponse): boolean {
     && task.external.data === serializeCustomExternalData(ingestion.data);
 }
 
-function toIpcSyncState(state: AsanaSyncRuntimeState): IpcSyncStateEvent {
-  return ipcSyncStateEventSchema.parse(state);
-}
-
-function toIpcSyncResult(
-  result: Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>["result"],
-): IpcSyncResult {
-  const {
-    events_token: _eventsToken,
-    ranking_cache: _rankingCache,
-    ...rendererResult
-  } = result;
-  void _eventsToken;
-  void _rankingCache;
-  return ipcSyncResultSchema.parse(rendererResult);
-}
+class UnreachableError extends Error {}
 
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
@@ -812,9 +795,6 @@ export class TaskHubApplication {
   private readonly oauth: AsanaOAuthCoordinator;
   private readonly resources: AsanaSetupResourceCoordinator;
   private readonly capability: AsanaCapabilityCheckService;
-  private readonly fullSource: AsanaFullSyncSource;
-  private readonly deltaSource: AsanaDeltaSyncSource;
-  private readonly planApplier: AsanaNormalizationPlanApplier;
   private readonly syncCoordinator: AsanaSyncCoordinator;
   private readonly codexWorkspace: CodexWorkspaceInitializationResult;
   private readonly aiSessionWorkspaceParentPath: string;
@@ -822,7 +802,15 @@ export class TaskHubApplication {
   private readonly codexConnectionFactory: CodexSessionConnectionFactory;
   private readonly codexAdapter: CodexSetupAdapter;
   private readonly setup: SetupOrchestrator;
-  private readonly readModel: ReadModelService;
+  public readonly taskRead: TaskReadWorkflow<
+    Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
+    Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
+    AsanaSyncRuntimeInternalResult,
+    AsanaSyncCoordinatorResult,
+    AsanaSyncRuntimeState,
+    AsanaSyncRuntimeState,
+    AsanaSyncCoordinatorResult
+  >;
   private readonly obsidian: ObsidianReadService;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
@@ -839,7 +827,7 @@ export class TaskHubApplication {
     IpcAsanaReauthenticationCompleteInput,
     IpcAsanaReauthenticationCancelInput,
     IpcAsanaAuthenticationState,
-    IpcSyncResult
+    AsanaSyncCoordinatorResult
   >;
   private readonly operationalContext: OperationalContextRuntime<
     SetupState,
@@ -880,7 +868,6 @@ export class TaskHubApplication {
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
-  private readonly syncStateRuntime: SyncStateRuntime<AsanaSyncRuntimeState, IpcSyncStateEvent>;
   private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
   private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
   private readonly synchronizationOperations: SynchronizationOperations<
@@ -905,6 +892,26 @@ export class TaskHubApplication {
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(persistence);
+    const taskReadContracts = {
+      ...this.database.taskReadContracts,
+      parseOverview: (value: unknown) => {
+        const response = ipcReadModelOverviewResponseSchema.parse({ kind: "ok", value });
+        if (response.kind !== "ok") {
+          throw new UnreachableError("読取概要の応答形式が不正です。");
+        }
+        return response.value;
+      },
+      parseDetail: (value: unknown) => {
+        const response = ipcReadModelTaskDetailResponseSchema.parse({ kind: "ok", value });
+        if (response.kind !== "ok") {
+          throw new UnreachableError("読取詳細の応答形式が不正です。");
+        }
+        return response.value;
+      },
+      hashBaseline: (entry: TaskReadEntry) => hashGuiEditBaseline(
+        asanaTaskResponseSchema.parse(entry.asana_response),
+      ),
+    };
     this.diagnostics = new DiagnosticLogService(
       this.database,
       options.app_version,
@@ -936,19 +943,19 @@ export class TaskHubApplication {
       this.writeClient,
       options.now_provider,
     );
-    this.fullSource = new AsanaFullSyncSource(this.readClient, this.writeClient);
-    this.deltaSource = new AsanaDeltaSyncSource(this.readClient);
-    this.planApplier = new AsanaNormalizationPlanApplier(
+    const fullSource = new AsanaFullSyncSource(this.readClient, this.writeClient);
+    const deltaSource = new AsanaDeltaSyncSource(this.readClient);
+    const planApplier = new AsanaNormalizationPlanApplier(
       this.readClient,
       this.writeClient,
       options.create_id,
     );
     this.syncCoordinator = new AsanaSyncCoordinator(
       this.readClient,
-      this.fullSource,
-      this.deltaSource,
-      this.planApplier,
-      this.database,
+      fullSource,
+      deltaSource,
+      planApplier,
+      this.database.taskRead,
       () => createNowIso(this.options.now_provider),
     );
     this.codexWorkspace = initializeCodexWorkspace({
@@ -996,7 +1003,7 @@ export class TaskHubApplication {
       environment: codexEnvironment,
       openAuthorizationUrl: options.open_codex_authorization_url,
     });
-    this.readModel = new ReadModelService(this.database);
+    const taskReadIndex = new TaskReadIndex(this.database.taskRead, taskReadContracts);
     this.cleanupAggregation = new CleanupAggregationService(
       this.database,
       this.obsidian,
@@ -1355,8 +1362,8 @@ export class TaskHubApplication {
         "Asana同期後の補助的なローカル状態更新に失敗しました。",
       ),
     });
-    this.syncStateRuntime = new SyncStateRuntime<AsanaSyncRuntimeState, IpcSyncStateEvent>({
-      toEvent: toIpcSyncState,
+    const syncStateRuntime = new SyncStateRuntime<AsanaSyncRuntimeState, AsanaSyncRuntimeState>({
+      toEvent: (state) => state,
       recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
       shouldReportKnownFailure: () => this.synchronizationOperations.shouldReportKnownFailure(),
       reportKnownFailure: (cause) => this.options.diagnostic(
@@ -1373,6 +1380,19 @@ export class TaskHubApplication {
       isReadyActivated: () => this.lifecycleRuntime.isReadyActivated(),
       synchronizeCodex: (signal) => this.configuredCodexRuntime.synchronizeAfterAsana(signal),
       reportUnexpectedError: (error, feature) => this.recordUnexpectedError(error, feature),
+    });
+    this.taskRead = new TaskReadWorkflow(taskReadIndex, syncStateRuntime, {
+      projectGid: () => this.requireContext().project_gid,
+      assertReady: () => this.assertOperationalReady(),
+      assertReauthenticationIdle: () => this.assertAsanaReauthenticationIdle(),
+      asana: new AsanaTaskReadAdapter(() => this.requireRuntime()),
+      parseSyncInput: (value) => ipcSyncInputSchema.parse(value),
+      toSyncState: (state) => state,
+      toSyncResult: (details) => details,
+      requireSynchronizedResult: (result) =>
+        this.synchronizationOperations.requireSynchronizedResult(result),
+      afterSynchronizedState: (result, signal) =>
+        this.synchronizationOperations.afterSynchronizedState(result, signal),
     });
     this.configuredCodexRuntime = new ConfiguredCodexRuntime({
       validateAbortSignal,
@@ -1402,7 +1422,7 @@ export class TaskHubApplication {
       IpcAsanaReauthenticationCompleteInput,
       IpcAsanaReauthenticationCancelInput,
       IpcAsanaAuthenticationState,
-      IpcSyncResult
+      AsanaSyncCoordinatorResult
     >({
       requireSettings: () => this.requireConfiguredDeviceSettings(),
       validateAbortSignal,
@@ -1439,7 +1459,7 @@ export class TaskHubApplication {
           this.requireRuntime().onOnline(signal),
         );
         await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
-        return toIpcSyncResult(synchronized.result);
+        return synchronized.result;
       },
       restoreContext: () => this.configureContextFromState(this.setup.getState()),
     });
@@ -1459,7 +1479,7 @@ export class TaskHubApplication {
       onlineProvider: () => this.options.online_provider(),
       createRuntime: (context, online) => new AsanaSyncRuntime(
         this.syncCoordinator,
-        this.database,
+        this.database.taskRead,
         {
           project_gid: context.project_gid,
           section_gids: context.section_gids,
@@ -1474,7 +1494,7 @@ export class TaskHubApplication {
         () => createNowIso(this.options.now_provider),
         this.operationQueue,
       ),
-      subscribeRuntime: (runtime) => this.syncStateRuntime.subscribeRuntime(runtime),
+      subscribeRuntime: (runtime) => this.taskRead.subscribeRuntime(runtime),
       createDisplayOrder: () => createAsanaDisplayOrderService(
         this.transport,
         (error) => this.recordUnexpectedError(error, "display_order"),
@@ -1584,7 +1604,7 @@ export class TaskHubApplication {
       stopExternalConfiguration: (errors) => this.externalTools.stopConfiguration(errors),
       externalAgent: this.externalAgent,
       externalAgentBridge: this.externalAgentBridge,
-      stopSyncSubscriptions: () => this.syncStateRuntime.stop(),
+      stopSyncSubscriptions: () => this.taskRead.stop(),
       clearAiListeners: () => {
         this.aiDeltaListeners.clear();
         this.aiStatusListeners.clear();
@@ -1647,8 +1667,6 @@ export class TaskHubApplication {
   public getIpcPorts(): IpcServicePorts {
     return {
       asana: this.createAsanaPort(),
-      readModel: this.createReadModelPort(),
-      sync: this.createSyncPort(),
       setup: this.createSetupPort(),
       gui: this.createGuiPort(),
       externalAgent: this.createExternalAgentPort(),
@@ -1716,7 +1734,7 @@ export class TaskHubApplication {
   public completeAsanaReauthentication(
     input: IpcAsanaReauthenticationCompleteInput,
     signal: AbortSignal,
-  ): Promise<IpcSyncResult> {
+  ): Promise<AsanaSyncCoordinatorResult> {
     return this.asanaReauthentication.complete(input, signal);
   }
 
@@ -2680,16 +2698,6 @@ export class TaskHubApplication {
     this.asanaReauthentication.assertIdle();
   }
 
-  private createReadModelPort(): IpcReadModelPort {
-    return {
-      getOverview: () => this.readModel.getOverview(this.requireContext().project_gid),
-      getTaskDetail: (taskGid) => this.readModel.getTaskDetail(
-        this.requireContext().project_gid,
-        gidSchema.parse(taskGid),
-      ),
-    };
-  }
-
   private createAsanaPort(): IpcAsanaPort {
     return {
       getAuthenticationState: () => this.getAsanaAuthenticationState(),
@@ -2698,29 +2706,6 @@ export class TaskHubApplication {
         this.completeAsanaReauthentication(input, signal),
       cancelReauthentication: (input, signal) =>
         this.cancelAsanaReauthentication(input, signal),
-    };
-  }
-
-  private createSyncPort(): IpcSyncPort {
-    return {
-      getState: () => {
-        this.assertOperationalReady();
-        return toIpcSyncState(this.requireRuntime().getState());
-      },
-      run: async (input, signal) => {
-        this.assertOperationalReady();
-        this.assertAsanaReauthenticationIdle();
-        const request = ipcSyncInputSchema.parse(input);
-        const runtime = this.requireRuntime();
-        const result = await this.synchronizationOperations.requireSynchronizedResult(
-          request.mode === "full"
-            ? runtime.manualFullSync(signal)
-            : runtime.manualSync(signal),
-        );
-        await this.synchronizationOperations.afterSynchronizedState(result, signal);
-        return toIpcSyncResult(result.result);
-      },
-      onState: (listener) => this.syncStateRuntime.onState(listener),
     };
   }
 

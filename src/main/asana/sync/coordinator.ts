@@ -23,7 +23,9 @@ import {
   rankingCacheSchema,
   syncStateSchema,
   taskCacheEntriesSchema,
+  type CleanupItemsCache,
   type ProjectMetadataCache,
+  type RankingCache,
   type SyncState,
   type TaskCacheEntry,
 } from "../../../shared/storage";
@@ -43,7 +45,7 @@ import {
   AsanaNormalizationPlanApplier,
   asanaNormalizationPlanApplierResultSchema,
 } from "./normalization-plan-applier";
-import { StorageDatabase } from "../../storage";
+import type { TaskSyncRepository } from "../../application/common/ports/task-read-repository";
 import { asanaSyncTokenSchema } from "../sync-token";
 import {
   compareStrings,
@@ -566,7 +568,13 @@ export class AsanaSyncCoordinator {
   private readonly fullSyncSource: AsanaFullSyncSource;
   private readonly deltaSyncSource: AsanaDeltaSyncSource;
   private readonly planApplier: AsanaNormalizationPlanApplier;
-  private readonly database: StorageDatabase;
+  private readonly repository: TaskSyncRepository<
+    TaskCacheEntry,
+    ProjectMetadataCache,
+    RankingCache,
+    SyncState,
+    CleanupItemsCache
+  >;
   private readonly timestampProvider: SyncTimestampProvider;
   private synchronizationInProgress = false;
 
@@ -575,14 +583,20 @@ export class AsanaSyncCoordinator {
     fullSyncSource: AsanaFullSyncSource,
     deltaSyncSource: AsanaDeltaSyncSource,
     planApplier: AsanaNormalizationPlanApplier,
-    database: StorageDatabase,
+    repository: TaskSyncRepository<
+      TaskCacheEntry,
+      ProjectMetadataCache,
+      RankingCache,
+      SyncState,
+      CleanupItemsCache
+    >,
     timestampProvider: SyncTimestampProvider,
   ) {
     this.readClient = readClient;
     this.fullSyncSource = fullSyncSource;
     this.deltaSyncSource = deltaSyncSource;
     this.planApplier = planApplier;
-    this.database = database;
+    this.repository = repository;
     this.timestampProvider = timestampProvider;
   }
 
@@ -598,18 +612,18 @@ export class AsanaSyncCoordinator {
     }
     this.synchronizationInProgress = true;
     try {
-      const cachedEntries = this.database.getTaskCache();
-      const storedCleanupItems = this.database.getCleanupItems();
+      const cachedEntries = this.repository.getTaskCache();
+      const storedCleanupItems = this.repository.getCleanupItems();
       const existingCleanupItems = storedCleanupItems == null
         ? []
         : cleanupItemsSchema.parse(storedCleanupItems);
       const previousTasks = cachedEntries
         .map((entry) => entry.task)
         .sort((left, right) => compareStrings(left.gid, right.gid));
-      const existingState = this.database.getSyncState(
+      const existingState = this.repository.getSyncState(
         validatedInput.project_gid,
       );
-      const existingMetadata = this.database.getProjectMetadataCache(
+      const existingMetadata = this.repository.getProjectMetadataCache(
         validatedInput.project_gid,
       );
       const collection = await this.collectSnapshot(
@@ -691,7 +705,7 @@ export class AsanaSyncCoordinator {
           : existingState?.last_full_sync_at,
         syncedAt,
       );
-      this.database.saveSyncSnapshot(
+      this.repository.saveSyncSnapshot(
         taskCacheEntries,
         metadata,
         rankingCache,

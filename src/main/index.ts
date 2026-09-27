@@ -668,7 +668,12 @@ async function createMainWindow(
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,
-    ports: { ...application.getIpcPorts(), appUpdate: updateService },
+    ports: {
+      ...application.getIpcPorts(),
+      readModel: application.taskRead,
+      sync: application.taskRead,
+      appUpdate: updateService,
+    },
     startupGate: gate,
     diagnostic: {
       record: (error) => {

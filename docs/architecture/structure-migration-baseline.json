@@ -1805,11 +1805,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/read-model/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/main/setup/index.ts"
     },
     {
@@ -1981,11 +1976,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/obsidian/tasks-vault-discovery.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/read-model/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -2205,11 +2195,6 @@
     {
       "path": "src/main/asana/runtime/service.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
     },
     {
@@ -2241,11 +2226,6 @@
       "path": "src/main/asana/runtime/service.ts",
       "rule": "old-import",
       "symbol": "src/main/asana/transport/index.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
     },
     {
       "path": "src/main/asana/runtime/service.ts",
@@ -2385,11 +2365,6 @@
     {
       "path": "src/main/asana/sync/coordinator.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/asana/sync/coordinator.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
     },
     {
@@ -2421,11 +2396,6 @@
       "path": "src/main/asana/sync/coordinator.ts",
       "rule": "old-import",
       "symbol": "src/main/asana/sync/normalization-plan-applier.ts"
-    },
-    {
-      "path": "src/main/asana/sync/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
     },
     {
       "path": "src/main/asana/sync/coordinator.ts",
@@ -4178,66 +4148,6 @@
       "symbol": "src/main/persistent-error-log.ts"
     },
     {
-      "path": "src/main/read-model/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/read-model/service.ts"
-    },
-    {
-      "path": "src/main/read-model/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/read-model/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/gui-edit/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/gui-edit/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/main/read-model/service.ts",
-      "rule": "old-path",
-      "symbol": "src/main/read-model/service.ts"
-    },
-    {
       "path": "src/main/redact-sensitive-text.ts",
       "rule": "old-path",
       "symbol": "src/main/redact-sensitive-text.ts"
@@ -4398,54 +4308,14 @@
       "symbol": "src/main/storage/application-journal.ts"
     },
     {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/cleanup-items-cache.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/cleanup-items-cache.ts"
-    },
-    {
       "path": "src/main/storage/database.ts",
       "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "module-mutable",
-      "symbol": "localAsynchronousCleanupItemKindSet"
     },
     {
       "path": "src/main/storage/database.ts",
       "rule": "old-import",
       "symbol": "src/main/storage/application-journal.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/cleanup-items-cache.ts"
     },
     {
       "path": "src/main/storage/database.ts",
@@ -4466,26 +4336,6 @@
       "path": "src/main/storage/database.ts",
       "rule": "old-import",
       "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/project-metadata-cache.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/ranking-cache.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/sync-state.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/task-cache.ts"
     },
     {
       "path": "src/main/storage/database.ts",
@@ -4611,116 +4461,6 @@
       "path": "src/main/storage/json.ts",
       "rule": "old-path",
       "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/project-metadata-cache.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/project-metadata-cache.ts"
-    },
-    {
-      "path": "src/main/storage/ranking-cache.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/ranking-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/ranking-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/ranking-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/ranking-cache.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/ranking-cache.ts"
-    },
-    {
-      "path": "src/main/storage/sync-state.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/sync-state.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/sync-state.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/sync-state.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/sync-state.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/sync-state.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/task-cache.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/task-cache.ts"
     },
     {
       "path": "src/main/storage/types.ts",

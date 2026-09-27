@@ -5,6 +5,7 @@ export type LegacyRuntimeOptions = ConstructorParameters<typeof TaskHubApplicati
 
 export type LegacyRuntimePort = Pick<
   TaskHubApplication,
+  | "taskRead"
   | "getIpcPorts"
   | "getState"
   | "onForeground"

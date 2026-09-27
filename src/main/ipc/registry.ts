@@ -118,6 +118,7 @@ import {
   ipcSetupStartInputSchema,
   ipcSetupStateResponseSchema,
   ipcSyncInputSchema,
+  ipcSyncResultSchema,
   ipcSyncGetStateInputSchema,
   ipcSyncGetStateResponseSchema,
   ipcSyncResponseSchema,
@@ -170,6 +171,22 @@ import {
 
 type MaybePromise<T> = T | PromiseLike<T>;
 
+type IpcSyncSourceResult = IpcSyncResult & {
+  readonly events_token?: string | undefined;
+  readonly ranking_cache?: unknown;
+};
+
+function toIpcSyncResult(result: IpcSyncSourceResult): IpcSyncResult {
+  const {
+    events_token: _eventsToken,
+    ranking_cache: _rankingCache,
+    ...rendererResult
+  } = result;
+  void _eventsToken;
+  void _rankingCache;
+  return ipcSyncResultSchema.parse(rendererResult);
+}
+
 /** IPCの診断へ元のエラーを渡すポートです。 */
 export interface IpcDiagnosticPort {
   record(error: unknown, channel: string): void;
@@ -184,7 +201,7 @@ export interface IpcReadModelPort {
 /** 同期処理をIPCへ提供するポートです。 */
 export interface IpcSyncPort {
   getState(): MaybePromise<IpcSyncStateEvent>;
-  run(input: IpcSyncInput, signal: AbortSignal): MaybePromise<IpcSyncResult>;
+  run(input: IpcSyncInput, signal: AbortSignal): MaybePromise<IpcSyncSourceResult>;
   onState?(listener: (state: IpcSyncStateEvent) => void): () => void;
 }
 
@@ -195,7 +212,7 @@ export interface IpcAsanaPort {
   completeReauthentication(
     input: IpcAsanaReauthenticationCompleteInput,
     signal: AbortSignal,
-  ): MaybePromise<IpcSyncResult>;
+  ): MaybePromise<IpcSyncSourceResult>;
   cancelReauthentication(
     input: IpcAsanaReauthenticationCancelInput,
     signal: AbortSignal,
@@ -576,7 +593,9 @@ export class IpcHandlerRegistry {
     );
     this.registerPortHandle(
       ipcMain, "asana:complete-reauthentication", ipcAsanaCompleteReauthenticationInputSchema, ipcAsanaCompleteReauthenticationResponseSchema, "asana",
-      async (port, input, signal) => port.completeReauthentication(input, signal),
+      async (port, input, signal) => toIpcSyncResult(
+        await port.completeReauthentication(input, signal),
+      ),
     );
     this.registerPortHandle(
       ipcMain, "asana:cancel-reauthentication", ipcAsanaCancelReauthenticationInputSchema, ipcAsanaCancelReauthenticationResponseSchema, "asana",
@@ -599,7 +618,7 @@ export class IpcHandlerRegistry {
     );
     this.registerPortHandle(
       ipcMain, "sync:run", ipcSyncInputSchema, ipcSyncResponseSchema, "sync",
-      async (port, input, signal) => port.run(input, signal),
+      async (port, input, signal) => toIpcSyncResult(await port.run(input, signal)),
     );
     this.registerPortHandle(
       ipcMain, "sync:get-state", ipcSyncGetStateInputSchema, ipcSyncGetStateResponseSchema, "sync",

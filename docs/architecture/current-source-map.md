@@ -1,6 +1,6 @@
 # 現行source map
 
-基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 358件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
+基準commit: `5328a66f2f2a7a036a5ba6c6eaac5d215fe156db`。対象は`src`以下の手編集source 359件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=5328a66f2f2a7a036a5ba6c6eaac5d215fe156db --write`。
 
 ## 機能と入口
 
@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | アプリ起動・更新・ウィンドウ | main/bootstrap | src/main/bootstrap/create-main-runtime.ts, src/main/bootstrap/register-main-lifecycle.ts, src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts |
 | 初回設定とAsana認証 | main/application/settings | src/main/setup/, src/main/auth/asana-oauth/ |
-| タスク取得・同期・順位 | main/application/task-read | src/main/read-model/, src/main/asana/sync/, src/main/domain/ranking/ |
+| タスク取得・同期・順位 | main/application/task-read | src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/asana/sync/, src/main/domain/ranking/ |
 | タスク直接編集 | main/application/gui-edit | src/main/gui-edit/, src/main/asana/client/task-write-client.ts |
 | 変更案の生成・検証・編集 | main/application/proposal-generate | src/main/ai/workflow/, src/main/ai/proposal-validation/, src/main/ai/proposal-workspace/ |
 | 変更案の承認・適用・復旧 | main/application/proposal-apply | src/main/ai/proposal-application/, src/main/storage/application-journal.ts |
@@ -39,6 +39,8 @@
 | 変更案適用と復旧 | src/main/ai/proposal-application/coordinator.ts | main/application/proposal-apply |
 | GUI編集 | src/main/gui-edit/service.ts | main/application/gui-edit |
 | Asana同期 | src/main/asana/sync/coordinator.ts | main/infrastructure/asana |
+| タスク読取と同期 | src/main/application/task-read/workflow.ts | main/application/task-read |
+| タスク読取の保存 | src/main/infrastructure/persistence/task-read-repository.ts | main/infrastructure/persistence |
 | SQLite schema | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
 | mock transport | src/renderer/src/task-hub.ts | renderer/shared/api |
 
@@ -68,6 +70,8 @@
 | src/main/application/codex-adapter.ts | main/infrastructure/ai |
 | src/main/application/common/errors/diagnostic-failure.ts | main/application/common |
 | src/main/application/common/errors/error-reporter.ts | main/application/common |
+| src/main/application/common/ports/asana-task-read.ts | main/application/common |
+| src/main/application/common/ports/task-read-repository.ts | main/application/common |
 | src/main/application/diagnostics.ts | main/infrastructure/logging |
 | src/main/application/gui-edit/build-proposal-operation.ts | main/application/gui-edit |
 | src/main/application/gui-edit/index.ts | main/application/gui-edit |
@@ -162,7 +166,11 @@
 | src/main/application/settings/setup-completion.ts | main/application/settings |
 | src/main/application/settings/setup-external-tool.ts | main/application/settings |
 | src/main/application/settings/setup-validation.ts | main/application/settings |
+| src/main/application/task-read/index.ts | main/application/task-read |
 | src/main/application/task-read/selected-snapshot.ts | main/application/task-read |
+| src/main/application/task-read/sync-state-runtime.ts | main/application/task-read |
+| src/main/application/task-read/task-read-index.ts | main/application/task-read |
+| src/main/application/task-read/workflow.ts | main/application/task-read |
 | src/main/application/task-write/display-order-input.ts | main/application/task-write |
 | src/main/application/task-write/index.ts | main/application/task-write |
 | src/main/asana/client/client.ts | main/infrastructure/asana |
@@ -219,7 +227,6 @@
 | src/main/bootstrap/operational-services-runtime.ts | main/bootstrap |
 | src/main/bootstrap/register-main-lifecycle.ts | main/bootstrap |
 | src/main/bootstrap/renderer-environment.ts | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | main/bootstrap |
 | src/main/bootstrap/synchronization-operations.ts | main/bootstrap |
 | src/main/codex/app-server/connection.ts | main/infrastructure/ai |
 | src/main/codex/app-server/errors.ts | main/infrastructure/ai |
@@ -303,11 +310,13 @@
 | src/main/infrastructure/ai/external-tools/run-with-retries.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-tools/server-listener.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/taskctl/local-ipc-files.ts | main/infrastructure/ai |
+| src/main/infrastructure/asana/index.ts | main/infrastructure/asana |
 | src/main/infrastructure/asana/normalization-plan.ts | main/infrastructure/asana |
 | src/main/infrastructure/asana/request-aborted-error.ts | main/infrastructure/asana |
 | src/main/infrastructure/asana/response-body.ts | main/infrastructure/asana |
 | src/main/infrastructure/asana/sync-normalization.ts | main/infrastructure/asana |
 | src/main/infrastructure/asana/synchronization-run.ts | main/infrastructure/asana |
+| src/main/infrastructure/asana/task-read-adapter.ts | main/infrastructure/asana |
 | src/main/infrastructure/logging/error-detail-base.ts | main/infrastructure/logging |
 | src/main/infrastructure/logging/index.ts | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | main/infrastructure/logging |
@@ -322,6 +331,7 @@
 | src/main/infrastructure/persistence/sqlite-connection.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/task-read-repository.ts | main/infrastructure/persistence |
 | src/main/ipc/handlers/event-subscriptions.ts | main/ipc |
 | src/main/ipc/handlers/failure-messages.ts | main/ipc |
 | src/main/ipc/index.ts | main/ipc |
@@ -333,25 +343,18 @@
 | src/main/obsidian/obsidian-uri.ts | main/infrastructure/obsidian |
 | src/main/obsidian/tasks-vault-discovery.ts | main/infrastructure/obsidian |
 | src/main/persistent-error-log.ts | main/infrastructure/logging |
-| src/main/read-model/index.ts | main/application/task-read |
-| src/main/read-model/service.ts | main/application/task-read |
 | src/main/redact-sensitive-text.ts | main/infrastructure/logging |
 | src/main/security.ts | main/bootstrap |
 | src/main/setup/index.ts | main/application/settings |
 | src/main/setup/service.ts | main/application/settings |
 | src/main/startup-gate.ts | main/bootstrap |
 | src/main/storage/application-journal.ts | main/infrastructure/persistence |
-| src/main/storage/cleanup-items-cache.ts | main/infrastructure/persistence |
 | src/main/storage/database.ts | main/infrastructure/persistence |
 | src/main/storage/device-settings.ts | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | main/infrastructure/persistence |
 | src/main/storage/index.ts | main/infrastructure/persistence |
 | src/main/storage/json.ts | main/infrastructure/persistence |
-| src/main/storage/project-metadata-cache.ts | main/infrastructure/persistence |
-| src/main/storage/ranking-cache.ts | main/infrastructure/persistence |
-| src/main/storage/sync-state.ts | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | main/infrastructure/persistence |
 | src/main/storage/types.ts | main/infrastructure/persistence |
 | src/main/storage/vault-mappings.ts | main/infrastructure/persistence |
 | src/main/window-state.ts | main/infrastructure/persistence |
@@ -445,7 +448,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/security.ts | allowedAsanaExternalHosts | main/bootstrap |
 | src/main/security.ts | allowedAsanaAuthorizationHosts | main/bootstrap |
 | src/main/security.ts | allowedCodexAuthorizationHosts | main/bootstrap |
-| src/main/storage/database.ts | localAsynchronousCleanupItemKindSet | main/infrastructure/persistence |
 | src/renderer/src/useToast.ts | messages | renderer/shared/components |
 | src/renderer/src/useToast.ts | nextMessageId | renderer/shared/components |
 
@@ -662,14 +664,12 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/service.ts | TaskHubApplication.codexWorkspace | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.configuredCodexRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.database | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.deltaSource | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.diagnostics | main/infrastructure/logging |
 | src/main/application/service.ts | TaskHubApplication.externalAgent | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalAgentBridge | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalAgentInstanceId | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalStatusEvidenceCollector | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.externalTools | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.fullSource | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.interactiveReadClient | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.interactiveWriteClient | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.journalRecovery | main/bootstrap |
@@ -680,23 +680,31 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/service.ts | TaskHubApplication.operationalContext | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.operationalServices | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.options | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.planApplier | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.readClient | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.readModel | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.resources | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.scheduler | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.secretStorage | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.setup | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.setupClient | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.syncCoordinator | main/application/task-read |
-| src/main/application/service.ts | TaskHubApplication.syncStateRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.synchronizationOperations | main/bootstrap |
+| src/main/application/service.ts | TaskHubApplication.taskRead | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.tokenProvider | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.transport | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.vaultMappingSaveInProgress | main/application/settings |
 | src/main/application/service.ts | TaskHubApplication.writeClient | main/bootstrap |
 | src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.completionOperation | main/application/settings |
 | src/main/application/settings/setup-asana-authorization.ts | SetupAsanaAuthorization.dependencies | main/application/settings |
+| src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.dependencies | main/application/task-read |
+| src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.diagnosticState | main/application/task-read |
+| src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.lastDisplaySyncAt | main/application/task-read |
+| src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.listeners | main/application/task-read |
+| src/main/application/task-read/sync-state-runtime.ts | SyncStateRuntime.removeRuntimeSubscription | main/application/task-read |
+| src/main/application/task-read/task-read-index.ts | TaskReadIndex.contracts | main/application/task-read |
+| src/main/application/task-read/task-read-index.ts | TaskReadIndex.storage | main/application/task-read |
+| src/main/application/task-read/workflow.ts | TaskReadWorkflow.dependencies | main/application/task-read |
+| src/main/application/task-read/workflow.ts | TaskReadWorkflow.index | main/application/task-read |
+| src/main/application/task-read/workflow.ts | TaskReadWorkflow.stateRuntime | main/application/task-read |
 | src/main/asana/client/client.ts | AsanaReadClient.transport | main/infrastructure/asana |
 | src/main/asana/client/setup-client.ts | AsanaSetupClient.transport | main/infrastructure/asana |
 | src/main/asana/client/task-write-client.ts | AsanaTaskWriteClient.transport | main/infrastructure/asana |
@@ -728,7 +736,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.configuration | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.connectionState | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.coordinator | main/infrastructure/asana |
-| src/main/asana/runtime/service.ts | AsanaSyncRuntime.database | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.forwardUnhandledError | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.lastErrorCode | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.lastSuccessfulSyncAt | main/infrastructure/asana |
@@ -741,6 +748,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.runGeneration | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.scheduledRun | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.state | main/infrastructure/asana |
+| src/main/asana/runtime/service.ts | AsanaSyncRuntime.stateRepository | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.stopController | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.stopped | main/infrastructure/asana |
 | src/main/asana/runtime/service.ts | AsanaSyncRuntime.timer | main/infrastructure/asana |
@@ -758,11 +766,11 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/asana/setup/capability-check.ts | AsanaCapabilityCheckService.writeClient | main/infrastructure/asana |
 | src/main/asana/setup/resource-coordinator.ts | AsanaSetupResourceCoordinator.readClient | main/infrastructure/asana |
 | src/main/asana/setup/resource-coordinator.ts | AsanaSetupResourceCoordinator.setupClient | main/infrastructure/asana |
-| src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.database | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.deltaSyncSource | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.fullSyncSource | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.planApplier | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.readClient | main/infrastructure/asana |
+| src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.repository | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.synchronizationInProgress | main/infrastructure/asana |
 | src/main/asana/sync/coordinator.ts | AsanaSyncCoordinator.timestampProvider | main/infrastructure/asana |
 | src/main/asana/sync/delta-sync-source.ts | AsanaDeltaSyncSource.readClient | main/infrastructure/asana |
@@ -824,11 +832,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.guiEdit | main/bootstrap |
 | src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.runtime | main/bootstrap |
 | src/main/bootstrap/operational-services-runtime.ts | OperationalServicesRuntime.writer | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.dependencies | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.diagnosticState | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.lastDisplaySyncAt | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.listeners | main/bootstrap |
-| src/main/bootstrap/sync-state-runtime.ts | SyncStateRuntime.removeRuntimeSubscription | main/bootstrap |
 | src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.applicationState | main/bootstrap |
 | src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.dependencies | main/bootstrap |
 | src/main/bootstrap/synchronization-operations.ts | SynchronizationOperations.failureDiagnosticSuppressionCount | main/bootstrap |
@@ -995,6 +998,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.activeTurn | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.deltaListeners | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/turn-coordinator.ts | CodexTurnCoordinator.options | main/infrastructure/ai |
+| src/main/infrastructure/asana/task-read-adapter.ts | AsanaTaskReadAdapter.runtime | main/infrastructure/asana |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.encodedSecrets | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.errorLogPath | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.formatter | main/infrastructure/logging |
@@ -1004,6 +1008,8 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.writing | main/infrastructure/logging |
 | src/main/infrastructure/obsidian/read-error.ts | ObsidianReadError.code | main/infrastructure/obsidian |
 | src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.database | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/task-read-repository.ts | TaskReadPersistenceRepository.contracts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/task-read-repository.ts | TaskReadPersistenceRepository.runtime | main/infrastructure/persistence |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.disposed | main/ipc |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.options | main/ipc |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.removers | main/ipc |
@@ -1014,7 +1020,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/ipc/registry.ts | IpcHandlerRegistry.options | main/ipc |
 | src/main/ipc/registry.ts | IpcHandlerRegistry.registeredIpcMain | main/ipc |
 | src/main/obsidian/obsidian-read-service.ts | ObsidianReadService.database | main/infrastructure/obsidian |
-| src/main/read-model/service.ts | ReadModelService.storage | main/application/task-read |
 | src/main/setup/service.ts | SetupOrchestrator.asana | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.asanaAuthorization | main/application/settings |
 | src/main/setup/service.ts | SetupOrchestrator.capability | main/application/settings |
@@ -1040,20 +1045,13 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectIncompleteStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectOneStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.updateStageStatement | main/infrastructure/persistence |
-| src/main/storage/cleanup-items-cache.ts | CleanupItemsCacheStore.database | main/infrastructure/persistence |
-| src/main/storage/cleanup-items-cache.ts | CleanupItemsCacheStore.saveStatement | main/infrastructure/persistence |
-| src/main/storage/cleanup-items-cache.ts | CleanupItemsCacheStore.selectStatement | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.applicationJournalStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.cleanupItemsCacheStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.database | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.deviceSettingsStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.diagnosticLogStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.externalToolDefinitionStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.projectMetadataCacheStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.rankingCacheStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.runtime | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.syncStateStore | main/infrastructure/persistence |
-| src/main/storage/database.ts | StorageDatabase.taskCacheStore | main/infrastructure/persistence |
+| src/main/storage/database.ts | StorageDatabase.taskRead | main/infrastructure/persistence |
+| src/main/storage/database.ts | StorageDatabase.taskReadContracts | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.vaultMappingStore | main/infrastructure/persistence |
 | src/main/storage/device-settings.ts | DeviceSettingsStore.clearStatement | main/infrastructure/persistence |
 | src/main/storage/device-settings.ts | DeviceSettingsStore.database | main/infrastructure/persistence |
@@ -1070,25 +1068,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.runtime | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.saveStatement | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.selectAllStatement | main/infrastructure/persistence |
-| src/main/storage/project-metadata-cache.ts | ProjectMetadataCacheStore.database | main/infrastructure/persistence |
-| src/main/storage/project-metadata-cache.ts | ProjectMetadataCacheStore.saveStatement | main/infrastructure/persistence |
-| src/main/storage/project-metadata-cache.ts | ProjectMetadataCacheStore.selectAllStatement | main/infrastructure/persistence |
-| src/main/storage/project-metadata-cache.ts | ProjectMetadataCacheStore.selectOneStatement | main/infrastructure/persistence |
-| src/main/storage/ranking-cache.ts | RankingCacheStore.database | main/infrastructure/persistence |
-| src/main/storage/ranking-cache.ts | RankingCacheStore.saveStatement | main/infrastructure/persistence |
-| src/main/storage/ranking-cache.ts | RankingCacheStore.selectStatement | main/infrastructure/persistence |
-| src/main/storage/sync-state.ts | SyncStateStore.database | main/infrastructure/persistence |
-| src/main/storage/sync-state.ts | SyncStateStore.saveStatement | main/infrastructure/persistence |
-| src/main/storage/sync-state.ts | SyncStateStore.selectAllStatement | main/infrastructure/persistence |
-| src/main/storage/sync-state.ts | SyncStateStore.selectOneStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.database | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.deleteAllStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.deleteByGidStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.insertStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.runtime | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.selectAllStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.selectOneStatement | main/infrastructure/persistence |
-| src/main/storage/task-cache.ts | TaskCacheStore.upsertStatement | main/infrastructure/persistence |
 | src/main/storage/vault-mappings.ts | VaultMappingStore.database | main/infrastructure/persistence |
 | src/main/storage/vault-mappings.ts | VaultMappingStore.deleteStatement | main/infrastructure/persistence |
 | src/main/storage/vault-mappings.ts | VaultMappingStore.saveStatement | main/infrastructure/persistence |
@@ -1241,22 +1220,22 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | 現行method | 移行先 | task |
 | --- | --- | --- |
 | close | PersistenceRuntime | T07 |
-| replaceTaskCache | TaskCacheRepository | T09 |
-| applyTaskCacheDiff | TaskCacheRepository | T09 |
-| getTaskCache | TaskCacheRepository | T09 |
-| saveSyncSnapshot | SyncSnapshotRepository | T09 |
-| getTaskCacheEntry | TaskCacheRepository | T09 |
-| saveProjectMetadataCache | ProjectMetadataRepository | T09 |
-| getProjectMetadataCache | ProjectMetadataRepository | T09 |
-| getProjectMetadataCaches | ProjectMetadataRepository | T09 |
-| saveRankingCache | RankingRepository | T09 |
-| getRankingCache | RankingRepository | T09 |
-| getCleanupItems | CleanupItemsRepository | T09 |
-| replaceCleanupItemsByKinds | CleanupItemsRepository | T09 |
-| mergeCleanupItemsByKinds | CleanupItemsRepository | T09 |
-| saveSyncState | SyncStateRepository | T09 |
-| getSyncState | SyncStateRepository | T09 |
-| getSyncStates | SyncStateRepository | T09 |
+| replaceTaskCache | TaskReadPersistenceRepository | T09 |
+| applyTaskCacheDiff | TaskReadPersistenceRepository | T09 |
+| getTaskCache | TaskReadPersistenceRepository | T09 |
+| saveSyncSnapshot | TaskReadPersistenceRepository | T09 |
+| getTaskCacheEntry | TaskReadPersistenceRepository | T09 |
+| saveProjectMetadataCache | TaskReadPersistenceRepository | T09 |
+| getProjectMetadataCache | TaskReadPersistenceRepository | T09 |
+| getProjectMetadataCaches | TaskReadPersistenceRepository | T09 |
+| saveRankingCache | TaskReadPersistenceRepository | T09 |
+| getRankingCache | TaskReadPersistenceRepository | T09 |
+| getCleanupItems | TaskReadPersistenceRepository | T09 |
+| replaceCleanupItemsByKinds | TaskReadPersistenceRepository | T09 |
+| mergeCleanupItemsByKinds | TaskReadPersistenceRepository | T09 |
+| saveSyncState | TaskReadPersistenceRepository | T09 |
+| getSyncState | TaskReadPersistenceRepository | T09 |
+| getSyncStates | TaskReadPersistenceRepository | T09 |
 | saveDeviceSettings | DeviceSettingsRepository | T17 |
 | getDeviceSettings | DeviceSettingsRepository | T17 |
 | clearDeviceSettings | DeviceSettingsRepository | T17 |
@@ -1277,7 +1256,7 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | replaceExternalToolDefinitions | ExternalToolDefinitionRepository | T17 |
 | deleteExternalToolDefinition | ExternalToolDefinitionRepository | T17 |
 | getExternalToolDefinitions | ExternalToolDefinitionRepository | T17 |
-| clearCaches | CacheMaintenanceRepository | T09 |
+| clearCaches | TaskReadPersistenceRepository | T09 |
 
 | SQLite table | 利用上のowner候補 |
 | --- | --- |
