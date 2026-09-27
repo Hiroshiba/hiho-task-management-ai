@@ -26,7 +26,7 @@
 
 `create-main-runtime.ts`は保存用repository、単回送信のAsana transport、read client、404判定、読戻しadapter、全Asana step executor、後続同期executor、実行engineを一度だけ組み立てます。transportとread clientは既存Asana接続を共有します。clock、ID生成器、error reporterもMainRuntimeの既存資源を共有し、別のownerを作りません。保存済みstepの`kind`と`executor_version`は登録済みexecutorへ一意に対応させます。
 
-通常適用はAI画面と外部agentの共有入口で承認直前の現在値を分類し、実行可能な操作を一つのexecutionへまとめます。承認競合とatomic groupの保留は書き込み対象から除き、既存の操作・グループ結果へ反映します。関係グラフは実行対象だけで再検証します。実行結果は保存済みstepとreceiptから投影し、途中成功と未確定操作を区別します。後続同期が失敗した操作は`local_resync_required`の`unknown`として返し、成功扱いしません。
+通常適用はAI画面と外部agentの共有入口で承認直前の現在値を分類し、実行可能な操作を一つのexecutionへまとめます。承認競合とatomic groupの保留は書き込み対象から除き、既存の操作・グループ結果へ反映します。実行可能な操作が0件ならexecutionを作らず、承認IPCは操作・グループ結果を含む`not_started`を返します。保存済みexecutionがある承認IPCは`execution`を返します。関係グラフは実行対象だけで再検証します。実行結果は保存済みstepとreceiptから投影し、途中成功と未確定操作を区別します。後続同期が失敗した操作は`local_resync_required`の`unknown`として返し、成功扱いしません。
 
 ## 保存するwrite step
 

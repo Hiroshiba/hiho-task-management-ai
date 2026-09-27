@@ -1,6 +1,7 @@
 import type { ProposalExecution, ProposalExecutionRepository } from "../common/ports/proposal-execution-repository";
 import { buildApplicationResult } from "./application-result";
 import { createOperationResult } from "./operation-result";
+import { latestProposalExecution } from "./latest-proposal-execution";
 
 export type StoredProposalWriteResult = {
   readonly proposal_id: string;
@@ -29,7 +30,9 @@ export type SelectedProposal = {
 };
 
 export type ApplicationOperationResult = ReturnType<typeof createOperationResult>;
-export type StoredProposalApplicationResult = ReturnType<typeof buildApplicationResult<ApplicationOperationResult>>;
+export type StoredProposalApplicationResult = ReturnType<typeof buildApplicationResult<ApplicationOperationResult>> & {
+  readonly execution_id?: string;
+};
 
 type StoredExecutionOperationResult = {
   readonly group_id: string;
@@ -117,10 +120,7 @@ export function getStoredProposalOperationStatus(
   operationId: string,
 ): { readonly execution_id: string; readonly operation: StoredExecutionOperationResult } | undefined {
   const executions = repository.getByProposal(proposalId);
-  if (executions.length > 1) {
-    throw new Error("同じ変更案の保存済みexecutionが複数あります。");
-  }
-  const execution = executions[0];
+  const execution = latestProposalExecution(executions);
   if (execution == null) return undefined;
   const context = execution.proposal_context;
   if (context == null) throw new Error("保存済みexecutionの変更案文脈がありません。");
@@ -155,5 +155,8 @@ export function projectStoredProposalResult(
       }
     }
   }
-  return buildApplicationResult(proposalId, proposal, selectedOperationIds, results);
+  return {
+    ...buildApplicationResult(proposalId, proposal, selectedOperationIds, results),
+    ...(execution == null ? {} : { execution_id: execution.execution_id }),
+  };
 }

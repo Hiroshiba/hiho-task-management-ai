@@ -154,6 +154,27 @@ const historyConfirmRequestSchema = z
 const executionRequestSchema = z.object({ execution_id: identifierSchema }).strict();
 const retryExecutionRequestSchema = z.object({ retry_of_execution_id: identifierSchema }).strict();
 const proposalExecutionSchema = executionDtoSchema.refine((execution) => execution.origin === "proposal");
+const approvalResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("execution"), execution: proposalExecutionSchema }).strict(),
+  z.object({
+    kind: z.literal("not_started"),
+    proposal_id: identifierSchema,
+    outcome: z.enum(["already_applied", "not_applied", "partially_applied"]),
+    operation_results: z.array(z.object({
+      group_id: identifierSchema,
+      operation_id: identifierSchema,
+      task_gid: gidSchema.optional(),
+      outcome: z.enum(["already_applied", "not_applied"]),
+      reason_code: identifierSchema,
+    }).strict()).min(1),
+    group_results: z.array(z.object({
+      group_id: identifierSchema,
+      atomic: z.boolean(),
+      operation_ids: z.array(identifierSchema).min(1),
+      outcome: z.enum(["already_applied", "not_applied", "partially_applied"]),
+    }).strict()).min(1),
+  }).strict(),
+]);
 const retryExecutionResponseSchema = responseSchema(
   proposalExecutionSchema.refine(
     (execution) => execution.retry_of_execution_id != null,
@@ -209,7 +230,7 @@ export const proposalsContracts = {
   approve: {
     channel: proposalsChannels.approve,
     request: selectionRequestSchema,
-    response: responseSchema(proposalExecutionSchema),
+    response: responseSchema(approvalResultSchema),
   },
   closeSession: {
     channel: proposalsChannels.closeSession,
@@ -239,7 +260,7 @@ export const proposalsContracts = {
   approveExternal: {
     channel: proposalsChannels.approveExternal,
     request: externalSelectionRequestSchema,
-    response: responseSchema(proposalExecutionSchema),
+    response: responseSchema(approvalResultSchema),
   },
   rejectExternal: {
     channel: proposalsChannels.rejectExternal,
@@ -324,6 +345,7 @@ export const proposalsContracts = {
 type ProposalViewResult = Promise<IpcResult<ProposalViewDto>>;
 type ExternalStateResult = Promise<IpcResult<z.infer<typeof externalProposalStateSchema>>>;
 type ExecutionResult = Promise<IpcResult<ExecutionDto>>;
+type ApprovalResult = Promise<IpcResult<z.infer<typeof approvalResultSchema>>>;
 
 export type ProposalsApi = {
   readonly getAiStatus: () => Promise<IpcResult<z.infer<typeof aiStatusSchema>>>;
@@ -337,13 +359,13 @@ export type ProposalsApi = {
   readonly reject: (
     input: z.infer<typeof proposalRequestSchema>,
   ) => Promise<IpcResult<z.infer<typeof completedSchema>>>;
-  readonly approve: (input: z.infer<typeof selectionRequestSchema>) => ExecutionResult;
+  readonly approve: (input: z.infer<typeof selectionRequestSchema>) => ApprovalResult;
   readonly closeSession: (sessionId: string) => Promise<IpcResult<z.infer<typeof completedSchema>>>;
   readonly getExternalState: () => ExternalStateResult;
   readonly setExternalEnabled: (enabled: boolean) => ExternalStateResult;
   readonly editExternalOperation: (input: z.infer<typeof externalEditRequestSchema>) => ExternalStateResult;
   readonly selectExternal: (input: z.infer<typeof externalSelectionRequestSchema>) => ExternalStateResult;
-  readonly approveExternal: (input: z.infer<typeof externalSelectionRequestSchema>) => ExecutionResult;
+  readonly approveExternal: (input: z.infer<typeof externalSelectionRequestSchema>) => ApprovalResult;
   readonly rejectExternal: (input: z.infer<typeof externalRejectRequestSchema>) => ExternalStateResult;
   readonly getHistoryStatus: () => Promise<IpcResult<z.infer<typeof historyStatusSchema>>>;
   readonly confirmHistory: (

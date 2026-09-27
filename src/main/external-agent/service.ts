@@ -503,6 +503,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
       const application = asanaProposalApplicationResultSchema.parse(await run);
       const result = aiWorkflowApprovalResultSchema.parse({
         proposal_id: record.proposal_id,
+        ...(application.execution_id == null ? {} : { execution_id: application.execution_id }),
         application: externalAgentApplicationSummary(application),
       });
       record.revision += 1;

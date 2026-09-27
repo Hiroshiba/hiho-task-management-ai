@@ -149,11 +149,14 @@ import {
   recoverStoredProposals,
   assertApprovalInputMatchesStored,
   type StoredProposalExecutionPort,
+  type ProposalExecutionWorkflow,
+  type StoredProposalExecution,
 } from "./proposal-apply";
 import { customExternalDataSchema } from "../domain/task-write-values";
 import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
+import type { ProposalsHandlerWorkflows } from "../ipc/handlers/proposals";
 import { buildDisplayOrderInput } from "./task-write";
 import { applyGuiTaskWriteExecution, projectGuiExecutionResult, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
 import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
@@ -943,6 +946,7 @@ export class TaskHubApplication {
   >;
   private taskWriteExecution: {
     readonly proposal: StoredProposalExecutionPort;
+    readonly proposalWorkflow: ProposalExecutionWorkflow;
     readonly gui: GuiEditExecutionPort;
     readonly guiWorkflow: GuiEditExecutionWorkflow;
   } | undefined;
@@ -1803,6 +1807,7 @@ export class TaskHubApplication {
   /** 通常適用とGUI編集の保存済みplan実行入口を一度だけ受け取ります。 */
   public setTaskWriteExecution(ports: {
     readonly proposal: StoredProposalExecutionPort;
+    readonly proposalWorkflow: ProposalExecutionWorkflow;
     readonly gui: GuiEditExecutionPort;
     readonly guiWorkflow: GuiEditExecutionWorkflow;
   }): void {
@@ -1822,6 +1827,69 @@ export class TaskHubApplication {
       ai: this.createAiPort(),
       proposalHistory: this.createProposalHistoryPort(),
       obsidian: this.obsidian.createIpcPort(),
+    };
+  }
+
+  /** 変更案の最終IPCに公開するworkflowを取得します。 */
+  public getProposalsHandlerWorkflows(): ProposalsHandlerWorkflows {
+    return {
+      ai: {
+        getStatus: () => {
+          this.assertOperationalReady();
+          return this.currentAiStatus();
+        },
+        startNewSession: (signal) => this.aiRuntime.startSession(signal),
+        startTurn: (input, signal) => this.aiInteraction.startTurn(input, signal),
+        getProposal: (input) => this.aiInteraction.withProposalRecord(input, false, (record) =>
+          record.workflow.getProposal(identifierSchema.parse(input.proposal_id))),
+        select: (input) => this.aiInteraction.withProposalRecord(input, true, (record) =>
+          record.workflow.select(aiWorkflowSelectionRequestSchema.parse(input))),
+        editOperation: (input) => this.aiInteraction.withProposalRecord(input, true, (record) =>
+          record.workflow.editOperation(aiWorkflowOperationEditSchema.parse(input))),
+        reject: (input) => this.aiInteraction.withProposalRecord(input, true, (record) => {
+          const proposalId = identifierSchema.parse(input.proposal_id);
+          record.workflow.rejectProposal(proposalId);
+          this.aiRuntime.forgetProposal(record, proposalId);
+        }),
+        approve: (input, signal) => this.aiInteraction.approve(input, signal),
+        closeSession: async (sessionId) => {
+          const record = this.aiRuntime.requireSession(sessionId);
+          await this.aiRuntime.closeRecord(record, "explicit");
+          return { completed: true };
+        },
+      },
+      external: {
+        getState: () => this.externalAgent.getState(),
+        setEnabled: (input, signal) => this.externalAgent.setEnabled(input, signal),
+        edit: (input, signal) => this.externalAgent.edit({
+          ...aiWorkflowOperationEditSchema.parse(input),
+          revision: input.revision,
+        }, signal),
+        select: (input, signal) => this.externalAgent.select(input, signal),
+        approve: (input, signal) => this.externalAgent.approve(input, signal),
+        reject: (input, signal) => this.externalAgent.reject(input, signal),
+      },
+      history: {
+        getStatus: () => this.getProposalHistoryDto(),
+        confirm: (input) => {
+          const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
+          this.proposalApplicationHistoryRepository.confirm(
+            checked.proposal_id,
+            checked.operation_id,
+            checked.checked_target_id,
+            checked.confirmed_result,
+          );
+          return this.getProposalHistoryDto();
+        },
+        synchronize: async (signal) => {
+          const result = await this.synchronizeProposalHistory(signal);
+          return { status: this.getProposalHistoryDto(), synced_at: result.synced_at };
+        },
+      },
+      execution: {
+        getExecution: (executionId) => this.getProposalExecution(executionId),
+        retryExecution: (executionId, signal) => this.retryProposalExecution(executionId, signal),
+      },
     };
   }
 
@@ -2729,6 +2797,20 @@ export class TaskHubApplication {
     return ipcProposalHistoryStatusSchema.parse({ entries });
   }
 
+  private getProposalHistoryDto(): Awaited<ReturnType<ProposalsHandlerWorkflows["history"]["getStatus"]>> {
+    return { entries: this.getProposalHistoryStatus().entries.map((entry) => {
+      if (entry.kind !== "confirmation_required") return entry;
+      return {
+        kind: entry.kind,
+        proposal_id: entry.proposal_id,
+        operation_id: entry.operation_id,
+        target_id: entry.target_id,
+        target_kind: entry.target_kind,
+        source_stage: entry.source_stage,
+      };
+    }) };
+  }
+
   private createProposalHistoryPort(): IpcProposalHistoryPort {
     return {
       getStatus: () => this.getProposalHistoryStatus(),
@@ -2950,6 +3032,30 @@ export class TaskHubApplication {
   /** 指定IDの保存済みGUI編集executionを取得します。 */
   public getGuiEditExecution(executionId: string): GuiEditExecution {
     return this.requireTaskWriteExecution().guiWorkflow.getExecution(executionId);
+  }
+
+  /** 指定IDの保存済み変更案executionを取得します。 */
+  public getProposalExecution(executionId: string): StoredProposalExecution {
+    return this.requireTaskWriteExecution().proposalWorkflow.getExecution(executionId);
+  }
+
+  /** 変更案の実行条件を確認して明示再試行します。 */
+  public async retryProposalExecution(executionId: string, signal: AbortSignal): Promise<StoredProposalExecution> {
+    this.assertMutationRequestAccepted();
+    const context = this.requireContext();
+    return this.operationQueue.enqueue({
+      priority: "user",
+      kind: "ai_apply",
+      signal,
+      beforeStart: () => {
+        this.assertQueuedMutationReady();
+        this.assertContextUnchanged(context);
+      },
+      run: (operationContext) => this.requireTaskWriteExecution().proposalWorkflow.retryExecution(
+        executionId,
+        operationContext.signal,
+      ),
+    });
   }
 
   /** GUI編集の実行条件を確認して明示再試行します。 */
@@ -3226,6 +3332,7 @@ export class TaskHubApplication {
         parseApplication: (value) => asanaProposalApplicationResultSchema.parse(value),
         createResult: (stored, application) => aiWorkflowApprovalResultSchema.parse({
           proposal_id: stored.proposal_id,
+          ...(application.execution_id == null ? {} : { execution_id: application.execution_id }),
           application: createApplicationSummary(application),
         }),
         forgetProposal: store.forgetProposal,

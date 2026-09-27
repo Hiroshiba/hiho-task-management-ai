@@ -17,7 +17,7 @@ import {
   type TaskWriteExecutionResult,
 } from "../application/task-write";
 import { GuiEditExecutionWorkflow, type GuiEditExecutionPort } from "../application/gui-edit";
-import type { StoredProposalExecutionPort } from "../application/proposal-apply";
+import { ProposalExecutionWorkflow, type StoredProposalExecutionPort } from "../application/proposal-apply";
 import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
 
 type TaskWriteRuntimeOptions = {
@@ -37,6 +37,7 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
   readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
   readonly proposal: StoredProposalExecutionPort;
+  readonly proposalWorkflow: ProposalExecutionWorkflow;
   readonly gui: GuiEditExecutionPort;
   readonly guiWorkflow: GuiEditExecutionWorkflow;
 } {
@@ -119,22 +120,28 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
     now: () => options.now().toISOString(),
     fingerprint,
   };
+  const proposal: StoredProposalExecutionPort = {
+    repository: {
+      save: (input) => repository.save(input),
+      get: (executionId) => {
+        const execution = repository.get(executionId);
+        return execution == null || execution.plan.origin !== "proposal" ? undefined : proposalExecution(execution);
+      },
+      getByProposal: (proposalId) => repository.getByProposal(proposalId).map(proposalExecution),
+      getIncomplete: () => repository.getIncomplete()
+        .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
+    },
+    historyRepository: options.historyRepository,
+    engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },
+    createId: options.createId,
+    now: () => options.now().toISOString(),
+    fingerprint,
+  };
   return {
     repository,
     engine,
-    proposal: {
-      repository: {
-        save: (input) => repository.save(input),
-        getByProposal: (proposalId) => repository.getByProposal(proposalId).map(proposalExecution),
-        getIncomplete: () => repository.getIncomplete()
-          .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
-      },
-      historyRepository: options.historyRepository,
-      engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },
-      createId: options.createId,
-      now: () => options.now().toISOString(),
-      fingerprint,
-    },
+    proposal,
+    proposalWorkflow: new ProposalExecutionWorkflow(proposal),
     gui,
     guiWorkflow: new GuiEditExecutionWorkflow(gui),
   };

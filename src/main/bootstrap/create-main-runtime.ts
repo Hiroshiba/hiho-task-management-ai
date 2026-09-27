@@ -6,6 +6,7 @@ import type { ErrorReporter } from "../application/common/errors/error-reporter"
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
 import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
+import { createProposalsHandlers, type ProposalsHandlers } from "../ipc/handlers/proposals";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
@@ -103,6 +104,7 @@ export interface MainRuntime {
     readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
   };
   readonly tasksHandlers: TasksHandlers;
+  readonly proposalsHandlers: ProposalsHandlers;
   readonly signal: AbortSignal;
   createWindowStateStore(): WindowStateStore;
   createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
@@ -159,7 +161,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       now: nowProvider,
       wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
     });
-    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
+    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
     const tasksHandlers = createTasksHandlers({
       taskRead: legacy.taskRead,
       guiEdit: legacy,
@@ -168,12 +170,14 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         retryExecution: (executionId, signal) => legacy.retryGuiEditExecution(executionId, signal),
       },
     });
+    const proposalsHandlers = createProposalsHandlers(legacy.getProposalsHandlerWorkflows());
     let disposal: Promise<void> | undefined;
     return {
       legacy,
       reporter,
       taskWriteExecution: { repository: taskWrite.repository, engine: taskWrite.engine },
       tasksHandlers,
+      proposalsHandlers,
       signal: controller.signal,
       createWindowStateStore: () => new WindowStateStore(
         openedPersistence.openLateTextFile(

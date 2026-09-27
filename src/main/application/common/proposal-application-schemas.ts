@@ -346,6 +346,7 @@ function applicationResultOutcomeFromGroups(
 const applicationResultSchema = z
   .object({
     proposal_id: identifierSchema,
+    execution_id: identifierSchema.optional(),
     outcome: applicationGroupOutcomeSchema,
     operations: z.array(applicationOperationResultSchema).min(1),
     groups: z.array(applicationGroupResultSchema).min(1),

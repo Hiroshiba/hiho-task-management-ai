@@ -464,6 +464,7 @@ const applicationSummarySchema = z
 export const aiWorkflowApprovalResultSchema = z
   .object({
     proposal_id: identifierSchema,
+    execution_id: identifierSchema.optional(),
     application: applicationSummarySchema,
   })
   .strict();

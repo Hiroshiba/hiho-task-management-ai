@@ -10,6 +10,7 @@ import type { ProposalOperationPlanningContext } from "../common/task-write-oper
 import { orderApplicableContexts } from "./operation-order";
 import { createTaskTemporaryReferences } from "./recovery-references";
 import { createOperationResult } from "./operation-result";
+import { latestProposalExecution } from "./latest-proposal-execution";
 import {
   projectStoredProposalResult,
   type ApplicationOperationResult,
@@ -55,7 +56,7 @@ type ApprovalResult = {
 };
 
 export type StoredProposalExecutionPort = {
-  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal" | "getIncomplete" | "save">;
+  readonly repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "get" | "getByProposal" | "getIncomplete" | "save">;
   readonly historyRepository: ProposalApplicationHistoryRepository;
   readonly engine: {
     run(executionId: string, signal: AbortSignal): Promise<ProposalExecution<StoredProposalWriteResult>>;
@@ -113,11 +114,7 @@ function existingExecution(
   proposalId: string,
   port: StoredProposalExecutionPort,
 ): ProposalExecution<StoredProposalWriteResult> | undefined {
-  const executions = port.repository.getByProposal(proposalId);
-  if (executions.length > 1) {
-    throw new Error("同じ変更案の保存済みexecutionが複数あります。");
-  }
-  return executions[0];
+  return latestProposalExecution(port.repository.getByProposal(proposalId));
 }
 
 /** 承認済みの全操作を一つの保存済みplanから適用します。 */

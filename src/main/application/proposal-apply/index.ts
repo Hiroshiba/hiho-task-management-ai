@@ -4,4 +4,7 @@ export { createApplicationSummary } from "./approval-summary";
 export { collectApprovalProjectTasks } from "./approval-task-read";
 export { applyStoredProposal, type StoredProposalExecutionPort } from "./apply-stored-proposal";
 export { recoverStoredProposals, type StoredProposalRecoveryResult } from "./recover-stored-proposals";
-export { getStoredProposalOperationStatus } from "./stored-proposal-result";
+export { getStoredProposalOperationStatus, operationResultFromExecution } from "./stored-proposal-result";
+export { buildApplicationResult } from "./application-result";
+export { TaskWriteRetryNotAllowedError } from "../common/prepare-task-write-retry";
+export { ProposalExecutionWorkflow, ProposalExecutionNotFoundError, type StoredProposalExecution } from "./execution-workflow";
