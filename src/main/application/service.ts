@@ -138,6 +138,11 @@ import {
   createObsidianPort,
 } from "../bootstrap/obsidian-ports";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
+import {
+  AiSessionRuntime,
+  type AiSessionBaselineStore as RuntimeAiSessionBaselineStore,
+  type AiSessionRecord as RuntimeAiSessionRecord,
+} from "../bootstrap/ai-session-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -285,57 +290,16 @@ type MutableTokenProviderPort = TokenProvider & {
 
 type BaselineExternalData = AsanaProposalApplicationInput["baseline_external_data"];
 
-type AiSessionBaselineStore = {
-  readonly externalData: Map<string, BaselineExternalData>;
-  readonly proposalKeys: Map<string, string>;
-  readonly currentTurnKeys: Set<string>;
-  taskctlSnapshot: TaskctlSnapshot | undefined;
-};
+type AiSessionBaselineStore = RuntimeAiSessionBaselineStore<BaselineExternalData, TaskctlSnapshot>;
 
-type AiSessionRecord = {
-  readonly sessionId: string;
-  readonly workspace: CodexWorkspaceInitializationResult;
-  readonly session: CodexSessionService;
-  readonly externalToolBroker: ExternalToolBroker | undefined;
-  readonly workflow: AiWorkflowService;
-  readonly baselineStore: AiSessionBaselineStore;
-  readonly lifecycleController: AbortController;
-  readonly removeLifecycleListener: () => void;
-  readonly removeDeltaListener: () => void;
-  readonly operations: Map<AbortController, Promise<unknown>>;
-  readonly proposalIds: Set<string>;
-  closing: boolean;
-  turnInFlight: boolean;
-  approvalInFlight: boolean;
-  closePromise: Promise<void> | undefined;
-};
-
-type AiSessionStartResult =
-  | { readonly kind: "started"; readonly session_id: string }
-  | { readonly kind: "authentication_required" };
-
-type AiSessionStartRequestStopState =
-  | { readonly kind: "not_claimed" }
-  | {
-      readonly kind: "claimed";
-      readonly result: Promise<AiSessionPromiseResult>;
-    };
-
-type AiSessionCleanupDisposition =
-  | { readonly kind: "record" }
-  | { readonly kind: "propagate_unrecorded" };
-
-type AiSessionStartRecord = {
-  readonly sessionId: string;
-  readonly workspaceUserDataPath: string;
-  readonly lifecycleController: AbortController;
-  readonly removeLifecycleListener: () => void;
-  workspace: CodexWorkspaceInitializationResult | undefined;
-  session: CodexSessionService | undefined;
-  externalToolBroker: ExternalToolBroker | undefined;
-  requestStopState: AiSessionStartRequestStopState;
-  readonly completion: Promise<AiSessionStartResult>;
-};
+type AiSessionRecord = RuntimeAiSessionRecord<
+  CodexWorkspaceInitializationResult,
+  CodexSessionService,
+  AiWorkflowService,
+  ExternalToolBroker,
+  BaselineExternalData,
+  TaskctlSnapshot
+>;
 
 type AiSessionExternalToolResources = {
   readonly broker: ExternalToolBroker | undefined;
@@ -492,19 +456,6 @@ function isAiSessionAbortError(error: unknown): boolean {
     current = current.cause;
   }
   return false;
-}
-
-type AiSessionPromiseResult =
-  | { readonly kind: "completed" }
-  | { readonly kind: "rejected"; readonly error: unknown };
-
-function settleAiSessionPromise(
-  promise: Promise<unknown>,
-): Promise<AiSessionPromiseResult> {
-  return promise.then(
-    () => ({ kind: "completed" }),
-    (error: unknown) => ({ kind: "rejected", error }),
-  );
 }
 
 function validateAbortSignal(signal: AbortSignal): void {
@@ -965,8 +916,16 @@ export class TaskHubApplication {
   private applicationCoordinator: AsanaProposalApplicationCoordinator | undefined;
   private guiEdit: AsanaGuiEditService | undefined;
   private aiSessionsConfigured = false;
-  private readonly aiSessions = new Map<string, AiSessionRecord>();
-  private readonly aiSessionStarts = new Map<string, AiSessionStartRecord>();
+  private readonly aiRuntime: AiSessionRuntime<
+    CodexWorkspaceInitializationResult,
+    CodexSessionService,
+    AiWorkflowService,
+    ExternalToolBroker,
+    ExternalToolStatusEvidenceCollector,
+    BaselineExternalData,
+    TaskctlSnapshot,
+    CodexSessionStartResult
+  >;
   private vaultMappingSaveInProgress = false;
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
@@ -1146,6 +1105,50 @@ export class TaskHubApplication {
       getSelection: () => this.setup.getExternalToolSelection(),
       markUnavailable: (reason) => this.setup.markExternalToolUnavailable(reason),
       rethrowFeatureAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
+    });
+    this.aiRuntime = new AiSessionRuntime({
+      lifecycleSignal: this.options.lifecycle_signal,
+      isStopped: () => this.stopped,
+      assertOperationalReady: () => this.assertOperationalReady(),
+      validateAbortSignal,
+      throwIfAborted,
+      createSessionId: () => identifierSchema.parse(randomUUID()),
+      parseSessionId: (sessionId) => identifierSchema.parse(sessionId),
+      workspaceUserDataPath: (sessionId) => join(
+        this.aiSessionWorkspaceParentPath,
+        `ai-session-${sessionId}`,
+      ),
+      createWorkspace: (sessionId) => this.createAiSessionWorkspace(sessionId),
+      prepareExternalTools: (workspace, signal) =>
+        this.prepareAiSessionExternalTools(workspace, signal),
+      createSession: (workspace, endpoint) => this.createAiSessionService(workspace, endpoint),
+      startSession: (session, signal) => session.start(signal),
+      createWorkflow: (session, collector, baselineStore, sessionId) =>
+        this.createAiWorkflow(session, collector, baselineStore, sessionId),
+      subscribeDelta: (workflow, sessionId) => workflow.onDelta((delta) => {
+        this.publishAiDelta(ipcAiDeltaEventSchema.parse({
+          session_id: sessionId,
+          thread_id: delta.threadId,
+          turn_id: delta.turnId,
+          item_id: delta.itemId,
+          delta: delta.delta,
+        }));
+      }),
+      onAuthenticationRequired: (result) => {
+        this.aiStartResult = result;
+        this.codexAuthenticationRequired = true;
+      },
+      publishStatus: () => this.publishAiStatus(),
+      createAbortedError: () => new CodexSessionAbortedError(),
+      removeWorkspace: (userDataPath) => removeCodexSessionWorkspace(
+        userDataPath,
+        this.aiSessionWorkspaceParentPath,
+      ),
+      combineFailures: (errors) => combineDiagnosticFailures(errors),
+      isAbortError: isAiSessionAbortError,
+      hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
+      linkOwnedSignal: (signal, owner) =>
+        this.operationQueue.linkOwnedSignal(signal, owner),
     });
     const externalAgentBridge = new ExternalAgentBridge({
       userDataPath: this.codexWorkspace.userDataPath,
@@ -1332,7 +1335,7 @@ export class TaskHubApplication {
     this.syncStateListeners.clear();
     this.aiDeltaListeners.clear();
     this.aiStatusListeners.clear();
-    await this.closeAllAiSessions(errors);
+    await this.aiRuntime.closeAll(errors);
     await this.stopAsyncService(this.displayOrder, errors);
     await this.stopAsyncService(this.runtime, errors);
     await this.stopAsyncService(this.operationQueue, errors);
@@ -3280,7 +3283,7 @@ export class TaskHubApplication {
   }
 
   private resetAiSessionWithdrawConfirmations(): void {
-    for (const record of this.aiSessions.values()) {
+    for (const record of this.aiRuntime.activeSessions()) {
       record.workflow.resetPendingWithdrawConfirmation();
     }
   }
@@ -3509,8 +3512,7 @@ export class TaskHubApplication {
     }
     if (
       this.externalTools.isConfigurationRunning()
-      || this.aiSessionStarts.size > 0
-      || this.aiSessions.size > 0
+      || this.aiRuntime.hasActiveSessions()
     ) {
       throw new ObsidianVaultMappingConflictError();
     }
@@ -3572,32 +3574,6 @@ export class TaskHubApplication {
     });
   }
 
-  private rememberProposal(record: AiSessionRecord, proposalId: string): void {
-    record.proposalIds.add(proposalId);
-  }
-
-  private forgetProposal(record: AiSessionRecord, proposalId: string): void {
-    record.proposalIds.delete(proposalId);
-    const baselineKey = record.baselineStore.proposalKeys.get(proposalId);
-    if (baselineKey == null) {
-      return;
-    }
-    record.baselineStore.proposalKeys.delete(proposalId);
-    if (![...record.baselineStore.proposalKeys.values()].includes(baselineKey)) {
-      record.baselineStore.externalData.delete(baselineKey);
-    }
-  }
-
-  private releaseCurrentTurnBaselines(record: AiSessionRecord): void {
-    for (const baselineKey of record.baselineStore.currentTurnKeys) {
-      if (![...record.baselineStore.proposalKeys.values()].includes(baselineKey)) {
-        record.baselineStore.externalData.delete(baselineKey);
-      }
-    }
-    record.baselineStore.currentTurnKeys.clear();
-    record.baselineStore.taskctlSnapshot = undefined;
-  }
-
   private currentAiStatus(): IpcAiStatus {
     if (this.stopped || this.codexSession.getState() === "stopped") {
       return ipcAiStatusEventSchema.parse({
@@ -3650,42 +3626,6 @@ export class TaskHubApplication {
         this.options.diagnostic(error, "ai_delta_listener", serviceErrorDiagnostic);
       }
     }
-  }
-
-  private createAiSessionLifecycle(): {
-    readonly controller: AbortController;
-    readonly remove: () => void;
-  } {
-    const controller = new AbortController();
-    const abort = (): void => {
-      controller.abort();
-    };
-    this.options.lifecycle_signal.addEventListener("abort", abort, { once: true });
-    if (this.options.lifecycle_signal.aborted) {
-      abort();
-    }
-    return {
-      controller,
-      remove: (): void => {
-        this.options.lifecycle_signal.removeEventListener("abort", abort);
-      },
-    };
-  }
-
-  private linkAbortSignal(
-    source: AbortSignal,
-    target: AbortController,
-  ): () => void {
-    const abort = (): void => {
-      target.abort();
-    };
-    source.addEventListener("abort", abort, { once: true });
-    if (source.aborted) {
-      abort();
-    }
-    return (): void => {
-      source.removeEventListener("abort", abort);
-    };
   }
 
   private createAiSessionWorkspace(sessionId: string): CodexWorkspaceInitializationResult {
@@ -3845,346 +3785,16 @@ export class TaskHubApplication {
     );
   }
 
-  private requireAiSession(sessionId: string): AiSessionRecord {
-    const parsedSessionId = identifierSchema.parse(sessionId);
-    const record = this.aiSessions.get(parsedSessionId);
-    if (record == null || record.closing) {
-      throw new Error("指定されたAIセッションは終了しています。");
-    }
-    return record;
-  }
-
-  private runAiSessionOperation<T>(
-    record: AiSessionRecord,
-    signal: AbortSignal,
-    operation: (operationSignal: AbortSignal) => T | PromiseLike<T>,
-  ): Promise<T> {
-    validateAbortSignal(signal);
-    if (record.closing) {
-      throw new Error("AIセッションは終了処理中です。");
-    }
-    const controller = new AbortController();
-    const removeRequestAbort = this.linkAbortSignal(signal, controller);
-    const removeSessionAbort = this.linkAbortSignal(
-      record.lifecycleController.signal,
-      controller,
-    );
-    const removeQueueOwnedSignal = this.operationQueue.hasOwner(signal)
-      ? this.operationQueue.linkOwnedSignal(controller.signal, signal)
-      : undefined;
-    const completion = Promise.resolve().then(() => operation(controller.signal));
-    record.operations.set(controller, completion);
-    return completion.finally(() => {
-      removeRequestAbort();
-      removeSessionAbort();
-      removeQueueOwnedSignal?.();
-      record.operations.delete(controller);
-    });
-  }
-
-  private async closeAiSessionRecord(
-    record: AiSessionRecord,
-    reason: "explicit" | "application_stop",
-  ): Promise<void> {
-    if (record.closePromise != null) {
-      return record.closePromise;
-    }
-    if (reason === "explicit" && record.approvalInFlight) {
-      throw new Error("承認適用中のAIセッションは終了できません。");
-    }
-    const stopDisposition: AiSessionCleanupDisposition = reason === "explicit"
-      ? { kind: "propagate_unrecorded" }
-      : { kind: "record" };
-    record.closing = true;
-    const sessionStopPromise = record.session.stop(stopDisposition);
-    record.lifecycleController.abort();
-    for (const controller of record.operations.keys()) {
-      controller.abort();
-    }
-    const closePromise = (async (): Promise<void> => {
-      const stopPromises: Promise<void>[] = [sessionStopPromise];
-      if (record.externalToolBroker != null) {
-        stopPromises.push(record.externalToolBroker.stop());
-      }
-      const stopResultsPromise = Promise.all(
-        stopPromises.map((promise) => settleAiSessionPromise(promise)),
-      );
-      const operationResultsPromise = Promise.all(
-        [...record.operations.entries()].map(async ([controller, promise]) => ({
-          controller,
-          result: await settleAiSessionPromise(promise),
-        })),
-      );
-      const operationResults = await operationResultsPromise;
-      const stopResults = await stopResultsPromise;
-      const errors: unknown[] = [
-        ...operationResults
-          .filter(({ controller, result }) =>
-            result.kind === "rejected"
-            && !isAiSessionAbortError(result.error)
-            && !controller.signal.aborted)
-          .map(({ result }) => {
-            if (result.kind !== "rejected") {
-              throw new Error("AIセッション操作の終了結果が不正です。");
-            }
-            return result.error;
-          }),
-        ...stopResults
-          .filter((result) => result.kind === "rejected")
-          .map((result) => result.error),
-      ];
-      try {
-        record.workflow.dispose();
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-      record.removeDeltaListener();
-      record.removeLifecycleListener();
-      for (const proposalId of record.proposalIds) {
-        this.forgetProposal(record, proposalId);
-      }
-      record.baselineStore.currentTurnKeys.clear();
-      record.baselineStore.proposalKeys.clear();
-      record.baselineStore.externalData.clear();
-      record.baselineStore.taskctlSnapshot = undefined;
-      if (this.aiSessions.get(record.sessionId) === record) {
-        this.aiSessions.delete(record.sessionId);
-      }
-      try {
-        removeCodexSessionWorkspace(
-          record.workspace.userDataPath,
-          this.aiSessionWorkspaceParentPath,
-        );
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-      if (errors.length > 0) {
-        throw combineDiagnosticFailures(errors);
-      }
-    })();
-    record.closePromise = closePromise;
-    return closePromise;
-  }
-
-  private async closeAiSessionStart(
-    start: AiSessionStartRecord,
-    disposition: AiSessionCleanupDisposition,
-  ): Promise<void> {
-    const stopResultPromises: Promise<AiSessionPromiseResult>[] = [];
-    if (start.session != null) {
-      switch (start.requestStopState.kind) {
-        case "not_claimed":
-          stopResultPromises.push(
-            settleAiSessionPromise(start.session.stop(disposition)),
-          );
-          break;
-        case "claimed":
-          stopResultPromises.push(start.requestStopState.result);
-          break;
-      }
-    }
-    if (start.externalToolBroker != null) {
-      stopResultPromises.push(
-        settleAiSessionPromise(start.externalToolBroker.stop()),
-      );
-    }
-    const stopResults = await Promise.all(stopResultPromises);
-    const errors = stopResults
-      .filter((result) => result.kind === "rejected")
-      .map((result) => result.error);
-    try {
-      removeCodexSessionWorkspace(
-        start.workspace?.userDataPath ?? start.workspaceUserDataPath,
-        this.aiSessionWorkspaceParentPath,
-      );
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    if (errors.length > 0) {
-      throw combineDiagnosticFailures(errors);
-    }
-  }
-
-  private async closeAllAiSessions(errors: unknown[]): Promise<void> {
-    const starts = [...this.aiSessionStarts.values()];
-    for (const start of starts) {
-      start.lifecycleController.abort();
-    }
-    const startResults = await Promise.all(
-      starts.map(async (start) => ({
-        start,
-        result: await settleAiSessionPromise(start.completion),
-      })),
-    );
-    for (const { start, result } of startResults) {
-      if (
-        result.kind === "rejected"
-        && !isAiSessionAbortError(result.error)
-        && !start.lifecycleController.signal.aborted
-      ) {
-        errors.push(result.error);
-      }
-    }
-    const records = [...this.aiSessions.values()];
-    await Promise.all(records.map(async (record) => {
-      try {
-        await this.closeAiSessionRecord(record, "application_stop");
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-    }));
-  }
-
-  private async runAiSessionStart(
-    start: AiSessionStartRecord,
-    signal: AbortSignal,
-  ): Promise<AiSessionStartResult> {
-    const abortForRequest = (): void => {
-      if (start.requestStopState.kind === "not_claimed" && start.session != null) {
-        start.requestStopState = {
-          kind: "claimed",
-          result: settleAiSessionPromise(
-            start.session.stop({ kind: "propagate_unrecorded" }),
-          ),
-        };
-      }
-      start.lifecycleController.abort();
-    };
-    signal.addEventListener("abort", abortForRequest, { once: true });
-    if (signal.aborted) {
-      abortForRequest();
-    }
-    const removeRequestAbort = (): void => {
-      signal.removeEventListener("abort", abortForRequest);
-    };
-    let lifecycleTransferred = false;
-    try {
-      start.workspace = this.createAiSessionWorkspace(start.sessionId);
-      const externalToolResources = await this.prepareAiSessionExternalTools(
-        start.workspace,
-        start.lifecycleController.signal,
-      );
-      start.externalToolBroker = externalToolResources.broker;
-      start.session = this.createAiSessionService(
-        start.workspace,
-        externalToolResources.endpoint,
-      );
-      const startResult = await start.session.start(start.lifecycleController.signal);
-      if (startResult.state === "authentication_required") {
-        this.aiStartResult = startResult;
-        this.codexAuthenticationRequired = true;
-        this.publishAiStatus();
-        await this.closeAiSessionStart(start, { kind: "propagate_unrecorded" });
-        return { kind: "authentication_required" };
-      }
-      if (this.stopped || start.lifecycleController.signal.aborted) {
-        throw new CodexSessionAbortedError();
-      }
-      const baselineStore: AiSessionBaselineStore = {
-        externalData: new Map(),
-        proposalKeys: new Map(),
-        currentTurnKeys: new Set(),
-        taskctlSnapshot: undefined,
-      };
-      const workflow = this.createAiWorkflow(
-        start.session,
-        externalToolResources.collector,
-        baselineStore,
-        start.sessionId,
-      );
-      const removeDeltaListener = workflow.onDelta((delta) => {
-        this.publishAiDelta(ipcAiDeltaEventSchema.parse({
-          session_id: start.sessionId,
-          thread_id: delta.threadId,
-          turn_id: delta.turnId,
-          item_id: delta.itemId,
-          delta: delta.delta,
-        }));
-      });
-      const record: AiSessionRecord = {
-        sessionId: start.sessionId,
-        workspace: start.workspace,
-        session: start.session,
-        externalToolBroker: start.externalToolBroker,
-        workflow,
-        baselineStore,
-        lifecycleController: start.lifecycleController,
-        removeLifecycleListener: start.removeLifecycleListener,
-        removeDeltaListener,
-        operations: new Map(),
-        proposalIds: new Set(),
-        closing: false,
-        turnInFlight: false,
-        approvalInFlight: false,
-        closePromise: undefined,
-      };
-      if (this.stopped || start.lifecycleController.signal.aborted) {
-        removeDeltaListener();
-        workflow.dispose();
-        throw new CodexSessionAbortedError();
-      }
-      this.aiSessions.set(start.sessionId, record);
-      lifecycleTransferred = true;
-      return { kind: "started", session_id: start.sessionId };
-    } catch (error: unknown) {
-      try {
-        await this.closeAiSessionStart(start, this.stopped
-          ? { kind: "record" }
-          : { kind: "propagate_unrecorded" });
-      } catch (cleanupError: unknown) {
-        throw combineDiagnosticFailures([error, cleanupError]);
-      }
-      throw error;
-    } finally {
-      removeRequestAbort();
-      if (!lifecycleTransferred) {
-        start.removeLifecycleListener();
-      }
-      this.aiSessionStarts.delete(start.sessionId);
-    }
-  }
-
-  private startAiSession(signal: AbortSignal): Promise<{
-    readonly kind: "started";
-    readonly session_id: string;
-  } | { readonly kind: "authentication_required" }> {
-    if (this.stopped) {
-      throw new Error("アプリケーションは停止済みです。");
-    }
-    this.assertOperationalReady();
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    const sessionId = identifierSchema.parse(randomUUID());
-    const lifecycle = this.createAiSessionLifecycle();
-    const start: AiSessionStartRecord = {
-      sessionId,
-      workspaceUserDataPath: join(
-        this.aiSessionWorkspaceParentPath,
-        `ai-session-${sessionId}`,
-      ),
-      lifecycleController: lifecycle.controller,
-      removeLifecycleListener: lifecycle.remove,
-      workspace: undefined,
-      session: undefined,
-      externalToolBroker: undefined,
-      requestStopState: { kind: "not_claimed" },
-      completion: Promise.resolve().then<AiSessionStartResult>(() =>
-        this.runAiSessionStart(start, signal)),
-    };
-    this.aiSessionStarts.set(sessionId, start);
-    return start.completion;
-  }
-
   private createAiPort(): IpcAiPort {
     return {
       getStatus: () => {
         this.assertOperationalReady();
         return this.currentAiStatus();
       },
-      startNewSession: (signal) => this.startAiSession(signal),
+      startNewSession: (signal) => this.aiRuntime.startSession(signal),
       startTurn: async (input: IpcAiTurnInput, signal): Promise<IpcAiTurnResult> => {
         this.assertMutationRequestAccepted();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         if (record.turnInFlight) {
           throw new Error("同じAIセッションで複数のターンを同時に実行できません。");
         }
@@ -4202,7 +3812,7 @@ export class TaskHubApplication {
             base_proposal_id: input.base_proposal_id,
           });
           const result = aiWorkflowTurnResultSchema.parse(
-            await this.runAiSessionOperation(
+            await this.aiRuntime.runOperation(
               record,
               signal,
               (operationSignal) => record.workflow.startTurn(request, operationSignal),
@@ -4218,36 +3828,36 @@ export class TaskHubApplication {
               record.workflow.rejectProposal(proposalId);
               throw new Error("AI変更案に対応する基準外部データがありません。");
             }
-            this.rememberProposal(record, proposalId);
+            this.aiRuntime.rememberProposal(record, proposalId);
             record.baselineStore.proposalKeys.set(proposalId, baselineKey);
             const baseProposalId = request.base_proposal_id;
             if (baseProposalId != null) {
               record.workflow.rejectProposal(baseProposalId);
-              this.forgetProposal(record, baseProposalId);
+              this.aiRuntime.forgetProposal(record, baseProposalId);
             }
           } else if (
             request.base_proposal_id != null
             && result.pending_proposal_action === "discard"
           ) {
             record.workflow.rejectProposal(request.base_proposal_id);
-            this.forgetProposal(record, request.base_proposal_id);
+            this.aiRuntime.forgetProposal(record, request.base_proposal_id);
           }
           return result;
         } finally {
-          this.releaseCurrentTurnBaselines(record);
+          this.aiRuntime.releaseCurrentTurnBaselines(record);
           record.turnInFlight = false;
         }
       },
       getProposal: (input: IpcAiProposalInput) => {
         this.assertOperationalReady();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         return aiWorkflowProposalViewSchema.parse(
           record.workflow.getProposal(identifierSchema.parse(input.proposal_id)),
         );
       },
       select: (input: IpcAiSelectionInput) => {
         this.assertOperationalReady();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         this.assertAiProposalOperationAvailable(record);
         return aiWorkflowProposalViewSchema.parse(
           record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
@@ -4258,7 +3868,7 @@ export class TaskHubApplication {
       },
       editOperation: (input: IpcAiEditInput) => {
         this.assertOperationalReady();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         this.assertAiProposalOperationAvailable(record);
         return aiWorkflowProposalViewSchema.parse(
           record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
@@ -4271,18 +3881,18 @@ export class TaskHubApplication {
       },
       reject: (input: IpcAiRejectInput) => {
         this.assertOperationalReady();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         this.assertAiProposalOperationAvailable(record);
         const validatedProposalId = identifierSchema.parse(input.proposal_id);
         record.workflow.rejectProposal(validatedProposalId);
-        this.forgetProposal(record, validatedProposalId);
+        this.aiRuntime.forgetProposal(record, validatedProposalId);
       },
       approve: async (
         input: IpcAiApprovalInput,
         signal,
       ): Promise<IpcAiApprovalResult> => {
         this.assertMutationRequestAccepted();
-        const record = this.requireAiSession(input.session_id);
+        const record = this.aiRuntime.requireSession(input.session_id);
         this.assertAiProposalOperationAvailable(record);
         const request = aiWorkflowApprovalRequestSchema.parse({
           proposal_id: input.proposal_id,
@@ -4300,22 +3910,22 @@ export class TaskHubApplication {
                 this.assertQueuedMutationReady();
                 this.assertContextUnchanged(approvalContext);
               },
-              run: (context) => this.runAiSessionOperation(
+              run: (context) => this.aiRuntime.runOperation(
                 record,
                 context.signal,
                 (operationSignal) => record.workflow.approve(request, operationSignal),
               ),
             }),
           );
-          this.forgetProposal(record, result.proposal_id);
+          this.aiRuntime.forgetProposal(record, result.proposal_id);
           return result;
         } finally {
           record.approvalInFlight = false;
         }
       },
       closeSession: async (sessionId) => {
-        const record = this.requireAiSession(sessionId);
-        await this.closeAiSessionRecord(record, "explicit");
+        const record = this.aiRuntime.requireSession(sessionId);
+        await this.aiRuntime.closeRecord(record, "explicit");
         return { completed: true };
       },
       onDelta: (listener) => {
