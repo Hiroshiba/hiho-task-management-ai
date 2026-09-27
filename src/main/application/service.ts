@@ -145,7 +145,13 @@ import {
 import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
 import { SynchronizationOperations } from "../bootstrap/synchronization-operations";
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
-import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthentication-runtime";
+import {
+  AsanaReauthenticationRuntime,
+  SetupIpcWorkflow,
+  contextMatchesSettings,
+  readSettingsState,
+  resolveDeviceId,
+} from "./settings";
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
@@ -275,7 +281,7 @@ import {
   migrateLegacyProposalConflictIdentifiers,
   type ExternalToolDefinitionRecord,
 } from "../storage";
-import { type PersistenceRuntime, type SqliteConnection } from "../infrastructure/persistence";
+import { SqliteSettingsRepository, type PersistenceRuntime, type SqliteConnection } from "../infrastructure/persistence";
 import { AsanaTaskReadAdapter } from "../infrastructure/asana";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
 
@@ -547,17 +553,6 @@ function codexAvailabilityFromState(
   return undefined;
 }
 
-function contextMatchesSettings(
-  context: OperationalContext,
-  settings: DeviceSettings,
-): boolean {
-  return context.device_id === settings.device_id
-    && context.client_id === settings.client_id
-    && context.workspace_gid === settings.workspace_gid
-    && context.project_gid === settings.project_gid
-    && canonicalizeJson(context.section_gids) === canonicalizeJson(settings.section_gids);
-}
-
 function requiresAsanaReauthentication(error: unknown): boolean {
   if (error instanceof AsanaOAuthCredentialError) {
     return true;
@@ -780,6 +775,7 @@ class UnreachableError extends Error {}
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
   private readonly database: StorageDatabase;
+  private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
   private readonly checkpoint: SetupCheckpointStore;
@@ -802,6 +798,7 @@ export class TaskHubApplication {
   private readonly codexConnectionFactory: CodexSessionConnectionFactory;
   private readonly codexAdapter: CodexSetupAdapter;
   private readonly setup: SetupOrchestrator;
+  private readonly setupIpc: IpcSetupPort;
   public readonly taskRead: TaskReadWorkflow<
     Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
     Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
@@ -892,6 +889,10 @@ export class TaskHubApplication {
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(persistence);
+    this.settingsRepository = new SqliteSettingsRepository(
+      persistence.connection,
+      (value) => deviceSettingsSchema.parse(value),
+    );
     const taskReadContracts = {
       ...this.database.taskReadContracts,
       parseOverview: (value: unknown) => {
@@ -1209,7 +1210,14 @@ export class TaskHubApplication {
     });
     this.externalAgent = externalAgent;
     this.setup = new SetupOrchestrator({
-      device_id: this.resolveDeviceId(),
+      device_id: resolveDeviceId({
+        settings: this.settingsRepository,
+        loadCheckpoint: () => this.checkpoint.load(),
+        parseState: (value) => setupStateSchema.parse(value),
+        contextFromState,
+        createId: this.options.create_id,
+        parseId: (value) => identifierSchema.parse(value),
+      }),
       codex: {
         detectCli: (signal) => this.detectCodexSafely(signal),
         getAuthenticationState: (signal) =>
@@ -1242,8 +1250,8 @@ export class TaskHubApplication {
       reportCapabilityFailure: (error) =>
         this.options.diagnostic(error, "setup", serviceErrorDiagnostic),
       database: {
-        saveDeviceSettings: (value) => this.database.saveDeviceSettings(value),
-        getDeviceSettings: () => this.database.getDeviceSettings(),
+        saveDeviceSettings: (value) => this.settingsRepository.save(value),
+        getDeviceSettings: () => this.settingsRepository.get(),
         saveVaultMapping: (value) => this.database.saveVaultMapping(value),
         getVaultMappings: () => this.database.getVaultMappings(),
       },
@@ -1265,13 +1273,13 @@ export class TaskHubApplication {
       DeviceSettings,
       OperationalContext["codex"]
     >({
-      initialSettings: this.database.getDeviceSettings(),
+      initialSettings: this.settingsRepository.get(),
       parseState: (state) => setupStateSchema.parse(state),
       contextFromState,
       operationKey: asanaOperationContextKey,
       availabilityFromState: codexAvailabilityFromState,
       clientIdFromState,
-      readSettings: () => this.database.getDeviceSettings(),
+      readSettings: () => this.settingsRepository.get(),
       parseSettings: (settings) => deviceSettingsSchema.parse(settings),
       contextMatchesSettings,
       configureExternalAgent: (context) => this.externalAgent.configureContext(context),
@@ -1580,7 +1588,7 @@ export class TaskHubApplication {
       isContextState,
       resumeSetup: (state, signal) => this.resumeSetupAtStartup(state, signal),
       configureAsanaFromStoredSettings: () => this.configureAsanaFromSettings(
-        this.database.getDeviceSettings(),
+        this.settingsRepository.get(),
       ),
       configureContextFromState: (state) => this.configureContextFromState(state),
       getApplicationState: () => this.getState(),
@@ -1618,6 +1626,53 @@ export class TaskHubApplication {
       markExternalStopped: () => this.externalTools.markStopped(),
       combineFailures: (errors) => combineDiagnosticFailures(errors),
     });
+    this.setupIpc = new SetupIpcWorkflow({
+      setup: this.setup,
+      parseState: (value) => setupStateSchema.parse(value),
+      afterTransition: (state) => {
+        const validatedState = setupStateSchema.parse(state);
+        this.configureAsanaFromSettings(this.settingsRepository.get());
+        this.configureContextFromState(validatedState);
+        this.aiStartResult = this.codexAdapter.getStartResult() ?? this.aiStartResult;
+        this.codexAuthenticationRequired = validatedState.kind === "codex_authentication_required"
+          || this.aiStartResult?.state === "authentication_required";
+        this.publishAiStatus();
+        return validatedState;
+      },
+      afterCodexAuthentication: async (signal) => {
+        if (!this.lifecycleRuntime.isReadyActivated()) {
+          await this.lifecycleRuntime.activateReady(signal);
+        } else {
+          await this.verifyConfiguredCodexCapabilities(signal);
+        }
+      },
+      afterVaultChoice: (signal) => this.refreshCodexThreadIfReady(signal),
+      runExternalToolConfiguration: (signal, run) =>
+        this.externalTools.runConfigurationOperation(signal, run),
+      afterExternalToolChoice: async (state, signal, commit) => {
+        if (state.kind === "external_tool_configured") {
+          const selection = setupExternalToolSelectionSchema.parse({
+            kind: "configured",
+            tool_id: state.tool_id,
+            allowed_channel_ids: state.allowed_channel_ids,
+          });
+          if (selection.kind !== "configured") {
+            throw new Error("確定済み固定Discord選択を取得できません。");
+          }
+          const activation = await this.externalTools.initialize(selection, signal);
+          if (activation.kind === "unavailable") {
+            await this.externalTools.markUnavailableSafely(
+              activation.reason_code,
+              new Error("確定済み固定Discord連携を有効化できませんでした。"),
+            );
+            return commit(this.setup.getState());
+          }
+          await this.refreshCodexThreadAfterExternalToolCommit(signal);
+        }
+        return state;
+      },
+      afterCodexCapability: (signal) => this.lifecycleRuntime.activateReady(signal),
+    }).createPort();
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
     this.configureAsanaFromSettings(this.operationalContext.getSettings());
     this.configureContextFromState(this.setup.getState());
@@ -1625,19 +1680,12 @@ export class TaskHubApplication {
 
   /** 現在の設定済みまたは未設定状態を取得します。 */
   public getState(): ApplicationState {
-    const setupState = setupStateSchema.parse(this.setup.getState());
-    const settings = this.database.getDeviceSettings();
-    if (setupState.kind === "ready" && settings != null) {
-      const parsedSettings = deviceSettingsSchema.parse(settings);
-      return applicationStateSchemaExport.parse({
-        kind: "configured",
-        setup_state: setupState,
-        settings: parsedSettings,
-      });
-    }
-    return applicationStateSchemaExport.parse({
-      kind: "unconfigured",
-      setup_state: setupState,
+    return readSettingsState({
+      readSetupState: () => this.setup.getState(),
+      settings: this.settingsRepository,
+      parseSetupState: (value) => setupStateSchema.parse(value),
+      parseSettings: (value) => deviceSettingsSchema.parse(value),
+      parseApplicationState: (value) => applicationStateSchemaExport.parse(value),
     });
   }
 
@@ -1667,7 +1715,7 @@ export class TaskHubApplication {
   public getIpcPorts(): IpcServicePorts {
     return {
       asana: this.createAsanaPort(),
-      setup: this.createSetupPort(),
+      setup: this.setupIpc,
       gui: this.createGuiPort(),
       externalAgent: this.createExternalAgentPort(),
       ai: this.createAiPort(),
@@ -1718,47 +1766,6 @@ export class TaskHubApplication {
       return;
     }
     runtime.setOnline(online);
-  }
-
-  /** 設定済みAsana OAuthの認証状態を取得します。 */
-  public getAsanaAuthenticationState(): IpcAsanaAuthenticationState {
-    return this.asanaReauthentication.getState();
-  }
-
-  /** 設定済みAsana OAuthのOut-of-Band再認証を開始します。 */
-  public beginAsanaReauthentication(signal: AbortSignal): Promise<IpcAsanaAuthenticationState> {
-    return this.asanaReauthentication.begin(signal);
-  }
-
-  /** 設定済みAsana OAuthのOut-of-Band再認証を完了します。 */
-  public completeAsanaReauthentication(
-    input: IpcAsanaReauthenticationCompleteInput,
-    signal: AbortSignal,
-  ): Promise<AsanaSyncCoordinatorResult> {
-    return this.asanaReauthentication.complete(input, signal);
-  }
-
-  /** 設定済みAsana OAuthのOut-of-Band再認証を取り消します。 */
-  public cancelAsanaReauthentication(
-    input: IpcAsanaReauthenticationCancelInput,
-    signal: AbortSignal,
-  ): IpcAsanaAuthenticationState {
-    return this.asanaReauthentication.cancel(input, signal);
-  }
-
-  private resolveDeviceId(): string {
-    const settings = this.database.getDeviceSettings();
-    if (settings != null) {
-      return deviceSettingsSchema.parse(settings).device_id;
-    }
-    const checkpointState = this.checkpoint.load();
-    if (checkpointState != null) {
-      const context = contextFromState(setupStateSchema.parse(checkpointState));
-      if (context != null) {
-        return identifierSchema.parse(context.device_id);
-      }
-    }
-    return identifierSchema.parse(this.options.create_id());
   }
 
   private configureAsanaFromSettings(settings: DeviceSettings | undefined): void {
@@ -2700,24 +2707,11 @@ export class TaskHubApplication {
 
   private createAsanaPort(): IpcAsanaPort {
     return {
-      getAuthenticationState: () => this.getAsanaAuthenticationState(),
-      beginReauthentication: (signal) => this.beginAsanaReauthentication(signal),
-      completeReauthentication: (input, signal) =>
-        this.completeAsanaReauthentication(input, signal),
-      cancelReauthentication: (input, signal) =>
-        this.cancelAsanaReauthentication(input, signal),
+      getAuthenticationState: () => this.asanaReauthentication.getState(),
+      beginReauthentication: (signal) => this.asanaReauthentication.begin(signal),
+      completeReauthentication: (input, signal) => this.asanaReauthentication.complete(input, signal),
+      cancelReauthentication: (input, signal) => this.asanaReauthentication.cancel(input, signal),
     };
-  }
-
-  private configureAfterSetupTransition(state: SetupState): SetupState {
-    const validatedState = setupStateSchema.parse(state);
-    this.configureAsanaFromSettings(this.database.getDeviceSettings());
-    this.configureContextFromState(validatedState);
-    this.aiStartResult = this.codexAdapter.getStartResult() ?? this.aiStartResult;
-    this.codexAuthenticationRequired = validatedState.kind === "codex_authentication_required"
-      || this.aiStartResult?.state === "authentication_required";
-    this.publishAiStatus();
-    return validatedState;
   }
 
   private resetAiSessionWithdrawConfirmations(): void {
@@ -2761,112 +2755,6 @@ export class TaskHubApplication {
         "確定済み外部ツール設定のCodex反映に失敗したためAI機能を無効にしました。",
       );
     }
-  }
-
-  private createSetupPort(): IpcSetupPort {
-    return {
-      getState: () => setupStateSchema.parse(this.setup.getState()),
-      start: async (signal) => this.configureAfterSetupTransition(
-        await this.setup.start(signal),
-      ),
-      completeCodexAuthentication: async (signal) => {
-        const state = this.configureAfterSetupTransition(
-          await this.setup.completeCodexAuthentication(signal),
-        );
-        if (state.kind === "ready") {
-          if (!this.lifecycleRuntime.isReadyActivated()) {
-            await this.lifecycleRuntime.activateReady(signal);
-          } else {
-            await this.verifyConfiguredCodexCapabilities(signal);
-          }
-        }
-        return state;
-      },
-      beginAsanaAuthorization: async (input, signal) =>
-        this.configureAfterSetupTransition(
-          await this.setup.beginAsanaAuthorization(input, signal),
-        ),
-      completeAsanaAuthorization: async (input, signal) =>
-        this.configureAfterSetupTransition(
-          await this.setup.completeAsanaAuthorization(input, signal),
-        ),
-      cancelAsanaAuthorization: (input, signal) =>
-        this.configureAfterSetupTransition(
-          this.setup.cancelAsanaAuthorization(input, signal),
-        ),
-      listWorkspaces: async (signal) => this.configureAfterSetupTransition(
-        await this.setup.listWorkspaces(signal),
-      ),
-      selectWorkspace: async (input, signal) =>
-        this.configureAfterSetupTransition(
-          await this.setup.selectWorkspace(input, signal),
-        ),
-      selectProject: async (input, signal) =>
-        this.configureAfterSetupTransition(
-          await this.setup.selectProject(input, signal),
-        ),
-      retryResources: async (signal) => this.configureAfterSetupTransition(
-        await this.setup.retryResourceReconciliation(signal),
-      ),
-      runCapability: async (signal) => this.configureAfterSetupTransition(
-        await this.setup.runCapabilityCheck(signal),
-      ),
-      chooseVault: async (input, signal) => {
-        const state = this.configureAfterSetupTransition(
-          await this.setup.chooseVault(input, signal),
-        );
-        await this.refreshCodexThreadIfReady(signal);
-        return state;
-      },
-      chooseExternalTool: (input, signal) =>
-        this.externalTools.runConfigurationOperation(
-          signal,
-          async (operationSignal) => {
-            const state = this.configureAfterSetupTransition(
-              await this.setup.chooseExternalTool(input, operationSignal),
-            );
-            if (state.kind === "external_tool_configured") {
-              const selection = setupExternalToolSelectionSchema.parse({
-                kind: "configured",
-                tool_id: state.tool_id,
-                allowed_channel_ids: state.allowed_channel_ids,
-              });
-              if (selection.kind !== "configured") {
-                throw new Error("確定済み固定Discord選択を取得できません。");
-              }
-              const activation = await this.externalTools.initialize(
-                selection,
-                operationSignal,
-              );
-              if (activation.kind === "unavailable") {
-                await this.externalTools.markUnavailableSafely(
-                  activation.reason_code,
-                  new Error("確定済み固定Discord連携を有効化できませんでした。"),
-                );
-                return this.configureAfterSetupTransition(
-                  this.setup.getState(),
-                );
-              }
-              await this.refreshCodexThreadAfterExternalToolCommit(
-                operationSignal,
-              );
-            }
-            return state;
-          },
-        ),
-      runFullSync: async (signal) => this.configureAfterSetupTransition(
-        await this.setup.runFullSync(signal),
-      ),
-      runCodexCapability: async (signal) => {
-        const state = this.configureAfterSetupTransition(
-          await this.setup.runCodexCapabilityCheck(signal),
-        );
-        if (state.kind === "ready") {
-          await this.lifecycleRuntime.activateReady(signal);
-        }
-        return state;
-      },
-    };
   }
 
   private requireGuiEdit(): AsanaGuiEditService {

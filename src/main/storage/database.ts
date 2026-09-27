@@ -14,14 +14,12 @@ import {
   ExternalToolDefinitionStore,
   type ExternalToolDefinitionRecord,
 } from "./external-tool-definitions";
-import { DeviceSettingsStore } from "./device-settings";
 import { VaultMappingStore } from "./vault-mappings";
 import type {
   ApplicationJournal,
   ApplicationJournalResult,
   ApplicationJournalStage,
   CleanupItemsCache,
-  DeviceSettings,
   DiagnosticLogEntry,
   ProjectMetadataCache,
   RankingCache,
@@ -186,7 +184,6 @@ export class StorageDatabase {
     TaskCacheDiff
   >;
   public readonly taskReadContracts: ReturnType<typeof createTaskReadPersistenceContracts>;
-  private readonly deviceSettingsStore: DeviceSettingsStore;
   private readonly vaultMappingStore: VaultMappingStore;
   private readonly applicationJournalStore: ApplicationJournalStore;
   private readonly diagnosticLogStore: DiagnosticLogStore;
@@ -197,7 +194,6 @@ export class StorageDatabase {
     this.taskReadContracts = createTaskReadPersistenceContracts();
     this.taskRead = new TaskReadPersistenceRepository(runtime, this.taskReadContracts);
     const database = this.runtime.connection;
-    this.deviceSettingsStore = new DeviceSettingsStore(database);
     this.vaultMappingStore = new VaultMappingStore(database);
     this.applicationJournalStore = new ApplicationJournalStore(database, this.runtime);
     this.diagnosticLogStore = new DiagnosticLogStore(database, this.runtime);
@@ -299,21 +295,6 @@ export class StorageDatabase {
   /** 保存済み同期状態を全件読み出します。 */
   public getSyncStates(): readonly SyncState[] {
     return this.taskRead.getSyncStates();
-  }
-
-  /** 秘密情報を含まない端末設定を保存します。 */
-  public saveDeviceSettings(settings: DeviceSettings): void {
-    this.deviceSettingsStore.save(settings);
-  }
-
-  /** 保存済み端末設定を読み出します。 */
-  public getDeviceSettings(): DeviceSettings | undefined {
-    return this.deviceSettingsStore.get();
-  }
-
-  /** 端末設定を削除します。 */
-  public clearDeviceSettings(): void {
-    this.deviceSettingsStore.clear();
   }
 
   /** Vaultと端末絶対パスの対応を保存します。 */

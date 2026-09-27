@@ -1,7 +1,10 @@
-import { deviceSettingsSchema, type DeviceSettings } from "../../shared/storage";
-import type { SqliteDatabase } from "./types";
+import type {
+  DeviceSettingsRecord,
+  SettingsRepository,
+} from "../../application/common/ports/settings-repository";
+import type { SqliteConnection } from "./sqlite-connection";
 
-interface DeviceSettingsRow {
+type DeviceSettingsRow = {
   readonly settings_key: number;
   readonly device_id: string;
   readonly client_id: string;
@@ -11,33 +14,19 @@ interface DeviceSettingsRow {
   readonly in_progress_section_gid: string;
   readonly completed_section_gid: string;
   readonly withdrawn_section_gid: string;
-}
+};
 
-function rowToDeviceSettings(row: DeviceSettingsRow): DeviceSettings {
-  if (row.settings_key !== 1) {
-    throw new Error("端末設定のキーが不正です。");
-  }
-  return deviceSettingsSchema.parse({
-    device_id: row.device_id,
-    client_id: row.client_id,
-    workspace_gid: row.workspace_gid,
-    project_gid: row.project_gid,
-    section_gids: {
-      not_started: row.not_started_section_gid,
-      in_progress: row.in_progress_section_gid,
-      completed: row.completed_section_gid,
-      withdrawn: row.withdrawn_section_gid,
-    },
-  });
-}
-
-/** 端末設定のSQLite操作を提供します。 */
-export class DeviceSettingsStore {
+/** 端末設定を既存のSQLite接続へ保存します。 */
+export class SqliteSettingsRepository<Settings extends DeviceSettingsRecord>
+implements SettingsRepository<Settings> {
   private readonly clearStatement;
   private readonly saveStatement;
   private readonly selectStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
+  public constructor(
+    database: SqliteConnection,
+    private readonly parseSettings: (value: unknown) => Settings,
+  ) {
     this.clearStatement = database.prepare<[], unknown>(
       "DELETE FROM device_settings WHERE settings_key = 1",
     );
@@ -64,28 +53,42 @@ export class DeviceSettingsStore {
   }
 
   /** 端末設定を保存します。 */
-  public save(settings: DeviceSettings): void {
-    const validatedSettings = deviceSettingsSchema.parse(settings);
+  public save(settings: Settings): void {
+    const validated = this.parseSettings(settings);
     this.saveStatement.run(
       1,
-      validatedSettings.device_id,
-      validatedSettings.client_id,
-      validatedSettings.workspace_gid,
-      validatedSettings.project_gid,
-      validatedSettings.section_gids.not_started,
-      validatedSettings.section_gids.in_progress,
-      validatedSettings.section_gids.completed,
-      validatedSettings.section_gids.withdrawn,
+      validated.device_id,
+      validated.client_id,
+      validated.workspace_gid,
+      validated.project_gid,
+      validated.section_gids.not_started,
+      validated.section_gids.in_progress,
+      validated.section_gids.completed,
+      validated.section_gids.withdrawn,
     );
   }
 
   /** 端末設定を読み出します。 */
-  public get(): DeviceSettings | undefined {
+  public get(): Settings | undefined {
     const row = this.selectStatement.get();
     if (row == null) {
       return undefined;
     }
-    return rowToDeviceSettings(row);
+    if (row.settings_key !== 1) {
+      throw new Error("端末設定のキーが不正です。");
+    }
+    return this.parseSettings({
+      device_id: row.device_id,
+      client_id: row.client_id,
+      workspace_gid: row.workspace_gid,
+      project_gid: row.project_gid,
+      section_gids: {
+        not_started: row.not_started_section_gid,
+        in_progress: row.in_progress_section_gid,
+        completed: row.completed_section_gid,
+        withdrawn: row.withdrawn_section_gid,
+      },
+    });
   }
 
   /** 端末設定を削除します。 */

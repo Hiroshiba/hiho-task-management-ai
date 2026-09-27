@@ -147,13 +147,12 @@ export type SetupCapabilityPort = Pick<
 
 export type SetupCapabilityFailureReporter = (error: unknown) => void;
 
-export type SetupDatabasePort = Pick<
-  StorageDatabase,
-  | "saveDeviceSettings"
-  | "getDeviceSettings"
-  | "saveVaultMapping"
-  | "getVaultMappings"
->;
+export type SetupDatabasePort = {
+  readonly saveDeviceSettings: (settings: DeviceSettings) => void;
+  readonly getDeviceSettings: () => DeviceSettings | undefined;
+  readonly saveVaultMapping: StorageDatabase["saveVaultMapping"];
+  readonly getVaultMappings: StorageDatabase["getVaultMappings"];
+};
 
 export type SetupCheckpointPort = {
   readonly load: () => SetupState | undefined;
