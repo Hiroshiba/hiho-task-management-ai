@@ -11,6 +11,7 @@ export type LegacyRuntimePort = Pick<
   | "getGuiEditExecution"
   | "retryGuiEditExecution"
   | "getIpcPorts"
+  | "getObsidianHandlerWorkflow"
   | "getProposalsHandlerWorkflows"
   | "getState"
   | "getTaskWriteAsanaBridge"

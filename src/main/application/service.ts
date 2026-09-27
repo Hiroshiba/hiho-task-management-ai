@@ -1830,6 +1830,11 @@ export class TaskHubApplication {
     };
   }
 
+  /** Obsidianの最終IPCへ公開するworkflowを取得します。 */
+  public getObsidianHandlerWorkflow(): ReturnType<ObsidianIntegrationWorkflow["createIpcPort"]> {
+    return this.obsidian.createIpcPort();
+  }
+
   /** 変更案の最終IPCに公開するworkflowを取得します。 */
   public getProposalsHandlerWorkflows(): ProposalsHandlerWorkflows {
     return {

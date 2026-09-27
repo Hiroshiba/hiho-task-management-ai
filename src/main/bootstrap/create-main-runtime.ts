@@ -4,9 +4,13 @@ import { setTimeout } from "node:timers/promises";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
+import { getGithubIntegrationStatus } from "../application/github-integration";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
-import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
+import { createDiagnosticsHandlers, type DiagnosticsHandlers } from "../ipc/handlers/diagnostics";
+import { createGithubIntegrationHandlers, type GithubIntegrationHandlers } from "../ipc/handlers/github-integration";
+import { createObsidianIntegrationHandlers, type ObsidianIntegrationHandlers } from "../ipc/handlers/obsidian-integration";
 import { createProposalsHandlers, type ProposalsHandlers } from "../ipc/handlers/proposals";
+import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
@@ -105,6 +109,9 @@ export interface MainRuntime {
   };
   readonly tasksHandlers: TasksHandlers;
   readonly proposalsHandlers: ProposalsHandlers;
+  readonly githubIntegrationHandlers: GithubIntegrationHandlers;
+  readonly obsidianIntegrationHandlers: ObsidianIntegrationHandlers;
+  readonly diagnosticsHandlers: DiagnosticsHandlers;
   readonly signal: AbortSignal;
   createWindowStateStore(): WindowStateStore;
   createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
@@ -171,6 +178,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       },
     });
     const proposalsHandlers = createProposalsHandlers(legacy.getProposalsHandlerWorkflows());
+    const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus });
+    const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(legacy.getObsidianHandlerWorkflow());
+    const diagnosticsHandlers = createDiagnosticsHandlers(engineReporter);
     let disposal: Promise<void> | undefined;
     return {
       legacy,
@@ -178,6 +188,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       taskWriteExecution: { repository: taskWrite.repository, engine: taskWrite.engine },
       tasksHandlers,
       proposalsHandlers,
+      githubIntegrationHandlers,
+      obsidianIntegrationHandlers,
+      diagnosticsHandlers,
       signal: controller.signal,
       createWindowStateStore: () => new WindowStateStore(
         openedPersistence.openLateTextFile(
