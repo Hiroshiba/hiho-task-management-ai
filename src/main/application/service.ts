@@ -149,6 +149,7 @@ import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthentication-runtime";
 import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
+import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -887,8 +888,11 @@ export class TaskHubApplication {
     AsanaProposalRecoveryResult
   >;
   private readonly configuredCodexRuntime: ConfiguredCodexRuntime;
-  private readyActivated = false;
-  private stopped = false;
+  private readonly lifecycleRuntime: MainLifecycleRuntime<
+    SetupState,
+    ApplicationState,
+    AsanaSyncRuntimeInternalResult
+  >;
 
   public constructor(options: ApplicationOptions) {
     applicationOptionsSchemaExport.parse(options);
@@ -994,7 +998,7 @@ export class TaskHubApplication {
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
     this.externalTools = new ExternalToolRuntime({
       lifecycleSignal: this.options.lifecycle_signal,
-      isStopped: () => this.stopped,
+      isStopped: () => this.lifecycleRuntime.isStopped(),
       platform: process.platform,
       validateAbortSignal,
       throwIfAborted,
@@ -1050,7 +1054,7 @@ export class TaskHubApplication {
     });
     this.aiRuntime = new AiSessionRuntime({
       lifecycleSignal: this.options.lifecycle_signal,
-      isStopped: () => this.stopped,
+      isStopped: () => this.lifecycleRuntime.isStopped(),
       assertOperationalReady: () => this.assertOperationalReady(),
       validateAbortSignal,
       throwIfAborted,
@@ -1360,7 +1364,7 @@ export class TaskHubApplication {
         this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic),
       lifecycleSignal: this.options.lifecycle_signal,
       afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
-      isReadyActivated: () => this.readyActivated,
+      isReadyActivated: () => this.lifecycleRuntime.isReadyActivated(),
       synchronizeCodex: (signal) => this.configuredCodexRuntime.synchronizeAfterAsana(signal),
       reportUnexpectedError: (error, feature) => this.recordUnexpectedError(error, feature),
     });
@@ -1433,6 +1437,78 @@ export class TaskHubApplication {
       },
       restoreContext: () => this.configureContextFromState(this.setup.getState()),
     });
+    this.lifecycleRuntime = new MainLifecycleRuntime<
+      SetupState,
+      ApplicationState,
+      AsanaSyncRuntimeInternalResult
+    >({
+      validateAbortSignal,
+      throwIfAborted,
+      initializeExternalAgentBridge: () => this.initializeExternalAgentBridge(),
+      ensureTasksVaultMapping: async (signal) => {
+        const hasTasksVaultMapping = this.database.getVaultMappings().some(
+          (mapping) => mapping.vault_id === "tasks",
+        );
+        if (!hasTasksVaultMapping) {
+          const tasksVaultDiscovery = await discoverTasksVault(signal);
+          if (tasksVaultDiscovery.kind === "found") {
+            throwIfAborted(signal);
+            this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
+            this.updateCodexVaultPaths();
+          }
+        }
+      },
+      recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
+      reconcileExternalTools: (signal) => this.externalTools.reconcileAtStartup(signal),
+      getSetupState: () => this.setup.getState(),
+      isOnline: () => this.isOnline(),
+      restoreReadyDeviceSettings: () => this.configureAsanaFromSettings(
+        this.setup.restoreReadyDeviceSettings(),
+      ),
+      startSetup: (signal) => this.setup.start(signal),
+      restoreCodexSession: (signal) => this.restorePersistedCodexSession(signal),
+      isContextState,
+      resumeSetup: (state, signal) => this.resumeSetupAtStartup(state, signal),
+      configureAsanaFromStoredSettings: () => this.configureAsanaFromSettings(
+        this.database.getDeviceSettings(),
+      ),
+      configureContextFromState: (state) => this.configureContextFromState(state),
+      getApplicationState: () => this.getState(),
+      configureOperationalServices: () => this.configureOperationalServices(),
+      requireRuntime: () => this.requireRuntime(),
+      recoverJournal: (signal) => this.journalRecovery.recover(signal),
+      rethrowFeatureAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
+      recordJournalRecoveryFailure: (error) => this.recordFeatureFailure(
+        error,
+        "application_journal",
+        "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
+      ),
+      ensureCodexLaunch: (signal) => this.configuredCodexRuntime.ensureLaunchAttempt(signal),
+      isSynchronizedResult: (
+        result,
+      ): result is Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }> =>
+        result.kind === "synchronized",
+      afterSynchronizedState: (result, signal) =>
+        this.synchronizationOperations.afterSynchronizedState(result, signal),
+      stopOAuthAuthorization: () => this.oauth.stopOutOfBandAuthorization(),
+      stopExternalConfiguration: (errors) => this.externalTools.stopConfiguration(errors),
+      externalAgent: this.externalAgent,
+      externalAgentBridge: this.externalAgentBridge,
+      stopSyncSubscriptions: () => this.syncStateRuntime.stop(),
+      clearAiListeners: () => {
+        this.aiDeltaListeners.clear();
+        this.aiStatusListeners.clear();
+      },
+      closeAiSessions: (errors) => this.aiRuntime.closeAll(errors),
+      displayOrder: () => this.displayOrder,
+      runtime: () => this.runtime,
+      operationQueue: this.operationQueue,
+      stopCodexSession: () => this.codexSession.stop({ kind: "record" }),
+      externalBroker: () => this.externalTools.brokerForStop(),
+      markExternalStopped: () => this.externalTools.markStopped(),
+      closeDatabase: () => this.database.close(),
+      combineFailures: (errors) => combineDiagnosticFailures(errors),
+    });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
     this.configureAsanaFromSettings(this.operationalContext.getSettings());
     this.configureContextFromState(this.setup.getState());
@@ -1469,91 +1545,13 @@ export class TaskHubApplication {
   }
 
   /** 起動時の設定再開、復旧、同期を実行します。 */
-  public async start(signal: AbortSignal): Promise<ApplicationState> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    if (this.stopped) {
-      throw new Error("アプリケーションは停止済みです。");
-    }
-    await this.initializeExternalAgentBridge();
-    const hasTasksVaultMapping = this.database.getVaultMappings().some(
-      (mapping) => mapping.vault_id === "tasks",
-    );
-    if (!hasTasksVaultMapping) {
-      const tasksVaultDiscovery = await discoverTasksVault(signal);
-      if (tasksVaultDiscovery.kind === "found") {
-        throwIfAborted(signal);
-        this.database.saveVaultMapping(tasksVaultDiscovery.mapping);
-        this.updateCodexVaultPaths();
-      }
-    }
-    this.recordDiagnostic("app.start", "info");
-    await this.externalTools.reconcileAtStartup(signal);
-    let state = this.setup.getState();
-    const readyCheckpointOffline = state.kind === "ready" && !this.isOnline();
-    if (state.kind === "ready") {
-      this.configureAsanaFromSettings(
-        this.setup.restoreReadyDeviceSettings(),
-      );
-    }
-    if (state.kind === "created" || state.kind === "codex_cli_ready") {
-      state = await this.setup.start(signal);
-    } else if (!readyCheckpointOffline) {
-      state = await this.restorePersistedCodexSession(signal);
-      if (state.kind === "resources_requires_action" || isContextState(state)) {
-        state = await this.resumeSetupAtStartup(state, signal);
-      }
-    }
-    this.configureAsanaFromSettings(this.database.getDeviceSettings());
-    this.configureContextFromState(state);
-    if (state.kind === "ready") {
-      await this.activateReadyApplication(signal);
-    }
-    return this.getState();
+  public start(signal: AbortSignal): Promise<ApplicationState> {
+    return this.lifecycleRuntime.start(signal);
   }
 
   /** Electron終了時に全サービスを停止します。 */
-  public async stop(): Promise<void> {
-    if (this.stopped) {
-      return;
-    }
-    this.stopped = true;
-    const errors: unknown[] = [];
-    try {
-      this.oauth.stopOutOfBandAuthorization();
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    await this.externalTools.stopConfiguration(errors);
-    await this.stopAsyncService(this.externalAgent, errors);
-    await this.stopAsyncService(this.externalAgentBridge, errors);
-    this.syncStateRuntime.stop();
-    this.aiDeltaListeners.clear();
-    this.aiStatusListeners.clear();
-    await this.aiRuntime.closeAll(errors);
-    await this.stopAsyncService(this.displayOrder, errors);
-    await this.stopAsyncService(this.runtime, errors);
-    await this.stopAsyncService(this.operationQueue, errors);
-    try {
-      await this.codexSession.stop({ kind: "record" });
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    await this.stopAsyncService(this.externalTools.brokerForStop(), errors);
-    this.externalTools.markStopped();
-    try {
-      this.recordDiagnostic("app.stop", "info");
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    try {
-      this.database.close();
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-    if (errors.length > 0) {
-      throw combineDiagnosticFailures(errors);
-    }
+  public stop(): Promise<void> {
+    return this.lifecycleRuntime.stop();
   }
 
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
@@ -2238,7 +2236,7 @@ export class TaskHubApplication {
 
   private assertOperationalReady(): void {
     this.assertSetupReady();
-    if (!this.readyActivated) {
+    if (!this.lifecycleRuntime.isReadyActivated()) {
       throw new Error("運用機能の起動が完了していません。");
     }
   }
@@ -2271,20 +2269,6 @@ export class TaskHubApplication {
     return coordinator;
   }
 
-  private async stopAsyncService(
-    service: { stop(): Promise<void> } | undefined,
-    errors: unknown[],
-  ): Promise<void> {
-    if (service == null) {
-      return;
-    }
-    try {
-      await service.stop();
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-  }
-
   private async initializeExternalAgentBridge(): Promise<void> {
     try {
       await this.externalAgentBridge.init(process.execPath);
@@ -2295,48 +2279,6 @@ export class TaskHubApplication {
         "外部連携ブリッジを起動できないため、外部連携を無効にしました。",
       );
     }
-  }
-
-  private async activateReadyApplication(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    if (this.readyActivated) {
-      return;
-    }
-    this.configureOperationalServices();
-    const runtime = this.requireRuntime();
-    const startedOffline = runtime.getState().kind === "offline";
-    let synchronizationDeferred = startedOffline;
-    if (!synchronizationDeferred) {
-      try {
-        await this.journalRecovery.recover(signal);
-      } catch (error: unknown) {
-        this.rethrowFeatureAbort(error, signal);
-        this.recordFeatureFailure(
-          error,
-          "application_journal",
-          "未完了のAI適用ジャーナルを起動同期前に復旧できませんでした。",
-        );
-        runtime.deferSynchronizationUntilRecovery();
-        synchronizationDeferred = true;
-      }
-    }
-    if (!startedOffline) {
-      await this.configuredCodexRuntime.ensureLaunchAttempt(signal);
-    }
-    if (!synchronizationDeferred) {
-      const runtimeResult = await runtime.start(signal);
-      if (runtimeResult.kind === "synchronized") {
-        await this.synchronizationOperations.afterSynchronizedState(runtimeResult, signal);
-      } else if (runtimeResult.kind === "aborted") {
-        throw new Error("設定済みアプリケーションの起動同期が中断されました。");
-      } else if (
-        runtimeResult.kind === "rejected"
-        && runtimeResult.reason === "stopped"
-      ) {
-        throw new Error("停止済みのAsana同期ランタイムは起動できません。");
-      }
-    }
-    this.readyActivated = true;
   }
 
   private async startCodexForConfigured(signal: AbortSignal): Promise<void> {
@@ -2872,8 +2814,8 @@ export class TaskHubApplication {
           await this.setup.completeCodexAuthentication(signal),
         );
         if (state.kind === "ready") {
-          if (!this.readyActivated) {
-            await this.activateReadyApplication(signal);
+          if (!this.lifecycleRuntime.isReadyActivated()) {
+            await this.lifecycleRuntime.activateReady(signal);
           } else {
             await this.verifyConfiguredCodexCapabilities(signal);
           }
@@ -2960,7 +2902,7 @@ export class TaskHubApplication {
           await this.setup.runCodexCapabilityCheck(signal),
         );
         if (state.kind === "ready") {
-          await this.activateReadyApplication(signal);
+          await this.lifecycleRuntime.activateReady(signal);
         }
         return state;
       },
@@ -3043,7 +2985,7 @@ export class TaskHubApplication {
   }
 
   private assertVaultMappingSaveAllowed(): void {
-    if (this.stopped) {
+    if (this.lifecycleRuntime.isStopped()) {
       throw new ObsidianVaultMappingConflictError();
     }
     if (
@@ -3111,7 +3053,7 @@ export class TaskHubApplication {
   }
 
   private currentAiStatus(): IpcAiStatus {
-    if (this.stopped || this.codexSession.getState() === "stopped") {
+    if (this.lifecycleRuntime.isStopped() || this.codexSession.getState() === "stopped") {
       return ipcAiStatusEventSchema.parse({
         kind: "unavailable",
         reason_code: "stopped",
