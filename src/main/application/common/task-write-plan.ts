@@ -175,6 +175,12 @@ const taskWritePlanSchema = z.object({
       && !checkedOperations.has(step.scope.operation_id) && !createdOperations.has(step.scope.operation_id)) {
       context.addIssue({ code: "custom", path: ["steps", index, "scope"], message: "非作成操作の書き込み前に照合stepが必要です。" });
     }
+    if (step.kind === "asana_set_parent"
+      && step.payload.target.kind === "temporary"
+      && step.payload.parent.kind === "temporary"
+      && step.payload.target.ref === step.payload.parent.ref) {
+      context.addIssue({ code: "custom", path: ["steps", index, "payload", "parent"], message: "タスク自身を親に指定できません。" });
+    }
     for (const target of referencedTargets(step)) {
       if (target.kind === "temporary" && !temporaryRefs.has(target.ref)) {
         context.addIssue({ code: "custom", path: ["steps", index, "payload"], message: "未作成の一時参照は書き込みstepに使用できません。" });
