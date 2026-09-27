@@ -10,22 +10,26 @@ type TaskWriteExternalBaseline = Extract<AsanaStep, { readonly kind: "asana_merg
 type TaskWriteExternalChange = Extract<AsanaStep, { readonly kind: "asana_merge_external_data" }>["payload"]["changes"][number];
 
 export type FieldState = "before" | "after" | "partial" | "conflict";
+type ComponentState = FieldState | "neutral";
 type ExternalData = Extract<TaskWriteExternalBaseline, { readonly kind: "stored" }>["data"];
+type Dependency = ExternalData["dependencies"][number];
 
 function same(left: unknown, right: unknown): boolean {
   return canonicalizeTaskWriteJson(left) === canonicalizeTaskWriteJson(right);
 }
 
-function compare(current: unknown, before: unknown, after: unknown): FieldState {
+function compare(current: unknown, before: unknown, after: unknown): ComponentState {
+  if (same(before, after)) return same(current, before) ? "neutral" : "conflict";
   if (same(current, after)) return "after";
   if (same(current, before)) return "before";
   return "conflict";
 }
 
-function combine(states: readonly FieldState[]): FieldState {
-  if (states.some((state) => state === "conflict")) return "conflict";
-  if (states.every((state) => state === "after")) return "after";
-  if (states.every((state) => state === "before")) return "before";
+function combine(states: readonly ComponentState[]): FieldState {
+  const effective = states.filter((state) => state !== "neutral");
+  if (effective.some((state) => state === "conflict")) return "conflict";
+  if (effective.every((state) => state === "after")) return "after";
+  if (effective.every((state) => state === "before")) return "before";
   return "partial";
 }
 
@@ -133,7 +137,7 @@ export function classifyOperationCore(
   projectGid: string,
   sectionGids: { readonly not_started: string; readonly in_progress: string; readonly completed: string; readonly withdrawn: string },
   workspaceTags: readonly ReadBackAsanaTag[],
-): FieldState {
+): ComponentState {
   if (projectSection(task, projectGid) == null) return "conflict";
   switch (operation.operation) {
     case "update_title": return compare(task.name, operation.before, operation.after);
@@ -179,9 +183,9 @@ export function readExternalData(task: ReadBackAsanaTask):
 }
 
 function dependencyValues(
-  dependencies: readonly { readonly target: TaskWriteTarget; readonly scope: string; readonly source: string }[],
+  dependencies: readonly { readonly target: TaskWriteTarget; readonly scope: Dependency["scope"]; readonly source: string }[],
   context: TaskWriteExecutionContext,
-): readonly { readonly task_gid: string; readonly scope: string; readonly source: string }[] {
+): readonly Dependency[] {
   return dependencies.map((dependency) => ({
     task_gid: targetGid(dependency.target, context),
     scope: dependency.scope,
@@ -189,18 +193,62 @@ function dependencyValues(
   })).sort((left, right) => left.task_gid.localeCompare(right.task_gid));
 }
 
+function dependencyMap(values: readonly Dependency[]): ReadonlyMap<string, Dependency> {
+  const result = new Map<string, Dependency>();
+  for (const value of values) {
+    if (result.has(value.task_gid)) throw new Error("依存関係のタスクGIDが重複しています。");
+    result.set(value.task_gid, value);
+  }
+  return result;
+}
+
+function sameDependency(left: Dependency | undefined, right: Dependency | undefined): boolean {
+  if (left == null || right == null) return left == null && right == null;
+  return same(left, right);
+}
+
+function dependenciesState(
+  change: Extract<TaskWriteExternalChange, { readonly kind: "dependencies" }>,
+  current: ExternalData["dependencies"],
+  context: TaskWriteExecutionContext,
+): ComponentState {
+  const before = dependencyMap(dependencyValues(change.before, context));
+  const after = dependencyMap(dependencyValues(change.after, context));
+  const observed = dependencyMap(current);
+  const changedGids = new Set([...before.keys(), ...after.keys()]);
+  const states: FieldState[] = [];
+  for (const gid of changedGids) {
+    const beforeValue = before.get(gid);
+    const afterValue = after.get(gid);
+    if (sameDependency(beforeValue, afterValue)) continue;
+    const currentValue = observed.get(gid);
+    if (sameDependency(currentValue, afterValue)) {
+      states.push("after");
+    } else if (sameDependency(currentValue, beforeValue)) {
+      states.push("before");
+    } else {
+      return "conflict";
+    }
+  }
+  return states.length === 0 ? "neutral" : combine(states);
+}
+
+function activityAnchorState(current: string, baseline: string, after: string): ComponentState {
+  const expectedAfter = baseline < after ? after : baseline;
+  if (current > expectedAfter) return "neutral";
+  if (current === expectedAfter) return expectedAfter === baseline ? "neutral" : "after";
+  return current === baseline ? "before" : "conflict";
+}
+
 function changeState(
   change: TaskWriteExternalChange,
   current: ExternalData,
   baseline: ExternalData,
   context: TaskWriteExecutionContext,
-): FieldState {
+): ComponentState {
   switch (change.kind) {
     case "duration": return compare(current.duration ?? { kind: "absent" }, change.before, change.after);
-    case "dependencies": return compare(
-      [...current.dependencies].sort((left, right) => left.task_gid.localeCompare(right.task_gid)),
-      dependencyValues(change.before, context),
-      dependencyValues(change.after, context));
+    case "dependencies": return dependenciesState(change, current.dependencies, context);
     case "parent_work_mode": return compare(current.parent_work_mode, change.before, change.after);
     case "obsidian_links": {
       const key = `${change.link.vault_id}\u0000${change.link.path}`;
@@ -210,7 +258,8 @@ function changeState(
       return compare(currentLink ?? null, baselineLink ?? null, afterLink ?? null);
     }
     case "last_active_status": return compare(current.last_active_status, baseline.last_active_status, change.after);
-    case "activity_anchor_on": return compare(current.activity_anchor_on, baseline.activity_anchor_on, change.after);
+    case "activity_anchor_on": return activityAnchorState(
+      current.activity_anchor_on, baseline.activity_anchor_on, change.after);
   }
 }
 
@@ -225,7 +274,7 @@ export function classifyExternalChanges(
 }
 
 /** 操作のcoreとexternal分類を一つの適用状態へまとめます。 */
-export function combineOperationStates(core: FieldState, external: FieldState): FieldState {
+export function combineOperationStates(core: ComponentState, external: FieldState): FieldState {
   return combine([core, external]);
 }
 
