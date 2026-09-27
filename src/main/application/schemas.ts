@@ -70,8 +70,6 @@ const applicationStateSchema = z.discriminatedUnion("kind", [
 const applicationOptionsSchema = z
   .object({
     user_data_path: applicationPathSchema,
-    secret_storage_path: applicationPathSchema,
-    checkpoint_path: applicationPathSchema,
     app_version: identifierSchema,
     codex_executable: z.string().min(1).max(4_096),
     read_only_vault_paths: z.array(applicationPathSchema).max(32),

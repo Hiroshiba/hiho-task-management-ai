@@ -335,12 +335,12 @@ function createApplicationRuntime(): MainRuntime {
   const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
   return createMainRuntime({
     userDataPath,
+    secretStoragePath: join(userDataPath, "secret-storage.json"),
+    checkpointPath: join(userDataPath, "setup-checkpoint.json"),
     logsPath: app.getPath("logs"),
     loggerFormatter: persistentErrorLogFormatter,
     legacy: {
       user_data_path: userDataPath,
-      secret_storage_path: join(userDataPath, "secret-storage.json"),
-      checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
       app_version: app.getVersion(),
       codex_executable: resolveCodexExecutable(),
       read_only_vault_paths: [],

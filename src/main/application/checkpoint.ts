@@ -1,11 +1,6 @@
 import { z } from "zod";
 import { setupStateSchema, type SetupState } from "../../shared/setup";
-import {
-  captureSecurePersistentFile,
-  normalizeSecurePersistentFilePath,
-  readSecurePersistentTextFile,
-  writeSecurePersistentTextFileAtomically,
-} from "../local-storage-path";
+import type { PersistentTextFile } from "../infrastructure/persistence";
 
 const checkpointVersion = 2;
 const legacyCheckpointVersion = 1;
@@ -160,19 +155,11 @@ function serializeCheckpoint(state: SetupState): string {
 
 /** 初回設定状態を秘密なしのJSONとして原子的に保存します。 */
 export class SetupCheckpointStore {
-  private readonly filePath: string;
-
-  public constructor(filePath: string) {
-    this.filePath = normalizeSecurePersistentFilePath(filePath);
-    captureSecurePersistentFile(this.filePath, "初回設定チェックポイント");
-  }
+  public constructor(private readonly file: PersistentTextFile) {}
 
   /** 保存済み初回設定状態を検証して読み出します。 */
   public load(): SetupState | undefined {
-    const serialized = readSecurePersistentTextFile(
-      this.filePath,
-      "初回設定チェックポイント",
-    );
+    const serialized = this.file.read();
     if (serialized == null) {
       return undefined;
     }
@@ -211,8 +198,7 @@ export class SetupCheckpointStore {
       throw new Error("旧初回設定チェックポイントを移行できません。", { cause: error });
     }
     try {
-      writeSecurePersistentTextFileAtomically(
-        this.filePath,
+      this.file.replaceAtomically(
         serializeCheckpoint(migratedState),
         "初回設定チェックポイントの移行",
       );
@@ -227,10 +213,6 @@ export class SetupCheckpointStore {
   /** 初回設定状態を一時ファイルから原子的に保存します。 */
   public save(state: SetupState): void {
     const validatedState = checkpointStateSchema.parse(state);
-    writeSecurePersistentTextFileAtomically(
-      this.filePath,
-      serializeCheckpoint(validatedState),
-      "初回設定チェックポイント",
-    );
+    this.file.replaceAtomically(serializeCheckpoint(validatedState), "初回設定チェックポイント");
   }
 }

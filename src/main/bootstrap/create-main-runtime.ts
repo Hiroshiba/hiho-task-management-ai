@@ -13,6 +13,8 @@ import {
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
+  readonly secretStoragePath: string;
+  readonly checkpointPath: string;
   readonly logsPath: string;
   readonly loggerFormatter: ConstructorParameters<typeof JsonlErrorReporter>[2];
   readonly legacy: Omit<LegacyRuntimeOptions, "lifecycle_signal" | "now_provider" | "create_id">;
@@ -27,7 +29,7 @@ export interface MainRuntime {
   dispose(): Promise<void>;
 }
 
-/** Mainの診断sink、SQLite接続、未移行機能を一度だけ組み立てます。 */
+/** Mainの診断sink、保存資源、未移行機能を一度だけ組み立てます。 */
 export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
   let reporter: ErrorReporter | undefined;
   try {
@@ -43,12 +45,16 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       migrateLegacyPersistence,
     );
     const openedPersistence = persistence;
+    const files = {
+      secretStorage: openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
+      checkpoint: openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
+    };
     const legacy = createLegacyRuntime({
       ...options.legacy,
       lifecycle_signal: controller.signal,
       now_provider: () => new Date(),
       create_id: randomUUID,
-    }, openedPersistence);
+    }, openedPersistence, files);
     let disposal: Promise<void> | undefined;
     return {
       legacy,
@@ -76,7 +82,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
             throw errors[0];
           }
           if (errors.length > 1) {
-            throw new AggregateError(errors, "Mainの停止とSQLite接続の終了に失敗しました。", {
+            throw new AggregateError(errors, "Mainの停止と保存資源の終了に失敗しました。", {
               cause: errors[0],
             });
           }
@@ -96,7 +102,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       } catch (closeError) {
         failure = new AggregateError(
           [error, closeError],
-          "Mainの初期化とSQLite接続の終了に失敗しました。",
+          "Mainの初期化と保存資源の終了に失敗しました。",
           { cause: error },
         );
       }

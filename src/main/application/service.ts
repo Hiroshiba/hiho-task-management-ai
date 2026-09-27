@@ -285,7 +285,12 @@ import {
   migrateLegacyProposalConflictIdentifiers,
   type ExternalToolDefinitionRecord,
 } from "../storage";
-import { SqliteSettingsRepository, type PersistenceRuntime, type SqliteConnection } from "../infrastructure/persistence";
+import {
+  SqliteSettingsRepository,
+  type PersistenceRuntime,
+  type PersistentTextFile,
+  type SqliteConnection,
+} from "../infrastructure/persistence";
 import { AsanaTaskReadAdapter } from "../infrastructure/asana";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
 
@@ -775,6 +780,11 @@ function externalDataIsValid(task: AsanaTaskResponse): boolean {
 
 class UnreachableError extends Error {}
 
+type ApplicationFileStores = {
+  readonly secretStorage: PersistentTextFile;
+  readonly checkpoint: PersistentTextFile;
+};
+
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
@@ -881,7 +891,11 @@ export class TaskHubApplication {
     AsanaSyncRuntimeInternalResult
   >;
 
-  public constructor(options: ApplicationOptions, persistence: PersistenceRuntime) {
+  public constructor(
+    options: ApplicationOptions,
+    persistence: PersistenceRuntime,
+    files: ApplicationFileStores,
+  ) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
     this.aiEvents = new AiEventRuntime({
@@ -922,8 +936,8 @@ export class TaskHubApplication {
       options.now_provider,
       diagnosticLogRetentionLimit,
     );
-    this.secretStorage = new SecretStorage(options.secret_storage_path);
-    const checkpoint = new SetupCheckpointStore(options.checkpoint_path);
+    this.secretStorage = new SecretStorage(files.secretStorage);
+    const checkpoint = new SetupCheckpointStore(files.checkpoint);
     this.scheduler = new AsanaRequestScheduler();
     this.tokenProvider = createMutableTokenProvider();
     this.transport = new AsanaTransport(this.scheduler, this.tokenProvider);

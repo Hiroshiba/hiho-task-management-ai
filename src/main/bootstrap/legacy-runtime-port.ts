@@ -23,6 +23,7 @@ export const migrateLegacyPersistence = migrateLegacyStorage;
 export function createLegacyRuntime(
   options: LegacyRuntimeOptions,
   persistence: PersistenceRuntime,
+  files: ConstructorParameters<typeof TaskHubApplication>[2],
 ): LegacyRuntimePort {
-  return new TaskHubApplication(options, persistence);
+  return new TaskHubApplication(options, persistence, files);
 }

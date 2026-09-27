@@ -1500,11 +1500,6 @@
     {
       "path": "src/main/application/checkpoint.ts",
       "rule": "old-import",
-      "symbol": "src/main/local-storage-path.ts"
-    },
-    {
-      "path": "src/main/application/checkpoint.ts",
-      "rule": "old-import",
       "symbol": "src/shared/setup/index.ts"
     },
     {
@@ -2711,11 +2706,6 @@
       "path": "src/main/auth/secret-storage/secret-storage.ts",
       "rule": "old-import",
       "symbol": "src/main/auth/secret-storage/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/secret-storage.ts",
-      "rule": "old-import",
-      "symbol": "src/main/local-storage-path.ts"
     },
     {
       "path": "src/main/auth/secret-storage/secret-storage.ts",

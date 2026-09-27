@@ -4,6 +4,7 @@ import {
   captureSecurePersistentFile,
   ensureSecurePersistentFile,
 } from "./secure-file-snapshot";
+import { PersistentTextFileHandle, type PersistentTextFile } from "./persistent-text-file";
 import { normalizeSecurePersistentFilePath } from "./secure-path-guard";
 import type { SqliteConnection } from "./sqlite-connection";
 import { initializeSqliteSchema } from "./sqlite-migration";
@@ -67,9 +68,10 @@ function assertPragmas(database: SqliteConnection): void {
   }
 }
 
-/** SQLite接続とトランザクションの生存期間を管理します。 */
+/** SQLite接続と永続ファイルの生存期間を管理します。 */
 export class PersistenceRuntime {
   private readonly database: BetterSqlite3.Database;
+  private readonly textFiles = new Set<PersistentTextFileHandle>();
 
   public constructor(
     dbPath: string,
@@ -132,10 +134,24 @@ export class PersistenceRuntime {
     return this.database.transaction(operation);
   }
 
-  /** SQLite接続を閉じます。 */
+  /** 永続テキストファイルを開きます。 */
+  public openTextFile(filePath: string, label: string): PersistentTextFile {
+    if (!this.database.open) {
+      throw new Error("永続化ランタイムは終了しています。");
+    }
+    const file = new PersistentTextFileHandle(filePath, label);
+    this.textFiles.add(file);
+    return file;
+  }
+
+  /** SQLite接続と永続ファイルを閉じます。 */
   public close(): void {
     if (this.database.open) {
       this.database.close();
     }
+    for (const file of this.textFiles) {
+      file.close();
+    }
+    this.textFiles.clear();
   }
 }

@@ -1,12 +1,6 @@
 import { safeStorage } from "electron";
 import { z } from "zod";
-import {
-  captureSecurePersistentFile,
-  normalizeSecurePersistentFilePath,
-  readSecurePersistentTextFile,
-  removeSecurePersistentFile,
-  writeSecurePersistentTextFileAtomically,
-} from "../../local-storage-path";
+import type { PersistentTextFile } from "../../infrastructure/persistence";
 import {
   encryptedSecretStorageSchema,
   secretStorageSchema,
@@ -73,12 +67,7 @@ function parseJson<T>(raw: string, schema: z.ZodType<T>): T {
 
 /** ElectronのOS保護ストレージを使って秘密情報を保存します。 */
 export class SecretStorage {
-  private readonly filePath: string;
-
-  public constructor(filePath: string) {
-    this.filePath = normalizeSecurePersistentFilePath(filePath);
-    captureSecurePersistentFile(this.filePath, "秘密情報ファイル");
-  }
+  public constructor(private readonly file: PersistentTextFile) {}
 
   /** 秘密情報を暗号化して原子的に保存します。 */
   public save(data: SecretStorageData): void {
@@ -93,19 +82,12 @@ export class SecretStorage {
       ciphertext,
     });
     const serializedFileData = JSON.stringify(fileData);
-    writeSecurePersistentTextFileAtomically(
-      this.filePath,
-      serializedFileData,
-      "秘密情報ファイル",
-    );
+    this.file.replaceAtomically(serializedFileData, "秘密情報ファイル");
   }
 
   /** 暗号化済み秘密情報を復号して読み出します。 */
   public load(): SecretStorageData | undefined {
-    const serializedFileData = readSecurePersistentTextFile(
-      this.filePath,
-      "秘密情報ファイル",
-    );
+    const serializedFileData = this.file.read();
     if (serializedFileData == null) {
       return undefined;
     }
@@ -123,6 +105,6 @@ export class SecretStorage {
 
   /** 保存済み秘密情報ファイルを削除します。 */
   public clear(): void {
-    removeSecurePersistentFile(this.filePath, "秘密情報ファイル");
+    this.file.remove();
   }
 }
