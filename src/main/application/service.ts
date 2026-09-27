@@ -144,6 +144,7 @@ import {
   type AiSessionRecord as RuntimeAiSessionRecord,
 } from "../bootstrap/ai-session-runtime";
 import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
+import { SynchronizationOperations } from "../bootstrap/synchronization-operations";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -937,7 +938,11 @@ export class TaskHubApplication {
   private removeRuntimeSubscription: (() => void) | undefined;
   private lastDisplaySyncAt: string | undefined;
   private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
-  private syncFailureDiagnosticSuppressionCount = 0;
+  private readonly synchronizationOperations: SynchronizationOperations<
+    AsanaSyncRuntimeInternalResult,
+    PostWriteSynchronizationResultWithCause,
+    PostWriteSynchronizationFailureCode
+  >;
   private readonly journalRecovery: JournalRecoveryRuntime<
     ReturnType<StorageDatabase["getIncompleteApplicationJournals"]>[number],
     AsanaProposalRecoveryResult
@@ -946,7 +951,6 @@ export class TaskHubApplication {
     kind: "pending",
   };
   private configuredCodexSynchronizationPromise: Promise<void> | undefined;
-  private aiApplicationState: "idle" | "applying" | "synchronizing" = "idle";
   private readyActivated = false;
   private stopped = false;
 
@@ -1038,7 +1042,7 @@ export class TaskHubApplication {
       connectionFactory,
       onError: onCodexError,
       snapshotProvider: () => this.createTaskctlSnapshot(),
-      syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
+      syncBeforeTurn: (signal) => this.synchronizationOperations.requireSynchronizedBeforeAi(signal),
     });
     this.codexAdapter = new CodexSetupAdapter({
       session: this.codexSession,
@@ -1258,6 +1262,60 @@ export class TaskHubApplication {
       afterRecovery: (result) =>
         this.cleanupAggregation.replaceProposalConflictsFromRecovery(result),
     });
+    this.synchronizationOperations = new SynchronizationOperations<
+      AsanaSyncRuntimeInternalResult,
+      PostWriteSynchronizationResultWithCause,
+      PostWriteSynchronizationFailureCode
+    >({
+      validateAbortSignal,
+      throwIfAborted,
+      hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
+      hasPendingJournal: () => this.journalRecovery.hasPending(),
+      hasIncompleteJournal: () => this.database.getIncompleteApplicationJournals()
+        .some((journal) => journal.final_result == null),
+      isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
+      recoverJournal: (signal) => this.journalRecovery.recover(signal),
+      afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
+      synchronizeCodexAfterAsana: (signal) =>
+        this.synchronizeConfiguredCodexAfterAsana(signal),
+      afterGuiEdit: (requiredTaskGids, signal) =>
+        this.requireRuntime().afterGuiEdit(requiredTaskGids, signal),
+      afterAiApply: (requiredTaskGids, signal) =>
+        this.requireRuntime().afterAiApply(requiredTaskGids, signal),
+      beforeAiTurn: (signal) => this.requireRuntime().beforeAiTurn(signal),
+      prepareRecoveredSynchronization: (requiredTaskGids, signal) => {
+        const context = this.requireContext();
+        return () => this.syncCoordinator.coordinate(
+          {
+            mode: "delta",
+            project_gid: context.project_gid,
+            section_gids: context.section_gids,
+            device_id: context.device_id,
+            app_version: this.options.app_version,
+            required_task_gids: [...requiredTaskGids],
+          },
+          signal,
+        );
+      },
+      isSynchronizedResult: (
+        result,
+      ): result is Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }> =>
+        result.kind === "synchronized",
+      abortedCode: "aborted",
+      classifyError: classifyPostWriteSynchronizationError,
+      isDiagnosticFailure: (error) => error instanceof DiagnosticFailureDispositionError,
+      recoveryRequired: postWriteRecoveryRequired,
+      recoveryRequiredWithCause: postWriteRecoveryRequiredWithCause,
+      synchronizedPostWrite: () => asanaPostWriteSynchronizationResultSchema.parse({
+        kind: "synchronized",
+      }),
+      fromRuntimeResult: postWriteSynchronizationFromRuntimeResult,
+      recordLocalRefreshFailure: (error) => this.recordFeatureFailure(
+        error,
+        "local_state_refresh",
+        "Asana同期後の補助的なローカル状態更新に失敗しました。",
+      ),
+    });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
     this.configureAsanaFromSettings(this.settings);
     this.configureContextFromState(this.setup.getState());
@@ -1403,8 +1461,8 @@ export class TaskHubApplication {
     this.assertOperationalReady();
     this.assertAsanaReauthenticationIdle();
     const runtime = this.requireRuntime();
-    const result = await this.requireSynchronizedResult(runtime.onForeground(signal));
-    await this.afterSynchronizedState(result, signal);
+    const result = await this.synchronizationOperations.requireSynchronizedResult(runtime.onForeground(signal));
+    await this.synchronizationOperations.afterSynchronizedState(result, signal);
   }
 
   /** Electronのオンライン復帰を同期へ渡します。 */
@@ -1414,7 +1472,7 @@ export class TaskHubApplication {
     const runtime = this.requireRuntime();
     const result = await runtime.onOnline(this.options.lifecycle_signal);
     if (result.kind === "synchronized") {
-      await this.afterSynchronizedState(result, this.options.lifecycle_signal);
+      await this.synchronizationOperations.afterSynchronizedState(result, this.options.lifecycle_signal);
       return;
     }
     if (result.kind === "failed") {
@@ -1534,10 +1592,10 @@ export class TaskHubApplication {
           };
         },
       });
-      const synchronized = await this.requireSynchronizedResult(
+      const synchronized = await this.synchronizationOperations.requireSynchronizedResult(
         this.requireRuntime().onOnline(signal),
       );
-      await this.afterSynchronizedState(synchronized, signal);
+      await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
       return toIpcSyncResult(synchronized.result);
     } finally {
       this.asanaReauthenticationOperation = { kind: "idle" };
@@ -1718,7 +1776,7 @@ export class TaskHubApplication {
         initial_online: online,
       },
       this.options.lifecycle_signal,
-      (signal) => this.beforeAsanaSynchronization(signal),
+      (signal) => this.synchronizationOperations.beforeSynchronization(signal),
       (error) => this.recordUnexpectedError(error, "sync"),
       this.options.unhandled_error_forwarder,
       () => createNowIso(this.options.now_provider),
@@ -1743,12 +1801,12 @@ export class TaskHubApplication {
       this.database,
       randomUUID,
       () => createNowIso(this.options.now_provider),
-      (requiredTaskGids, signal) => this.afterAiApply(requiredTaskGids, signal),
+      (requiredTaskGids, signal) => this.synchronizationOperations.afterAiApply(requiredTaskGids, signal),
       (error, event) => this.options.diagnostic(error, "application_journal", event),
     );
     const guiEdit = new AsanaGuiEditService(
       writer,
-      (requiredTaskGids, signal) => this.afterGuiEdit(requiredTaskGids, signal),
+      (requiredTaskGids, signal) => this.synchronizationOperations.afterGuiEdit(requiredTaskGids, signal),
       () => this.isOnline(),
       (request, signal) => this.validateRelationGraph(request, signal),
       {
@@ -2301,27 +2359,6 @@ export class TaskHubApplication {
     return coordinator;
   }
 
-  private async beforeAsanaSynchronization(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    throwIfAborted(signal);
-    if (this.aiApplicationState === "synchronizing") {
-      return;
-    }
-    if (this.aiApplicationState === "applying") {
-      throw new Error("AI変更案の適用完了前に別の同期を開始できません。");
-    }
-    await this.journalRecovery.recover(signal);
-    throwIfAborted(signal);
-    if (
-      this.journalRecovery.hasPending()
-      || this.database
-        .getIncompleteApplicationJournals()
-        .some((journal) => journal.final_result == null)
-    ) {
-      throw new Error("未完了のAI適用ジャーナルを復旧するまで同期を開始できません。");
-    }
-  }
-
   private async stopAsyncService(
     service: { stop(): Promise<void> } | undefined,
     errors: unknown[],
@@ -2377,7 +2414,7 @@ export class TaskHubApplication {
     if (!synchronizationDeferred) {
       const runtimeResult = await runtime.start(signal);
       if (runtimeResult.kind === "synchronized") {
-        await this.afterSynchronizedState(runtimeResult, signal);
+        await this.synchronizationOperations.afterSynchronizedState(runtimeResult, signal);
       } else if (runtimeResult.kind === "aborted") {
         throw new Error("設定済みアプリケーションの起動同期が中断されました。");
       } else if (
@@ -2505,173 +2542,6 @@ export class TaskHubApplication {
     this.publishAiStatus();
   }
 
-  private async requireSynchronizedResult(
-    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
-  ): Promise<Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>> {
-    const result = await this.awaitSyncResult(resultPromise);
-    if (result.kind === "synchronized") {
-      return result;
-    }
-    if (result.kind === "rejected") {
-      throw new Error(
-        result.reason === "offline"
-          ? "オフライン中はAsana同期を実行できません。"
-          : "停止済みのAsana同期ランタイムは実行できません。",
-      );
-    }
-    if (result.kind === "aborted") {
-      throw new Error("Asana同期が中断されました。");
-    }
-    throw new Error(`Asana同期に失敗しました。エラーコード: ${result.error_code}`, {
-      cause: result.cause,
-    });
-  }
-
-  private async awaitSyncResult(
-    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
-  ): Promise<AsanaSyncRuntimeInternalResult> {
-    this.syncFailureDiagnosticSuppressionCount += 1;
-    try {
-      return await resultPromise;
-    } finally {
-      this.syncFailureDiagnosticSuppressionCount -= 1;
-    }
-  }
-
-  private async afterSynchronizedState(
-    result: Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }>,
-    signal: AbortSignal,
-  ): Promise<void> {
-    void result;
-    await this.journalRecovery.recover(signal);
-    await this.afterLocalStateRefresh(signal);
-    await this.synchronizeConfiguredCodexAfterAsana(signal);
-  }
-
-  private afterGuiEdit(
-    requiredTaskGids: readonly string[],
-    signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResultWithCause> {
-    return this.resolvePostWriteSynchronization(
-      this.requireRuntime().afterGuiEdit(requiredTaskGids, signal),
-      signal,
-    );
-  }
-
-  private async afterAiApply(
-    requiredTaskGids: readonly string[],
-    signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResultWithCause> {
-    if (this.journalRecovery.isRunning()) {
-      return this.synchronizeRecoveredApplicationJournals(requiredTaskGids, signal);
-    }
-    if (this.aiApplicationState !== "applying") {
-      throw new Error("AI変更案の適用状態が同期開始条件を満たしません。");
-    }
-    this.aiApplicationState = "synchronizing";
-    this.syncFailureDiagnosticSuppressionCount += 1;
-    try {
-      return await this.resolvePostWriteSynchronization(
-        this.requireRuntime().afterAiApply(requiredTaskGids, signal),
-        signal,
-      );
-    } finally {
-      this.syncFailureDiagnosticSuppressionCount -= 1;
-      this.aiApplicationState = "applying";
-    }
-  }
-
-  private async synchronizeRecoveredApplicationJournals(
-    requiredTaskGids: readonly string[],
-    signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResultWithCause> {
-    const context = this.requireContext();
-    try {
-      await this.syncCoordinator.coordinate(
-        {
-          mode: "delta",
-          project_gid: context.project_gid,
-          section_gids: context.section_gids,
-          device_id: context.device_id,
-          app_version: this.options.app_version,
-          required_task_gids: [...requiredTaskGids],
-        },
-        signal,
-      );
-    } catch (error: unknown) {
-      if (error instanceof DiagnosticFailureDispositionError) {
-        throw error;
-      }
-      if (signal.aborted) {
-        return postWriteRecoveryRequired("aborted");
-      }
-      const classification = classifyPostWriteSynchronizationError(error);
-      if (classification.kind === "recovery_required") {
-        return postWriteRecoveryRequiredWithCause(classification.error_code, error);
-      }
-      throw new Error("AI適用ジャーナル復旧後の同期に失敗しました。", {
-        cause: error,
-      });
-    }
-    const synchronization = asanaPostWriteSynchronizationResultSchema.parse({
-      kind: "synchronized",
-    });
-    await this.refreshAuxiliaryStateAfterPostWrite(signal);
-    return synchronization;
-  }
-
-  private async resolvePostWriteSynchronization(
-    resultPromise: Promise<AsanaSyncRuntimeInternalResult>,
-    signal: AbortSignal,
-  ): Promise<PostWriteSynchronizationResultWithCause> {
-    let runtimeResult: AsanaSyncRuntimeInternalResult;
-    try {
-      runtimeResult = await resultPromise;
-    } catch (error: unknown) {
-      if (error instanceof DiagnosticFailureDispositionError) {
-        throw error;
-      }
-      if (signal.aborted) {
-        return postWriteRecoveryRequired("aborted");
-      }
-      const classification = classifyPostWriteSynchronizationError(error);
-      if (classification.kind === "recovery_required") {
-        return postWriteRecoveryRequiredWithCause(classification.error_code, error);
-      }
-      throw new Error("書き込み後の同期で想定外エラーが発生しました。", {
-        cause: error,
-      });
-    }
-    const synchronization = postWriteSynchronizationFromRuntimeResult(runtimeResult);
-    if (synchronization.kind === "recovery_required") {
-      return synchronization;
-    }
-    await this.refreshAuxiliaryStateAfterPostWrite(signal);
-    return synchronization;
-  }
-
-  private async refreshAuxiliaryStateAfterPostWrite(
-    signal: AbortSignal,
-  ): Promise<void> {
-    try {
-      await this.afterLocalStateRefresh(signal);
-    } catch (error: unknown) {
-      this.recordFeatureFailure(
-        error,
-        "local_state_refresh",
-        "Asana同期後の補助的なローカル状態更新に失敗しました。",
-      );
-    }
-  }
-
-  private async requireSynchronizedBeforeAi(signal: AbortSignal): Promise<void> {
-    const result = await this.requireSynchronizedResult(
-      this.requireRuntime().beforeAiTurn(signal),
-    );
-    void result;
-    await this.afterLocalStateRefresh(signal);
-  }
-
   private recordSyncStateDiagnostic(state: AsanaSyncRuntimeState, cause?: unknown): void {
     const diagnosticState = this.syncDiagnosticState;
     if (state.kind === "syncing") {
@@ -2700,7 +2570,7 @@ export class TaskHubApplication {
       state.kind === "authentication_required"
       || (state.kind === "error" && state.error_code !== "unexpected_error")
     ) {
-      if (this.syncFailureDiagnosticSuppressionCount === 0) {
+      if (this.synchronizationOperations.shouldReportKnownFailure()) {
         this.options.diagnostic(
           cause == null
             ? new Error("Asana同期で認証または既知のエラーが発生しました。")
@@ -3166,12 +3036,12 @@ export class TaskHubApplication {
         this.assertAsanaReauthenticationIdle();
         const request = ipcSyncInputSchema.parse(input);
         const runtime = this.requireRuntime();
-        const result = await this.requireSynchronizedResult(
+        const result = await this.synchronizationOperations.requireSynchronizedResult(
           request.mode === "full"
             ? runtime.manualFullSync(signal)
             : runtime.manualSync(signal),
         );
-        await this.afterSynchronizedState(result, signal);
+        await this.synchronizationOperations.afterSynchronizedState(result, signal);
         return toIpcSyncResult(result.result);
       },
       onState: (listener) => {
@@ -3617,7 +3487,7 @@ export class TaskHubApplication {
         this.options.diagnostic(error, "codex", serviceErrorDiagnostic);
       },
       snapshotProvider: () => this.createTaskctlSnapshot(),
-      syncBeforeTurn: (signal) => this.requireSynchronizedBeforeAi(signal),
+      syncBeforeTurn: (signal) => this.synchronizationOperations.requireSynchronizedBeforeAi(signal),
     });
   }
 
@@ -3673,20 +3543,11 @@ export class TaskHubApplication {
     input: AsanaProposalApplicationInput,
     signal: AbortSignal,
   ): Promise<Awaited<ReturnType<AsanaProposalApplicationCoordinator["apply"]>>> {
-    if (this.aiApplicationState !== "idle") {
-      throw new Error("変更案を同時に適用できません。");
-    }
-    if (!this.operationQueue.hasOwner(signal)) {
-      throw new Error("変更案適用の実行権を所有していません。");
-    }
-    this.aiApplicationState = "applying";
-    try {
-      const result = await applicationCoordinator.apply(input, signal);
-      this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
-      return result;
-    } finally {
-      this.aiApplicationState = "idle";
-    }
+    return this.synchronizationOperations.applyProposal(
+      signal,
+      () => applicationCoordinator.apply(input, signal),
+      (result) => this.cleanupAggregation.replaceProposalConflictsFromApplication(result),
+    );
   }
 
   private applyExternalProposal(
