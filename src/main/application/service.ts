@@ -145,6 +145,7 @@ import {
 } from "../bootstrap/ai-session-runtime";
 import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
 import { SynchronizationOperations } from "../bootstrap/synchronization-operations";
+import { SyncStateRuntime } from "../bootstrap/sync-state-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -323,13 +324,6 @@ type CodexAuthenticationState = z.infer<typeof codexAuthenticationStateSchema>;
 type CodexKnownFailureCapture =
   | { readonly kind: "none" }
   | { readonly kind: "captured"; readonly error: unknown };
-
-type SyncDiagnosticState =
-  | { readonly kind: "idle" }
-  | {
-      readonly kind: "running";
-      readonly previous_success_at: string | undefined;
-    };
 
 type ConfiguredCodexLaunchState =
   | { readonly kind: "pending" }
@@ -932,12 +926,9 @@ export class TaskHubApplication {
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
-  private readonly syncStateListeners = new Set<(state: IpcSyncStateEvent) => void>();
+  private readonly syncStateRuntime: SyncStateRuntime<AsanaSyncRuntimeState, IpcSyncStateEvent>;
   private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
   private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
-  private removeRuntimeSubscription: (() => void) | undefined;
-  private lastDisplaySyncAt: string | undefined;
-  private syncDiagnosticState: SyncDiagnosticState = { kind: "idle" };
   private readonly synchronizationOperations: SynchronizationOperations<
     AsanaSyncRuntimeInternalResult,
     PostWriteSynchronizationResultWithCause,
@@ -1316,6 +1307,25 @@ export class TaskHubApplication {
         "Asana同期後の補助的なローカル状態更新に失敗しました。",
       ),
     });
+    this.syncStateRuntime = new SyncStateRuntime<AsanaSyncRuntimeState, IpcSyncStateEvent>({
+      toEvent: toIpcSyncState,
+      recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
+      shouldReportKnownFailure: () => this.synchronizationOperations.shouldReportKnownFailure(),
+      reportKnownFailure: (cause) => this.options.diagnostic(
+        cause == null
+          ? new Error("Asana同期で認証または既知のエラーが発生しました。")
+          : cause,
+        "sync",
+        serviceErrorDiagnostic,
+      ),
+      reportListenerFailure: (error) =>
+        this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic),
+      lifecycleSignal: this.options.lifecycle_signal,
+      afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
+      isReadyActivated: () => this.readyActivated,
+      synchronizeCodex: (signal) => this.synchronizeConfiguredCodexAfterAsana(signal),
+      reportUnexpectedError: (error, feature) => this.recordUnexpectedError(error, feature),
+    });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
     this.configureAsanaFromSettings(this.settings);
     this.configureContextFromState(this.setup.getState());
@@ -1410,9 +1420,7 @@ export class TaskHubApplication {
     await this.externalTools.stopConfiguration(errors);
     await this.stopAsyncService(this.externalAgent, errors);
     await this.stopAsyncService(this.externalAgentBridge, errors);
-    this.removeRuntimeSubscription?.();
-    this.removeRuntimeSubscription = undefined;
-    this.syncStateListeners.clear();
+    this.syncStateRuntime.stop();
     this.aiDeltaListeners.clear();
     this.aiStatusListeners.clear();
     await this.aiRuntime.closeAll(errors);
@@ -1782,9 +1790,7 @@ export class TaskHubApplication {
       () => createNowIso(this.options.now_provider),
       this.operationQueue,
     );
-    const removeRuntimeSubscription = runtime.subscribe((runtimeState, cause) => {
-      this.handleRuntimeState(runtimeState, cause);
-    });
+    this.syncStateRuntime.subscribeRuntime(runtime);
     const displayOrder = createAsanaDisplayOrderService(
       this.transport,
       (error) => this.recordUnexpectedError(error, "display_order"),
@@ -1836,7 +1842,6 @@ export class TaskHubApplication {
       (error) => this.options.diagnostic(error, "gui_edit", serviceErrorDiagnostic),
     );
     this.runtime = runtime;
-    this.removeRuntimeSubscription = removeRuntimeSubscription;
     this.displayOrder = displayOrder;
     this.writer = writer;
     this.applicationCoordinator = applicationCoordinator;
@@ -2542,74 +2547,6 @@ export class TaskHubApplication {
     this.publishAiStatus();
   }
 
-  private recordSyncStateDiagnostic(state: AsanaSyncRuntimeState, cause?: unknown): void {
-    const diagnosticState = this.syncDiagnosticState;
-    if (state.kind === "syncing") {
-      if (diagnosticState.kind === "idle") {
-        this.recordDiagnostic("sync.started", "info");
-        this.syncDiagnosticState = {
-          kind: "running",
-          previous_success_at: state.last_successful_sync_at,
-        };
-      }
-      return;
-    }
-    if (diagnosticState.kind === "idle") {
-      return;
-    }
-    this.syncDiagnosticState = { kind: "idle" };
-    if (
-      state.kind === "online"
-      && state.last_successful_sync_at != null
-      && state.last_successful_sync_at !== diagnosticState.previous_success_at
-    ) {
-      this.recordDiagnostic("sync.completed", "info");
-      return;
-    }
-    if (
-      state.kind === "authentication_required"
-      || (state.kind === "error" && state.error_code !== "unexpected_error")
-    ) {
-      if (this.synchronizationOperations.shouldReportKnownFailure()) {
-        this.options.diagnostic(
-          cause == null
-            ? new Error("Asana同期で認証または既知のエラーが発生しました。")
-            : cause,
-          "sync",
-          serviceErrorDiagnostic,
-        );
-      }
-    }
-  }
-
-  private handleRuntimeState(state: AsanaSyncRuntimeState, cause?: unknown): void {
-    const ipcState = toIpcSyncState(state);
-    for (const listener of this.syncStateListeners) {
-      try {
-        listener(ipcState);
-      } catch (error: unknown) {
-        this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic);
-      }
-    }
-    this.recordSyncStateDiagnostic(state, cause);
-    if (
-      state.last_successful_sync_at == null
-      || state.last_successful_sync_at === this.lastDisplaySyncAt
-      || this.options.lifecycle_signal.aborted
-    ) {
-      return;
-    }
-    this.lastDisplaySyncAt = state.last_successful_sync_at;
-    void this.afterLocalStateRefresh(this.options.lifecycle_signal).catch(
-      (error: unknown) => this.recordUnexpectedError(error, "display_order"),
-    );
-    if (this.readyActivated) {
-      void this.synchronizeConfiguredCodexAfterAsana(this.options.lifecycle_signal).catch(
-        (error: unknown) => this.recordUnexpectedError(error, "codex"),
-      );
-    }
-  }
-
   private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
     const tasks = parseTaskCache(this.database.getTaskCache())
       .map((entry) => taskSchema.parse(entry.task));
@@ -3044,15 +2981,7 @@ export class TaskHubApplication {
         await this.synchronizationOperations.afterSynchronizedState(result, signal);
         return toIpcSyncResult(result.result);
       },
-      onState: (listener) => {
-        if (typeof listener !== "function") {
-          throw new TypeError("同期状態の購読関数が必要です。");
-        }
-        this.syncStateListeners.add(listener);
-        return (): void => {
-          this.syncStateListeners.delete(listener);
-        };
-      },
+      onState: (listener) => this.syncStateRuntime.onState(listener),
     };
   }
 
