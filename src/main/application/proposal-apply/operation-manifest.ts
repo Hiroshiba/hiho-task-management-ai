@@ -293,7 +293,9 @@ function durationEffects(operation: ProposalWriteOperation, context: ProposalOpe
   }
   const update = requireOperation(operation, "clear_duration");
   requireExternalBaseline(context);
-  return [externalEffect(update.target, context, [{ kind: "duration", before: update.before, after: { kind: "absent" } }])];
+  return "kind" in update.before
+    ? []
+    : [externalEffect(update.target, context, [{ kind: "duration", before: update.before, after: { kind: "absent" } }])];
 }
 
 function dependenciesEffects(operation: ProposalWriteOperation, context: ProposalOperationPlanningContext): readonly OperationEffect[] {

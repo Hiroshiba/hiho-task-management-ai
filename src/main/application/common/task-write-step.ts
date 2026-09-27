@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { proposalWriteOperationSchema } from "../../domain/proposal-write-operation";
 import {
   customExternalDataSchema,
   dateSchema,
@@ -194,6 +195,20 @@ const synchronizationPayloadSchema = z.object({
   condition: z.enum(["verified_operation", "writer_result_available"]),
 }).strict();
 
+const proposalOperationCheckPayloadSchema = z.object({
+  operation: proposalWriteOperationSchema.refine((operation) => operation.operation !== "create_task"),
+  project_gid: gidSchema,
+  workspace_gid: gidSchema,
+  section_gids: z.object({
+    not_started: gidSchema,
+    in_progress: gidSchema,
+    completed: gidSchema,
+    withdrawn: gidSchema,
+  }).strict(),
+  activity_date: dateSchema,
+  external_baseline: taskWriteExternalBaselineSchema.optional(),
+}).strict();
+
 const stepShape = {
   step_id: identifierSchema,
   scope: z.discriminatedUnion("kind", [
@@ -206,6 +221,7 @@ const stepShape = {
 };
 
 export const taskWriteStepSchema = z.discriminatedUnion("kind", [
+  z.object({ ...stepShape, kind: z.literal("proposal_operation_check"), payload: proposalOperationCheckPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_create_task"), payload: createTaskPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_update_task"), payload: updateTaskPayloadSchema }).strict(),
   z.object({ ...stepShape, kind: z.literal("asana_add_to_section"), payload: sectionPayloadSchema }).strict(),
