@@ -15,4 +15,5 @@ export { TaskReadPersistenceRepository, type TaskReadPersistenceContracts } from
 export { SqliteSettingsRepository } from "./settings-repository";
 export { SqliteProposalExecutionRepository } from "./proposal-execution-repository";
 export { SqliteLegacyProposalExecutionRepository } from "./legacy-proposal-execution-repository";
+export { SqliteLegacyProposalHistoryRepository } from "./proposal-application-history-repository";
 export type { SqliteConnection } from "./sqlite-connection";

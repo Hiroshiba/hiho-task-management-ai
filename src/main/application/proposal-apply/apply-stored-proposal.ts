@@ -129,6 +129,9 @@ export async function applyStoredProposal(
   signal: AbortSignal,
 ): Promise<StoredProposalApplicationResult> {
   signal.throwIfAborted();
+  if (port.legacyRepository.getByProposal(input.proposal_id) != null) {
+    throw new Error("旧適用履歴がある変更案を新しいexecutionとして再実行できません。");
+  }
   const proposal = input.approval_input.proposal;
   const selected = new Set(input.approval_input.selected_operation_ids);
   for (const group of proposal.groups) {

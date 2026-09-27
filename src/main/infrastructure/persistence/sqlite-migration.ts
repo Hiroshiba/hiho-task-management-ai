@@ -10,10 +10,13 @@ import {
   applicationJournalV3Columns,
   applicationJournalV4ColumnsWithoutRecoveryReason,
   applicationJournalV5Columns,
+  legacyApplicationHistoryColumns,
+  legacyApplicationHistoryTableSql,
   storageLegacyTableNames,
   storageSchemaSql,
   storageSchemaVersion,
   storageTableNames,
+  storageV7TableNames,
   type ExpectedTableColumn,
   type TableInfoRow,
   type TableNameRow,
@@ -56,8 +59,18 @@ function assertExecutionTableColumns(database: SqliteDatabase): void {
   assertTableColumns(database, "proposal_execution_steps", proposalExecutionStepColumns);
 }
 
+function assertHistoryTableColumns(database: SqliteDatabase): void {
+  assertTableColumns(database, "legacy_application_history", legacyApplicationHistoryColumns);
+}
+
+function createHistoryTable(database: SqliteDatabase): void {
+  database.exec(legacyApplicationHistoryTableSql);
+  assertHistoryTableColumns(database);
+}
+
 function createExecutionTables(database: SqliteDatabase): void {
   database.exec(proposalExecutionTablesSql);
+  createHistoryTable(database);
   assertStorageTableNames(readTableNames(database), storageTableNames);
   assertExecutionTableColumns(database);
 }
@@ -356,12 +369,29 @@ function migrateSchemaFromV6(
   transaction: SqliteTransaction,
 ): void {
   const migrate = transaction(() => {
-    assertStorageTableNames(readTableNames(database), storageTableNames);
+    assertStorageTableNames(readTableNames(database), storageV7TableNames);
     assertTableColumns(database, "application_journal", applicationJournalV5Columns);
     assertTableColumns(database, "proposal_executions", proposalExecutionColumns);
     assertTableColumns(database, "proposal_execution_steps", proposalExecutionV6StepColumns);
     database.exec("ALTER TABLE proposal_execution_steps ADD COLUMN sync_error_code TEXT");
     assertExecutionTableColumns(database);
+    createHistoryTable(database);
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
+function migrateSchemaFromV7(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageV7TableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    assertExecutionTableColumns(database);
+    createHistoryTable(database);
+    assertStorageTableNames(readTableNames(database), storageTableNames);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
   migrate();
@@ -393,6 +423,7 @@ export function initializeSqliteSchema(
         applicationJournalV5Columns,
       );
       assertExecutionTableColumns(database);
+      assertHistoryTableColumns(database);
       database.pragma(`user_version = ${storageSchemaVersion}`);
     });
     createSchema();
@@ -419,6 +450,11 @@ export function initializeSqliteSchema(
     return;
   }
 
+  if (userVersion === 7) {
+    migrateSchemaFromV7(database, transaction);
+    return;
+  }
+
   if (userVersion !== storageSchemaVersion) {
     throw new Error(`未対応のSQLite schema versionです: ${userVersion}`);
   }
@@ -426,4 +462,5 @@ export function initializeSqliteSchema(
   assertStorageTableNames(tableNames, storageTableNames);
   assertTableColumns(database, "application_journal", applicationJournalV5Columns);
   assertExecutionTableColumns(database);
+  assertHistoryTableColumns(database);
 }

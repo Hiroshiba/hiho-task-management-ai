@@ -1,6 +1,6 @@
 import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageSchemaVersion = 7;
+export const storageSchemaVersion = 8;
 
 export const storageLegacyTableNames = [
   "task_cache",
@@ -15,11 +15,34 @@ export const storageLegacyTableNames = [
   "external_tool_definitions",
 ] as const;
 
-export const storageTableNames = [
+export const storageV7TableNames = [
   ...storageLegacyTableNames,
   "proposal_executions",
   "proposal_execution_steps",
 ] as const;
+
+export const storageTableNames = [
+  ...storageV7TableNames,
+  "legacy_application_history",
+] as const;
+
+export const legacyApplicationHistoryTableSql = `
+CREATE TABLE legacy_application_history (
+  proposal_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  format_version INTEGER NOT NULL CHECK (format_version = 1),
+  source_schema_version INTEGER NOT NULL CHECK (source_schema_version BETWEEN 3 AND 7),
+  source_stage TEXT NOT NULL,
+  source_final_result TEXT,
+  source_recovery_reason TEXT,
+  confirmation_state TEXT NOT NULL CHECK (confirmation_state IN ('not_required', 'required', 'confirmed')),
+  confirmed_result TEXT CHECK (confirmed_result IS NULL OR confirmed_result IN ('applied', 'not_applied')),
+  snapshot_json TEXT NOT NULL,
+  snapshot_sha256 TEXT NOT NULL,
+  PRIMARY KEY (proposal_id, operation_id),
+  CHECK ((confirmation_state = 'confirmed') = (confirmed_result IS NOT NULL))
+);
+`;
 
 export const applicationJournalTableSql = `
 CREATE TABLE application_journal (
@@ -274,6 +297,7 @@ CREATE TABLE external_tool_definitions (
   credential_reference_names_json TEXT NOT NULL
 );
 ${proposalExecutionTablesSql}
+${legacyApplicationHistoryTableSql}
 `;
 
 export interface TableNameRow {
@@ -342,3 +366,17 @@ export const applicationJournalV5Columns: readonly ExpectedTableColumn[] = [
 
 export const applicationJournalV4ColumnsWithoutRecoveryReason =
   applicationJournalV5Columns.filter((column) => column.name !== "recovery_reason");
+
+export const legacyApplicationHistoryColumns: readonly ExpectedTableColumn[] = [
+  { name: "proposal_id", type: "TEXT", notnull: 1, pk: 1 },
+  { name: "operation_id", type: "TEXT", notnull: 1, pk: 2 },
+  { name: "format_version", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "source_schema_version", type: "INTEGER", notnull: 1, pk: 0 },
+  { name: "source_stage", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "source_final_result", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "source_recovery_reason", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "confirmation_state", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "confirmed_result", type: "TEXT", notnull: 0, pk: 0 },
+  { name: "snapshot_json", type: "TEXT", notnull: 1, pk: 0 },
+  { name: "snapshot_sha256", type: "TEXT", notnull: 1, pk: 0 },
+];

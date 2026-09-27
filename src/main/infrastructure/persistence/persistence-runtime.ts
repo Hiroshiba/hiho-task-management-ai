@@ -7,6 +7,7 @@ import {
 import { PersistentTextFileHandle, type PersistentTextFile } from "./persistent-text-file";
 import { normalizeSecurePersistentFilePath } from "./secure-path-guard";
 import type { SqliteConnection } from "./sqlite-connection";
+import { backupSqliteBeforeMigration } from "./sqlite-migration-backup";
 import { initializeSqliteSchema } from "./sqlite-migration";
 
 export const storageBusyTimeoutMilliseconds = 5_000;
@@ -71,6 +72,7 @@ function assertPragmas(database: SqliteConnection): void {
 /** SQLite接続と永続ファイルの生存期間を管理します。 */
 export class PersistenceRuntime {
   private readonly database: BetterSqlite3.Database;
+  public readonly migrationBackupPath: string | undefined;
   private readonly textFiles = new Set<PersistentTextFileHandle>();
   private readonly lateTextFiles = new Set<PersistentTextFileHandle>();
 
@@ -107,6 +109,7 @@ export class PersistenceRuntime {
         databaseFileLabel,
       );
       validateSqliteAuxiliaryFiles(normalizedDbPath);
+      this.migrationBackupPath = backupSqliteBeforeMigration(database, normalizedDbPath);
       initializeSqliteSchema(
         database,
         (operation) => this.transaction(operation),

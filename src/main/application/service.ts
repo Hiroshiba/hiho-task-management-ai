@@ -3194,9 +3194,6 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<AsanaProposalApplicationResult> {
     const validated = asanaProposalApplicationInputSchema.parse(input);
-    if (this.legacyProposalExecutionRepository.getByProposal(validated.proposal_id) != null) {
-      throw new Error("旧適用ジャーナルがある変更案を新しいexecutionとして再実行できません。");
-    }
     const baselines = validated.baseline_external_data.map((item) => {
       const parsed = parseCustomExternalData(item.external.data);
       if (parsed.kind !== "valid") {

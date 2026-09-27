@@ -4,6 +4,7 @@ import { setTimeout } from "node:timers/promises";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
+import { migrateLegacyFormat } from "../application/proposal-apply";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
@@ -11,6 +12,7 @@ import {
   ApplicationUpdateAttemptStore,
   PersistenceRuntime,
   SqliteLegacyProposalExecutionRepository,
+  SqliteLegacyProposalHistoryRepository,
   SqliteProposalExecutionRepository,
   WindowStateStore,
 } from "../infrastructure/persistence";
@@ -95,6 +97,11 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         openedPersistence.openTextFile(filePath, "外部連携設定"),
     };
     const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
+    migrateLegacyFormat(
+      new SqliteLegacyProposalHistoryRepository(openedPersistence),
+      engineReporter,
+      openedPersistence.migrationBackupPath,
+    );
     const legacyRepository = new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter);
     const legacy = createLegacyRuntime({
       ...options.legacy,

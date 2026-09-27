@@ -87,6 +87,7 @@ export interface ProposalExecutionRepository<Result extends object> {
 export type LegacyProposalExecutionStep = {
   readonly step_id: string;
   readonly operation_id: string;
+  readonly operation_order?: number;
   readonly stage: string;
   readonly state: "succeeded" | "failed" | "confirmation_required";
   readonly started_at: string;
@@ -95,6 +96,8 @@ export type LegacyProposalExecutionStep = {
     | { readonly kind: "temporary"; readonly ref: string }
     | { readonly kind: "new_task"; readonly uuid: string };
   readonly final_result: "applied" | "not_applied" | "unknown" | "failed" | null;
+  readonly confirmation_state?: "not_required" | "required" | "confirmed";
+  readonly confirmed_result?: "applied" | "not_applied";
   readonly operation_kind?: string;
 };
 
@@ -115,7 +118,7 @@ export type LegacyProposalExecutionRead =
       readonly error_id: ErrorId;
     };
 
-/** 旧適用ジャーナルを変更せず復旧表示へ変換します。 */
+/** 旧行と非実行履歴を変更せず復旧表示へ変換します。 */
 export interface LegacyProposalExecutionRepository {
   getByProposal(proposalId: string): LegacyProposalExecutionRead | undefined;
   getIncomplete(): readonly LegacyProposalExecutionRead[];
