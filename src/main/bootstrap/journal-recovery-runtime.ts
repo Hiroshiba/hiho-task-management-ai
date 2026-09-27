@@ -1,7 +1,7 @@
 type RecoveryJournal = {
   readonly proposal_id: string;
   readonly operation_id: string;
-  readonly final_result?: string | undefined;
+  readonly final_result?: string | null | undefined;
 };
 
 type RecoveryResult = {

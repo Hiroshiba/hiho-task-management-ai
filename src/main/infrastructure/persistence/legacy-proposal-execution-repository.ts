@@ -212,12 +212,22 @@ function parseLegacyStep(value: unknown): LegacyProposalExecutionStep {
     : row.final_result === "failed" || row.final_result === "not_applied"
       ? "failed"
       : "confirmation_required";
+  let target: LegacyProposalExecutionStep["target"];
+  if (row.new_task_uuid != null) {
+    target = { kind: "new_task", uuid: row.new_task_uuid };
+  } else if (row.target_gid != null) {
+    target = { kind: "task", gid: row.target_gid };
+  } else {
+    target = { kind: "temporary", ref: requirePlanField(row.target_temporary_ref) };
+  }
   return {
     step_id: `legacy:${row.operation_id}`,
     operation_id: row.operation_id,
     stage: row.stage,
     state,
     started_at: row.started_at,
+    target,
+    final_result: row.final_result,
     ...(row.operation_kind == null ? {} : { operation_kind: row.operation_kind }),
   };
 }

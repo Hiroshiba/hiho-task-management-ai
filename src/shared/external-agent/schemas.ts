@@ -388,6 +388,35 @@ export const externalAgentProposalSchema = z
     }
   });
 
+const savedExecutionOperationBaseShape = {
+  group_id: identifierSchema,
+  operation_id: identifierSchema,
+  task_gid: gidSchema.optional(),
+};
+
+const savedExecutionOperationResultSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    ...savedExecutionOperationBaseShape,
+    outcome: z.literal("applied"),
+    reason_code: z.literal("applied"),
+  }).strict(),
+  z.object({
+    ...savedExecutionOperationBaseShape,
+    outcome: z.literal("already_applied"),
+    reason_code: z.literal("already_applied"),
+  }).strict(),
+  z.object({
+    ...savedExecutionOperationBaseShape,
+    outcome: z.literal("not_applied"),
+    reason_code: z.enum(["writer_conflict", "external_api_failed"]),
+  }).strict(),
+  z.object({
+    ...savedExecutionOperationBaseShape,
+    outcome: z.literal("unknown"),
+    reason_code: z.enum(["recovery_required", "local_resync_required"]),
+  }).strict(),
+]);
+
 /** 外部連携の提案一覧状態を検証するスキーマです。 */
 export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kind", [
   z
@@ -403,6 +432,11 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
         operation_id: identifierSchema,
         result: z.discriminatedUnion("kind", [
           z.object({ kind: z.literal("journal"), journal: applicationJournalReadableSchema }).strict(),
+          z.object({
+            kind: z.literal("execution"),
+            execution_id: identifierSchema,
+            operation: savedExecutionOperationResultSchema,
+          }).strict(),
           z.object({
             kind: z.literal("unknown"),
             reason_code: z.enum([
@@ -660,6 +694,13 @@ export const externalAgentProposalStatusResponseSchema = z
         });
       }
       response.result.results.forEach((entry, index) => {
+        if (entry.result.kind === "execution" && entry.result.operation.operation_id !== entry.operation_id) {
+          context.addIssue({
+            code: "custom",
+            path: ["result", "results", index, "result", "operation", "operation_id"],
+            message: "executionの操作IDが照会結果と一致しません。",
+          });
+        }
         if (entry.result.kind !== "journal") {
           return;
         }

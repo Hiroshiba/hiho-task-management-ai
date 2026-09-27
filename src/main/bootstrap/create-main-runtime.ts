@@ -1,22 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
-import type { TaskWriteExecutorRegistry } from "../application/common/ports/task-write-executor";
-import type { ProposalExecution, ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
-import { guiTaskWriteResultSchema, type GuiTaskWriteResult } from "../application/common/gui-task-write-result";
-import { TaskWriteSynchronizationError } from "../application/common/task-write-synchronization-error";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
-import {
-  buildTaskWriteExecutionResult,
-  ProposalExecutionEngine,
-  proposalTaskWriteResultSchema,
-  type ProposalTaskWriteResult,
-  taskWriteExecutionResultSchema,
-  type TaskWriteExecutionResult,
-} from "../application/task-write";
-import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
+import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
+import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
   ApplicationUpdateAttemptStore,
@@ -31,28 +20,7 @@ import {
   type LegacyRuntimeOptions,
   type LegacyRuntimePort,
 } from "./legacy-runtime-port";
-
-const USE_NEW_WRITE_EXECUTION_ENGINE: boolean = false;
-
-function proposalExecution(
-  execution: ProposalExecution<TaskWriteExecutionResult>,
-): ProposalExecution<ProposalTaskWriteResult> {
-  if (execution.plan.origin !== "proposal") throw new Error("proposal以外のexecutionを読み出しました。");
-  if (execution.state === "succeeded") {
-    return { ...execution, result: proposalTaskWriteResultSchema.parse(execution.result) };
-  }
-  return execution;
-}
-
-function guiExecution(
-  execution: ProposalExecution<TaskWriteExecutionResult>,
-): ProposalExecution<GuiTaskWriteResult> {
-  if (execution.plan.origin !== "gui-edit") throw new Error("GUI編集以外のexecutionを読み出しました。");
-  if (execution.state === "succeeded") {
-    return { ...execution, result: guiTaskWriteResultSchema.parse(execution.result) };
-  }
-  return execution;
-}
+import { createTaskWriteRuntime } from "./create-task-write-runtime";
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
@@ -126,91 +94,34 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       openExternalAgentConfigFile: (filePath: string) =>
         openedPersistence.openTextFile(filePath, "外部連携設定"),
     };
+    const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
+    const legacyRepository = new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter);
     const legacy = createLegacyRuntime({
       ...options.legacy,
       lifecycle_signal: controller.signal,
       now_provider: nowProvider,
       create_id: createId,
-    }, openedPersistence, files);
-    const bridge = legacy.getTaskWriteAsanaBridge();
-    const fingerprint = (canonicalPayload: string) =>
-      createHash("sha256").update(canonicalPayload).digest("hex");
-    const repository = new SqliteProposalExecutionRepository<TaskWriteExecutionResult>(
-      openedPersistence,
-      (value) => parseTaskWritePlan(value, fingerprint),
-      (value) => taskWriteReceiptSchema.parse(value),
-      taskWriteExecutionResultSchema,
-    );
-    const readBack = new AsanaTaskWriteReadBackAdapter(
-      bridge.readClient,
-      (error) => bridge.isNotFound(error),
-      (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
-    );
-    const executors = {
-      ...new AsanaTaskWriteCallAdapter(bridge.transport, bridge.readClient).getExecutors(),
-      local_synchronize: {
-        1: {
-          execute: async (step, context, signal) => {
-            const origin = context.plan.origin;
-            if (step.payload.condition !== (origin === "proposal" ? "verified_operation" : "writer_result_available")) {
-              throw new Error("後続同期の実行条件が保存済みplanと一致しません。");
-            }
-            const result = origin === "proposal"
-              ? await bridge.synchronizeAfterProposalWrite(
-                context.synchronization_task_gids,
-                context.execution_id,
-                signal,
-              )
-              : await bridge.synchronizeAfterGuiWrite(context.synchronization_task_gids, signal);
-            if (result.kind === "recovery_required") {
-              throw new TaskWriteSynchronizationError(result.error_code, result.cause);
-            }
-            return { kind: "synchronized", task_gids: context.synchronization_task_gids };
-          },
-        },
-      },
-    } satisfies TaskWriteExecutorRegistry;
-    const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
-    const engine = new ProposalExecutionEngine(
-      repository,
-      executors,
-      readBack,
-      buildTaskWriteExecutionResult,
-      { now: () => nowProvider().toISOString() },
-      engineReporter,
-    );
-    if (USE_NEW_WRITE_EXECUTION_ENGINE) {
-      const proposalRepository = {
-        save: (input) => repository.save(input),
-        getByProposal: (proposalId) => repository.getByProposal(proposalId).map(proposalExecution),
-        getIncomplete: () => repository.getIncomplete()
-          .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
-      } satisfies Pick<ProposalExecutionRepository<ProposalTaskWriteResult>, "save" | "getByProposal" | "getIncomplete">;
-      legacy.setProposalWriteExecution({
-        repository: proposalRepository,
-        legacyRepository: new SqliteLegacyProposalExecutionRepository(openedPersistence, engineReporter),
-        engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },
-        createId,
-        now: () => nowProvider().toISOString(),
-        fingerprint,
-      });
-      legacy.setGuiWriteExecution({
-        repository: {
-          save: (input) => repository.save(input),
-          getIncomplete: () => repository.getIncomplete()
-            .filter((execution) => execution.plan.origin === "gui-edit").map(guiExecution),
-        },
-        engine: { run: async (executionId, signal) => guiExecution(await engine.run(executionId, signal)) },
-        createId,
-        now: () => nowProvider().toISOString(),
-        fingerprint,
-      });
-    }
+    }, openedPersistence, files, legacyRepository);
+    const taskWrite = createTaskWriteRuntime({
+      bridge: legacy.getTaskWriteAsanaBridge(),
+      legacyRepository,
+      reporter: engineReporter,
+      createRepository: (fingerprint) => new SqliteProposalExecutionRepository<TaskWriteExecutionResult>(
+        openedPersistence,
+        (value) => parseTaskWritePlan(value, fingerprint),
+        (value) => taskWriteReceiptSchema.parse(value),
+        taskWriteExecutionResultSchema,
+      ),
+      createId,
+      now: nowProvider,
+      wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
+    });
+    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, gui: taskWrite.gui });
     let disposal: Promise<void> | undefined;
     return {
       legacy,
       reporter,
-      taskWriteExecution: { repository, engine },
+      taskWriteExecution: { repository: taskWrite.repository, engine: taskWrite.engine },
       signal: controller.signal,
       createWindowStateStore: () => new WindowStateStore(
         openedPersistence.openLateTextFile(

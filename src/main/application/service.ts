@@ -96,6 +96,7 @@ import {
   diagnosticFailureDispositionFromError,
 } from "./common/errors/diagnostic-failure";
 import type { TaskWriteAsanaBridge } from "./common/ports/asana-task-write";
+import type { LegacyProposalExecutionRepository } from "./common/ports/proposal-execution-repository";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -141,15 +142,14 @@ import {
   normalizeAsanaSnapshot,
   normalizeTaskGraph,
 } from "../domain";
-import {
-  createBaselineTaskSnapshots,
-} from "./proposal-generate";
+import { createBaselineTaskSnapshots } from "./proposal-generate";
 import {
   applyStoredProposal,
   approveStoredProposal,
   collectApprovalProjectTasks,
   createApplicationSummary,
   createApprovalPreparationInput,
+  getStoredProposalOperationStatus,
   recoverStoredProposals,
   assertApprovalInputMatchesStored,
   type StoredProposalExecutionPort,
@@ -199,6 +199,7 @@ import {
 import {
   ExternalAgentService,
   type ExternalAgentBaseline,
+  type ExternalAgentServiceOptions,
 } from "../external-agent";
 import {
   ExternalAgentBridge,
@@ -287,8 +288,10 @@ import {
   type IpcAsanaReauthenticationCompleteInput,
 } from "../../shared/ipc";
 import {
+  applicationJournalLegacyCompletedSchema,
   deviceSettingsSchema,
   vaultMappingSchema,
+  type ApplicationJournal,
   type DeviceSettings,
   type TaskCacheEntry,
 } from "../../shared/storage";
@@ -792,6 +795,63 @@ function externalDataIsValid(task: AsanaTaskResponse): boolean {
 
 class UnreachableError extends Error {}
 
+function assertNonNullable<T>(value: T | undefined, message: string): asserts value is T {
+  if (value == null) throw new Error(message);
+}
+
+function getLegacyProposalOperationStatus(
+  repository: LegacyProposalExecutionRepository,
+  proposalId: string,
+  operationId: string,
+):
+  | { readonly kind: "journal"; readonly journal: ApplicationJournal }
+  | { readonly kind: "unknown"; readonly reason_code: "journal_result_unknown"; readonly message: string }
+  | undefined {
+  const legacy = repository.getByProposal(proposalId);
+  if (legacy == null) return undefined;
+  if (legacy.kind === "rejected") {
+    return {
+      kind: "unknown",
+      reason_code: "journal_result_unknown",
+      message: `旧適用ジャーナルを確認できません。エラーID: ${legacy.error_id}`,
+    };
+  }
+  const step = legacy.execution.steps.find((item) => item.operation_id === operationId);
+  if (step == null) return undefined;
+  if (step.state === "confirmation_required") {
+    return {
+      kind: "unknown",
+      reason_code: "journal_result_unknown",
+      message: "旧適用ジャーナルの結果を確認してください。",
+    };
+  }
+  if (step.final_result == null || step.final_result === "unknown") {
+    throw new Error("旧適用ジャーナルの確定状態と保存結果が一致しません。");
+  }
+  const completedStages = new Set([
+    "started", "task_created", "attributes_applied", "relations_applied",
+    "read_back", "metadata_verified", "ranking_recalculated",
+  ]);
+  if (!completedStages.has(step.stage)) {
+    return {
+      kind: "unknown",
+      reason_code: "journal_result_unknown",
+      message: "旧適用ジャーナルの完了段階を確認できません。",
+    };
+  }
+  return {
+    kind: "journal",
+    journal: applicationJournalLegacyCompletedSchema.parse({
+      proposal_id: legacy.execution.proposal_id,
+      operation_id: step.operation_id,
+      target: step.target,
+      started_at: step.started_at,
+      stage: step.stage,
+      final_result: step.final_result,
+    }),
+  };
+}
+
 type ApplicationFileStores = {
   readonly secretStorage: PersistentTextFile;
   readonly checkpoint: PersistentTextFile;
@@ -894,14 +954,12 @@ export class TaskHubApplication {
     PostWriteSynchronizationResultWithCause,
     PostWriteSynchronizationFailureCode
   >;
-  private proposalWriteExecution:
-    | { readonly kind: "legacy" }
-    | { readonly kind: "stored_plan"; readonly port: StoredProposalExecutionPort } = { kind: "legacy" };
-  private guiWriteExecution:
-    | { readonly kind: "legacy" }
-    | { readonly kind: "stored_plan"; readonly port: GuiEditExecutionPort } = { kind: "legacy" };
+  private taskWriteExecution: {
+    readonly proposal: StoredProposalExecutionPort;
+    readonly gui: GuiEditExecutionPort;
+  } | undefined;
   private readonly journalRecovery: JournalRecoveryRuntime<
-    ReturnType<StorageDatabase["getIncompleteApplicationJournals"]>[number],
+    { readonly proposal_id: string; readonly operation_id: string; readonly final_result: null },
     AsanaProposalRecoveryResult
   >;
   private readonly configuredCodexRuntime: ConfiguredCodexRuntime;
@@ -915,6 +973,7 @@ export class TaskHubApplication {
     options: ApplicationOptions,
     persistence: PersistenceRuntime,
     files: ApplicationFileStores,
+    private readonly legacyProposalExecutionRepository: LegacyProposalExecutionRepository,
   ) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
@@ -1255,8 +1314,8 @@ export class TaskHubApplication {
         this.prepareApprovalInput(input, signal),
       apply_proposal: (input, signal) =>
         this.applyExternalProposal(input, signal),
-      get_journal: (proposalId, operationId) =>
-        this.database.getApplicationJournal(proposalId, operationId),
+      get_saved_operation_result: (proposalId, operationId) =>
+        this.getSavedProposalOperationStatus(proposalId, operationId),
       assert_apply_ready: () => this.assertMutationRequestAccepted(),
       open_review: async () => {
         await this.options.open_external_agent_review();
@@ -1375,28 +1434,17 @@ export class TaskHubApplication {
         signal,
         run: (context) => run(context.signal),
       }),
-      getIncompleteJournals: () => this.database.getIncompleteApplicationJournals(),
-      hasAdditionalIncomplete: () => this.proposalWriteExecution.kind === "stored_plan"
-        && this.proposalWriteExecution.port.repository.getIncomplete().length > 0
-        || this.guiWriteExecution.kind === "stored_plan"
-        && this.guiWriteExecution.port.repository.getIncomplete().length > 0,
+      getIncompleteJournals: () => this.getIncompleteLegacyJournals(),
+      hasAdditionalIncomplete: () => this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
+        || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
       recover: async (signal) => {
-        if (this.guiWriteExecution.kind === "stored_plan") {
-          await recoverGuiTaskWrites(this.guiWriteExecution.port, signal);
-        }
-        return this.proposalWriteExecution.kind === "stored_plan"
-          ? asanaProposalRecoveryResultSchema.parse(await recoverStoredProposals(this.proposalWriteExecution.port, signal))
-          : this.requireApplicationCoordinator().recover(
-            {
-              applications: [],
-              project_gids: [this.requireContext().project_gid],
-            },
-            signal,
-          );
+        const execution = this.requireTaskWriteExecution();
+        await recoverGuiTaskWrites(execution.gui, signal);
+        return asanaProposalRecoveryResultSchema.parse(await recoverStoredProposals(execution.proposal, signal));
       },
       afterRecovery: (result) => this.cleanupAggregation.replaceProposalConflictsFromRecovery(
         result,
-        this.proposalWriteExecution.kind === "stored_plan",
+        true,
       ),
     });
     this.synchronizationOperations = new SynchronizationOperations<
@@ -1408,20 +1456,15 @@ export class TaskHubApplication {
       throwIfAborted,
       hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
       hasPendingJournal: () => this.journalRecovery.hasPending(),
-      hasIncompleteJournal: () => this.database.getIncompleteApplicationJournals().length > 0
-        || (this.proposalWriteExecution.kind === "stored_plan"
-          && this.proposalWriteExecution.port.repository.getIncomplete().length > 0)
-        || (this.guiWriteExecution.kind === "stored_plan"
-          && this.guiWriteExecution.port.repository.getIncomplete().length > 0),
+      hasIncompleteJournal: () => this.getIncompleteLegacyJournals().length > 0
+        || this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
+        || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
       isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
       assertRecoveredSynchronizationReady: (executionId) => {
-        if (this.database.getIncompleteApplicationJournals().length > 0) {
+        if (this.getIncompleteLegacyJournals().length > 0) {
           throw new Error("未確定の旧AI適用ジャーナルがあるため後続同期を開始できません。");
         }
-        if (this.proposalWriteExecution.kind !== "stored_plan") {
-          throw new Error("保存済みplan実行入口がありません。");
-        }
-        if (this.proposalWriteExecution.port.repository.getIncomplete()
+        if (this.requireTaskWriteExecution().proposal.repository.getIncomplete()
           .some((execution) => execution.execution_id !== executionId)) {
           throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
         }
@@ -1817,20 +1860,15 @@ export class TaskHubApplication {
     };
   }
 
-  /** 通常適用の保存済みplan実行入口を一度だけ受け取ります。 */
-  public setProposalWriteExecution(port: StoredProposalExecutionPort): void {
-    if (this.proposalWriteExecution.kind !== "legacy") {
+  /** 通常適用とGUI編集の保存済みplan実行入口を一度だけ受け取ります。 */
+  public setTaskWriteExecution(ports: {
+    readonly proposal: StoredProposalExecutionPort;
+    readonly gui: GuiEditExecutionPort;
+  }): void {
+    if (this.taskWriteExecution != null) {
       throw new Error("保存済みplan実行入口を二重に設定できません。");
     }
-    this.proposalWriteExecution = { kind: "stored_plan", port };
-  }
-
-  /** GUI編集の保存済みplan実行入口を一度だけ受け取ります。 */
-  public setGuiWriteExecution(port: GuiEditExecutionPort): void {
-    if (this.guiWriteExecution.kind !== "legacy") {
-      throw new Error("GUI編集の保存済みplan実行入口を二重に設定できません。");
-    }
-    this.guiWriteExecution = { kind: "stored_plan", port };
+    this.taskWriteExecution = ports;
   }
 
   /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
@@ -2701,6 +2739,51 @@ export class TaskHubApplication {
     return Promise.resolve(result);
   }
 
+  private requireTaskWriteExecution(): NonNullable<TaskHubApplication["taskWriteExecution"]> {
+    const execution = this.taskWriteExecution;
+    assertNonNullable(execution, "保存済みplan実行入口がありません。");
+    return execution;
+  }
+
+  private getIncompleteLegacyJournals(): readonly {
+    readonly proposal_id: string;
+    readonly operation_id: string;
+    readonly final_result: null;
+  }[] {
+    return this.legacyProposalExecutionRepository.getIncomplete().flatMap((result) => {
+      if (result.kind === "rejected") {
+        const operationId = result.operation_id;
+        assertNonNullable(operationId, "旧適用ジャーナルの操作IDを読み取れません。");
+        return [{ proposal_id: result.proposal_id, operation_id: operationId, final_result: null }];
+      }
+      return result.execution.steps
+        .filter((step) => step.state === "confirmation_required")
+        .map((step) => ({
+          proposal_id: result.execution.proposal_id,
+          operation_id: step.operation_id,
+          final_result: null,
+        }));
+    });
+  }
+
+  private getSavedProposalOperationStatus(
+    proposalId: string,
+    operationId: string,
+  ): ReturnType<ExternalAgentServiceOptions["get_saved_operation_result"]> {
+    const legacy = getLegacyProposalOperationStatus(this.legacyProposalExecutionRepository, proposalId, operationId);
+    if (legacy != null) return legacy;
+    const stored = getStoredProposalOperationStatus(
+      this.requireTaskWriteExecution().proposal.repository,
+      proposalId,
+      operationId,
+    );
+    if (stored == null) return undefined;
+    return {
+      kind: "execution",
+      ...stored,
+    };
+  }
+
   private assertWritesAllowed(): void {
     this.assertOperationalReady();
     this.asanaReauthentication.assertIdle();
@@ -2713,7 +2796,7 @@ export class TaskHubApplication {
     }
     if (
       this.journalRecovery.hasPending()
-      || this.database.getIncompleteApplicationJournals().length > 0
+      || this.getIncompleteLegacyJournals().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで書き込みを開始できません。");
     }
@@ -2756,7 +2839,7 @@ export class TaskHubApplication {
     }
     if (
       this.journalRecovery.hasPending()
-      || this.database.getIncompleteApplicationJournals().length > 0
+      || this.getIncompleteLegacyJournals().length > 0
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで変更操作を受け付けられません。");
     }
@@ -2833,10 +2916,6 @@ export class TaskHubApplication {
     }
   }
 
-  private requireGuiEdit(): AsanaGuiEditService {
-    return this.operationalServices.requireGuiEdit();
-  }
-
   private createGuiPort(): IpcGuiEditPort {
     return {
       apply: async (input: IpcGuiRequest, signal): Promise<IpcGuiEditResult> => {
@@ -2880,13 +2959,11 @@ export class TaskHubApplication {
                 baseline_task: baselineTask,
                 operation: request.operation,
               };
-              return this.guiWriteExecution.kind === "stored_plan"
-                ? applyGuiTaskWrite(guiInput, this.guiWriteExecution.port, {
-                    isOnline: () => this.isOnline(),
-                    readTask: (taskGid, requestSignal) => this.interactiveReadClient.getTask(taskGid, requestSignal),
-                    validateRelation: (relation, requestSignal) => this.validateRelationGraph(relation, requestSignal),
-                  }, operationContext.signal)
-                : this.requireGuiEdit().apply(guiInput, operationContext.signal);
+              return applyGuiTaskWrite(guiInput, this.requireTaskWriteExecution().gui, {
+                isOnline: () => this.isOnline(),
+                readTask: (taskGid, requestSignal) => this.interactiveReadClient.getTask(taskGid, requestSignal),
+                validateRelation: (relation, requestSignal) => this.validateRelationGraph(relation, requestSignal),
+              }, operationContext.signal);
             },
           });
           return ipcGuiEditResultSchema.parse(result);
@@ -3100,14 +3177,12 @@ export class TaskHubApplication {
   ): Promise<AsanaProposalApplicationResult> {
     return this.synchronizationOperations.applyProposal(
       signal,
-      () => this.proposalWriteExecution.kind === "stored_plan"
-        ? this.applyStoredProposalApplication(
-          applicationCoordinator,
-          input,
-          this.proposalWriteExecution.port,
-          signal,
-        )
-        : applicationCoordinator.apply(input, signal),
+      () => this.applyStoredProposalApplication(
+        applicationCoordinator,
+        input,
+        this.requireTaskWriteExecution().proposal,
+        signal,
+      ),
       (result) => this.cleanupAggregation.replaceProposalConflictsFromApplication(result),
     );
   }
@@ -3119,7 +3194,7 @@ export class TaskHubApplication {
     signal: AbortSignal,
   ): Promise<AsanaProposalApplicationResult> {
     const validated = asanaProposalApplicationInputSchema.parse(input);
-    if (this.database.getApplicationJournalsByProposal(validated.proposal_id).length > 0) {
+    if (this.legacyProposalExecutionRepository.getByProposal(validated.proposal_id) != null) {
       throw new Error("旧適用ジャーナルがある変更案を新しいexecutionとして再実行できません。");
     }
     const baselines = validated.baseline_external_data.map((item) => {

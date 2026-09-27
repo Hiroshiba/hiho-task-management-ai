@@ -1,4 +1,4 @@
-import type { ProposalExecution } from "../common/ports/proposal-execution-repository";
+import type { ProposalExecution, ProposalExecutionRepository } from "../common/ports/proposal-execution-repository";
 import { buildApplicationResult } from "./application-result";
 import { createOperationResult } from "./operation-result";
 
@@ -31,6 +31,17 @@ export type SelectedProposal = {
 export type ApplicationOperationResult = ReturnType<typeof createOperationResult>;
 export type StoredProposalApplicationResult = ReturnType<typeof buildApplicationResult<ApplicationOperationResult>>;
 
+type StoredExecutionOperationResult = {
+  readonly group_id: string;
+  readonly operation_id: string;
+  readonly task_gid?: string;
+} & (
+  | { readonly outcome: "applied"; readonly reason_code: "applied" }
+  | { readonly outcome: "already_applied"; readonly reason_code: "already_applied" }
+  | { readonly outcome: "not_applied"; readonly reason_code: "writer_conflict" | "external_api_failed" }
+  | { readonly outcome: "unknown"; readonly reason_code: "recovery_required" | "local_resync_required" }
+);
+
 function receiptTaskGid(
   steps: ProposalExecution<StoredProposalWriteResult>["steps"],
 ): string | undefined {
@@ -48,13 +59,18 @@ export function operationResultFromExecution(
   execution: ProposalExecution<StoredProposalWriteResult>,
   groupId: string,
   operationId: string,
-): ApplicationOperationResult {
+): StoredExecutionOperationResult {
   if (execution.state === "succeeded") {
     const result = execution.result.operations.find((item) => item.operation_id === operationId);
     if (result == null || result.group_id !== groupId) {
       throw new Error("保存済み適用結果の操作が一致しません。");
     }
-    return result;
+    if (result.outcome !== result.reason_code) {
+      throw new Error("保存済み適用結果の操作結果と理由が一致しません。");
+    }
+    return result.outcome === "applied"
+      ? createOperationResult(groupId, operationId, "applied", "applied", result.task_gid)
+      : createOperationResult(groupId, operationId, "already_applied", "already_applied", result.task_gid);
   }
   const steps = execution.steps.filter((step) =>
     step.descriptor.scope.kind === "operation"
@@ -73,12 +89,12 @@ export function operationResultFromExecution(
   }
   if (steps.every((step) => step.state === "succeeded")) {
     if (taskGid == null) throw new Error("完了操作の対象GIDがありません。");
-    const outcome = check?.state === "succeeded"
+    const alreadyApplied = check?.state === "succeeded"
       && check.receipt.kind === "proposal_operation_check"
-      && check.receipt.outcome === "already_applied"
-      ? "already_applied"
-      : "applied";
-    return createOperationResult(groupId, operationId, outcome, outcome, taskGid);
+      && check.receipt.outcome === "already_applied";
+    return alreadyApplied
+      ? createOperationResult(groupId, operationId, "already_applied", "already_applied", taskGid)
+      : createOperationResult(groupId, operationId, "applied", "applied", taskGid);
   }
   const incomplete = steps.find((step) => step.state !== "succeeded");
   if (incomplete == null) throw new Error("未完了操作のstepがありません。");
@@ -92,6 +108,28 @@ export function operationResultFromExecution(
     return createOperationResult(groupId, operationId, "not_applied", "writer_conflict", taskGid);
   }
   return createOperationResult(groupId, operationId, "not_applied", "external_api_failed", taskGid);
+}
+
+/** 保存済みexecutionから指定操作の状態を読み出します。 */
+export function getStoredProposalOperationStatus(
+  repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal">,
+  proposalId: string,
+  operationId: string,
+): { readonly execution_id: string; readonly operation: StoredExecutionOperationResult } | undefined {
+  const executions = repository.getByProposal(proposalId);
+  if (executions.length > 1) {
+    throw new Error("同じ変更案の保存済みexecutionが複数あります。");
+  }
+  const execution = executions[0];
+  if (execution == null) return undefined;
+  const context = execution.proposal_context;
+  if (context == null) throw new Error("保存済みexecutionの変更案文脈がありません。");
+  const group = context.groups.find((item) => item.operation_ids.includes(operationId));
+  if (group == null) return undefined;
+  return {
+    execution_id: execution.execution_id,
+    operation: operationResultFromExecution(execution, group.group_id, operationId),
+  };
 }
 
 /** 承認結果と保存済みstepを既存の適用結果DTOへまとめます。 */

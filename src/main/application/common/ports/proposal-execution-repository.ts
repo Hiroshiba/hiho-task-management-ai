@@ -90,6 +90,11 @@ export type LegacyProposalExecutionStep = {
   readonly stage: string;
   readonly state: "succeeded" | "failed" | "confirmation_required";
   readonly started_at: string;
+  readonly target:
+    | { readonly kind: "task"; readonly gid: string }
+    | { readonly kind: "temporary"; readonly ref: string }
+    | { readonly kind: "new_task"; readonly uuid: string };
+  readonly final_result: "applied" | "not_applied" | "unknown" | "failed" | null;
   readonly operation_kind?: string;
 };
 

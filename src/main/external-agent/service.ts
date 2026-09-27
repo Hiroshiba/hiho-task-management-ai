@@ -74,6 +74,7 @@ import type {
   ExternalAgentGuiSetEnabledInput,
   ExternalAgentInfoResponse,
   ExternalAgentProposalStatus,
+  ExternalAgentProposalStatusResult,
   ExternalAgentRequestInput,
   ExternalAgentResponse,
   ExternalAgentTaskQueryResponse,
@@ -92,6 +93,7 @@ import type {
   ExternalAgentProposalStatusResponse,
   ExternalAgentReviewOpenResponse,
 } from "../../shared/external-agent";
+
 import {
   externalAgentCliInputSchema,
   externalAgentErrorResponseSchema,
@@ -175,6 +177,10 @@ import {
 const maximumRequests = 100;
 const externalAgentOperationKind: AsanaOperationKind = "external_apply";
 
+type SavedOperationStatusResult =
+  | { readonly kind: "journal"; readonly journal: ApplicationJournal }
+  | Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" }>;
+
 export type ExternalAgentBaseline = {
   readonly snapshot: AiWorkflowSnapshot;
   readonly baseline_snapshot: BaselineSnapshot;
@@ -207,10 +213,10 @@ export type ExternalAgentServiceOptions = {
     input: AsanaProposalApplicationInput,
     signal: AbortSignal,
   ) => AsanaProposalApplicationResult | PromiseLike<AsanaProposalApplicationResult>;
-  readonly get_journal: (
+  readonly get_saved_operation_result: (
     proposalId: string,
     operationId: string,
-  ) => ApplicationJournal | undefined;
+  ) => SavedOperationStatusResult | undefined;
   readonly assert_apply_ready: () => void;
   readonly open_review: (
     proposalId: string,
@@ -874,7 +880,7 @@ export class ExternalAgentService implements IpcExternalAgentPort {
     return externalAgentProposalStatus(proposalId, operationIds, {
       parseIdentifier: (value) => identifierSchema.parse(value),
       getProposal: (id) => this.proposals.get(id),
-      getJournal: (id, operationId) => this.options.get_journal(id, operationId),
+      getSavedResult: (id, operationId) => this.options.get_saved_operation_result(id, operationId),
       createConflictError: () => new ExternalAgentServiceError("conflict", "操作ID集合が提案と一致しません。"),
       parseCurrentResult: (value) => externalAgentProposalStatusResultSchema.parse(value),
       parseResponse: (value) => externalAgentProposalStatusResponseSchema.parse(value),

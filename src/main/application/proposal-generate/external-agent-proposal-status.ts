@@ -1,9 +1,9 @@
 import { externalAgentProposalStatusSummary } from "./external-agent-response";
 
-/** 外部提案の現行状態または適用ジャーナルを返します。 */
+/** 外部提案の現行状態または保存済み操作結果を返します。 */
 export function externalAgentProposalStatus<
   TRecord extends Parameters<typeof externalAgentProposalStatusSummary>[0],
-  TJournal,
+  TSavedResult,
   TResponse,
 >(
   proposalId: string,
@@ -11,7 +11,7 @@ export function externalAgentProposalStatus<
   ports: {
     readonly parseIdentifier: (value: string) => string;
     readonly getProposal: (proposalId: string) => TRecord | undefined;
-    readonly getJournal: (proposalId: string, operationId: string) => TJournal | undefined;
+    readonly getSavedResult: (proposalId: string, operationId: string) => TSavedResult | undefined;
     readonly createConflictError: () => Error;
     readonly parseCurrentResult: (value: unknown) => unknown;
     readonly parseResponse: (value: unknown) => TResponse;
@@ -38,11 +38,11 @@ export function externalAgentProposalStatus<
     });
   }
   const results = parsedOperationIds.map((operationId) => {
-    const journal = ports.getJournal(parsedProposalId, operationId);
-    if (journal != null) {
+    const savedResult = ports.getSavedResult(parsedProposalId, operationId);
+    if (savedResult != null) {
       return {
         operation_id: operationId,
-        result: { kind: "journal", journal },
+        result: savedResult,
       };
     }
     return {

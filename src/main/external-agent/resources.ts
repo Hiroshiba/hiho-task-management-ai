@@ -156,7 +156,7 @@ TaskHubへの要求は、同じランチャーを \`request\` で呼び出し、
 
 提出に成功したワークスペースは封印されます。以後の変更の選択、編集、承認、却下はTaskHubのGUIで行います。基本検証やグラフ検証が不適合の操作もレビューへ残し、利用者が適用可能なグループや非一括の操作を選べます。CLIからは承認できず、選択された操作だけがGUI承認後にAsanaへ反映されます。
 
-\`proposals.status\` の \`result.kind=current\` は、\`result.proposal\` に提案や文脈のID、改訂番号、出所、\`operation_ids\`、\`state\` を返します。\`state.kind=finished\` の \`state.result.application.operations\` で各操作の \`outcome\` を確認し、\`applied\` または \`already_applied\` の場合だけ反映済みと報告してください。\`result.kind=journals\` では各操作の \`journal.final_result\` が \`applied\` の場合だけ反映済みと扱います。\`unknown\` や記録がない操作を未適用と断定しないでください。
+\`proposals.status\` の \`result.kind=current\` は、\`result.proposal\` に提案や文脈のID、改訂番号、出所、\`operation_ids\`、\`state\` を返します。\`state.kind=finished\` の \`state.result.application.operations\` で各操作の \`outcome\` を確認し、\`applied\` または \`already_applied\` の場合だけ反映済みと報告してください。\`result.kind=journals\` では、各操作の \`result.kind=execution\` なら \`operation.outcome\` が \`applied\` または \`already_applied\`、\`result.kind=journal\` なら \`journal.final_result\` が \`applied\` の場合だけ反映済みと扱います。\`unknown\` や記録がない操作を未適用と断定しないでください。
 
 応答喪失時は、準備と提出には同じ \`request_id\`、編集には同じ \`edit_batch_id\` を使い、入力内容を変えずに再送します。同じ編集を二重適用せず、提出済みの要求は同じ提案IDと現在状態を返します。異なる内容へ同じIDを使わず、結果不明を理由に新しいIDで自動再提出しないでください。
 
