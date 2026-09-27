@@ -192,7 +192,10 @@ import {
   ExternalAgentService,
   type ExternalAgentBaseline,
 } from "../external-agent";
-import { ExternalAgentBridge } from "../external-agent/transport";
+import {
+  ExternalAgentBridge,
+  type ExternalAgentBridgeOptions,
+} from "../external-agent/transport";
 import {
   SetupCheckpointStore,
 } from "./checkpoint";
@@ -783,6 +786,7 @@ class UnreachableError extends Error {}
 type ApplicationFileStores = {
   readonly secretStorage: PersistentTextFile;
   readonly checkpoint: PersistentTextFile;
+  readonly openExternalAgentConfigFile: ExternalAgentBridgeOptions["openConfigFile"];
 };
 
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
@@ -1212,6 +1216,7 @@ export class TaskHubApplication {
     });
     const externalAgentBridge = new ExternalAgentBridge({
       userDataPath: this.codexWorkspace.userDataPath,
+      openConfigFile: files.openExternalAgentConfigFile,
       handleRequest: (input, signal) => {
         return externalAgent.handleRequest(input, signal);
       },

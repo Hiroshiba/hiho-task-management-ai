@@ -39,6 +39,7 @@ import {
   writeExternalAgentConfig,
   writeExternalAgentConnectionInfo,
   writeExternalAgentResources,
+  type ExternalAgentConfigFile,
   type ExternalAgentRegistration,
   type ExternalAgentResourcePaths,
 } from "./resources";
@@ -50,6 +51,7 @@ export type ExternalAgentRequestHandler = (
 
 export type ExternalAgentBridgeOptions = {
   readonly userDataPath: string;
+  readonly openConfigFile: (filePath: string) => ExternalAgentConfigFile;
   readonly handleRequest: ExternalAgentRequestHandler;
   readonly onError: (error: unknown) => void;
 };
@@ -208,11 +210,13 @@ function descriptorMatches(left: ExternalAgentDescriptor, right: ExternalAgentDe
 /** 外部Codex向けの独立したTaskHub IPCブリッジです。 */
 export class ExternalAgentBridge {
   private readonly userDataPath: string;
+  private readonly openConfigFile: ExternalAgentBridgeOptions["openConfigFile"];
   private readonly handleRequest: ExternalAgentRequestHandler;
   private readonly onError: (error: unknown) => void;
   private state: BridgeState = "created";
   private enabled = false;
   private paths: ExternalAgentResourcePaths | undefined;
+  private configFile: ExternalAgentConfigFile | undefined;
   private server: Server | undefined;
   private descriptor: ExternalAgentDescriptor | undefined;
   private unixEndpointDirectoryPath: string | undefined;
@@ -227,6 +231,7 @@ export class ExternalAgentBridge {
       throw new TypeError("外部連携のuserDataパスが必要です。");
     }
     this.userDataPath = options.userDataPath;
+    this.openConfigFile = options.openConfigFile;
     this.handleRequest = options.handleRequest;
     this.onError = options.onError;
   }
@@ -242,7 +247,9 @@ export class ExternalAgentBridge {
         const paths = writeExternalAgentResources(this.userDataPath, processExecPath);
         this.paths = paths;
         removeExternalAgentConnectionInfo(paths);
-        const config = readExternalAgentConfig(paths);
+        const configFile = this.openConfigFile(paths.configPath);
+        this.configFile = configFile;
+        const config = readExternalAgentConfig(configFile);
         this.enabled = config.enabled;
         if (this.enabled) {
           await this.startTransport(paths);
@@ -263,6 +270,7 @@ export class ExternalAgentBridge {
         throw new Error("外部連携ブリッジは利用可能な状態ではありません。");
       }
       const paths = this.requirePaths();
+      const configFile = this.requireConfigFile();
       if (enabled === this.enabled) {
         return;
       }
@@ -270,7 +278,7 @@ export class ExternalAgentBridge {
         this.enabled = true;
         try {
           await this.startTransport(paths);
-          writeExternalAgentConfig(paths, externalAgentConfigSchema.parse({ enabled: true }));
+          writeExternalAgentConfig(configFile, externalAgentConfigSchema.parse({ enabled: true }));
         } catch (error: unknown) {
           this.enabled = false;
           this.state = "failed";
@@ -290,7 +298,7 @@ export class ExternalAgentBridge {
       }
       try {
         await this.stopTransport(paths);
-        writeExternalAgentConfig(paths, externalAgentConfigSchema.parse({ enabled: false }));
+        writeExternalAgentConfig(configFile, externalAgentConfigSchema.parse({ enabled: false }));
         this.enabled = false;
       } catch (error: unknown) {
         this.state = "failed";
@@ -349,6 +357,13 @@ export class ExternalAgentBridge {
       throw new Error("外部連携資源が初期化されていません。");
     }
     return this.paths;
+  }
+
+  private requireConfigFile(): ExternalAgentConfigFile {
+    if (this.configFile == null) {
+      throw new Error("外部連携設定が初期化されていません。");
+    }
+    return this.configFile;
   }
 
   private notifyError(error: unknown): void {

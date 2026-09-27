@@ -55,6 +55,8 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const files = {
       secretStorage: openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
       checkpoint: openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
+      openExternalAgentConfigFile: (filePath: string) =>
+        openedPersistence.openTextFile(filePath, "外部連携設定"),
     };
     const legacy = createLegacyRuntime({
       ...options.legacy,

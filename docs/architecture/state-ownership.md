@@ -7,6 +7,7 @@
 | MainRuntimeと外部client | `create-main-runtime.ts`が返す`MainRuntime` | Electron app ready後 | app終了処理でdispose |
 | 起動、停止、ウィンドウ、online監視、自動更新 | `register-main-lifecycle.ts` | MainRuntime生成後 | `before-quit`でウィンドウ状態保存と停止を済ませ、更新適用後の`will-quit`で後段ファイルを閉じる。timer、listener、windowもapp終了時に破棄 |
 | DB接続、transaction、通常の永続ファイル | persistence adapterの`PersistenceRuntime` | MainRuntime生成時 | MainRuntime disposeで閉じる。SQLiteと各ファイルへ保存 |
+| 外部連携の有効化設定ファイル | persistence adapterの`PersistenceRuntime` | 外部連携資源の更新と旧接続情報の削除後、MainRuntimeの遅延factoryで開く | 設定変更時に原子的に保存し、MainRuntime disposeで閉じる |
 | ウィンドウ状態と更新試行の永続ファイル | persistence adapterの`PersistenceRuntime` | MainRuntimeの遅延factoryを通じて各機能の生成時に開く | ウィンドウの`close`と更新適用時の保存を終えた後、`will-quit`で一度だけ閉じる |
 | Asana認証と同期実行 | settingsとtask-read workflowの実行単位 | 要求受付と同期開始時 | 終了時に中断・listenerを解放。token、同期状態、cacheは既存保存形式へ保存 |
 | Vaultマッピング保存中lock | Obsidian integration workflow | 保存開始時 | 成功・失敗・中断後にfinallyで解放。マッピングはSQLiteへ保存 |

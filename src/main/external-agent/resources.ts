@@ -2,7 +2,6 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   ensureSecureUserDataDirectory,
-  readSecurePersistentTextFile,
   removeSecurePersistentFile,
   writeSecurePersistentTextFileAtomically,
 } from "../local-storage-path";
@@ -38,6 +37,11 @@ export type ExternalAgentResourcePaths = {
 export type ExternalAgentRegistration = {
   readonly symlinkCommand: string;
   readonly allowExecutionCommand: string;
+};
+
+export type ExternalAgentConfigFile = {
+  read(): string | undefined;
+  replaceAtomically(content: string, label: string): void;
 };
 
 function isWindowsAbsolutePath(value: string): boolean {
@@ -205,21 +209,20 @@ export function writeExternalAgentResources(
 }
 
 /** 外部連携設定を読み込み、初回だけ無効状態を保存します。 */
-export function readExternalAgentConfig(paths: ExternalAgentResourcePaths): ExternalAgentConfig {
-  const raw = readSecurePersistentTextFile(paths.configPath, "外部連携設定");
+export function readExternalAgentConfig(file: ExternalAgentConfigFile): ExternalAgentConfig {
+  const raw = file.read();
   if (raw == null) {
     const config = externalAgentConfigSchema.parse({ enabled: false });
-    writeExternalAgentConfig(paths, config);
+    writeExternalAgentConfig(file, config);
     return config;
   }
   return externalAgentConfigSchema.parse(JSON.parse(raw));
 }
 
 /** 外部連携設定を厳密なJSONとして置き換えます。 */
-export function writeExternalAgentConfig(paths: ExternalAgentResourcePaths, config: ExternalAgentConfig): void {
+export function writeExternalAgentConfig(file: ExternalAgentConfigFile, config: ExternalAgentConfig): void {
   const validatedConfig = externalAgentConfigSchema.parse(config);
-  writeManagedTextFile(
-    paths.configPath,
+  file.replaceAtomically(
     `${JSON.stringify(validatedConfig)}\n`,
     "外部連携設定",
   );
