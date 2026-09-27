@@ -1,7 +1,7 @@
 import { canonicalizeTaskWriteJson, customExternalDataSchema } from "../../domain/task-write-values";
 import type { TaskWriteExecutionContext } from "../../application/common/ports/task-write-executor";
 import type { TaskWriteReadBackPort } from "../../application/common/ports/task-write-read-back";
-import type { ReadBackAsanaTask } from "./task-write-asana-response";
+import type { ReadBackAsanaTag, ReadBackAsanaTask } from "./task-write-asana-response";
 
 type AsanaStep = Parameters<TaskWriteReadBackPort["inspectAsanaStep"]>[0];
 type OperationStep = Parameters<TaskWriteReadBackPort["inspectOperation"]>[0];
@@ -72,13 +72,56 @@ function statusState(
   return "conflict";
 }
 
-function categoryState(task: ReadBackAsanaTask, prefix: string, before: string, after: string): FieldState {
-  const category = task.tags.filter((tag) => tag.name.startsWith(prefix));
-  if (category.length === 1 && category[0]?.name === after) return "after";
-  if (category.length === 1 && category[0]?.name === before) return "before";
-  if (category.length === 2
-    && category.some((tag) => tag.name === before)
-    && category.some((tag) => tag.name === after)) return "partial";
+/** タスクに付いたカテゴリタグをGID重複の検証後に抽出します。 */
+export function categoryTags(task: ReadBackAsanaTask, prefix: string): readonly ReadBackAsanaTag[] {
+  const seen = new Set<string>();
+  for (const tag of task.tags) {
+    if (seen.has(tag.gid)) throw new Error("対象タスクのタグGIDが重複しています。");
+    seen.add(tag.gid);
+  }
+  return task.tags.filter((tag) => tag.name.startsWith(prefix));
+}
+
+/** ワークスペース内のタグ名を一意のタグへ解決します。 */
+export function resolveWorkspaceTag(name: string, tags: readonly ReadBackAsanaTag[]): ReadBackAsanaTag {
+  const matches = tags.filter((tag) => tag.name === name);
+  if (matches.length !== 1) throw new Error("対象タグ名をワークスペースタグへ一意に解決できません。");
+  const match = matches[0];
+  if (match == null) throw new Error("対象タグをワークスペースタグへ解決できません。");
+  return match;
+}
+
+/** ワークスペース内に旧タグがあれば一意に解決します。 */
+export function optionalWorkspaceTag(name: string, tags: readonly ReadBackAsanaTag[]): ReadBackAsanaTag | undefined {
+  const matches = tags.filter((tag) => tag.name === name);
+  if (matches.length > 1) throw new Error("対象タグ名をワークスペースタグへ一意に解決できません。");
+  return matches[0];
+}
+
+function categoryState(
+  task: ReadBackAsanaTask,
+  prefix: string,
+  beforeName: string,
+  afterName: string,
+  defaultBefore: boolean,
+  sameValue: boolean,
+  workspaceTags: readonly ReadBackAsanaTag[],
+): FieldState {
+  const category = categoryTags(task, prefix);
+  const before = optionalWorkspaceTag(beforeName, workspaceTags);
+  const after = resolveWorkspaceTag(afterName, workspaceTags);
+  const beforeIsDefault = defaultBefore && category.length === 0;
+  const beforeTagIsExact = before != null && category.length === 1
+    && category[0]?.gid === before.gid && category[0].name === before.name;
+  const beforeExact = beforeIsDefault || beforeTagIsExact;
+  const afterExact = category.length === 1
+    && category[0]?.gid === after.gid && category[0].name === after.name;
+  if (sameValue && beforeExact) return "after";
+  if (afterExact) return "after";
+  if (beforeExact) return "before";
+  if (before != null && category.length === 2
+    && category.some((tag) => tag.gid === before.gid && tag.name === before.name)
+    && category.some((tag) => tag.gid === after.gid && tag.name === after.name)) return "partial";
   return "conflict";
 }
 
@@ -89,6 +132,7 @@ export function classifyOperationCore(
   context: TaskWriteExecutionContext,
   projectGid: string,
   sectionGids: { readonly not_started: string; readonly in_progress: string; readonly completed: string; readonly withdrawn: string },
+  workspaceTags: readonly ReadBackAsanaTag[],
 ): FieldState {
   if (projectSection(task, projectGid) == null) return "conflict";
   switch (operation.operation) {
@@ -96,7 +140,8 @@ export function classifyOperationCore(
     case "update_notes": return compare(task.notes, operation.before, operation.after);
     case "set_status": return statusState(task, projectGid, sectionGids, operation.before, operation.after);
     case "set_importance": return categoryState(task, "TaskHub/重要度/",
-      `TaskHub/重要度/${operation.before}`, `TaskHub/重要度/${operation.after}`);
+      `TaskHub/重要度/${operation.before}`, `TaskHub/重要度/${operation.after}`,
+      operation.before === 3, operation.before === operation.after, workspaceTags);
     case "set_due": return compare(currentDue(task), operation.before, operation.after);
     case "clear_due": return compare(currentDue(task), operation.before, operation.after);
     case "set_duration":
@@ -106,7 +151,8 @@ export function classifyOperationCore(
     case "link_obsidian":
     case "unlink_obsidian": return "after";
     case "set_area": return categoryState(task, "TaskHub/領域/",
-      `TaskHub/領域/${operation.before}`, `TaskHub/領域/${operation.after}`);
+      `TaskHub/領域/${operation.before}`, `TaskHub/領域/${operation.after}`,
+      operation.before === "未分類", operation.before === operation.after, workspaceTags);
     case "set_parent": return compare(task.parent?.gid ?? null,
       parentGid(operation.before, context), parentGid(operation.after, context));
     case "complete": return statusState(task, projectGid, sectionGids, operation.before, "completed");

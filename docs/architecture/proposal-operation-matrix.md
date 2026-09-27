@@ -28,7 +28,7 @@
 
 `create_task`は送信前に発行したUUIDと一致する既存タスクを専用プロジェクトで調べます。作成要求の`external.gid`と初期データは同じ`C`の入力です。応答の新GIDを後続属性更新より先にジャーナルへ保存し、GETの404、external、project所属、目的セクションの投影遅延だけを上限付きGETで再観測します。読み戻しで目的外の値が見えた場合は上書きせず競合とします。タグと親の各call後にもGETを挟み、最後に全属性とexternal dataを再検証します。根拠は`create-task-write.ts`の119〜129行、130〜200行、215〜310行、328〜446行です。
 
-非作成では初期読込でcoreとexternal dataを独立に変更前、変更後、許可する部分適用、競合へ分類します。coreの後にexternal dataを再読込し、承認時基準からマージして必要な場合だけ`E`を送信します。書き込み後には両方を読戻します。根拠は`non-create-write.ts`の102〜180行、211〜289行、292〜457行です。タグの許可する部分適用は新旧2タグの併存だけ、状態の許可する部分適用は目的セクションだけ変更済みで完了フラグが旧値の状態だけです。
+非作成では初期読込でcoreとexternal dataを独立に変更前、変更後、許可する部分適用、競合へ分類します。coreの後にexternal dataを再読込し、承認時基準からマージして必要な場合だけ`E`を送信します。書き込み後には両方を読戻します。根拠は`non-create-write.ts`の102〜180行、211〜289行、292〜457行です。重要度`3`と領域`未分類`は旧タグが付いていなくても変更前として扱い、旧タグがないまま新タグだけが付いた削除stepは適用済みとして扱います。カテゴリタグ名はワークスペース内で一意に解決し、タスク上のタグはGIDと名前で照合します。タグの許可する部分適用は新旧2タグの併存だけ、状態の許可する部分適用は目的セクションだけ変更済みで完了フラグが旧値の状態だけです。
 
 通常適用では`applied`と`already_applied`を確認した操作のGIDを重複排除し、操作群の最後に`postApply`を一回実行します。`L`は操作ごとのAsana callではなく実行全体の最終stepです。GUI直接編集ではwriter結果が得られた後、競合結果を含めて`postApply`を呼びます。共通planの`local_synchronize.condition`はproposalでは`verified_operation`、GUIでは`writer_result_available`を使います。executorは実行元に応じて異なる事後同期入口を呼び、成功時に同期したGIDをreceiptへ保存します。同期失敗時は先に成功したAsana receiptを残して`confirmation_required`へ進めます。根拠は`journal-progress.ts`の72〜105行、`post-apply-completion.ts`の62〜83行、`gui-edit/service.ts`の875〜899行です。
 

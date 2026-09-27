@@ -15,12 +15,15 @@ import {
   type ReadBackAsanaTask,
 } from "./task-write-asana-response";
 import {
+  categoryTags,
   classifyExternalChanges,
   classifyOperationCore,
   combineOperationStates,
   initialExternalData,
   observedTaskState,
+  optionalWorkspaceTag,
   readExternalData,
+  resolveWorkspaceTag,
   type FieldState,
 } from "./task-write-reconciliation";
 
@@ -125,11 +128,6 @@ function compare(current: unknown, before: unknown, after: unknown): FieldState 
   return "conflict";
 }
 
-function tagGid(tags: readonly ReadBackAsanaTag[], name: string): string | undefined {
-  const matching = tags.filter((tag) => tag.name === name);
-  return matching.length === 1 ? matching[0]?.gid : undefined;
-}
-
 function classifyStep(
   step: Exclude<AsanaStep, { readonly kind: "asana_create_task" }>,
   task: ReadBackAsanaTask,
@@ -144,34 +142,27 @@ function classifyStep(
         step.payload.before_section_gid, step.payload.after_section_gid);
     }
     case "asana_add_tag": {
-      const desired = tagGid(workspaceTags, step.payload.tag.tag_name);
-      if (desired == null) return "conflict";
+      const desired = resolveWorkspaceTag(step.payload.tag.tag_name, workspaceTags);
       const before = step.payload.expected_before;
       const categoryPrefix = step.payload.tag.category === "importance" ? "TaskHub/重要度/" : "TaskHub/領域/";
-      const categoryTags = task.tags.filter((tag) => tag.name.startsWith(categoryPrefix));
-      const otherTags = categoryTags.filter((tag) => tag.gid !== desired);
-      if (categoryTags.some((tag) => tag.gid === desired && tag.name === step.payload.tag.tag_name)) {
-        return otherTags.length === 0
-          || before.kind !== "absent" && otherTags.length === 1 && otherTags[0]?.name === before.tag_name
-          ? "after"
-          : "conflict";
-      }
-      if (before.kind === "absent") return categoryTags.length === 0 ? "before" : "conflict";
-      if (before.kind === "named_or_absent" && categoryTags.length === 0) return "before";
-      return categoryTags.length === 1 && categoryTags[0]?.name === before.tag_name
-        ? "before"
-        : "conflict";
+      const current = categoryTags(task, categoryPrefix);
+      const old = before.kind === "absent" ? undefined : optionalWorkspaceTag(before.tag_name, workspaceTags);
+      const hasDesired = current.some((tag) => tag.gid === desired.gid && tag.name === desired.name);
+      const hasOld = old != null && current.some((tag) => tag.gid === old.gid && tag.name === old.name);
+      if ((current.length === 1 && hasDesired) || (current.length === 2 && hasDesired && hasOld)) return "after";
+      if ((current.length === 0 && before.kind !== "named") || (current.length === 1 && hasOld)) return "before";
+      return "conflict";
     }
     case "asana_remove_tag": {
-      const old = tagGid(workspaceTags, step.payload.tag.tag_name);
-      const replacement = tagGid(workspaceTags, step.payload.replacement.tag_name);
-      if (old == null || replacement == null || !task.tags.some((tag) => tag.gid === replacement)) return "conflict";
+      const old = optionalWorkspaceTag(step.payload.tag.tag_name, workspaceTags);
+      const replacement = resolveWorkspaceTag(step.payload.replacement.tag_name, workspaceTags);
       const prefix = step.payload.tag.category === "importance" ? "TaskHub/重要度/" : "TaskHub/領域/";
-      const categoryTags = task.tags.filter((tag) => tag.name.startsWith(prefix));
-      if (categoryTags.length === 1 && categoryTags[0]?.gid === replacement) return "after";
-      return categoryTags.length === 2
-        && categoryTags.some((tag) => tag.gid === old)
-        && categoryTags.some((tag) => tag.gid === replacement)
+      const current = categoryTags(task, prefix);
+      if (current.length === 1
+        && current[0]?.gid === replacement.gid && current[0].name === replacement.name) return "after";
+      return old != null && current.length === 2
+        && current.some((tag) => tag.gid === old.gid && tag.name === old.name)
+        && current.some((tag) => tag.gid === replacement.gid && tag.name === replacement.name)
         ? "before"
         : "conflict";
     }
@@ -227,8 +218,11 @@ export class AsanaTaskWriteReadBackAdapter implements TaskWriteReadBackPort {
     const gid = resolveTarget(operation.target, context);
     const task = parseReadBackAsanaTask(await this.readClient.getTask(gid, signal));
     if (task.gid !== gid || projectSection(task, step.payload.project_gid) == null) return { state: "conflict" };
+    const workspaceTags = operation.operation === "set_importance" || operation.operation === "set_area"
+      ? parseReadBackAsanaTags(await this.readClient.listWorkspaceTags(step.payload.workspace_gid, signal))
+      : [];
     const core = classifyOperationCore(operation, task, context,
-      step.payload.project_gid, step.payload.section_gids);
+      step.payload.project_gid, step.payload.section_gids, workspaceTags);
     let external: FieldState = "after";
     if (step.payload.external_baseline != null) {
       const externalStep = context.plan.steps.find((candidate) =>
