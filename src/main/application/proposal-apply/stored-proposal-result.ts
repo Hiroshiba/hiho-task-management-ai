@@ -1,4 +1,8 @@
 import type { ProposalExecution, ProposalExecutionRepository } from "../common/ports/proposal-execution-repository";
+import type {
+  ProposalExecutionContext,
+  ProposalPreflightOperationResult,
+} from "../common/ports/proposal-execution-context";
 import { buildApplicationResult } from "./application-result";
 import { createOperationResult } from "./operation-result";
 import { latestProposalExecution } from "./latest-proposal-execution";
@@ -45,6 +49,27 @@ type StoredExecutionOperationResult = {
   | { readonly outcome: "unknown"; readonly reason_code: "recovery_required" | "local_resync_required" }
 );
 
+function requireProposalContext(
+  execution: ProposalExecution<StoredProposalWriteResult>,
+): { readonly proposalId: string; readonly context: ProposalExecutionContext } {
+  const proposalId = execution.proposal_id;
+  const context = execution.proposal_context;
+  if (execution.plan.origin !== "proposal" || proposalId == null || context == null) {
+    throw new Error("保存済みexecutionの変更案文脈がありません。");
+  }
+  return { proposalId, context };
+}
+
+function contextProposal(context: ProposalExecutionContext): Parameters<typeof buildApplicationResult>[1] {
+  return {
+    groups: context.groups.map((group) => ({
+      group_id: group.group_id,
+      atomic: group.atomic,
+      operations: group.operation_ids.map((operationId) => ({ operation_id: operationId })),
+    })),
+  };
+}
+
 function receiptTaskGid(
   steps: ProposalExecution<StoredProposalWriteResult>["steps"],
 ): string | undefined {
@@ -57,8 +82,7 @@ function receiptTaskGid(
   return undefined;
 }
 
-/** 保存済みstepの結果を既存の操作結果へ投影します。 */
-export function operationResultFromExecution(
+function operationResultFromExecution(
   execution: ProposalExecution<StoredProposalWriteResult>,
   groupId: string,
   operationId: string,
@@ -118,45 +142,112 @@ export function getStoredProposalOperationStatus(
   repository: Pick<ProposalExecutionRepository<StoredProposalWriteResult>, "getByProposal">,
   proposalId: string,
   operationId: string,
-): { readonly execution_id: string; readonly operation: StoredExecutionOperationResult } | undefined {
+): { readonly execution_id: string; readonly operation: StoredExecutionOperationResult | ProposalPreflightOperationResult } | undefined {
   const executions = repository.getByProposal(proposalId);
   const execution = latestProposalExecution(executions);
   if (execution == null) return undefined;
-  const context = execution.proposal_context;
-  if (context == null) throw new Error("保存済みexecutionの変更案文脈がありません。");
+  const { context } = requireProposalContext(execution);
   const group = context.groups.find((item) => item.operation_ids.includes(operationId));
   if (group == null) return undefined;
+  const preflight = context.preflight_results.find((item) => item.operation_id === operationId);
   return {
     execution_id: execution.execution_id,
-    operation: operationResultFromExecution(execution, group.group_id, operationId),
+    operation: preflight ?? operationResultFromExecution(execution, group.group_id, operationId),
   };
 }
 
-/** 承認結果と保存済みstepを既存の適用結果DTOへまとめます。 */
-export function projectStoredProposalResult(
+/** 実行対象がない承認結果を既存の適用結果へまとめます。 */
+export function projectPreflightProposalResult(
   proposalId: string,
   proposal: SelectedProposal,
   selectedOperationIds: ReadonlySet<string>,
   preflightResults: ReadonlyMap<string, ApplicationOperationResult>,
-  execution: ProposalExecution<StoredProposalWriteResult> | undefined,
 ): StoredProposalApplicationResult {
-  const results = new Map(preflightResults);
-  if (execution != null) {
-    const context = execution.proposal_context;
-    if (context == null || execution.proposal_id !== proposalId) {
-      throw new Error("保存済みexecutionの変更案文脈が一致しません。");
-    }
-    for (const group of context.groups) {
-      for (const operationId of group.operation_ids) {
-        if (results.has(operationId)) {
-          throw new Error("保存済み操作と承認競合結果が重複しています。");
-        }
-        results.set(operationId, operationResultFromExecution(execution, group.group_id, operationId));
-      }
+  return buildApplicationResult(proposalId, proposal, selectedOperationIds, preflightResults);
+}
+
+/** 保存済み選択とstep結果から適用結果を再構成します。 */
+export function projectStoredProposalResult(
+  execution: ProposalExecution<StoredProposalWriteResult>,
+): ReturnType<typeof buildApplicationResult<ApplicationOperationResult>> {
+  const { proposalId, context } = requireProposalContext(execution);
+  const preflight = new Map(context.preflight_results.map((result) => [result.operation_id, result]));
+  const results = new Map<string, ApplicationOperationResult>();
+  for (const group of context.groups) {
+    for (const operationId of group.operation_ids) {
+      results.set(operationId, preflight.get(operationId)
+        ?? operationResultFromExecution(execution, group.group_id, operationId));
     }
   }
-  return {
-    ...buildApplicationResult(proposalId, proposal, selectedOperationIds, results),
-    ...(execution == null ? {} : { execution_id: execution.execution_id }),
-  };
+  return buildApplicationResult(proposalId, contextProposal(context), new Set(results.keys()), results);
+}
+
+function projectPendingProposalResults(
+  execution: ProposalExecution<StoredProposalWriteResult>,
+): {
+  readonly operation_results: readonly (ProposalPreflightOperationResult | {
+    readonly group_id: string;
+    readonly operation_id: string;
+    readonly outcome: "pending";
+  })[];
+  readonly group_results: readonly ({
+    readonly group_id: string;
+    readonly atomic: boolean;
+    readonly operation_ids: readonly string[];
+    readonly outcome: "pending";
+  } | ReturnType<typeof buildApplicationResult<ProposalPreflightOperationResult>>["groups"][number])[];
+} {
+  const { proposalId, context } = requireProposalContext(execution);
+  const preflight = new Map(context.preflight_results.map((result) => [result.operation_id, result]));
+  const operationResults: (ProposalPreflightOperationResult | {
+    readonly group_id: string;
+    readonly operation_id: string;
+    readonly outcome: "pending";
+  })[] = context.groups.flatMap((group) => group.operation_ids.map((operationId) => {
+    const result = preflight.get(operationId);
+    return result ?? { group_id: group.group_id, operation_id: operationId, outcome: "pending" };
+  }));
+  const groupResults: ({
+    readonly group_id: string;
+    readonly atomic: boolean;
+    readonly operation_ids: readonly string[];
+    readonly outcome: "pending";
+  } | ReturnType<typeof buildApplicationResult<ProposalPreflightOperationResult>>["groups"][number])[] = context.groups.map((group) => {
+    if (group.operation_ids.some((operationId) => !preflight.has(operationId))) {
+      return { ...group, outcome: "pending" };
+    }
+    const result = buildApplicationResult(proposalId, {
+      groups: [{
+        group_id: group.group_id,
+        atomic: group.atomic,
+        operations: group.operation_ids.map((operationId) => ({ operation_id: operationId })),
+      }],
+    }, new Set(group.operation_ids), preflight).groups[0];
+    if (result == null) throw new Error("保存済み事前判定のグループ結果がありません。");
+    return result;
+  });
+  return { operation_results: operationResults, group_results: groupResults };
+}
+
+/** 保存済みexecutionの状態に応じた操作とグループ結果を投影します。 */
+export function projectProposalExecutionResults(
+  execution: ProposalExecution<StoredProposalWriteResult>,
+): {
+  readonly operation_results: readonly (ApplicationOperationResult | {
+    readonly group_id: string;
+    readonly operation_id: string;
+    readonly outcome: "pending";
+  })[];
+  readonly group_results: readonly ({
+    readonly group_id: string;
+    readonly atomic: boolean;
+    readonly operation_ids: readonly string[];
+    readonly outcome: "pending" | "applied" | "already_applied" | "not_applied" | "partially_applied" | "unknown";
+  })[];
+} {
+  if (execution.state === "planned" || execution.state === "running") {
+    return projectPendingProposalResults(execution);
+  }
+  const projected = projectStoredProposalResult(execution);
+  return { operation_results: projected.operations, group_results: projected.groups };
 }

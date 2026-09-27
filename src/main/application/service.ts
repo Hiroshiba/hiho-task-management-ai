@@ -140,6 +140,7 @@ import {
 import { validateSelectedProposalGraph } from "../domain/proposal-analysis/graph";
 import { createBaselineTaskSnapshots } from "./proposal-generate";
 import {
+  applyExistingStoredProposal,
   applyStoredProposal,
   approveStoredProposal,
   collectApprovalProjectTasks,
@@ -3328,6 +3329,16 @@ export class TaskHubApplication {
           stored,
           selection: z.infer<typeof aiWorkflowApprovalRequestSchema>["selection"],
         ) => resolveSelectedOperationIds(stored, selection),
+        loadSavedApplication: async (stored, selected, currentSignal) => {
+          const existing = await applyExistingStoredProposal(
+            stored.proposal_id,
+            stored.proposal,
+            selected,
+            this.requireTaskWriteExecution().proposal,
+            currentSignal,
+          );
+          return existing == null ? undefined : asanaProposalApplicationResultSchema.parse(existing);
+        },
         assertGraphSafe: assertSelectedProposalGraphIsSafe,
         isOnline: () => this.isOnline(),
         OfflineError: AiWorkflowOfflineError,

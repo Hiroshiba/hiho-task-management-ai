@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { buildApplicationResult, operationResultFromExecution, type StoredProposalExecution } from "../../application/proposal-apply";
+import {
+  projectProposalExecutionResults,
+  type StoredProposalExecution,
+} from "../../application/proposal-apply";
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
 import { identifierSchema } from "../../../shared/ipc-contracts/common";
@@ -166,25 +169,10 @@ export function toProposalViewDto(source: unknown, revision: number | undefined)
 /** 保存済み変更案executionを表示DTOへ変換します。 */
 export function toProposalExecutionDto(execution: StoredProposalExecution): ExecutionDto {
   const proposalId = execution.proposal_id;
-  const context = execution.proposal_context;
-  if (execution.plan.origin !== "proposal" || proposalId == null || context == null) {
+  if (execution.plan.origin !== "proposal" || proposalId == null) {
     throw new Error("変更案executionの保存文脈がありません。");
   }
-  const operationIds = context.groups.flatMap((group) => group.operation_ids);
-  const pending = execution.state === "planned" || execution.state === "running";
-  const projected = pending ? undefined : buildApplicationResult(
-    proposalId,
-    { groups: context.groups.map((group) => ({
-      group_id: group.group_id,
-      atomic: group.atomic,
-      operations: group.operation_ids.map((operationId) => ({ operation_id: operationId })),
-    })) },
-    new Set(operationIds),
-    new Map(context.groups.flatMap((group) => group.operation_ids.map((operationId) => ([
-      operationId,
-      operationResultFromExecution(execution, group.group_id, operationId),
-    ] satisfies readonly [string, ReturnType<typeof operationResultFromExecution>])))),
-  );
+  const projected = projectProposalExecutionResults(execution);
   return executionDtoSchema.parse({
     origin: "proposal",
     execution_id: execution.execution_id,
@@ -194,14 +182,8 @@ export function toProposalExecutionDto(execution: StoredProposalExecution): Exec
     ...(execution.error_id == null ? {} : { error_id: execution.error_id }),
     created_at: execution.created_at,
     updated_at: execution.updated_at,
-    operation_results: pending
-      ? context.groups.flatMap((group) => group.operation_ids.map((operationId) => ({
-        operation_id: operationId, group_id: group.group_id, outcome: "pending",
-      })))
-      : projected?.operations,
-    group_results: pending
-      ? context.groups.map((group) => ({ ...group, outcome: "pending" }))
-      : projected?.groups,
+    operation_results: projected.operation_results,
+    group_results: projected.group_results,
   });
 }
 

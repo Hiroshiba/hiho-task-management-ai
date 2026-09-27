@@ -15,6 +15,8 @@ export async function approveStoredProposal<
     readonly throwIfAborted: (signal: AbortSignal) => void;
     readonly getStoredProposal: (proposalId: string) => TStored;
     readonly resolveSelection: (stored: TStored, selection: TRequest["selection"]) => TSelection;
+    readonly loadSavedApplication: (stored: TStored, selected: TSelection, signal: AbortSignal) =>
+      TApplication | undefined | PromiseLike<TApplication | undefined>;
     readonly assertGraphSafe: (stored: TStored, selected: TSelection) => void;
     readonly isOnline: () => boolean;
     readonly OfflineError: new () => Error;
@@ -33,21 +35,27 @@ export async function approveStoredProposal<
   dependencies.throwIfAborted(signal);
   const stored = dependencies.getStoredProposal(request.proposal_id);
   const selected = dependencies.resolveSelection(stored, request.selection);
-  dependencies.assertGraphSafe(stored, selected);
-  if (dependencies.isOnline() !== true) {
-    throw new dependencies.OfflineError();
+  const savedApplication = await dependencies.loadSavedApplication(stored, selected, signal);
+  let application: TApplication;
+  if (savedApplication != null) {
+    application = dependencies.parseApplication(savedApplication);
+  } else {
+    dependencies.assertGraphSafe(stored, selected);
+    if (dependencies.isOnline() !== true) {
+      throw new dependencies.OfflineError();
+    }
+    const approvalInput = await dependencies.prepareApprovalInput(
+      dependencies.createPreparationInput(stored, selected), signal,
+    );
+    const validatedInput = dependencies.parseApprovalInput(approvalInput);
+    dependencies.assertApprovalInputMatchesStored(validatedInput, stored, selected);
+    if (dependencies.isOnline() !== true) {
+      throw new dependencies.OfflineError();
+    }
+    application = dependencies.parseApplication(
+      await dependencies.apply(validatedInput, signal),
+    );
   }
-  const approvalInput = await dependencies.prepareApprovalInput(
-    dependencies.createPreparationInput(stored, selected), signal,
-  );
-  const validatedInput = dependencies.parseApprovalInput(approvalInput);
-  dependencies.assertApprovalInputMatchesStored(validatedInput, stored, selected);
-  if (dependencies.isOnline() !== true) {
-    throw new dependencies.OfflineError();
-  }
-  const application = dependencies.parseApplication(
-    await dependencies.apply(validatedInput, signal),
-  );
   if (application.proposal_id !== stored.proposal_id) {
     throw new dependencies.WorkflowError("適用結果の変更案IDが一致しません。");
   }

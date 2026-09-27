@@ -59,11 +59,13 @@ export function buildProposalExecutionResult(
   if (execution.steps.some((step) => step.state !== "succeeded")) {
     throw new Error("未完了stepからproposal適用結果を作成できません。");
   }
+  const preflightIds = new Set(context.preflight_results.map((result) => result.operation_id));
   const operations: OperationResult[] = [];
   const groups: GroupResult[] = [];
   for (const group of context.groups) {
     const groupOperations: OperationResult[] = [];
-    for (const operationId of group.operation_ids) {
+    const operationIds = group.operation_ids.filter((operationId) => !preflightIds.has(operationId));
+    for (const operationId of operationIds) {
       const operationSteps = execution.steps.filter((step) =>
         step.descriptor.scope.kind === "operation"
         && step.descriptor.scope.operation_id === operationId);
@@ -93,11 +95,12 @@ export function buildProposalExecutionResult(
         reason_code: outcome,
       });
     }
+    if (groupOperations.length === 0) continue;
     operations.push(...groupOperations);
     groups.push({
       group_id: group.group_id,
       atomic: group.atomic,
-      operation_ids: group.operation_ids,
+      operation_ids: operationIds,
       outcome: groupOperations.some((operation) => operation.outcome === "applied")
         ? "applied"
         : "already_applied",

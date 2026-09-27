@@ -407,7 +407,7 @@ const savedExecutionOperationResultSchema = z.discriminatedUnion("outcome", [
   z.object({
     ...savedExecutionOperationBaseShape,
     outcome: z.literal("not_applied"),
-    reason_code: z.enum(["writer_conflict", "external_api_failed"]),
+    reason_code: z.enum(["approval_conflict", "atomic_group_blocked", "writer_conflict", "external_api_failed"]),
   }).strict(),
   z.object({
     ...savedExecutionOperationBaseShape,

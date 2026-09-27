@@ -2,6 +2,7 @@ import type {
   ProposalExecution,
   ProposalExecutionRepository,
 } from "../common/ports/proposal-execution-repository";
+import { parseProposalExecutionContext } from "../common/ports/proposal-execution-context";
 import type { ProposalApplicationHistoryRepository } from "../common/ports/proposal-application-history";
 import type { TaskWritePlan, TaskWritePayloadFingerprint } from "../common/task-write-plan";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
@@ -12,6 +13,7 @@ import { createTaskTemporaryReferences } from "./recovery-references";
 import { createOperationResult } from "./operation-result";
 import { latestProposalExecution } from "./latest-proposal-execution";
 import {
+  projectPreflightProposalResult,
   projectStoredProposalResult,
   type ApplicationOperationResult,
   type SelectedProposal,
@@ -117,6 +119,59 @@ function existingExecution(
   return latestProposalExecution(port.repository.getByProposal(proposalId));
 }
 
+function selectedGroups(
+  proposal: SelectedProposal,
+  selected: ReadonlySet<string>,
+): NonNullable<ProposalExecution<StoredProposalWriteResult>["proposal_context"]>["groups"] {
+  for (const group of proposal.groups) {
+    if (!group.atomic) continue;
+    const selectedCount = group.operations.filter((item) => selected.has(item.operation_id)).length;
+    if (selectedCount > 0 && selectedCount !== group.operations.length) {
+      throw new Error(`atomicグループ ${group.group_id} の操作を部分選択できません。`);
+    }
+  }
+  return proposal.groups.flatMap((group) => {
+    const operationIds = group.operations.filter((item) => selected.has(item.operation_id))
+      .map((item) => item.operation_id);
+    return operationIds.length === 0 ? [] : [{
+      group_id: group.group_id,
+      atomic: group.atomic,
+      operation_ids: operationIds,
+    }];
+  });
+}
+
+/** 保存済みexecutionを選択内容と照合して返します。 */
+export async function applyExistingStoredProposal(
+  proposalId: string,
+  proposal: SelectedProposal,
+  selectedOperationIds: readonly string[],
+  port: StoredProposalExecutionPort,
+  signal: AbortSignal,
+): Promise<StoredProposalApplicationResult | undefined> {
+  signal.throwIfAborted();
+  const saved = existingExecution(proposalId, port);
+  if (saved == null) return undefined;
+  if (port.historyRepository.getByProposal(proposalId) != null) {
+    throw new Error("旧適用履歴がある変更案を新しいexecutionとして再実行できません。");
+  }
+  const groups = selectedGroups(proposal, new Set(selectedOperationIds));
+  const context = saved.proposal_context;
+  if (context == null || context.groups.length !== groups.length
+    || context.groups.some((group, index) => {
+      const selectedGroup = groups[index];
+      return selectedGroup == null || group.group_id !== selectedGroup.group_id
+        || group.atomic !== selectedGroup.atomic
+        || group.operation_ids.length !== selectedGroup.operation_ids.length
+        || group.operation_ids.some((operationId, operationIndex) =>
+          operationId !== selectedGroup.operation_ids[operationIndex]);
+    })) {
+    throw new Error("保存済みexecutionと選択された操作が一致しません。");
+  }
+  const completed = await port.engine.run(saved.execution_id, signal);
+  return { ...projectStoredProposalResult(completed), execution_id: completed.execution_id };
+}
+
 /** 承認済みの全操作を一つの保存済みplanから適用します。 */
 export async function applyStoredProposal(
   input: ApplicationInput,
@@ -126,26 +181,22 @@ export async function applyStoredProposal(
   signal: AbortSignal,
 ): Promise<StoredProposalApplicationResult> {
   signal.throwIfAborted();
+  const proposal = input.approval_input.proposal;
+  const selected = new Set(input.approval_input.selected_operation_ids);
+  const existing = await applyExistingStoredProposal(
+    input.proposal_id, proposal, input.approval_input.selected_operation_ids, port, signal,
+  );
+  if (existing != null) return existing;
   if (port.historyRepository.getByProposal(input.proposal_id) != null) {
     throw new Error("旧適用履歴がある変更案を新しいexecutionとして再実行できません。");
   }
-  const proposal = input.approval_input.proposal;
-  const selected = new Set(input.approval_input.selected_operation_ids);
-  for (const group of proposal.groups) {
-    if (!group.atomic) continue;
-    const selectedCount = group.operations.filter((item) => selected.has(item.operation_id)).length;
-    if (selectedCount > 0 && selectedCount !== group.operations.length) {
-      throw new Error(`atomicグループ ${group.group_id} の操作を部分選択できません。`);
-    }
-  }
+  const selectedProposalGroups = selectedGroups(proposal, selected);
   const references = new Map(input.approval_input.journal_task_mappings.map((item) =>
     [item.temporary_ref, item.task_gid]));
   const baselineMap = new Map(input.baseline_external_data.map((item) =>
     [item.task_gid, item.baseline]));
   const approvalOperations = new Map(approval.operations.map((item) => [item.operation_id, item]));
   const approvalGroups = new Map(approval.groups.map((item) => [item.group_id, item]));
-  const saved = existingExecution(input.proposal_id, port);
-  const savedOperationIds = new Set(saved?.proposal_context?.groups.flatMap((group) => group.operation_ids) ?? []);
   const preflightResults = new Map<string, ApplicationOperationResult>();
   const executable: OperationContext[] = [];
   for (const group of proposal.groups) {
@@ -156,7 +207,6 @@ export async function applyStoredProposal(
       if (decision == null || decision.group_id !== group.group_id || classification == null) {
         throw new Error("承認競合結果の操作またはグループが一致しません。");
       }
-      if (savedOperationIds.has(original.operation_id)) continue;
       if (decision.kind === "conflict") {
         preflightResults.set(original.operation_id, createOperationResult(
           group.group_id, original.operation_id, "not_applied", "approval_conflict",
@@ -174,15 +224,8 @@ export async function applyStoredProposal(
       }
     }
   }
-  if (saved != null) {
-    if (executable.length > 0) {
-      throw new Error("保存済みplanと選択された承認済み操作が一致しません。");
-    }
-    const completed = await port.engine.run(saved.execution_id, signal);
-    return projectStoredProposalResult(input.proposal_id, proposal, selected, preflightResults, completed);
-  }
   if (executable.length === 0) {
-    return projectStoredProposalResult(input.proposal_id, proposal, selected, preflightResults, undefined);
+    return projectPreflightProposalResult(input.proposal_id, proposal, selected, preflightResults);
   }
   assertGraphSafe(executable.map((item) => item.operation.operation_id));
   const ordered = orderApplicableContexts(executable, references, createTaskTemporaryReferences);
@@ -207,19 +250,14 @@ export async function applyStoredProposal(
       };
     }),
   }, port.fingerprint);
-  const context = {
+  const context = parseProposalExecutionContext({
     format_version: 1,
-    groups: proposal.groups.flatMap((group) => {
-      const operationIds = executable
-        .filter((item) => item.group.group_id === group.group_id)
-        .map((item) => item.operation.operation_id);
-      return operationIds.length === 0 ? [] : [{
-        group_id: group.group_id,
-        atomic: group.atomic,
-        operation_ids: operationIds,
-      }];
-    }),
-  } satisfies NonNullable<ProposalExecution<StoredProposalWriteResult>["proposal_context"]>;
+    groups: selectedProposalGroups,
+    preflight_results: selectedProposalGroups.flatMap((group) => group.operation_ids.flatMap((operationId) => {
+      const result = preflightResults.get(operationId);
+      return result == null ? [] : [result];
+    })),
+  });
   port.repository.save({
     plan: planned,
     proposal_id: input.proposal_id,
@@ -227,5 +265,5 @@ export async function applyStoredProposal(
     created_at: port.now(),
   });
   const completed = await port.engine.run(executionId, signal);
-  return projectStoredProposalResult(input.proposal_id, proposal, selected, preflightResults, completed);
+  return { ...projectStoredProposalResult(completed), execution_id: completed.execution_id };
 }

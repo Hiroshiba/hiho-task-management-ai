@@ -64,7 +64,7 @@ export function fingerprintProposalExecutionContext(context: ProposalExecutionCo
   return createHash("sha256").update(canonicalizeTaskWriteJson(context)).digest("hex");
 }
 
-/** 保存済みcontextとplanの操作集合を照合します。 */
+/** 保存済みcontextの選択操作をplanと事前判定結果に照らして検証します。 */
 export function parseExecutionContext(
   value: unknown,
   plan: ProposalExecution<object>["plan"],
@@ -80,11 +80,13 @@ export function parseExecutionContext(
     ? [step.scope.operation_id]
     : []));
   const contextOperationIds = context.groups.flatMap((group) => group.operation_ids);
+  const preflightIds = new Set(context.preflight_results.map((result) => result.operation_id));
   if (
-    planOperationIds.size !== contextOperationIds.length
-    || contextOperationIds.some((operationId) => !planOperationIds.has(operationId))
+    planOperationIds.size + preflightIds.size !== contextOperationIds.length
+    || contextOperationIds.some((operationId) =>
+      planOperationIds.has(operationId) === preflightIds.has(operationId))
   ) {
-    throw new Error("proposal contextの操作IDが保存済みplanと一致しません。");
+    throw new Error("proposal contextの選択操作がplanと事前判定結果に一致しません。");
   }
   return context;
 }
