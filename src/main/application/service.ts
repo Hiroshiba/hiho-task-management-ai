@@ -147,6 +147,7 @@ import { SynchronizationOperations } from "../bootstrap/synchronization-operatio
 import { SyncStateRuntime } from "../bootstrap/sync-state-runtime";
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import { AsanaReauthenticationRuntime } from "../bootstrap/asana-reauthentication-runtime";
+import { OperationalContextRuntime } from "../bootstrap/operational-context-runtime";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -836,8 +837,12 @@ export class TaskHubApplication {
     IpcAsanaAuthenticationState,
     IpcSyncResult
   >;
-  private context: OperationalContext | undefined;
-  private settings: DeviceSettings | undefined;
+  private readonly operationalContext: OperationalContextRuntime<
+    SetupState,
+    OperationalContext,
+    DeviceSettings,
+    OperationalContext["codex"]
+  >;
   private runtime: AsanaSyncRuntime | undefined;
   private displayOrder: AsanaDisplayOrderService | undefined;
   private writer: AsanaProposalOperationWriter | undefined;
@@ -1160,7 +1165,34 @@ export class TaskHubApplication {
       },
       fullSync: (input, signal) => this.runSetupFullSync(input, signal),
     });
-    this.settings = this.database.getDeviceSettings();
+    this.operationalContext = new OperationalContextRuntime<
+      SetupState,
+      OperationalContext,
+      DeviceSettings,
+      OperationalContext["codex"]
+    >({
+      initialSettings: this.database.getDeviceSettings(),
+      parseState: (state) => setupStateSchema.parse(state),
+      contextFromState,
+      operationKey: asanaOperationContextKey,
+      availabilityFromState: codexAvailabilityFromState,
+      clientIdFromState,
+      readSettings: () => this.database.getDeviceSettings(),
+      parseSettings: (settings) => deviceSettingsSchema.parse(settings),
+      contextMatchesSettings,
+      configureExternalAgent: (context) => this.externalAgent.configureContext(context),
+      invalidatePendingMutations: () => this.operationQueue.invalidatePendingMutations(
+        "context_changed",
+      ),
+      setCodexAvailability: (availability) => {
+        this.codexAvailability = availability;
+      },
+      setTokenProvider: (clientId) => this.tokenProvider.setProvider(
+        new AsanaOAuthClient(clientId, this.secretStorage),
+      ),
+      updateCodexVaultPaths: () => this.updateCodexVaultPaths(),
+      assertOperationalReady: () => this.assertOperationalReady(),
+    });
     this.journalRecovery = new JournalRecoveryRuntime({
       validateAbortSignal,
       throwIfAborted,
@@ -1325,7 +1357,7 @@ export class TaskHubApplication {
       restoreContext: () => this.configureContextFromState(this.setup.getState()),
     });
     this.codexAvailability = contextFromState(this.setup.getState())?.codex;
-    this.configureAsanaFromSettings(this.settings);
+    this.configureAsanaFromSettings(this.operationalContext.getSettings());
     this.configureContextFromState(this.setup.getState());
   }
 
@@ -1547,21 +1579,8 @@ export class TaskHubApplication {
     return identifierSchema.parse(randomUUID());
   }
 
-  private configureAsanaFromSettings(
-    settings: DeviceSettings | undefined,
-  ): void {
-    if (settings == null) {
-      this.settings = undefined;
-      return;
-    }
-    const validatedSettings = deviceSettingsSchema.parse(settings);
-    this.settings = validatedSettings;
-    this.tokenProvider.setProvider(
-      new AsanaOAuthClient(
-        validatedSettings.client_id,
-        this.secretStorage,
-      ),
-    );
+  private configureAsanaFromSettings(settings: DeviceSettings | undefined): void {
+    this.operationalContext.configureAsanaFromSettings(settings);
   }
 
   private readOnlyVaultPaths(): readonly string[] {
@@ -1586,53 +1605,13 @@ export class TaskHubApplication {
   }
 
   private configureContextFromState(state: SetupState): void {
-    const validatedState = setupStateSchema.parse(state);
-    const context = contextFromState(validatedState);
-    const previousContext = this.context;
-    const previousContextKey = previousContext == null
-      ? "unconfigured"
-      : asanaOperationContextKey(previousContext);
-    const contextKey = context == null ? "unconfigured" : asanaOperationContextKey(context);
-    const contextChanged = previousContextKey !== contextKey;
-    this.context = context;
-    this.externalAgent.configureContext(
-      context == null
-        ? undefined
-        : {
-            project_gid: context.project_gid,
-            source_key: asanaOperationContextKey(context),
-          },
-      );
-    if (contextChanged && previousContext != null) {
-      this.operationQueue.invalidatePendingMutations("context_changed");
-    }
-    this.codexAvailability = codexAvailabilityFromState(validatedState);
-    const settings = this.database.getDeviceSettings();
-    this.configureAsanaFromSettings(settings);
-    if (settings == null) {
-      const clientId = clientIdFromState(validatedState);
-      if (clientId != null) {
-        this.tokenProvider.setProvider(
-          new AsanaOAuthClient(
-            clientId,
-            this.secretStorage,
-          ),
-        );
-      }
-    }
-    if (context != null && settings != null && validatedState.kind === "ready") {
-      const validatedSettings = deviceSettingsSchema.parse(settings);
-      if (!contextMatchesSettings(context, validatedSettings)) {
-        throw new Error("設定済み文脈と端末設定が一致しません。");
-      }
-    }
-    this.updateCodexVaultPaths();
+    this.operationalContext.configureFromState(state);
   }
 
   private configureOperationalServices(): void {
     this.assertSetupReady();
     const context = this.requireContext();
-    const settings = this.settings;
+    const settings = this.operationalContext.getSettings();
     if (settings == null || !contextMatchesSettings(context, settings)) {
       throw new Error("設定済み文脈と端末設定が一致しません。");
     }
@@ -2171,16 +2150,7 @@ export class TaskHubApplication {
   }
 
   private requireConfiguredDeviceSettings(): DeviceSettings {
-    this.assertOperationalReady();
-    const storedSettings = this.database.getDeviceSettings();
-    if (storedSettings == null) {
-      throw new Error("設定済みAsana OAuthの端末設定がありません。");
-    }
-    const settings = deviceSettingsSchema.parse(storedSettings);
-    if (!contextMatchesSettings(this.requireContext(), settings)) {
-      throw new Error("設定済み文脈と端末設定が一致しません。");
-    }
-    return settings;
+    return this.operationalContext.requireConfiguredSettings();
   }
 
   private assertSetupReady(): void {
@@ -2205,11 +2175,7 @@ export class TaskHubApplication {
   }
 
   private requireContext(): OperationalContext {
-    const context = this.context;
-    if (context == null) {
-      throw new Error("Asana設定の文脈がありません。");
-    }
-    return context;
+    return this.operationalContext.requireContext();
   }
 
   private requireWriter(): AsanaProposalOperationWriter {
@@ -2373,7 +2339,7 @@ export class TaskHubApplication {
   }
 
   private createTaskctlSnapshot(): TaskctlSnapshot {
-    const context = this.context;
+    const context = this.operationalContext.getContext();
     const entries = parseTaskCache(this.database.getTaskCache());
     const tasks = entries
       .map((entry) => taskSchema.parse(entry.task))
