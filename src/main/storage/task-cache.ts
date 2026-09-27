@@ -15,6 +15,7 @@ import {
 } from "../../shared/storage";
 import { parseStorageJson, serializeStorageJson } from "./json";
 import type { SqliteDatabase } from "./types";
+import type { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
 
 interface TaskCacheRow {
   readonly gid: string;
@@ -72,7 +73,10 @@ export class TaskCacheStore {
   private readonly selectAllStatement;
   private readonly selectOneStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
+  public constructor(
+    private readonly database: SqliteDatabase,
+    private readonly runtime: PersistenceRuntime,
+  ) {
     this.deleteAllStatement = database.prepare<[], unknown>("DELETE FROM task_cache");
     this.deleteByGidStatement = database.prepare<[string], unknown>(
       "DELETE FROM task_cache WHERE gid = ?",
@@ -106,7 +110,7 @@ export class TaskCacheStore {
   /** タスクキャッシュを一つのトランザクションで全件置換します。 */
   public replace(entries: readonly TaskCacheEntry[]): void {
     const validatedEntries = taskCacheEntriesSchema.parse(entries).map(validateTaskCacheEntry);
-    const replace = this.database.transaction((records: TaskCacheEntry[]) => {
+    const replace = this.runtime.transaction((records: TaskCacheEntry[]) => {
       this.deleteAllStatement.run();
       records.forEach((entry) => {
         const externalData = entry.custom_external_data == null
@@ -132,7 +136,7 @@ export class TaskCacheStore {
       upsert: validatedEntries,
       missing_gids: validatedDiff.missing_gids,
     };
-    const apply = this.database.transaction((records: TaskCacheDiff) => {
+    const apply = this.runtime.transaction((records: TaskCacheDiff) => {
       records.upsert.forEach((entry) => {
         const externalData = entry.custom_external_data == null
           ? null

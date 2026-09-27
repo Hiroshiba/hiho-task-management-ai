@@ -82,6 +82,47 @@ const sqliteOwners = new Map([
   ["external_tool_definitions", "main/application/settings"],
 ]);
 
+const storageDatabaseMethodDestinations = [
+  ["close", "PersistenceRuntime", "T07"],
+  ["replaceTaskCache", "TaskCacheRepository", "T09"],
+  ["applyTaskCacheDiff", "TaskCacheRepository", "T09"],
+  ["getTaskCache", "TaskCacheRepository", "T09"],
+  ["saveSyncSnapshot", "SyncSnapshotRepository", "T09"],
+  ["getTaskCacheEntry", "TaskCacheRepository", "T09"],
+  ["saveProjectMetadataCache", "ProjectMetadataRepository", "T09"],
+  ["getProjectMetadataCache", "ProjectMetadataRepository", "T09"],
+  ["getProjectMetadataCaches", "ProjectMetadataRepository", "T09"],
+  ["saveRankingCache", "RankingRepository", "T09"],
+  ["getRankingCache", "RankingRepository", "T09"],
+  ["getCleanupItems", "CleanupItemsRepository", "T09"],
+  ["replaceCleanupItemsByKinds", "CleanupItemsRepository", "T09"],
+  ["mergeCleanupItemsByKinds", "CleanupItemsRepository", "T09"],
+  ["saveSyncState", "SyncStateRepository", "T09"],
+  ["getSyncState", "SyncStateRepository", "T09"],
+  ["getSyncStates", "SyncStateRepository", "T09"],
+  ["saveDeviceSettings", "DeviceSettingsRepository", "T17"],
+  ["getDeviceSettings", "DeviceSettingsRepository", "T17"],
+  ["clearDeviceSettings", "DeviceSettingsRepository", "T17"],
+  ["saveVaultMapping", "VaultMappingRepository", "T15"],
+  ["deleteVaultMapping", "VaultMappingRepository", "T15"],
+  ["getVaultMappings", "VaultMappingRepository", "T15"],
+  ["prepareApplicationJournals", "ApplicationJournalRepository", "T21"],
+  ["recordApplicationJournalTaskCreated", "ApplicationJournalRepository", "T21"],
+  ["updateApplicationJournalStage", "ApplicationJournalRepository", "T21"],
+  ["completeApplicationJournal", "ApplicationJournalRepository", "T21"],
+  ["clearApplicationJournalRecoveryCause", "ApplicationJournalRepository", "T21"],
+  ["getApplicationJournal", "ApplicationJournalRepository", "T21"],
+  ["getApplicationJournalsByProposal", "ApplicationJournalRepository", "T21"],
+  ["getIncompleteApplicationJournals", "ApplicationJournalRepository", "T21"],
+  ["appendDiagnosticLog", "DiagnosticLogRepository", "T06"],
+  ["getDiagnosticLogs", "DiagnosticLogRepository", "T06"],
+  ["saveExternalToolDefinition", "ExternalToolDefinitionRepository", "T17"],
+  ["replaceExternalToolDefinitions", "ExternalToolDefinitionRepository", "T17"],
+  ["deleteExternalToolDefinition", "ExternalToolDefinitionRepository", "T17"],
+  ["getExternalToolDefinitions", "ExternalToolDefinitionRepository", "T17"],
+  ["clearCaches", "CacheMaintenanceRepository", "T09"],
+];
+
 const appStateOwners = new Map([
   ["renderer/app", ["screen", "appUpdateState", "removeAppUpdateSubscription", "isMounted"]],
   ["renderer/features/tasks", [
@@ -261,6 +302,20 @@ function render(revision) {
     ["ウィンドウJSON", "src/main/window-state.ts", "windowStateVersion"],
     ["Asana Custom external data", "src/shared/domain/external-data.ts", "customExternalDataSchemaVersion"],
   ].map(([name, path, symbol]) => [name, version(path, symbol), path, symbol]);
+  const facadeMethods = [...readSource("src/main/storage/database.ts")
+    .matchAll(/^ {2}public (\w+)\(/gm)]
+    .map((match) => match[1])
+    .filter((method) => method !== "constructor");
+  const destinations = new Map(storageDatabaseMethodDestinations.map(
+    ([method, repository, task]) => [method, { repository, task }],
+  ));
+  if (
+    destinations.size !== storageDatabaseMethodDestinations.length
+    || facadeMethods.length !== destinations.size
+    || facadeMethods.some((method) => !destinations.has(method))
+  ) {
+    throw new Error("StorageDatabase methodの移行先が一意に決まっていません。");
+  }
   for (const [, path] of entryPoints) {
     if (!paths.includes(path)) {
       throw new Error(`主要entry pointがありません: ${path}`);
@@ -306,6 +361,15 @@ function render(revision) {
     table(["形式", "現行version", "現行source", "version symbol"], versions),
     "SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaの現行versionは上記の値です。",
     "",
+    "## StorageDatabaseの移行先",
+    "",
+    "現行facadeの公開methodを列挙し、用途別repositoryと移行taskを一意に割り当てます。`PersistenceRuntime`は接続とtransactionのownerです。",
+    "",
+    table(["現行method", "移行先", "task"], facadeMethods.map((method) => [
+      method,
+      destinations.get(method).repository,
+      destinations.get(method).task,
+    ])),
     table(["SQLite table", "利用上のowner候補"], tables.map((name) => [name, sqliteOwners.get(name)])),
   ].join("\n");
 }

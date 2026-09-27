@@ -1,6 +1,6 @@
 # 現行source map
 
-基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 351件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
+基準commit: `6dbec2c199a55ba52645f0d0e234f89bf6193c7d`。対象は`src`以下の手編集source 354件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=6dbec2c199a55ba52645f0d0e234f89bf6193c7d --write`。
 
 ## 機能と入口
 
@@ -310,7 +310,10 @@
 | src/main/infrastructure/obsidian/read-error.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/secure-note-reader.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/obsidian/vault-path-security.ts | main/infrastructure/obsidian |
+| src/main/infrastructure/persistence/persistence-runtime.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/secure-file-snapshot.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secure-path-guard.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/sqlite-connection.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
 | src/main/ipc/handlers/event-subscriptions.ts | main/ipc |
@@ -998,6 +1001,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.reported | main/infrastructure/logging |
 | src/main/infrastructure/logging/jsonl-error-reporter.ts | JsonlErrorReporter.writing | main/infrastructure/logging |
 | src/main/infrastructure/obsidian/read-error.ts | ObsidianReadError.code | main/infrastructure/obsidian |
+| src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.database | main/infrastructure/persistence |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.disposed | main/ipc |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.options | main/ipc |
 | src/main/ipc/handlers/event-subscriptions.ts | IpcEventSubscriptions.removers | main/ipc |
@@ -1029,6 +1033,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/application-journal.ts | ApplicationJournalStore.insertPreparedStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.markProposalUnresolvedStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.recordCreatedTaskStatement | main/infrastructure/persistence |
+| src/main/storage/application-journal.ts | ApplicationJournalStore.runtime | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectByProposalStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectIncompleteStatement | main/infrastructure/persistence |
 | src/main/storage/application-journal.ts | ApplicationJournalStore.selectOneStatement | main/infrastructure/persistence |
@@ -1044,6 +1049,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/database.ts | StorageDatabase.externalToolDefinitionStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.projectMetadataCacheStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.rankingCacheStore | main/infrastructure/persistence |
+| src/main/storage/database.ts | StorageDatabase.runtime | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.syncStateStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.taskCacheStore | main/infrastructure/persistence |
 | src/main/storage/database.ts | StorageDatabase.vaultMappingStore | main/infrastructure/persistence |
@@ -1054,10 +1060,12 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.database | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.deleteOlderStatement | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.insertStatement | main/infrastructure/persistence |
+| src/main/storage/diagnostic-log.ts | DiagnosticLogStore.runtime | main/infrastructure/persistence |
 | src/main/storage/diagnostic-log.ts | DiagnosticLogStore.selectAllStatement | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.database | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.deleteAllStatement | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.deleteStatement | main/infrastructure/persistence |
+| src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.runtime | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.saveStatement | main/infrastructure/persistence |
 | src/main/storage/external-tool-definitions.ts | ExternalToolDefinitionStore.selectAllStatement | main/infrastructure/persistence |
 | src/main/storage/project-metadata-cache.ts | ProjectMetadataCacheStore.database | main/infrastructure/persistence |
@@ -1075,6 +1083,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/storage/task-cache.ts | TaskCacheStore.deleteAllStatement | main/infrastructure/persistence |
 | src/main/storage/task-cache.ts | TaskCacheStore.deleteByGidStatement | main/infrastructure/persistence |
 | src/main/storage/task-cache.ts | TaskCacheStore.insertStatement | main/infrastructure/persistence |
+| src/main/storage/task-cache.ts | TaskCacheStore.runtime | main/infrastructure/persistence |
 | src/main/storage/task-cache.ts | TaskCacheStore.selectAllStatement | main/infrastructure/persistence |
 | src/main/storage/task-cache.ts | TaskCacheStore.selectOneStatement | main/infrastructure/persistence |
 | src/main/storage/task-cache.ts | TaskCacheStore.upsertStatement | main/infrastructure/persistence |
@@ -1222,6 +1231,51 @@ channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`で�
 | Asana Custom external data | 1 | src/shared/domain/external-data.ts | customExternalDataSchemaVersion |
 
 SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaの現行versionは上記の値です。
+
+## StorageDatabaseの移行先
+
+現行facadeの公開methodを列挙し、用途別repositoryと移行taskを一意に割り当てます。`PersistenceRuntime`は接続とtransactionのownerです。
+
+| 現行method | 移行先 | task |
+| --- | --- | --- |
+| close | PersistenceRuntime | T07 |
+| replaceTaskCache | TaskCacheRepository | T09 |
+| applyTaskCacheDiff | TaskCacheRepository | T09 |
+| getTaskCache | TaskCacheRepository | T09 |
+| saveSyncSnapshot | SyncSnapshotRepository | T09 |
+| getTaskCacheEntry | TaskCacheRepository | T09 |
+| saveProjectMetadataCache | ProjectMetadataRepository | T09 |
+| getProjectMetadataCache | ProjectMetadataRepository | T09 |
+| getProjectMetadataCaches | ProjectMetadataRepository | T09 |
+| saveRankingCache | RankingRepository | T09 |
+| getRankingCache | RankingRepository | T09 |
+| getCleanupItems | CleanupItemsRepository | T09 |
+| replaceCleanupItemsByKinds | CleanupItemsRepository | T09 |
+| mergeCleanupItemsByKinds | CleanupItemsRepository | T09 |
+| saveSyncState | SyncStateRepository | T09 |
+| getSyncState | SyncStateRepository | T09 |
+| getSyncStates | SyncStateRepository | T09 |
+| saveDeviceSettings | DeviceSettingsRepository | T17 |
+| getDeviceSettings | DeviceSettingsRepository | T17 |
+| clearDeviceSettings | DeviceSettingsRepository | T17 |
+| saveVaultMapping | VaultMappingRepository | T15 |
+| deleteVaultMapping | VaultMappingRepository | T15 |
+| getVaultMappings | VaultMappingRepository | T15 |
+| prepareApplicationJournals | ApplicationJournalRepository | T21 |
+| recordApplicationJournalTaskCreated | ApplicationJournalRepository | T21 |
+| updateApplicationJournalStage | ApplicationJournalRepository | T21 |
+| completeApplicationJournal | ApplicationJournalRepository | T21 |
+| clearApplicationJournalRecoveryCause | ApplicationJournalRepository | T21 |
+| getApplicationJournal | ApplicationJournalRepository | T21 |
+| getApplicationJournalsByProposal | ApplicationJournalRepository | T21 |
+| getIncompleteApplicationJournals | ApplicationJournalRepository | T21 |
+| appendDiagnosticLog | DiagnosticLogRepository | T06 |
+| getDiagnosticLogs | DiagnosticLogRepository | T06 |
+| saveExternalToolDefinition | ExternalToolDefinitionRepository | T17 |
+| replaceExternalToolDefinitions | ExternalToolDefinitionRepository | T17 |
+| deleteExternalToolDefinition | ExternalToolDefinitionRepository | T17 |
+| getExternalToolDefinitions | ExternalToolDefinitionRepository | T17 |
+| clearCaches | CacheMaintenanceRepository | T09 |
 
 | SQLite table | 利用上のowner候補 |
 | --- | --- |

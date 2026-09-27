@@ -3,6 +3,7 @@ import {
   type DiagnosticLogEntry,
 } from "../../shared/storage";
 import type { SqliteDatabase } from "./types";
+import type { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
 
 interface DiagnosticLogRow {
   readonly id: number;
@@ -44,7 +45,10 @@ export class DiagnosticLogStore {
   private readonly insertStatement;
   private readonly selectAllStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
+  public constructor(
+    private readonly database: SqliteDatabase,
+    private readonly runtime: PersistenceRuntime,
+  ) {
     this.insertStatement = database.prepare<
       [string, string, string, number | null, string | null, string | null, string | null, string | null, string | null],
       unknown
@@ -63,7 +67,7 @@ export class DiagnosticLogStore {
   public append(entry: DiagnosticLogEntry, retentionLimit: number): void {
     const validatedEntry = diagnosticLogEntrySchema.parse(entry);
     validateRetentionLimit(retentionLimit);
-    const append = this.database.transaction(() => {
+    const append = this.runtime.transaction(() => {
       this.insertStatement.run(
         validatedEntry.occurred_at,
         validatedEntry.severity,

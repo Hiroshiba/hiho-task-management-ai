@@ -1,3 +1,3 @@
-import type BetterSqlite3 from "better-sqlite3";
+import type { SqliteConnection } from "../infrastructure/persistence/sqlite-connection";
 
-export type SqliteDatabase = BetterSqlite3.Database;
+export type SqliteDatabase = SqliteConnection;

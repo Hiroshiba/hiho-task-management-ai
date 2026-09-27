@@ -1,4 +1,4 @@
-import type BetterSqlite3 from "better-sqlite3";
+import type { SqliteConnection, SqliteTransaction } from "./sqlite-connection";
 import {
   applicationJournalTableSql,
   applicationJournalV3Columns,
@@ -13,7 +13,7 @@ import {
   type TableRowCount,
 } from "./sqlite-schema";
 
-type SqliteDatabase = BetterSqlite3.Database;
+type SqliteDatabase = SqliteConnection;
 type MigrateLegacyCleanupIdentifiers = (database: SqliteDatabase) => void;
 
 function readTableNames(database: SqliteDatabase): readonly string[] {
@@ -108,9 +108,10 @@ export function assertTableRowCount(
 
 function migrateSchemaFromV3(
   database: SqliteDatabase,
+  transaction: SqliteTransaction,
   migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
-  const migrate = database.transaction(() => {
+  const migrate = transaction(() => {
     assertStorageTableNames(readTableNames(database));
     assertTableColumns(
       database,
@@ -205,9 +206,10 @@ function migrateSchemaFromV3(
 
 function migrateSchemaFromV4(
   database: SqliteDatabase,
+  transaction: SqliteTransaction,
   migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
-  const migrate = database.transaction(() => {
+  const migrate = transaction(() => {
     assertStorageTableNames(readTableNames(database));
     const sourceColumns = readTableColumns(database, "application_journal");
     const hasRecoveryReason = hasExpectedTableColumns(
@@ -314,6 +316,7 @@ function migrateSchemaFromV4(
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
 export function initializeSqliteSchema(
   database: SqliteDatabase,
+  transaction: SqliteTransaction,
   migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const userVersion = database.pragma("user_version", { simple: true });
@@ -327,7 +330,7 @@ export function initializeSqliteSchema(
       throw new Error("SQLiteに未対応のschemaが存在します。");
     }
 
-    const createSchema = database.transaction(() => {
+    const createSchema = transaction(() => {
       database.exec(storageSchemaSql);
       assertStorageTableNames(readTableNames(database));
       assertTableColumns(
@@ -342,12 +345,12 @@ export function initializeSqliteSchema(
   }
 
   if (userVersion === 3) {
-    migrateSchemaFromV3(database, migrateLegacyProposalConflictIdentifiers);
+    migrateSchemaFromV3(database, transaction, migrateLegacyProposalConflictIdentifiers);
     return;
   }
 
   if (userVersion === 4) {
-    migrateSchemaFromV4(database, migrateLegacyProposalConflictIdentifiers);
+    migrateSchemaFromV4(database, transaction, migrateLegacyProposalConflictIdentifiers);
     return;
   }
 

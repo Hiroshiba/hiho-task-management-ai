@@ -9,6 +9,7 @@ import {
 import { identifierSchema } from "../../shared/domain";
 import { assertChanged, parseStorageJson, serializeStorageJson } from "./json";
 import type { SqliteDatabase } from "./types";
+import type { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
 
 const externalToolDefinitionRecordSchema = externalToolDefinitionSchema
   .extend({
@@ -82,7 +83,10 @@ export class ExternalToolDefinitionStore {
   private readonly saveStatement;
   private readonly selectAllStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
+  public constructor(
+    private readonly database: SqliteDatabase,
+    private readonly runtime: PersistenceRuntime,
+  ) {
     this.deleteAllStatement = database.prepare<[], unknown>(
       "DELETE FROM external_tool_definitions",
     );
@@ -116,7 +120,7 @@ export class ExternalToolDefinitionStore {
   /** 外部ツール定義を一つのトランザクションで置き換えます。 */
   public replace(records: readonly ExternalToolDefinitionRecord[]): void {
     const validatedRecords = externalToolDefinitionRecordsSchema.parse(records);
-    const replace = this.database.transaction(() => {
+    const replace = this.runtime.transaction(() => {
       this.deleteAllStatement.run();
       validatedRecords.forEach((record) => {
         const { definition, credentialReferenceNames } = splitDefinition(record);

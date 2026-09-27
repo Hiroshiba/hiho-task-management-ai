@@ -20,6 +20,7 @@ import {
 } from "../../shared/storage";
 import { assertChanged, parseStorageJson, serializeStorageJson } from "./json";
 import type { SqliteDatabase } from "./types";
+import type { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
 
 interface ApplicationJournalRow {
   readonly proposal_id: string;
@@ -349,7 +350,10 @@ export class ApplicationJournalStore {
   private readonly selectOneStatement;
   private readonly updateStageStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
+  public constructor(
+    private readonly database: SqliteDatabase,
+    private readonly runtime: PersistenceRuntime,
+  ) {
     this.insertPreparedStatement = database.prepare<
       [
         string,
@@ -556,7 +560,7 @@ export class ApplicationJournalStore {
     proposalId: string,
     reasons: ReadonlyMap<string, ApplicationJournalRecoveryReason>,
   ): void {
-    const persist = this.database.transaction(() => {
+    const persist = this.runtime.transaction(() => {
       const incompleteRows = this.selectByProposalStatement
         .all(proposalId)
         .filter((row) => row.final_result == null && row.stage !== "legacy_unresolved");
@@ -651,7 +655,7 @@ export class ApplicationJournalStore {
     const validatedEntries = entries.map(validatePlanEntry);
     const proposalIds = new Set<string>();
     const operationIds = new Set<string>();
-    const prepare = this.database.transaction(() => {
+    const prepare = this.runtime.transaction(() => {
       for (const entry of validatedEntries) {
         if (proposalIds.size > 0 && !proposalIds.has(entry.proposal_id)) {
           throw new Error("一つの復旧計画へ複数のproposal_idを指定できません。");
@@ -730,7 +734,7 @@ export class ApplicationJournalStore {
     const validatedOperationId = identifierSchema.parse(operationId);
     const validatedTemporaryRef = identifierSchema.parse(temporaryRef);
     const validatedTaskGid = gidSchema.parse(taskGid);
-    const record = this.database.transaction(() => {
+    const record = this.runtime.transaction(() => {
       const currentRow = this.selectOneStatement.get(
         validatedProposalId,
         validatedOperationId,
@@ -803,7 +807,7 @@ export class ApplicationJournalStore {
     if (validatedStage === "legacy_unresolved" || validatedStage === "started") {
       throw new Error("適用ジャーナルを旧段階へ更新できません。");
     }
-    const update = this.database.transaction(() => {
+    const update = this.runtime.transaction(() => {
       const currentRow = this.selectOneStatement.get(
         validatedProposalId,
         validatedOperationId,
@@ -840,7 +844,7 @@ export class ApplicationJournalStore {
     const validatedProposalId = identifierSchema.parse(proposalId);
     const validatedOperationId = identifierSchema.parse(operationId);
     const validatedFinalResult = applicationJournalResultSchema.parse(finalResult);
-    const complete = this.database.transaction(() => {
+    const complete = this.runtime.transaction(() => {
       const result = this.completeStatement.run(
         validatedFinalResult,
         validatedProposalId,

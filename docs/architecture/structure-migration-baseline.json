@@ -4530,11 +4530,6 @@
     {
       "path": "src/main/storage/database.ts",
       "rule": "old-import",
-      "symbol": "src/main/local-storage-path.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
       "symbol": "src/main/storage/application-journal.ts"
     },
     {

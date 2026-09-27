@@ -1,13 +1,9 @@
-import BetterSqlite3 from "better-sqlite3";
 import {
-  assertSecurePersistentFileSnapshot,
-  captureSecurePersistentFile,
-  ensureSecurePersistentFile,
-  normalizeSecurePersistentFilePath,
-} from "../local-storage-path";
+  PersistenceRuntime,
+  storageBusyTimeoutMilliseconds,
+} from "../infrastructure/persistence/persistence-runtime";
 import {
   assertTableRowCount,
-  initializeSqliteSchema,
   readTableRowCount,
 } from "../infrastructure/persistence/sqlite-migration";
 import {
@@ -58,14 +54,7 @@ import { parseStorageJson, serializeStorageJson } from "./json";
 
 export { storageSchemaVersion } from "../infrastructure/persistence/sqlite-schema";
 
-export const storageBusyTimeoutMilliseconds = 5_000;
-
-const databaseFileLabel = "SQLiteデータベース";
-const sqliteAuxiliaryFileSuffixes: readonly string[] = [
-  "-journal",
-  "-shm",
-  "-wal",
-];
+export { storageBusyTimeoutMilliseconds };
 
 const localAsynchronousCleanupItemKinds: readonly CleanupItemKind[] = [
   "proposal_conflict",
@@ -83,31 +72,6 @@ interface CleanupItemsCacheRow {
 
 const legacyProposalConflictMessagePattern =
   /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
-
-function validateSqliteAuxiliaryFiles(dbPath: string): void {
-  sqliteAuxiliaryFileSuffixes.forEach((suffix) => {
-    captureSecurePersistentFile(
-      `${dbPath}${suffix}`,
-      `${databaseFileLabel}${suffix}`,
-    );
-  });
-}
-
-function closeDatabaseAfterInitializationFailure(
-  database: SqliteDatabase,
-  error: unknown,
-): never {
-  try {
-    database.close();
-  } catch (closeError) {
-    throw new AggregateError(
-      [error, closeError],
-      "SQLiteの初期化と接続終了に失敗しました。",
-      { cause: error },
-    );
-  }
-  throw error;
-}
 
 function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
   const sourceRowCount = readTableRowCount(database, "cleanup_items_cache");
@@ -174,33 +138,9 @@ function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): voi
   assertTableRowCount(database, "cleanup_items_cache", sourceRowCount);
 }
 
-function assertPragmas(database: SqliteDatabase): void {
-  database.pragma("foreign_keys = ON");
-  const foreignKeys = database.pragma("foreign_keys", { simple: true });
-  if (foreignKeys !== 1) {
-    throw new Error("SQLiteのforeign_keysをONに設定できませんでした。");
-  }
-
-  const journalMode = database.pragma("journal_mode = WAL", { simple: true });
-  if (journalMode !== "wal") {
-    throw new Error("SQLiteのjournal_modeをWALに設定できませんでした。");
-  }
-
-  database.pragma(`busy_timeout = ${storageBusyTimeoutMilliseconds}`);
-  const busyTimeout = database.pragma("busy_timeout", { simple: true });
-  if (busyTimeout !== storageBusyTimeoutMilliseconds) {
-    throw new Error("SQLiteのbusy_timeoutを設定できませんでした。");
-  }
-
-  database.pragma("synchronous = FULL");
-  const synchronous = database.pragma("synchronous", { simple: true });
-  if (synchronous !== 2) {
-    throw new Error("SQLiteのsynchronousをFULLに設定できませんでした。");
-  }
-}
-
 /** SQLite永続化層を開き、対象スキーマを初期化します。 */
 export class StorageDatabase {
+  private readonly runtime: PersistenceRuntime;
   private readonly database: SqliteDatabase;
   private readonly taskCacheStore: TaskCacheStore;
   private readonly projectMetadataCacheStore: ProjectMetadataCacheStore;
@@ -214,63 +154,24 @@ export class StorageDatabase {
   private readonly externalToolDefinitionStore: ExternalToolDefinitionStore;
 
   public constructor(dbPath: string) {
-    const normalizedDbPath = normalizeSecurePersistentFilePath(dbPath);
-    captureSecurePersistentFile(normalizedDbPath, databaseFileLabel);
-    validateSqliteAuxiliaryFiles(normalizedDbPath);
-    const databaseSnapshot = ensureSecurePersistentFile(
-      normalizedDbPath,
-      databaseFileLabel,
-    );
-    validateSqliteAuxiliaryFiles(normalizedDbPath);
-    assertSecurePersistentFileSnapshot(
-      normalizedDbPath,
-      databaseSnapshot,
-      databaseFileLabel,
-    );
-    const database = new BetterSqlite3(normalizedDbPath, { fileMustExist: true });
-    try {
-      assertSecurePersistentFileSnapshot(
-        normalizedDbPath,
-        databaseSnapshot,
-        databaseFileLabel,
-      );
-      validateSqliteAuxiliaryFiles(normalizedDbPath);
-      assertPragmas(database);
-      assertSecurePersistentFileSnapshot(
-        normalizedDbPath,
-        databaseSnapshot,
-        databaseFileLabel,
-      );
-      validateSqliteAuxiliaryFiles(normalizedDbPath);
-      initializeSqliteSchema(database, migrateLegacyProposalConflictIdentifiers);
-      assertSecurePersistentFileSnapshot(
-        normalizedDbPath,
-        databaseSnapshot,
-        databaseFileLabel,
-      );
-      validateSqliteAuxiliaryFiles(normalizedDbPath);
-    } catch (error) {
-      closeDatabaseAfterInitializationFailure(database, error);
-    }
-
+    this.runtime = new PersistenceRuntime(dbPath, migrateLegacyProposalConflictIdentifiers);
+    const database = this.runtime.connection;
     this.database = database;
-    this.taskCacheStore = new TaskCacheStore(database);
+    this.taskCacheStore = new TaskCacheStore(database, this.runtime);
     this.projectMetadataCacheStore = new ProjectMetadataCacheStore(database);
     this.rankingCacheStore = new RankingCacheStore(database);
     this.cleanupItemsCacheStore = new CleanupItemsCacheStore(database);
     this.syncStateStore = new SyncStateStore(database);
     this.deviceSettingsStore = new DeviceSettingsStore(database);
     this.vaultMappingStore = new VaultMappingStore(database);
-    this.applicationJournalStore = new ApplicationJournalStore(database);
-    this.diagnosticLogStore = new DiagnosticLogStore(database);
-    this.externalToolDefinitionStore = new ExternalToolDefinitionStore(database);
+    this.applicationJournalStore = new ApplicationJournalStore(database, this.runtime);
+    this.diagnosticLogStore = new DiagnosticLogStore(database, this.runtime);
+    this.externalToolDefinitionStore = new ExternalToolDefinitionStore(database, this.runtime);
   }
 
   /** SQLite接続を閉じます。 */
   public close(): void {
-    if (this.database.open) {
-      this.database.close();
-    }
+    this.runtime.close();
   }
 
   /** タスクキャッシュを一つのトランザクションで全件置換します。 */
@@ -304,7 +205,7 @@ export class StorageDatabase {
     if (validatedMetadata.project.gid !== validatedSyncState.project_gid) {
       throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
     }
-    const save = this.database.transaction(() => {
+    const save = this.runtime.transaction(() => {
       const storedCleanupItems = this.cleanupItemsCacheStore.get();
       const existingCleanupItems = storedCleanupItems == null
         ? cleanupItemsSchema.parse([])
@@ -365,7 +266,7 @@ export class StorageDatabase {
     kinds: readonly CleanupItemKind[],
     replacementItems: CleanupItemsCache,
   ): CleanupItemsCache {
-    const replace = this.database.transaction(() => {
+    const replace = this.runtime.transaction(() => {
       const storedItems = this.cleanupItemsCacheStore.get();
       const existingItems = storedItems == null
         ? cleanupItemsSchema.parse([])
@@ -386,7 +287,7 @@ export class StorageDatabase {
     kinds: readonly CleanupItemKind[],
     items: CleanupItemsCache,
   ): CleanupItemsCache {
-    const merge = this.database.transaction(() => {
+    const merge = this.runtime.transaction(() => {
       const storedItems = this.cleanupItemsCacheStore.get();
       const existingItems = storedItems == null
         ? cleanupItemsSchema.parse([])
@@ -547,7 +448,7 @@ export class StorageDatabase {
 
   /** 再構築可能なキャッシュだけを全消去します。 */
   public clearCaches(): void {
-    const clear = this.database.transaction(() => {
+    const clear = this.runtime.transaction(() => {
       this.database.exec(
         "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM cleanup_items_cache; DELETE FROM sync_state; DELETE FROM diagnostic_log;",
       );
