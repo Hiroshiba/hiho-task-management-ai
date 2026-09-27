@@ -30,7 +30,7 @@
 
 非作成では初期読込でcoreとexternal dataを独立に変更前、変更後、許可する部分適用、競合へ分類します。coreの後にexternal dataを再読込し、承認時基準からマージして必要な場合だけ`E`を送信します。書き込み後には両方を読戻します。根拠は`non-create-write.ts`の102〜180行、211〜289行、292〜457行です。タグの許可する部分適用は新旧2タグの併存だけ、状態の許可する部分適用は目的セクションだけ変更済みで完了フラグが旧値の状態だけです。
 
-通常適用では`applied`と`already_applied`を確認した操作のGIDを重複排除し、操作群の最後に`postApply`を一回実行します。`L`は操作ごとのAsana callではなく実行全体の最終stepです。GUI直接編集の旧経路はwriter結果が得られた後、競合結果を含めて`postApply`を呼びます。共通planの`local_synchronize.condition`はproposalでは`verified_operation`、GUIでは`writer_result_available`を使います。根拠は`journal-progress.ts`の72〜105行、`post-apply-completion.ts`の62〜83行、`gui-edit/service.ts`の875〜899行です。
+通常適用では`applied`と`already_applied`を確認した操作のGIDを重複排除し、操作群の最後に`postApply`を一回実行します。`L`は操作ごとのAsana callではなく実行全体の最終stepです。GUI直接編集ではwriter結果が得られた後、競合結果を含めて`postApply`を呼びます。共通planの`local_synchronize.condition`はproposalでは`verified_operation`、GUIでは`writer_result_available`を使います。executorは実行元に応じて異なる事後同期入口を呼び、成功時に同期したGIDをreceiptへ保存します。同期失敗時は先に成功したAsana receiptを残して`confirmation_required`へ進めます。根拠は`journal-progress.ts`の72〜105行、`post-apply-completion.ts`の62〜83行、`gui-edit/service.ts`の875〜899行です。
 
 再開では保存済みの承認時external基準と一時参照を使います。`read_back`以降はwriterを再実行せずローカル同期へ進みます。それ以前でも`inspectRecovery`でcoreとexternal dataを照合し、両方が変更後なら再送せず、第三状態や結果不明なら手動確認へ送ります。作成のGIDが未保存の`write_started`ではUUID一致タスクを探索し、0件または複数件で再作成しません。根拠は`recovery-operations.ts`の532〜685行、780〜890行と`recovery-writer-input.ts`の43〜113行です。
 

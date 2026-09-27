@@ -4,7 +4,7 @@
 
 | 状態 | 唯一のowner | 生成 | 破棄・保存 |
 | --- | --- | --- | --- |
-| MainRuntimeと外部client | `create-main-runtime.ts`が返す`MainRuntime` | Electron app ready後 | app終了処理でdispose |
+| MainRuntimeと外部client | `create-main-runtime.ts`が返す`MainRuntime` | Electron app ready後。task write engineは既存Asana接続のtransportとread clientを共有して一度だけ生成 | app終了処理でdispose |
 | 起動、停止、ウィンドウ、online監視、自動更新 | `register-main-lifecycle.ts` | MainRuntime生成後 | `before-quit`でウィンドウ状態保存と停止を済ませ、更新適用後の`will-quit`で後段ファイルを閉じる。timer、listener、windowもapp終了時に破棄 |
 | DB接続、transaction、通常の永続ファイル | persistence adapterの`PersistenceRuntime` | MainRuntime生成時 | MainRuntime disposeで閉じる。SQLiteと各ファイルへ保存 |
 | 外部連携の有効化設定ファイル | persistence adapterの`PersistenceRuntime` | 外部連携資源の更新と旧接続情報の削除後、MainRuntimeの遅延factoryで開く | 設定変更時に原子的に保存し、MainRuntime disposeで閉じる |
@@ -16,7 +16,7 @@
 | AI状態と差分のMain側購読 | `AiEventRuntime` | MainRuntime生成時 | MainRuntime終了時にdispose |
 | 外部提案の文脈、準備要求、提案基準、提出要求 | proposal-generate workflow | 文脈設定と提案準備時 | 文脈変更時に準備済み文脈を失効。提出要求は同一稼働中に照合し、停止時に破棄。未承認案は永続化しない |
 | 提出済み外部提案の確認対象、承認状態、適用結果 | proposal-apply workflow | 提出受付時 | MainRuntime終了時にmemoryを破棄。適用記録はjournalへ保存 |
-| proposal execution、plan、journal | proposal execution repository | 承認後、外部書き込み前 | terminal stateまで永続化。復旧は保存済みplanを読む |
+| proposal execution、plan、journal | proposal execution repository | 承認後、外部書き込み前。MainRuntimeが既存SQLite接続からrepositoryを一度だけ生成 | terminal stateまで永続化。復旧は保存済みplanを読む |
 | proposal実行中lock | proposal engine | execution開始時 | terminalまたは例外時のfinallyで解放。永続状態とも照合 |
 | task write plan | 呼び出し単位のimmutable value | proposal handlerまたはGUI編集 | 実行完了後に破棄。実行開始前にjournalへ保存 |
 | IPC handlerとsubscription | 各IPC handler | register時 | unregister関数で解除 |

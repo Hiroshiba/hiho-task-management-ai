@@ -24,6 +24,8 @@
 
 17操作の識別子は [current-source-map.md](current-source-map.md) の機械生成一覧で照合します。旧変更案は既存境界で検証し、plan生成時は`src/main/domain/proposal-write-operation.ts`で書き込みに使う項目だけを検証します。manifestは`Record<ProposalWriteOperation["operation"], OperationHandler>`を`satisfies`で検査し、各操作をちょうど1handlerへ割り当てます。`importance`と`area`はカテゴリタグ、`duration`と`link_obsidian`はCustom external dataです。Obsidianノートへ書き込みません。native field、タグの追加と削除、Custom external dataは実際のAsana callごとに別stepとします。活動日はCustom external dataの変更項目であり、依存関係や親作業モードの変更と一つのAsana callへマージします。後続同期は適用可能な操作群の最後に一度だけ実行します。
 
+`create-main-runtime.ts`は保存用repository、単回送信のAsana transport、read client、404判定、読戻しadapter、全Asana step executor、後続同期executor、実行engineを一度だけ組み立てます。transportとread clientは既存Asana接続を共有します。clock、ID生成器、error reporterもMainRuntimeの既存資源を共有し、別のownerを作りません。保存済みstepの`kind`と`executor_version`は登録済みexecutorへ一意に対応させます。
+
 ## 保存するwrite step
 
 各stepは`step_id`、`scope`、`kind`、`executor_version`、`payload`、`payload_fingerprint`、`retry_class`を持つimmutableな値です。対象参照は`payload.target`または同期用の`payload.targets`に保存し、既存GIDと作成タスクの一時参照を区別します。`retry_class`は`read_back_verifiable`、`idempotent`、`non_retryable`のいずれかです。作成は非再送、Asana属性は読み戻しで再送可否を判定し、ローカル同期は冪等です。実行関数、SDK object、資格情報は永続化しません。保存した`kind`と`executor_version`からexecutor registryで解決します。意味を変える場合はversionを上げ、旧versionの保存済みstepを移行し終えるまで旧executorを保持します。
@@ -46,6 +48,8 @@ Asana stepは書き込み前後に読戻し、作成stepは事前発行UUIDで�
 Asana書き込みstepのtransportは各attemptで一度だけ送信します。通信失敗、429、5xx、401後の認証更新でも同じattempt内では再送しません。再試行の判断とattemptの保存は実行エンジンが読戻し後に行います。
 
 proposal単位の同時実行を禁止します。二重click、IPC再送、起動時復旧は同じlockとrepositoryのexecution stateで判定します。`succeeded`への再要求は保存済みresultだけを返します。`failed`と`confirmation_required`への再要求は保存済み状態とerror IDを返し、同じexecution IDで再実行しません。利用者が明示的にやり直す場合だけ、元execution IDを参照する新executionを作ります。
+
+proposalの後続同期は旧適用状態が`applying`で、操作queueの実行権を所有する場合に限り呼びます。旧ジャーナルの復旧中は復旧用の同期条件に従います。GUI編集の後続同期はGUI編集のqueue所有条件に従う別入口を呼びます。いずれも条件が整わない段階で成功や空同期を返さず、実行を始めません。
 
 SQLite v6は`application_journal`を保持し、新しい`proposal_executions`と`proposal_execution_steps`を追加します。v3、v4、v5からのschema移行は一つのtransactionで行い、旧行の件数を照合します。新executionの全planと全stepは外部callより前に一つのtransactionで保存します。step状態と試行回数はCASで更新し、receiptまたはerror IDとexecution状態も同じtransactionで確定します。最終resultは`succeeded`へのCASと同時に保存します。保存時と読込時にplan全体と各payloadのfingerprintを照合します。
 
