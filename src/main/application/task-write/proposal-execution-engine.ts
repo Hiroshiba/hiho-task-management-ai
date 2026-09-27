@@ -161,8 +161,9 @@ export class ProposalExecutionEngine<Result extends object> {
     context: TaskWriteExecutionContext,
     signal: AbortSignal,
   ): Promise<boolean> {
-    if (step.descriptor.kind !== "proposal_operation_check") {
-      throw new Error("照合stepの種類が一致しません。");
+    if (step.descriptor.kind !== "proposal_operation_check"
+      || step.descriptor.scope.kind !== "operation") {
+      throw new Error("照合stepの種類または操作IDが一致しません。");
     }
     const attempt = step.state === "planned" ? this.start(execution, step) : step.attempt;
     if (attempt == null) return false;
@@ -171,6 +172,17 @@ export class ProposalExecutionEngine<Result extends object> {
       observation = await this.readBack.inspectOperation(step.descriptor, context, signal);
     } catch (error) {
       return this.stop(execution, step, attempt, "confirmation_required", error);
+    }
+    if (observation.state === "needs_write") {
+      const operationId = step.descriptor.scope.operation_id;
+      const hasWriteStep = context.plan.steps.some((candidate) =>
+        candidate.scope.kind === "operation"
+        && candidate.scope.operation_id === operationId
+        && candidate.kind !== "proposal_operation_check");
+      if (!hasWriteStep) {
+        return this.stop(execution, step, attempt, "failed",
+          new Error("未適用の操作に保存済み書き込みstepがありません。"));
+      }
     }
     if (observation.state === "needs_write" || observation.state === "already_applied") {
       return this.settle(execution, step, attempt, {

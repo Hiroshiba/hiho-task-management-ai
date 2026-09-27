@@ -77,6 +77,10 @@ export function buildProposalExecutionResult(
       if (receipt.kind !== "proposal_operation_check" && receipt.kind !== "created_task") {
         throw new Error("操作の先頭receiptがplanと一致しません。");
       }
+      if (receipt.kind === "proposal_operation_check" && receipt.outcome === "needs_write"
+        && !operationSteps.some((step) => step.descriptor.kind !== "proposal_operation_check")) {
+        throw new Error("未適用の操作に成功済み書き込みstepがありません。");
+      }
       const outcome = receipt.kind === "proposal_operation_check"
         && receipt.outcome === "already_applied"
         ? "already_applied"
