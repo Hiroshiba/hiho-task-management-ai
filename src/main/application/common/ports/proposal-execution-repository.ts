@@ -75,6 +75,7 @@ export type CompleteProposalExecution<Result extends object> = {
 
 /** 保存済みplanを正本としてexecutionと各stepを原子的に進めます。 */
 export interface ProposalExecutionRepository<Result extends object> {
+  onChanged(listener: (execution: ProposalExecution<Result>) => void): () => void;
   save(input: SaveProposalExecution): void;
   get(executionId: string): ProposalExecution<Result> | undefined;
   getByProposal(proposalId: string): readonly ProposalExecution<Result>[];

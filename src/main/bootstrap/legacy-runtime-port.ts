@@ -11,6 +11,7 @@ export type LegacyRuntimePort = Pick<
   | "getGuiEditExecution"
   | "retryGuiEditExecution"
   | "getIpcPorts"
+  | "getSettingsHandlerWorkflows"
   | "getObsidianHandlerWorkflow"
   | "getProposalsHandlerWorkflows"
   | "getState"

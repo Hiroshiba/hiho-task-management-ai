@@ -210,6 +210,12 @@ function createApplicationRuntime(): MainRuntime {
     checkpointPath: join(userDataPath, "setup-checkpoint.json"),
     logsPath: app.getPath("logs"),
     loggerFormatter: persistentErrorLogFormatter,
+    system: {
+      getVersion: () => app.getVersion(),
+      waitForStartup: (signal) => startupGate.waitForStartup(signal),
+      getUpdateState: () => requireApplicationUpdateService().getState(),
+      onUpdateState: (listener) => requireApplicationUpdateService().onState(listener),
+    },
     legacy: {
       user_data_path: userDataPath,
       app_version: app.getVersion(),
@@ -251,6 +257,14 @@ function createApplicationRuntime(): MainRuntime {
       },
     },
   });
+}
+
+function requireApplicationUpdateService(): ApplicationUpdateService {
+  const service = applicationUpdateService;
+  if (service == null) {
+    throw new Error("アプリ本体の更新サービスが初期化されていません。");
+  }
+  return service;
 }
 
 function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {
@@ -529,10 +543,7 @@ async function createMainWindow(
     },
     savedWindowState,
   );
-  const updateService = applicationUpdateService;
-  if (updateService == null) {
-    throw new Error("アプリ本体の更新サービスが初期化されていません。");
-  }
+  const updateService = requireApplicationUpdateService();
   const registry = new IpcHandlerRegistry({
     rendererWebContents: window.webContents,
     rendererUrl,

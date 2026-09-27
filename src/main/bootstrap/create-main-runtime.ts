@@ -10,8 +10,12 @@ import { createDiagnosticsHandlers, type DiagnosticsHandlers } from "../ipc/hand
 import { createGithubIntegrationHandlers, type GithubIntegrationHandlers } from "../ipc/handlers/github-integration";
 import { createObsidianIntegrationHandlers, type ObsidianIntegrationHandlers } from "../ipc/handlers/obsidian-integration";
 import { createProposalsHandlers, type ProposalsHandlers } from "../ipc/handlers/proposals";
+import { createSettingsHandlers, type SettingsHandlers } from "../ipc/handlers/settings";
+import { createSystemHandlers, type SystemHandlers, type SystemHandlerWorkflow } from "../ipc/handlers/system";
 import { createTasksHandlers, type TasksHandlers } from "../ipc/handlers/tasks";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
+import type { GuiEditExecution } from "../application/gui-edit";
+import type { StoredProposalExecution } from "../application/proposal-apply";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
 import {
   ApplicationUpdateAttemptStore,
@@ -35,6 +39,7 @@ type MainRuntimeOptions = {
   readonly checkpointPath: string;
   readonly logsPath: string;
   readonly loggerFormatter: ConstructorParameters<typeof JsonlErrorReporter>[2];
+  readonly system: SystemHandlerWorkflow;
   readonly legacy: Omit<LegacyRuntimeOptions, "lifecycle_signal" | "now_provider" | "create_id">;
 };
 
@@ -106,7 +111,11 @@ export interface MainRuntime {
   readonly taskWriteExecution: {
     readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
     readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
+    readonly onGuiChanged: (listener: (execution: GuiEditExecution) => void) => () => void;
+    readonly onProposalChanged: (listener: (execution: StoredProposalExecution) => void) => () => void;
   };
+  readonly systemHandlers: SystemHandlers;
+  readonly settingsHandlers: SettingsHandlers;
   readonly tasksHandlers: TasksHandlers;
   readonly proposalsHandlers: ProposalsHandlers;
   readonly githubIntegrationHandlers: GithubIntegrationHandlers;
@@ -163,12 +172,15 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         (value) => parseTaskWritePlan(value, fingerprint),
         (value) => taskWriteReceiptSchema.parse(value),
         taskWriteExecutionResultSchema,
+        engineReporter,
       ),
       createId,
       now: nowProvider,
       wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
     });
     legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
+    const systemHandlers = createSystemHandlers(options.system);
+    const settingsHandlers = createSettingsHandlers(legacy.getSettingsHandlerWorkflows());
     const tasksHandlers = createTasksHandlers({
       taskRead: legacy.taskRead,
       guiEdit: legacy,
@@ -185,7 +197,14 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     return {
       legacy,
       reporter,
-      taskWriteExecution: { repository: taskWrite.repository, engine: taskWrite.engine },
+      taskWriteExecution: {
+        repository: taskWrite.repository,
+        engine: taskWrite.engine,
+        onGuiChanged: taskWrite.onGuiChanged,
+        onProposalChanged: taskWrite.onProposalChanged,
+      },
+      systemHandlers,
+      settingsHandlers,
       tasksHandlers,
       proposalsHandlers,
       githubIntegrationHandlers,

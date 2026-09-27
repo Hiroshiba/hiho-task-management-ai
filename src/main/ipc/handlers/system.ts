@@ -5,7 +5,7 @@ import { createContractHandler, type ContractHandler, type IpcSuccessValue } fro
 
 type UpdateState = IpcSuccessValue<typeof systemContracts.getUpdateState.response>;
 type SystemInvokeName = "getVersion" | "waitForStartup" | "getUpdateState";
-type SystemHandlers = {
+export type SystemHandlers = {
   readonly [Name in SystemInvokeName]: ContractHandler<(typeof systemContracts)[Name]>;
 } & {
   readonly subscribeUpdateState: (
@@ -20,8 +20,10 @@ type SystemHandlers = {
   ) => z.output<typeof systemContracts.updateState.event>;
 };
 
+export type SystemHandlerWorkflow = SystemWorkflow<UpdateState>;
+
 /** systemのuse caseに対応するIPC handlerを作成します。 */
-export function createSystemHandlers(workflow: SystemWorkflow<UpdateState>): SystemHandlers {
+export function createSystemHandlers(workflow: SystemHandlerWorkflow): SystemHandlers {
   return {
     getVersion: createContractHandler(systemContracts.getVersion, () => workflow.getVersion()),
     waitForStartup: createContractHandler(systemContracts.waitForStartup, async (_request, signal): Promise<{ completed: true }> => {

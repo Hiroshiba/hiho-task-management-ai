@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ErrorReporter } from "../../application/common/errors/error-reporter";
 import type {
   CompleteProposalExecution,
   ProposalExecution,
@@ -37,12 +38,36 @@ function assertSingleChange(result: ChangeResult, operation: string): void {
 /** 保存済みplanとstepの状態をSQLite transactionで管理します。 */
 export class SqliteProposalExecutionRepository<Result extends object>
 implements ProposalExecutionRepository<Result> {
+  private readonly listeners = new Set<(execution: ProposalExecution<Result>) => void>();
+
   public constructor(
     private readonly runtime: PersistenceRuntime,
     private readonly parsePlan: PlanParser,
     private readonly parseReceipt: ReceiptParser,
     private readonly resultSchema: z.ZodType<Result>,
+    private readonly reporter: ErrorReporter,
   ) {}
+
+  /** 保存済みexecutionの変更を購読します。 */
+  public onChanged(listener: (execution: ProposalExecution<Result>) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private publishChanged(execution: ProposalExecution<Result>): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(execution);
+      } catch (error: unknown) {
+        this.reporter.reportErrorOnce(error, {
+          source: "service",
+          diagnosticCode: "ipc.error",
+          context: "service_diagnostic",
+          level: "error",
+        });
+      }
+    }
+  }
 
   /** 全stepを未開始としてplanと同じtransactionに保存します。 */
   public save(input: SaveProposalExecution): void {
@@ -103,11 +128,13 @@ implements ProposalExecutionRepository<Result> {
           createdAt,
         );
       }
-      if (this.get(plan.execution_id) == null) {
+      const execution = this.get(plan.execution_id);
+      if (execution == null) {
         throw new Error("保存したexecutionを読み出せません。");
       }
+      return execution;
     });
-    save();
+    this.publishChanged(save());
   }
 
   /** IDに一致するexecutionと全stepを検証して読み出します。 */
@@ -190,7 +217,7 @@ implements ProposalExecutionRepository<Result> {
         || step.state !== expectedState
         || step.attempt !== expectedAttempt
       ) {
-        return false;
+        return undefined;
       }
       if (execution.steps.slice(0, index).some((previous) => previous.state !== "succeeded")) {
         throw new Error("前のstepが完了する前に開始できません。");
@@ -209,7 +236,7 @@ implements ProposalExecutionRepository<Result> {
         expectedAttempt,
       );
       if (changed.changes === 0) {
-        return false;
+        return undefined;
       }
       assertSingleChange(changed, "step開始");
       const executionChanged = this.runtime.connection.prepare<[string, string], ChangeResult>(
@@ -217,10 +244,18 @@ implements ProposalExecutionRepository<Result> {
           WHERE execution_id = ? AND state IN ('planned', 'running')`,
       ).run(startedAt, executionId);
       assertSingleChange(executionChanged, "execution開始");
-      this.get(executionId);
-      return true;
+      const changedExecution = this.get(executionId);
+      if (changedExecution == null) {
+        throw new Error("開始したexecutionを読み出せません。");
+      }
+      return changedExecution;
     });
-    return start();
+    const changedExecution = start();
+    if (changedExecution == null) {
+      return false;
+    }
+    this.publishChanged(changedExecution);
+    return true;
   }
 
   /** 実行中stepのreceiptまたはerror IDをCASで確定します。 */
@@ -253,7 +288,7 @@ implements ProposalExecutionRepository<Result> {
         || step.state !== "running"
         || step.attempt !== expectedAttempt
       ) {
-        return false;
+        return undefined;
       }
       if (syncErrorCode != null && (execution.plan.origin !== "gui-edit" || step.descriptor.kind !== "local_synchronize")) {
         throw new Error("同期失敗コードをGUI編集の後続同期以外へ保存できません。");
@@ -275,7 +310,7 @@ implements ProposalExecutionRepository<Result> {
         expectedAttempt,
       );
       if (changed.changes === 0) {
-        return false;
+        return undefined;
       }
       assertSingleChange(changed, "step確定");
       const nextState = outcome.state === "succeeded" ? "running" : outcome.state;
@@ -291,10 +326,18 @@ implements ProposalExecutionRepository<Result> {
         executionId,
       );
       assertSingleChange(executionChanged, "execution確定");
-      this.get(executionId);
-      return true;
+      const changedExecution = this.get(executionId);
+      if (changedExecution == null) {
+        throw new Error("確定したexecutionを読み出せません。");
+      }
+      return changedExecution;
     });
-    return settle();
+    const changedExecution = settle();
+    if (changedExecution == null) {
+      return false;
+    }
+    this.publishChanged(changedExecution);
+    return true;
   }
 
   /** 全step完了後に最終resultとsucceededへの遷移を同時に保存します。 */
@@ -315,7 +358,7 @@ implements ProposalExecutionRepository<Result> {
         throw new Error("完了するexecutionがありません。");
       }
       if (execution.state !== "running") {
-        return false;
+        return undefined;
       }
       if (execution.steps.some((step) => step.state !== "succeeded")) {
         throw new Error("未完了のstepがあるexecutionを完了できません。");
@@ -331,12 +374,20 @@ implements ProposalExecutionRepository<Result> {
               WHERE execution_id = proposal_executions.execution_id AND state <> 'succeeded'
             )`).run(serializedResult, completedAt, executionId);
       if (changed.changes === 0) {
-        return false;
+        return undefined;
       }
       assertSingleChange(changed, "execution完了");
-      this.get(executionId);
-      return true;
+      const changedExecution = this.get(executionId);
+      if (changedExecution == null) {
+        throw new Error("完了したexecutionを読み出せません。");
+      }
+      return changedExecution;
     });
-    return completeExecution();
+    const changedExecution = completeExecution();
+    if (changedExecution == null) {
+      return false;
+    }
+    this.publishChanged(changedExecution);
+    return true;
   }
 }

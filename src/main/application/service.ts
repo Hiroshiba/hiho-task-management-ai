@@ -157,6 +157,7 @@ import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import { createAiIpcPort } from "../ipc/handlers/ai";
 import type { ProposalsHandlerWorkflows } from "../ipc/handlers/proposals";
+import type { SettingsHandlerWorkflows } from "../ipc/handlers/settings";
 import { buildDisplayOrderInput } from "./task-write";
 import { applyGuiTaskWriteExecution, projectGuiExecutionResult, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
 import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
@@ -1827,6 +1828,14 @@ export class TaskHubApplication {
       ai: this.createAiPort(),
       proposalHistory: this.createProposalHistoryPort(),
       obsidian: this.obsidian.createIpcPort(),
+    };
+  }
+
+  /** 初回設定とAsana再認証の最終IPCへ公開するworkflowを取得します。 */
+  public getSettingsHandlerWorkflows(): SettingsHandlerWorkflows {
+    return {
+      setup: this.setupIpc,
+      asana: this.asanaReauthentication.createPort(),
     };
   }
 

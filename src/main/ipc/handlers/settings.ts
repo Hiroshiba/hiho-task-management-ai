@@ -10,7 +10,7 @@ type ReauthenticationResult = IpcSuccessValue<typeof settingsContracts.completeA
 type ReauthenticationSourceResult = Pick<ReauthenticationResult, "synced_at" | "performed_mode"> & {
   readonly cleanup_items: readonly unknown[];
 };
-type SettingsHandlers = {
+export type SettingsHandlers = {
   readonly [Name in keyof typeof settingsContracts]: ContractHandler<(typeof settingsContracts)[Name]>;
 };
 

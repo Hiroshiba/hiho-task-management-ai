@@ -16,8 +16,8 @@ import {
   type ProposalTaskWriteResult,
   type TaskWriteExecutionResult,
 } from "../application/task-write";
-import { GuiEditExecutionWorkflow, type GuiEditExecutionPort } from "../application/gui-edit";
-import { ProposalExecutionWorkflow, type StoredProposalExecutionPort } from "../application/proposal-apply";
+import { GuiEditExecutionWorkflow, type GuiEditExecution, type GuiEditExecutionPort } from "../application/gui-edit";
+import { ProposalExecutionWorkflow, type StoredProposalExecution, type StoredProposalExecutionPort } from "../application/proposal-apply";
 import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
 
 type TaskWriteRuntimeOptions = {
@@ -40,6 +40,8 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   readonly proposalWorkflow: ProposalExecutionWorkflow;
   readonly gui: GuiEditExecutionPort;
   readonly guiWorkflow: GuiEditExecutionWorkflow;
+  readonly onGuiChanged: (listener: (execution: GuiEditExecution) => void) => () => void;
+  readonly onProposalChanged: (listener: (execution: StoredProposalExecution) => void) => () => void;
 } {
   const fingerprint = (canonicalPayload: string): string =>
     createHash("sha256").update(canonicalPayload).digest("hex");
@@ -144,5 +146,11 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
     proposalWorkflow: new ProposalExecutionWorkflow(proposal),
     gui,
     guiWorkflow: new GuiEditExecutionWorkflow(gui),
+    onGuiChanged: (listener) => repository.onChanged((execution) => {
+      if (execution.plan.origin === "gui-edit") listener(guiExecution(execution));
+    }),
+    onProposalChanged: (listener) => repository.onChanged((execution) => {
+      if (execution.plan.origin === "proposal") listener(proposalExecution(execution));
+    }),
   };
 }
