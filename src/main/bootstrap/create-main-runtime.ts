@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
-import { PersistenceRuntime } from "../infrastructure/persistence";
+import {
+  ApplicationUpdateAttemptStore,
+  PersistenceRuntime,
+  WindowStateStore,
+} from "../infrastructure/persistence";
 import {
   createLegacyRuntime,
   migrateLegacyPersistence,
@@ -25,8 +29,11 @@ export interface MainRuntime {
   readonly legacy: LegacyRuntimePort;
   readonly reporter: ErrorReporter | undefined;
   readonly signal: AbortSignal;
+  createWindowStateStore(): WindowStateStore;
+  createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
   abort(): void;
   dispose(): Promise<void>;
+  closeLateFiles(): void;
 }
 
 /** Mainの診断sink、保存資源、未移行機能を一度だけ組み立てます。 */
@@ -60,6 +67,18 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       legacy,
       reporter,
       signal: controller.signal,
+      createWindowStateStore: () => new WindowStateStore(
+        openedPersistence.openLateTextFile(
+          join(options.userDataPath, "window-state.json"),
+          "ウィンドウ状態",
+        ),
+      ),
+      createApplicationUpdateAttemptStore: () => new ApplicationUpdateAttemptStore(
+        openedPersistence.openLateTextFile(
+          join(options.userDataPath, "application-update-attempt.json"),
+          "アプリ本体の更新試行",
+        ),
+      ),
       abort: () => controller.abort(),
       dispose: () => {
         if (disposal != null) {
@@ -92,6 +111,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         });
         return disposal;
       },
+      closeLateFiles: () => openedPersistence.closeLateFiles(),
     };
   } catch (error) {
     controller.abort();

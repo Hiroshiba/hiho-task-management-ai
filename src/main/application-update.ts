@@ -9,12 +9,9 @@ import {
   type IpcAppUpdateState,
 } from "../shared/ipc";
 import {
-  captureSecurePersistentFile,
-  normalizeSecurePersistentFilePath,
-  readSecurePersistentTextFileWithByteLimit,
-  removeSecurePersistentFile,
-  writeSecurePersistentTextFileAtomically,
-} from "./local-storage-path";
+  stableVersionSchema,
+  type ApplicationUpdateAttemptStore,
+} from "./infrastructure/persistence";
 
 const latestReleaseAssetsUrl =
   "https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest/download/";
@@ -33,14 +30,7 @@ const genericUpdateProviderSchema = z.object({
   provider: z.literal("generic"),
   url: z.url(),
 }).passthrough();
-const stableVersionSchema = z.string().max(64).regex(/^\d+\.\d+\.\d+$/);
 const stableVersionPartsSchema = z.tuple([z.coerce.bigint(), z.coerce.bigint(), z.coerce.bigint()]);
-const applicationUpdateAttemptSchema = z.object({
-  targetVersion: stableVersionSchema,
-  status: z.enum(["pending", "failed"]),
-}).strict();
-
-type ApplicationUpdateAttempt = z.infer<typeof applicationUpdateAttemptSchema>;
 
 function shouldRetryUpdateOperation(error: unknown, operation: "check" | "download"): boolean {
   if (!(error instanceof Error)) {
@@ -88,44 +78,6 @@ function hasReachedVersion(currentVersion: string, targetVersion: string): boole
     return current[1] > target[1];
   }
   return current[2] >= target[2];
-}
-
-/** アプリ本体の更新試行を安全なファイルへ保存します。 */
-class ApplicationUpdateAttemptStore {
-  private readonly filePath: string;
-
-  public constructor(userDataPath: string) {
-    this.filePath = normalizeSecurePersistentFilePath(join(userDataPath, "application-update-attempt.json"));
-    captureSecurePersistentFile(this.filePath, "アプリ本体の更新試行");
-  }
-
-  /** 保存済みの更新試行を読み出します。 */
-  public load(): ApplicationUpdateAttempt | undefined {
-    const serialized = readSecurePersistentTextFileWithByteLimit(
-      this.filePath,
-      "アプリ本体の更新試行",
-      1_024,
-    );
-    if (serialized == null) {
-      return undefined;
-    }
-    const parsed: unknown = JSON.parse(serialized);
-    return applicationUpdateAttemptSchema.parse(parsed);
-  }
-
-  /** 更新試行を原子的に保存します。 */
-  public save(attempt: ApplicationUpdateAttempt): void {
-    writeSecurePersistentTextFileAtomically(
-      this.filePath,
-      JSON.stringify(applicationUpdateAttemptSchema.parse(attempt)),
-      "アプリ本体の更新試行",
-    );
-  }
-
-  /** 保存済みの更新試行を削除します。 */
-  public clear(): void {
-    removeSecurePersistentFile(this.filePath, "アプリ本体の更新試行");
-  }
 }
 
 type ApplicationUpdater = Pick<
@@ -215,11 +167,11 @@ export class ApplicationUpdateService {
     private readonly candidate: boolean,
     private readonly platform: NodeJS.Platform,
     private readonly resourcesPath: string,
-    userDataPath: string,
+    attemptStore: ApplicationUpdateAttemptStore,
     private readonly reportError: (error: unknown) => void,
   ) {
     this.state = candidate ? { kind: "idle" } : { kind: "unavailable" };
-    this.attemptStore = new ApplicationUpdateAttemptStore(userDataPath);
+    this.attemptStore = attemptStore;
     this.restoreInstallAttempt();
   }
 

@@ -1475,22 +1475,12 @@
     {
       "path": "src/main/application-update.ts",
       "rule": "old-import",
-      "symbol": "src/main/local-storage-path.ts"
-    },
-    {
-      "path": "src/main/application-update.ts",
-      "rule": "old-import",
       "symbol": "src/shared/ipc/index.ts"
     },
     {
       "path": "src/main/application-update.ts",
       "rule": "old-path",
       "symbol": "src/main/application-update.ts"
-    },
-    {
-      "path": "src/main/application-update.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/local-storage-path.ts"
     },
     {
       "path": "src/main/application/checkpoint.ts",
@@ -4221,11 +4211,6 @@
       "path": "src/main/storage/vault-mappings.ts",
       "rule": "old-path",
       "symbol": "src/main/storage/vault-mappings.ts"
-    },
-    {
-      "path": "src/main/window-state.ts",
-      "rule": "old-import",
-      "symbol": "src/main/local-storage-path.ts"
     },
     {
       "path": "src/main/window-state.ts",

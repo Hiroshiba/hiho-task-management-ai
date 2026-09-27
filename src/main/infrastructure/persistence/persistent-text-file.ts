@@ -310,6 +310,7 @@ export function removeSecurePersistentFile(
 /** 永続テキストファイルの読み書きと削除を提供します。 */
 export interface PersistentTextFile {
   read(): string | undefined;
+  readWithByteLimit(maximumBytes: number): string | undefined;
   replaceAtomically(content: string, label: string): void;
   remove(): void;
 }
@@ -328,6 +329,16 @@ export class PersistentTextFileHandle implements PersistentTextFile {
   public read(): string | undefined {
     this.assertOpen();
     return readSecurePersistentTextFile(this.filePath, this.label);
+  }
+
+  /** 指定サイズ以下の検証済みファイルからテキストを読み取ります。 */
+  public readWithByteLimit(maximumBytes: number): string | undefined {
+    this.assertOpen();
+    return readSecurePersistentTextFileWithByteLimit(
+      this.filePath,
+      this.label,
+      maximumBytes,
+    );
   }
 
   /** 一時ファイルからテキストを原子的に置き換えます。 */

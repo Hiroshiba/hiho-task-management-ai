@@ -5,73 +5,15 @@ import type {
   Input,
   Rectangle,
 } from "electron";
-import { z } from "zod";
 import {
-  captureSecurePersistentFile,
-  normalizeSecurePersistentFilePath,
-  readSecurePersistentTextFile,
-  writeSecurePersistentTextFileAtomically,
-} from "./local-storage-path";
+  windowStateSchema,
+  windowStateVersion,
+  type NormalWindowMode,
+  type WindowState,
+  type WindowStateStore,
+} from "./infrastructure/persistence";
 
-const windowStateVersion = 1;
 const windowStateSaveDebounceMilliseconds = 150;
-
-const windowBoundsSchema = z
-  .object({
-    x: z.number().finite().int(),
-    y: z.number().finite().int(),
-    width: z.number().finite().int().positive(),
-    height: z.number().finite().int().positive(),
-  })
-  .strict();
-
-const normalWindowModeSchema = z.enum(["normal", "maximized"]);
-
-const windowStateSchema = z.discriminatedUnion("mode", [
-  z
-    .object({
-      version: z.literal(windowStateVersion),
-      mode: z.literal("normal"),
-      bounds: windowBoundsSchema,
-    })
-    .strict(),
-  z
-    .object({
-      version: z.literal(windowStateVersion),
-      mode: z.literal("maximized"),
-      bounds: windowBoundsSchema,
-    })
-    .strict(),
-  z
-    .object({
-      version: z.literal(windowStateVersion),
-      mode: z.literal("fullscreen"),
-      restore_mode: normalWindowModeSchema,
-      bounds: windowBoundsSchema,
-    })
-    .strict(),
-]);
-
-type WindowState = z.infer<typeof windowStateSchema>;
-type NormalWindowMode = z.infer<typeof normalWindowModeSchema>;
-
-function serializeWindowState(state: WindowState): string {
-  return JSON.stringify(windowStateSchema.parse(state));
-}
-
-function parseWindowState(serialized: string): WindowState {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(serialized);
-  } catch (error) {
-    throw new Error("ウィンドウ状態のJSONが不正です。", { cause: error });
-  }
-  try {
-    return windowStateSchema.parse(parsed);
-  } catch (error) {
-    throw new Error("ウィンドウ状態の内容が不正です。", { cause: error });
-  }
-}
 
 function intersectionArea(left: Rectangle, right: Rectangle): number {
   const width = Math.min(left.x + left.width, right.x + right.width)
@@ -136,34 +78,6 @@ function constrainWindowState(
   const display = displayForBounds(state.bounds, displays);
   const bounds = constrainBounds(state.bounds, display);
   return windowStateSchema.parse({ ...state, bounds });
-}
-
-/** ウィンドウ状態を安全なJSONとして保存・読み込みします。 */
-export class WindowStateStore {
-  private readonly filePath: string;
-
-  public constructor(filePath: string) {
-    this.filePath = normalizeSecurePersistentFilePath(filePath);
-    captureSecurePersistentFile(this.filePath, "ウィンドウ状態");
-  }
-
-  /** 保存済みウィンドウ状態を検証して読み出します。 */
-  public load(): WindowState | undefined {
-    const serialized = readSecurePersistentTextFile(this.filePath, "ウィンドウ状態");
-    if (serialized == null) {
-      return undefined;
-    }
-    return parseWindowState(serialized);
-  }
-
-  /** ウィンドウ状態を原子的に保存します。 */
-  public save(state: WindowState): void {
-    writeSecurePersistentTextFileAtomically(
-      this.filePath,
-      serializeWindowState(state),
-      "ウィンドウ状態",
-    );
-  }
 }
 
 function normalModeForWindow(window: BrowserWindow): NormalWindowMode {

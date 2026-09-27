@@ -4,9 +4,10 @@
 
 | 状態 | 唯一のowner | 生成 | 破棄・保存 |
 | --- | --- | --- | --- |
-| MainRuntimeと外部client | `create-main-runtime.ts`が返す`MainRuntime` | Electron app ready後 | app終了時にdispose |
-| 起動、停止、ウィンドウ、online監視、自動更新 | `register-main-lifecycle.ts` | MainRuntime生成後 | app終了時にtimer、listener、windowを破棄。ウィンドウ状態と更新試行はJSONへ保存 |
-| DB接続とtransaction | persistence adapter | MainRuntime生成時 | MainRuntime dispose。SQLiteへ保存 |
+| MainRuntimeと外部client | `create-main-runtime.ts`が返す`MainRuntime` | Electron app ready後 | app終了処理でdispose |
+| 起動、停止、ウィンドウ、online監視、自動更新 | `register-main-lifecycle.ts` | MainRuntime生成後 | `before-quit`でウィンドウ状態保存と停止を済ませ、更新適用後の`will-quit`で後段ファイルを閉じる。timer、listener、windowもapp終了時に破棄 |
+| DB接続、transaction、通常の永続ファイル | persistence adapterの`PersistenceRuntime` | MainRuntime生成時 | MainRuntime disposeで閉じる。SQLiteと各ファイルへ保存 |
+| ウィンドウ状態と更新試行の永続ファイル | persistence adapterの`PersistenceRuntime` | MainRuntimeの遅延factoryを通じて各機能の生成時に開く | ウィンドウの`close`と更新適用時の保存を終えた後、`will-quit`で一度だけ閉じる |
 | Asana認証と同期実行 | settingsとtask-read workflowの実行単位 | 要求受付と同期開始時 | 終了時に中断・listenerを解放。token、同期状態、cacheは既存保存形式へ保存 |
 | Vaultマッピング保存中lock | Obsidian integration workflow | 保存開始時 | 成功・失敗・中断後にfinallyで解放。マッピングはSQLiteへ保存 |
 | Codex sessionと外部ツール接続 | `AiSessionRuntime`とAI adapter | session開始時 | session終了時にprocess、socket、作業資源を破棄 |

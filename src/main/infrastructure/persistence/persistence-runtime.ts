@@ -72,6 +72,7 @@ function assertPragmas(database: SqliteConnection): void {
 export class PersistenceRuntime {
   private readonly database: BetterSqlite3.Database;
   private readonly textFiles = new Set<PersistentTextFileHandle>();
+  private readonly lateTextFiles = new Set<PersistentTextFileHandle>();
 
   public constructor(
     dbPath: string,
@@ -144,7 +145,17 @@ export class PersistenceRuntime {
     return file;
   }
 
-  /** SQLite接続と永続ファイルを閉じます。 */
+  /** Electronの終了直前まで使う永続テキストファイルを開きます。 */
+  public openLateTextFile(filePath: string, label: string): PersistentTextFile {
+    if (!this.database.open) {
+      throw new Error("永続化ランタイムは終了しています。");
+    }
+    const file = new PersistentTextFileHandle(filePath, label);
+    this.lateTextFiles.add(file);
+    return file;
+  }
+
+  /** SQLite接続と通常の永続ファイルを閉じます。 */
   public close(): void {
     if (this.database.open) {
       this.database.close();
@@ -153,5 +164,13 @@ export class PersistenceRuntime {
       file.close();
     }
     this.textFiles.clear();
+  }
+
+  /** Electronの終了直前まで使った永続ファイルを閉じます。 */
+  public closeLateFiles(): void {
+    for (const file of this.lateTextFiles) {
+      file.close();
+    }
+    this.lateTextFiles.clear();
   }
 }

@@ -60,6 +60,10 @@ export function registerMainLifecycle(
     });
   });
 
+  app.on("will-quit", () => {
+    runtime?.closeLateFiles();
+  });
+
   if (!app.requestSingleInstanceLock()) {
     state = { kind: "stopped" };
     app.quit();

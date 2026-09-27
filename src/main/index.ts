@@ -47,7 +47,7 @@ import {
   assertTrustedIpcSender,
   isApplicationUrl,
 } from "./security";
-import { WindowStateController, WindowStateStore } from "./window-state";
+import { WindowStateController } from "./window-state";
 
 const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
@@ -371,9 +371,8 @@ function createApplicationRuntime(): MainRuntime {
         }
         await ensureMainWindow(
           getRendererUrl(),
-          runtime.legacy,
+          runtime,
           startupGate,
-          runtime.signal,
         );
         if (!showAndFocusMainWindow()) {
           throw new Error("TaskHubメインウィンドウを表示できません。");
@@ -624,16 +623,14 @@ function showAndFocusMainWindow(): boolean {
 
 async function createMainWindow(
   rendererUrl: string,
-  application: LegacyRuntimePort,
+  runtime: MainRuntime,
   gate: StartupGate,
-  signal: AbortSignal,
 ): Promise<void> {
+  const signal = runtime.signal;
   if (!lifecycle.isRunning() || signal.aborted) {
     return;
   }
-  const windowStateStore = new WindowStateStore(
-    join(app.getPath("userData"), "window-state.json"),
-  );
+  const windowStateStore = runtime.createWindowStateStore();
   const savedWindowState = windowStateStore.load();
   const window = new BrowserWindow({
     show: false,
@@ -669,9 +666,9 @@ async function createMainWindow(
     rendererWebContents: window.webContents,
     rendererUrl,
     ports: {
-      ...application.getIpcPorts(),
-      readModel: application.taskRead,
-      sync: application.taskRead,
+      ...runtime.legacy.getIpcPorts(),
+      readModel: runtime.legacy.taskRead,
+      sync: runtime.legacy.taskRead,
       appUpdate: updateService,
     },
     startupGate: gate,
@@ -738,10 +735,10 @@ async function createMainWindow(
 
 function ensureMainWindow(
   rendererUrl: string,
-  application: LegacyRuntimePort,
+  runtime: MainRuntime,
   gate: StartupGate,
-  signal: AbortSignal,
 ): Promise<void> {
+  const signal = runtime.signal;
   if (!lifecycle.isRunning() || signal.aborted) {
     return Promise.resolve();
   }
@@ -753,9 +750,8 @@ function ensureMainWindow(
   }
   windowCreationPromise = createMainWindow(
     rendererUrl,
-    application,
+    runtime,
     gate,
-    signal,
   ).finally(() => {
     windowCreationPromise = undefined;
   });
@@ -897,7 +893,7 @@ async function bootstrap(): Promise<void> {
     ),
     process.platform,
     process.resourcesPath,
-    app.getPath("userData"),
+    runtime.createApplicationUpdateAttemptStore(),
     (error) => {
       recordPersistentError("main", "app.error", "application_update", "error", error);
     },
@@ -908,9 +904,8 @@ async function bootstrap(): Promise<void> {
     if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
       void ensureMainWindow(
         rendererUrl,
-        application,
+        runtime,
         startupGate,
-        runtime.signal,
       ).catch((error) => {
         if (runtime.signal.aborted || !lifecycle.isRunning()) {
           return;
@@ -922,9 +917,8 @@ async function bootstrap(): Promise<void> {
   });
   await ensureMainWindow(
     rendererUrl,
-    application,
+    runtime,
     startupGate,
-    runtime.signal,
   );
   await yieldToRenderer();
   if (runtime.signal.aborted || !lifecycle.isRunning()) {
