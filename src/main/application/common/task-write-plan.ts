@@ -214,8 +214,7 @@ const taskWritePlanSchema = z.object({
   if (plan.origin === "proposal" && checkedOperations.size + createdOperations.size === 0) {
     context.addIssue({ code: "custom", path: ["steps"], message: "変更案には操作の作成または照合stepが必要です。" });
   }
-  const createSteps = plan.steps.filter((step): step is Extract<TaskWriteStep, { kind: "asana_create_task" }> =>
-    step.kind === "asana_create_task" && step.scope.kind === "operation");
+  const createSteps = plan.steps.filter((step) => step.kind === "asana_create_task");
   const readyReferences = new Set(plan.known_references.map((reference) => reference.temporary_ref));
   for (const [index, step] of createSteps.entries()) {
     const readyOperationIds = createSteps.slice(index)
@@ -257,6 +256,7 @@ export const taskWriteReceiptSchema = z.discriminatedUnion("kind", [
     ...asanaReceiptShape,
     kind: z.literal("asana_write"),
     task_gid: gidSchema,
+    verification_step_id: identifierSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("proposal_operation_check"),
@@ -264,6 +264,7 @@ export const taskWriteReceiptSchema = z.discriminatedUnion("kind", [
     recorded_at: isoDateTimeSchema,
     planned_payload_fingerprint: snapshotHashSchema,
     observed_state_fingerprint: snapshotHashSchema,
+    task_gid: gidSchema,
     outcome: z.enum(["needs_write", "already_applied"]),
   }).strict(),
   z.object({

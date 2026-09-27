@@ -198,6 +198,23 @@ export function parseExecutionRecord<Result extends object>(
     }
     return parseStep(value, descriptor, row.execution_id, index, parseReceipt);
   });
+  for (const [index, step] of steps.entries()) {
+    if (step.state !== "succeeded" || step.receipt.kind !== "asana_write"
+      || step.receipt.verification_step_id == null) continue;
+    const receipt = step.receipt;
+    const source = steps.slice(0, index).find((candidate) =>
+      candidate.descriptor.step_id === receipt.verification_step_id);
+    if (source?.state !== "succeeded"
+      || source.receipt.kind !== "proposal_operation_check"
+      || source.receipt.outcome !== "already_applied"
+      || source.receipt.task_gid !== step.receipt.task_gid
+      || source.receipt.observed_state_fingerprint !== step.receipt.observed_state_fingerprint
+      || source.descriptor.scope.kind !== "operation"
+      || step.descriptor.scope.kind !== "operation"
+      || source.descriptor.scope.operation_id !== step.descriptor.scope.operation_id) {
+      throw new Error("省略したAsana stepの照合receiptが一致しません。");
+    }
+  }
   const activeSteps = steps.filter((step) => step.state !== "planned" && step.state !== "succeeded");
   const firstPlanned = steps.findIndex((step) => step.state === "planned");
   const activeIndex = steps.findIndex((step) => step.state !== "planned" && step.state !== "succeeded");

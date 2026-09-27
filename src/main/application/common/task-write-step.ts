@@ -233,10 +233,14 @@ export const taskWriteStepSchema = z.discriminatedUnion("kind", [
   z.object({ ...stepShape, kind: z.literal("local_synchronize"), payload: synchronizationPayloadSchema }).strict(),
 ]);
 
-export type TaskWriteStep = z.infer<typeof taskWriteStepSchema>;
-export type TaskWriteTarget = z.infer<typeof taskWriteTargetSchema>;
-export type TaskWriteExternalChange = z.infer<typeof externalChangeSchema>;
-export type TaskWriteExternalBaseline = z.infer<typeof taskWriteExternalBaselineSchema>;
+type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+export type TaskWriteStep = DeepReadonly<z.infer<typeof taskWriteStepSchema>>;
+export type TaskWriteTarget = DeepReadonly<z.infer<typeof taskWriteTargetSchema>>;
+export type TaskWriteExternalChange = DeepReadonly<z.infer<typeof externalChangeSchema>>;
+export type TaskWriteExternalBaseline = DeepReadonly<z.infer<typeof taskWriteExternalBaselineSchema>>;
 export type TaskWriteStepDraft = TaskWriteStep extends infer T
   ? T extends TaskWriteStep
     ? Omit<T, "executor_version" | "retry_class" | "payload_fingerprint">
