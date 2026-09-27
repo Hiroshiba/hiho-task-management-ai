@@ -38,6 +38,8 @@
 
 `src/main/index.ts`と`src/renderer/index.html`は既存のビルド入口として残し、業務ロジックと可変状態を持たせません。自動更新とウィンドウのライフサイクルはbootstrapが管理します。外部Codexとtaskctlの接続および外部エージェントのtransportはAI infrastructureが担います。`external-agent/service.ts`に同居する提案基準と生成、提出後の確認と承認・適用は、それぞれproposal-generateとproposal-applyへ分けます。`shared/storage/schemas.ts`の保存形式はpersistenceへ、`shared/view-model/task-filter.ts`の画面フィルターはrendererのtasksへ移します。境界を越えて渡す値だけをIPC契約に置きます。
 
+AI変更案の保持、会話根拠、取り下げ確認、生成世代は`ProposalGenerationState`がセッション単位で管理します。Codexターンは`application/common/ports/proposal-generation-session.ts`のportから呼び出し、AI応答の構造検証と訂正再試行を外部書き込みより先に完了します。承認時の再取得、基準値の照合、適用、保持値の削除は`proposal-apply`が順に実行します。AI状態と差分のMain側購読は`AiEventRuntime`、IPCからの提案操作の配送は`main/ipc/handlers/ai.ts`が管理します。
+
 ## 依存方向
 
 | import元 | 許可する内部依存 | 禁止する依存 |

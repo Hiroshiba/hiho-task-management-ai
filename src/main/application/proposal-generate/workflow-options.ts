@@ -39,10 +39,9 @@ type WorkflowOptionsShape = {
   readonly taskctlSnapshotProvider: unknown;
   readonly baselineExternalDataProvider: unknown;
   readonly externalStatusEvidenceCollector: unknown;
-  readonly applicationCoordinator: unknown;
-  readonly prepareApprovalInput: unknown;
-  readonly isOnline: unknown;
+  readonly executeApproval: unknown;
   readonly logRetryEvent: unknown;
+  readonly reportListenerError: unknown;
 };
 
 /** AIワークフローの依存境界を検証します。 */
@@ -56,10 +55,9 @@ export function parseWorkflowOptions<TOptions extends WorkflowOptionsShape>(
   readonly taskctlSnapshotProvider: TOptions["taskctlSnapshotProvider"];
   readonly baselineExternalDataProvider: TOptions["baselineExternalDataProvider"];
   readonly externalStatusEvidenceCollector: TOptions["externalStatusEvidenceCollector"];
-  readonly applicationCoordinator: TOptions["applicationCoordinator"];
-  readonly prepareApprovalInput: TOptions["prepareApprovalInput"];
-  readonly isOnline: TOptions["isOnline"];
+  readonly executeApproval: TOptions["executeApproval"];
   readonly logRetryEvent: TOptions["logRetryEvent"];
+  readonly reportListenerError: TOptions["reportListenerError"];
 } {
 const sessionPortSchema = z.custom<TOptions["session"]>(
   (value) => {
@@ -103,28 +101,19 @@ const externalStatusEvidenceCollectorSchema = z.custom<
   "外部状態根拠収集境界が必要です。",
 );
 
-const applicationCoordinatorSchema = z.custom<
-  TOptions["applicationCoordinator"]
->(
-  (value) => typeof value === "object"
-    && value != null
-    && typeof Reflect.get(value, "apply") === "function",
-  "Asana適用コーディネータが必要です。",
-);
-
-const approvalInputProviderSchema = z.custom<TOptions["prepareApprovalInput"]>(
+const approvalExecutorSchema = z.custom<TOptions["executeApproval"]>(
   (value) => typeof value === "function",
-  "承認入力供給関数が必要です。",
-);
-
-const onlineStateProviderSchema = z.custom<TOptions["isOnline"]>(
-  (value) => typeof value === "function",
-  "オンライン状態供給関数が必要です。",
+  "承認実行関数が必要です。",
 );
 
 const retryEventLoggerSchema = z.custom<TOptions["logRetryEvent"]>(
   (value) => typeof value === "function",
   "AI変更案の再試行ログ関数が必要です。",
+);
+
+const listenerErrorReporterSchema = z.custom<TOptions["reportListenerError"]>(
+  (value) => typeof value === "function",
+  "差分購読のエラー記録関数が必要です。",
 );
 
 return z
@@ -135,10 +124,9 @@ return z
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
     externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
-    applicationCoordinator: applicationCoordinatorSchema,
-    prepareApprovalInput: approvalInputProviderSchema,
-    isOnline: onlineStateProviderSchema,
+    executeApproval: approvalExecutorSchema,
     logRetryEvent: retryEventLoggerSchema,
+    reportListenerError: listenerErrorReporterSchema,
   })
   .strict()
     .parse(options);

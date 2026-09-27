@@ -9,7 +9,9 @@
 | DB接続とtransaction | persistence adapter | MainRuntime生成時 | MainRuntime dispose。SQLiteへ保存 |
 | Asana認証と同期実行 | settingsとtask-read workflowの実行単位 | 要求受付と同期開始時 | 終了時に中断・listenerを解放。token、同期状態、cacheは既存保存形式へ保存 |
 | Vaultマッピング保存中lock | Obsidian integration workflow | 保存開始時 | 成功・失敗・中断後にfinallyで解放。マッピングはSQLiteへ保存 |
-| Codex sessionと外部ツール接続 | proposal-generate workflowとAI adapter | session開始時 | session終了時にprocess、socket、作業資源を破棄。未承認案は永続化しない |
+| Codex sessionと外部ツール接続 | `AiSessionRuntime`とAI adapter | session開始時 | session終了時にprocess、socket、作業資源を破棄 |
+| AI変更案、会話根拠、取り下げ確認、生成世代 | `ProposalGenerationState` | session開始時 | session終了時にdispose。未承認案は永続化しない |
+| AI状態と差分のMain側購読 | `AiEventRuntime` | MainRuntime生成時 | MainRuntime終了時にdispose |
 | 外部提案の文脈、準備要求、提案基準、提出要求 | proposal-generate workflow | 文脈設定と提案準備時 | 文脈変更時に準備済み文脈を失効。提出要求は同一稼働中に照合し、停止時に破棄。未承認案は永続化しない |
 | 提出済み外部提案の確認対象、承認状態、適用結果 | proposal-apply workflow | 提出受付時 | MainRuntime終了時にmemoryを破棄。適用記録はjournalへ保存 |
 | proposal execution、plan、journal | proposal execution repository | 承認後、外部書き込み前 | terminal stateまで永続化。復旧は保存済みplanを読む |

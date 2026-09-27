@@ -102,15 +102,21 @@ import {
 } from "./diagnostics";
 import {
   AiWorkflowService,
+  AiWorkflowError,
+  AiWorkflowOfflineError,
   AiWorkflowRetryLogEventError,
+  assertSelectedProposalGraphIsSafe,
   aiWorkflowRetryLogEventSchema,
   createBaselineSnapshot,
+  resolveSelectedOperationIds,
   type AiWorkflowRetryLogEvent,
   type ApprovalPreparationInput,
 } from "../ai/workflow";
 import {
   AsanaProposalApplicationCoordinator,
   AsanaProposalOperationWriter,
+  asanaProposalApplicationInputSchema,
+  asanaProposalApplicationResultSchema,
   asanaPostWriteSynchronizationResultSchema,
   type ApplicationDiagnostic,
   type AsanaProposalApplicationInput,
@@ -132,10 +138,21 @@ import {
   normalizeAsanaSnapshot,
   normalizeTaskGraph,
 } from "../domain";
-import { collectApprovalProjectTasks } from "./proposal-generate";
+import {
+  createBaselineTaskSnapshots,
+} from "./proposal-generate";
+import {
+  approveStoredProposal,
+  collectApprovalProjectTasks,
+  createApplicationSummary,
+  createApprovalPreparationInput,
+  assertApprovalInputMatchesStored,
+} from "./proposal-apply";
+import { createAiIpcPort } from "../ipc/handlers/ai";
 import { buildDisplayOrderInput } from "./task-write";
 import { validateRelationGraph } from "./gui-edit";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
+import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
 import {
   AiSessionRuntime,
   type AiSessionBaselineStore as RuntimeAiSessionBaselineStore,
@@ -253,8 +270,6 @@ import {
   type IpcAiEditInput,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
-  type IpcAiProposalInput,
-  type IpcAiRejectInput,
   type IpcAsanaAuthenticationState,
   type IpcAsanaReauthenticationCancelInput,
   type IpcAsanaReauthenticationCompleteInput,
@@ -849,8 +864,7 @@ export class TaskHubApplication {
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
-  private readonly aiDeltaListeners = new Set<(delta: IpcCodexDelta) => void>();
-  private readonly aiStatusListeners = new Set<(status: IpcAiStatus) => void>();
+  private readonly aiEvents: AiEventRuntime<IpcAiStatus, IpcCodexDelta>;
   private readonly synchronizationOperations: SynchronizationOperations<
     AsanaSyncRuntimeInternalResult,
     PostWriteSynchronizationResultWithCause,
@@ -870,6 +884,11 @@ export class TaskHubApplication {
   public constructor(options: ApplicationOptions, persistence: PersistenceRuntime) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
+    this.aiEvents = new AiEventRuntime({
+      currentStatus: () => this.currentAiStatus(),
+      reportListenerError: (error, channel) =>
+        this.options.diagnostic(error, channel, serviceErrorDiagnostic),
+    });
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     this.database = new StorageDatabase(persistence);
@@ -1087,7 +1106,7 @@ export class TaskHubApplication {
       createWorkflow: (session, collector, baselineStore, sessionId) =>
         this.createAiWorkflow(session, collector, baselineStore, sessionId),
       subscribeDelta: (workflow, sessionId) => workflow.onDelta((delta) => {
-        this.publishAiDelta(ipcAiDeltaEventSchema.parse({
+        this.aiEvents.publishDelta(ipcAiDeltaEventSchema.parse({
           session_id: sessionId,
           thread_id: delta.threadId,
           turn_id: delta.turnId,
@@ -1099,7 +1118,7 @@ export class TaskHubApplication {
         this.aiStartResult = result;
         this.codexAuthenticationRequired = true;
       },
-      publishStatus: () => this.publishAiStatus(),
+      publishStatus: () => this.aiEvents.publishStatus(),
       createAbortedError: () => new CodexSessionAbortedError(),
       removeWorkspace: (userDataPath) => removeCodexSessionWorkspace(
         userDataPath,
@@ -1437,7 +1456,7 @@ export class TaskHubApplication {
         });
         this.aiStartResult = undefined;
         this.codexAuthenticationRequired = false;
-        this.publishAiStatus();
+        this.aiEvents.publishStatus();
       },
       verifyCapabilities: (signal) => this.verifyConfiguredCodexCapabilities(signal),
     });
@@ -1618,8 +1637,7 @@ export class TaskHubApplication {
       externalAgentBridge: this.externalAgentBridge,
       stopSyncSubscriptions: () => this.taskRead.stop(),
       clearAiListeners: () => {
-        this.aiDeltaListeners.clear();
-        this.aiStatusListeners.clear();
+        this.aiEvents.dispose();
       },
       closeAiSessions: (errors) => this.aiRuntime.closeAll(errors),
       displayOrder: () => this.operationalServices.getDisplayOrder(),
@@ -1640,7 +1658,7 @@ export class TaskHubApplication {
         this.aiStartResult = this.codexAdapter.getStartResult() ?? this.aiStartResult;
         this.codexAuthenticationRequired = validatedState.kind === "codex_authentication_required"
           || this.aiStartResult?.state === "authentication_required";
-        this.publishAiStatus();
+        this.aiEvents.publishStatus();
         return validatedState;
       },
       afterCodexAuthentication: async (signal) => {
@@ -2100,7 +2118,7 @@ export class TaskHubApplication {
       }
     }
     try {
-      this.publishAiStatus();
+      this.aiEvents.publishStatus();
     } catch (error: unknown) {
       errors.push(error);
     }
@@ -2253,13 +2271,13 @@ export class TaskHubApplication {
   }
 
   private async startCodexForConfigured(signal: AbortSignal): Promise<void> {
-    this.publishAiStatus();
+    this.aiEvents.publishStatus();
     const detected = await this.detectCodexSafely(signal);
     this.codexAvailability = detected;
     if (detected.kind === "unavailable") {
       this.aiStartResult = undefined;
       this.codexAuthenticationRequired = false;
-      this.publishAiStatus();
+      this.aiEvents.publishStatus();
       return;
     }
     const authentication = await this.getCodexAuthenticationStateSafely(signal);
@@ -2267,12 +2285,12 @@ export class TaskHubApplication {
       this.codexAvailability = authentication;
       this.aiStartResult = undefined;
       this.codexAuthenticationRequired = false;
-      this.publishAiStatus();
+      this.aiEvents.publishStatus();
       return;
     }
     this.codexAuthenticationRequired = authentication.kind === "required";
     this.aiStartResult = this.codexAdapter.getStartResult();
-    this.publishAiStatus();
+    this.aiEvents.publishStatus();
   }
 
   private async verifyConfiguredCodexCapabilities(signal: AbortSignal): Promise<void> {
@@ -2281,7 +2299,7 @@ export class TaskHubApplication {
     }
     const availability = await this.checkCodexCapabilitiesSafely(signal);
     this.codexAvailability = availability;
-    this.publishAiStatus();
+    this.aiEvents.publishStatus();
   }
 
   private async afterLocalStateRefresh(signal: AbortSignal): Promise<void> {
@@ -2685,7 +2703,7 @@ export class TaskHubApplication {
     this.aiStartResult = await this.codexSession.startNewSession(signal);
     this.resetAiSessionWithdrawConfirmations();
     this.codexAuthenticationRequired = false;
-    this.publishAiStatus();
+    this.aiEvents.publishStatus();
   }
 
   private async refreshCodexThreadAfterExternalToolCommit(
@@ -2804,57 +2822,17 @@ export class TaskHubApplication {
   }
 
   private currentAiStatus(): IpcAiStatus {
-    if (this.lifecycleRuntime.isStopped() || this.codexSession.getState() === "stopped") {
-      return ipcAiStatusEventSchema.parse({
-        kind: "unavailable",
-        reason_code: "stopped",
-      });
-    }
-    if (this.codexAvailability?.kind === "unavailable") {
-      return ipcAiStatusEventSchema.parse({
-        kind: "unavailable",
-        reason_code: this.codexAvailability.reason_code,
-      });
-    }
-    if (this.codexAuthenticationRequired || this.aiStartResult?.state === "authentication_required") {
-      return ipcAiStatusEventSchema.parse({ kind: "authentication_required" });
-    }
-    const model = this.codexAdapter.getReadyModel();
-    if (model != null && isReadyCodexResult(this.aiStartResult)) {
-      return ipcAiStatusEventSchema.parse({
-        kind: "ready",
-        model,
-      });
-    }
-    const sessionState = this.codexSession.getState();
-    if (sessionState === "disabled" || sessionState === "failed") {
-      return ipcAiStatusEventSchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-    }
-    return ipcAiStatusEventSchema.parse({ kind: "starting" });
-  }
-
-  private publishAiStatus(): void {
-    const status = this.currentAiStatus();
-    for (const listener of this.aiStatusListeners) {
-      try {
-        listener(status);
-      } catch (error: unknown) {
-        this.options.diagnostic(error, "ai_status_listener", serviceErrorDiagnostic);
-      }
-    }
-  }
-
-  private publishAiDelta(event: IpcCodexDelta): void {
-    for (const listener of this.aiDeltaListeners) {
-      try {
-        listener(event);
-      } catch (error: unknown) {
-        this.options.diagnostic(error, "ai_delta_listener", serviceErrorDiagnostic);
-      }
-    }
+    return deriveAiStatus({
+      stopped: this.lifecycleRuntime.isStopped(),
+      getSessionState: () => this.codexSession.getState(),
+      unavailableReason: this.codexAvailability?.kind === "unavailable"
+        ? this.codexAvailability.reason_code
+        : undefined,
+      authenticationRequired: this.codexAuthenticationRequired
+        || this.aiStartResult?.state === "authentication_required",
+      isReadySession: () => isReadyCodexResult(this.aiStartResult),
+      getModel: () => this.codexAdapter.getReadyModel(),
+    }, (value) => ipcAiStatusEventSchema.parse(value));
   }
 
   private createAiSessionWorkspace(sessionId: string): CodexWorkspaceInitializationResult {
@@ -2956,17 +2934,47 @@ export class TaskHubApplication {
         return value;
       },
       externalStatusEvidenceCollector,
-      applicationCoordinator: {
-        apply: (input, signal) => this.applyProposalApplication(
+      executeApproval: (input, signal, store) => approveStoredProposal(input, signal, {
+        parseRequest: (value) => aiWorkflowApprovalRequestSchema.parse(value),
+        throwIfAborted,
+        getStoredProposal: store.getStoredProposal,
+        resolveSelection: (
+          stored,
+          selection: z.infer<typeof aiWorkflowApprovalRequestSchema>["selection"],
+        ) => resolveSelectedOperationIds(stored, selection),
+        assertGraphSafe: assertSelectedProposalGraphIsSafe,
+        isOnline: () => this.isOnline(),
+        OfflineError: AiWorkflowOfflineError,
+        createPreparationInput: (stored, selected): ApprovalPreparationInput =>
+          createApprovalPreparationInput(stored, selected),
+        prepareApprovalInput: (prepared, currentSignal) =>
+          this.prepareApprovalInput(prepared, currentSignal),
+        parseApprovalInput: (value) => asanaProposalApplicationInputSchema.parse(value),
+        assertApprovalInputMatchesStored: (validated, stored, selected) =>
+          assertApprovalInputMatchesStored(validated, stored, selected, {
+            canonicalizeJson,
+            createBaselineTaskSnapshots,
+            WorkflowError: AiWorkflowError,
+          }),
+        apply: (validated, currentSignal) => this.applyProposalApplication(
           applicationCoordinator,
-          input,
-          signal,
+          validated,
+          currentSignal,
         ),
-      },
-      prepareApprovalInput: (input, signal) =>
-        this.prepareApprovalInput(input, signal),
-      isOnline: () => this.isOnline(),
+        parseApplication: (value) => asanaProposalApplicationResultSchema.parse(value),
+        createResult: (stored, application) => aiWorkflowApprovalResultSchema.parse({
+          proposal_id: stored.proposal_id,
+          application: createApplicationSummary(application),
+        }),
+        forgetProposal: store.forgetProposal,
+        WorkflowError: AiWorkflowError,
+      }),
       logRetryEvent: (event) => this.recordAiWorkflowRetryEvent(event),
+      reportListenerError: (error) => this.options.diagnostic(
+        error,
+        "ai_delta_listener",
+        serviceErrorDiagnostic,
+      ),
     });
   }
 
@@ -3006,71 +3014,40 @@ export class TaskHubApplication {
   }
 
   private createAiPort(): IpcAiPort {
-    return {
-      getStatus: () => {
-        this.assertOperationalReady();
-        return this.currentAiStatus();
-      },
+    return createAiIpcPort({
+      assertReady: () => this.assertOperationalReady(),
+      currentStatus: () => this.currentAiStatus(),
       startNewSession: (signal) => this.aiRuntime.startSession(signal),
-      startTurn: (input, signal) => this.aiInteraction.startTurn(input, signal),
-      getProposal: (input: IpcAiProposalInput) => {
-        return this.aiInteraction.withProposalRecord(input, false, (record) =>
-          aiWorkflowProposalViewSchema.parse(
-            record.workflow.getProposal(identifierSchema.parse(input.proposal_id)),
-          ));
-      },
-      select: (input: IpcAiSelectionInput) => {
-        return this.aiInteraction.withProposalRecord(input, true, (record) =>
-          aiWorkflowProposalViewSchema.parse(
-            record.workflow.select(aiWorkflowSelectionRequestSchema.parse({
-              proposal_id: input.proposal_id,
-              selection: input.selection,
-            })),
-          ));
-      },
-      editOperation: (input: IpcAiEditInput) => {
-        return this.aiInteraction.withProposalRecord(input, true, (record) =>
-          aiWorkflowProposalViewSchema.parse(
-            record.workflow.editOperation(aiWorkflowOperationEditSchema.parse({
-              proposal_id: input.proposal_id,
-              operation_id: input.operation_id,
-              after: input.after,
-              evidence_locator: input.evidence_locator,
-            })),
-          ));
-      },
-      reject: (input: IpcAiRejectInput) => {
-        this.aiInteraction.withProposalRecord(input, true, (record) => {
-          const validatedProposalId = identifierSchema.parse(input.proposal_id);
-          record.workflow.rejectProposal(validatedProposalId);
-          this.aiRuntime.forgetProposal(record, validatedProposalId);
-        });
-      },
-      approve: (input, signal) => this.aiInteraction.approve(input, signal),
+      startTurn: (input: IpcAiTurnInput, signal) => this.aiInteraction.startTurn(input, signal),
+      withProposalRecord: <TInput extends { readonly session_id: string }, TResult>(
+        input: TInput,
+        requireAvailable: boolean,
+        run: (record: AiSessionRecord) => TResult,
+      ) =>
+        this.aiInteraction.withProposalRecord(input, requireAvailable, run),
+      parseProposalId: (value) => identifierSchema.parse(value),
+      parseSelection: (value: { readonly proposal_id: string; readonly selection: IpcAiSelectionInput["selection"] }) =>
+        aiWorkflowSelectionRequestSchema.parse(value),
+      parseEdit: (value: {
+        readonly proposal_id: string;
+        readonly operation_id: string;
+        readonly after: IpcAiEditInput["after"];
+        readonly evidence_locator: string;
+      }) => aiWorkflowOperationEditSchema.parse(value),
+      parseView: (value) => aiWorkflowProposalViewSchema.parse(value),
+      getProposal: (record: AiSessionRecord, proposalId) => record.workflow.getProposal(proposalId),
+      select: (record: AiSessionRecord, input) => record.workflow.select(input),
+      editOperation: (record: AiSessionRecord, input) => record.workflow.editOperation(input),
+      rejectProposal: (record: AiSessionRecord, proposalId) => record.workflow.rejectProposal(proposalId),
+      forgetProposal: (record: AiSessionRecord, proposalId) => this.aiRuntime.forgetProposal(record, proposalId),
+      approve: (input: IpcAiApprovalInput, signal) => this.aiInteraction.approve(input, signal),
       closeSession: async (sessionId) => {
         const record = this.aiRuntime.requireSession(sessionId);
         await this.aiRuntime.closeRecord(record, "explicit");
-        return { completed: true };
       },
-      onDelta: (listener) => {
-        if (typeof listener !== "function") {
-          throw new TypeError("AI差分の購読関数が必要です。");
-        }
-        this.aiDeltaListeners.add(listener);
-        return (): void => {
-          this.aiDeltaListeners.delete(listener);
-        };
-      },
-      onStatus: (listener) => {
-        if (typeof listener !== "function") {
-          throw new TypeError("AI状態の購読関数が必要です。");
-        }
-        this.aiStatusListeners.add(listener);
-        return (): void => {
-          this.aiStatusListeners.delete(listener);
-        };
-      },
-    };
+      onDelta: (listener) => this.aiEvents.onDelta(listener),
+      onStatus: (listener) => this.aiEvents.onStatus(listener),
+    });
   }
 
 

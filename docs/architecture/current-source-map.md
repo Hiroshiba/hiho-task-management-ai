@@ -1,6 +1,6 @@
 # 現行source map
 
-基準commit: `7be99af8d2bf12be4af60d8407c4eeb4060a5e4f`。対象は`src`以下の手編集source 373件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=7be99af8d2bf12be4af60d8407c4eeb4060a5e4f --write`。
+基準commit: `b0f09f1d4364b2b17b142b4267b48b1c5c91243f`。対象は`src`以下の手編集source 379件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision=b0f09f1d4364b2b17b142b4267b48b1c5c91243f --write`。
 
 ## 機能と入口
 
@@ -10,8 +10,8 @@
 | 初回設定とAsana認証 | main/application/settings | src/main/setup/, src/main/auth/asana-oauth/ |
 | タスク取得・同期・順位 | main/application/task-read | src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/asana/sync/, src/main/domain/ranking/ |
 | タスク直接編集 | main/application/gui-edit | src/main/gui-edit/, src/main/asana/client/task-write-client.ts |
-| 変更案の生成・検証・編集 | main/application/proposal-generate | src/main/ai/workflow/, src/main/ai/proposal-validation/, src/main/ai/proposal-workspace/ |
-| 変更案の承認・適用・復旧 | main/application/proposal-apply | src/main/ai/proposal-application/, src/main/storage/application-journal.ts |
+| 変更案の生成・検証・編集 | main/application/proposal-generate | src/main/application/proposal-generate/, src/main/ai/workflow/, src/main/ai/proposal-validation/, src/main/ai/proposal-workspace/ |
+| 変更案の承認・適用・復旧 | main/application/proposal-apply | src/main/application/proposal-apply/, src/main/ai/proposal-application/, src/main/storage/application-journal.ts |
 | 外部Codex接続とツール | main/infrastructure/ai | src/main/codex/, src/main/external-agent/transport.ts, src/main/external-tools/ |
 | 外部提案の準備・生成 | main/application/proposal-generate | src/main/external-agent/service.ts |
 | 外部提案の承認・適用 | main/application/proposal-apply | src/main/external-agent/service.ts |
@@ -35,7 +35,8 @@
 | preload bridge | src/preload/index.ts | preload |
 | Renderer起動 | src/renderer/src/main.ts | renderer/app |
 | Renderer画面 | src/renderer/src/App.vue | renderer/app |
-| 変更案生成 | src/main/ai/workflow/service.ts | main/application/proposal-generate |
+| 変更案生成の状態 | src/main/application/proposal-generate/workflow-state.ts | main/application/proposal-generate |
+| 変更案生成のCodex接続 | src/main/ai/workflow/service.ts | main/application/proposal-generate |
 | 変更案適用と復旧 | src/main/ai/proposal-application/coordinator.ts | main/application/proposal-apply |
 | GUI編集 | src/main/gui-edit/service.ts | main/application/gui-edit |
 | Asana同期 | src/main/asana/sync/coordinator.ts | main/infrastructure/asana |
@@ -74,6 +75,7 @@
 | src/main/application/common/errors/error-reporter.ts | main/application/common |
 | src/main/application/common/ports/asana-task-read.ts | main/application/common |
 | src/main/application/common/ports/obsidian-vault-repository.ts | main/application/common |
+| src/main/application/common/ports/proposal-generation-session.ts | main/application/common |
 | src/main/application/common/ports/settings-repository.ts | main/application/common |
 | src/main/application/common/ports/task-read-repository.ts | main/application/common |
 | src/main/application/diagnostics.ts | main/infrastructure/logging |
@@ -90,6 +92,10 @@
 | src/main/application/proposal-apply/apply-planning.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/apply-write-operation.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/apply-writing.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/approval-execution.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/approval-preparation.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/approval-summary.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/approval-task-read.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/category-tag-write.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/create-read-back.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/create-rejection-completion.ts | main/application/proposal-apply |
@@ -97,6 +103,7 @@
 | src/main/application/proposal-apply/existing-journal-result.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/external-metadata.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/external-value-comparison.ts | main/application/proposal-apply |
+| src/main/application/proposal-apply/index.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/journal-progress.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/native-operation-write.ts | main/application/proposal-apply |
 | src/main/application/proposal-apply/non-create-write.ts | main/application/proposal-apply |
@@ -116,10 +123,7 @@
 | src/main/application/proposal-apply/status-write.ts | main/application/proposal-apply |
 | src/main/application/proposal-generate/approval-comparison.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/approval-conflict-schemas.ts | main/application/proposal-generate |
-| src/main/application/proposal-generate/approval-preparation.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/approval-results.ts | main/application/proposal-generate |
-| src/main/application/proposal-generate/approval-summary.ts | main/application/proposal-generate |
-| src/main/application/proposal-generate/approval-task-read.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/attempt-resources.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/baseline-snapshot.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/basic-validation-schemas.ts | main/application/proposal-generate |
@@ -162,6 +166,7 @@
 | src/main/application/proposal-generate/turn-response.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/turn-retry.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/workflow-options.ts | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/workspace-validation.ts | main/application/proposal-generate |
 | src/main/application/schemas.ts | main/application/common |
 | src/main/application/service.ts | main/bootstrap |
@@ -225,6 +230,7 @@
 | src/main/auth/secret-storage/index.ts | main/infrastructure/persistence |
 | src/main/auth/secret-storage/schemas.ts | main/infrastructure/persistence |
 | src/main/auth/secret-storage/secret-storage.ts | main/infrastructure/persistence |
+| src/main/bootstrap/ai-event-runtime.ts | main/bootstrap |
 | src/main/bootstrap/ai-interaction-runtime.ts | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | main/bootstrap |
@@ -353,6 +359,7 @@
 | src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/task-read-repository.ts | main/infrastructure/persistence |
+| src/main/ipc/handlers/ai.ts | main/ipc |
 | src/main/ipc/handlers/event-subscriptions.ts | main/ipc |
 | src/main/ipc/handlers/failure-messages.ts | main/ipc |
 | src/main/ipc/index.ts | main/ipc |
@@ -607,15 +614,8 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/ai/workflow/errors.ts | AiWorkflowRetryableFailureError.issues | main/application/proposal-generate |
 | src/main/ai/workflow/errors.ts | AiWorkflowRetryableFailureError.recoveryAction | main/application/proposal-generate |
 | src/main/ai/workflow/retry.ts | AiWorkflowRetryLogEventError.event | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.completedEvidenceSources | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.deltaListeners | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.lifecycle | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.listenerErrorCount | main/application/proposal-generate |
 | src/main/ai/workflow/service.ts | AiWorkflowService.options | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.pendingWithdrawConfirmation | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.proposals | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.removeSessionDelta | main/application/proposal-generate |
-| src/main/ai/workflow/service.ts | AiWorkflowService.sessionGeneration | main/application/proposal-generate |
+| src/main/ai/workflow/service.ts | AiWorkflowService.state | main/application/proposal-generate |
 | src/main/application-update.ts | ApplicationUpdateAttemptStore.filePath | main/bootstrap |
 | src/main/application-update.ts | ApplicationUpdateService.activeOperation | main/bootstrap |
 | src/main/application-update.ts | ApplicationUpdateService.attemptStore | main/bootstrap |
@@ -666,13 +666,22 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/proposal-generate/proposal-store.ts | ProposalStore.maximumProposals | main/application/proposal-generate |
 | src/main/application/proposal-generate/proposal-store.ts | ProposalStore.parseProposalId | main/application/proposal-generate |
 | src/main/application/proposal-generate/proposal-store.ts | ProposalStore.selection | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.StateError | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.completedEvidenceSources | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.deltaListeners | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.lifecycle | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.pendingWithdrawConfirmation | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.proposals | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.releaseTaskctlSnapshot | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.removeSessionDelta | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.reportListenerError | main/application/proposal-generate |
+| src/main/application/proposal-generate/workflow-state.ts | ProposalGenerationState.sessionGeneration | main/application/proposal-generate |
 | src/main/application/service.ts | AsanaOAuthRefreshHttpError.cause | main/bootstrap |
-| src/main/application/service.ts | TaskHubApplication.aiDeltaListeners | main/application/proposal-generate |
+| src/main/application/service.ts | TaskHubApplication.aiEvents | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.aiInteraction | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.aiRuntime | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.aiSessionWorkspaceParentPath | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.aiStartResult | main/application/proposal-generate |
-| src/main/application/service.ts | TaskHubApplication.aiStatusListeners | main/application/proposal-generate |
 | src/main/application/service.ts | TaskHubApplication.asanaReauthentication | main/bootstrap |
 | src/main/application/service.ts | TaskHubApplication.cleanupAggregation | main/application/task-read |
 | src/main/application/service.ts | TaskHubApplication.codexAdapter | main/bootstrap |
@@ -839,6 +848,9 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/auth/asana-oauth/errors.ts | AsanaOAuthResponseError.status | main/infrastructure/asana |
 | src/main/auth/asana-oauth/errors.ts | AsanaOAuthTokenEndpointError.code | main/infrastructure/asana |
 | src/main/auth/secret-storage/secret-storage.ts | SecretStorage.filePath | main/infrastructure/persistence |
+| src/main/bootstrap/ai-event-runtime.ts | AiEventRuntime.deltaListeners | main/bootstrap |
+| src/main/bootstrap/ai-event-runtime.ts | AiEventRuntime.dependencies | main/bootstrap |
+| src/main/bootstrap/ai-event-runtime.ts | AiEventRuntime.statusListeners | main/bootstrap |
 | src/main/bootstrap/ai-interaction-runtime.ts | AiInteractionRuntime.dependencies | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.dependencies | main/bootstrap |
 | src/main/bootstrap/ai-session-runtime.ts | AiSessionRuntime.sessions | main/bootstrap |

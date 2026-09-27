@@ -9,7 +9,7 @@ import {
 } from "../../../shared/ai";
 import { ProposalWorkspace, type ProposalWorkspaceIssue, type ProposalWorkspaceValidation } from "../proposal-workspace";
 import {
-  aiWorkflowApprovalRequestSchema, aiWorkflowApprovalResultSchema, aiWorkflowImpactSchema,
+  aiWorkflowImpactSchema,
   aiWorkflowOperationEditSchema, aiWorkflowProposalViewSchema, aiWorkflowSelectionRequestSchema,
   aiWorkflowSnapshotSchema, aiWorkflowTurnContextSchema, aiWorkflowTurnRequestSchema,
   aiWorkflowTurnResultSchema, type AiWorkflowApprovalRequest, type AiWorkflowApprovalResult,
@@ -26,17 +26,17 @@ import {
   type ProposalValidationResult, type TrustedStatusEvidenceReference,
 } from "../proposal-validation";
 import {
-  asanaProposalApplicationInputSchema, asanaProposalApplicationResultSchema,
-  type AsanaProposalApplicationInput, type AsanaProposalApplicationCoordinator,
+  asanaProposalApplicationInputSchema,
+  type AsanaProposalApplicationInput,
 } from "../proposal-application";
 import {
   CodexSessionOutputValidationError, CodexSessionSyncError, type CodexSessionDelta,
-  type CodexSessionDeltaListener, type CodexSessionTurnInput, type CodexSessionTurnInputFactory,
+  type CodexSessionDeltaListener, type CodexSessionTurnInput,
   type CodexSessionTurnResult,
 } from "../../codex/session";
 import { taskctlSnapshotSchema, type TaskctlSnapshot } from "../../codex/taskctl";
 import {
-  AiWorkflowEditError, AiWorkflowError, AiWorkflowOfflineError, AiWorkflowProposalNotFoundError,
+  AiWorkflowEditError, AiWorkflowError, AiWorkflowProposalNotFoundError,
   AiWorkflowRetryableFailureError, AiWorkflowSelectionError, AiWorkflowStateError,
   AiWorkflowSyncError,
 } from "./errors";
@@ -76,7 +76,6 @@ import { executeTurnWithRetry, createAbortGuard } from "../../application/propos
 import { runTurnAttemptWithResources, type AttemptResourceState } from "../../application/proposal-generate/attempt-resources";
 import { bindProposalEvidence as bindProposalEvidenceSources } from "../../application/proposal-generate/proposal-evidence";
 import { createWorkflowProposalView as buildWorkflowProposalView } from "../../application/proposal-generate/proposal-view";
-import { createApprovalPreparationInput, assertApprovalInputMatchesStored } from "../../application/proposal-generate/approval-preparation";
 import { editStoredProposal, operationMap as indexProposalOperations } from "../../application/proposal-generate/proposal-edit";
 import {
   createStoredProposal as buildStoredProposal,
@@ -87,13 +86,11 @@ import {
   validateWorkspaceProposal as validateSubmittedWorkspaceProposal,
 } from "../../application/proposal-generate/workspace-validation";
 import { runSessionTurn } from "../../application/proposal-generate/turn-attempt";
-import { ProposalStore } from "../../application/proposal-generate/proposal-store";
 import { prepareTurn, createTurnInput as connectTurnInput } from "../../application/proposal-generate/turn-preparation";
-import { createNoProposalCommit, createProposalCommit, commitTurn as applyTurnCommit } from "../../application/proposal-generate/turn-commit";
+import { createNoProposalCommit, createProposalCommit } from "../../application/proposal-generate/turn-commit";
 import { validateGeneratedResponse } from "../../application/proposal-generate/turn-response";
-import { createApplicationSummary } from "../../application/proposal-generate/approval-summary";
 import {
-  createBaselineTaskSnapshots, createBaselineSnapshot as buildBaselineSnapshot,
+  createBaselineSnapshot as buildBaselineSnapshot,
   assertTaskctlSnapshotMatchesBaseline as verifyTaskctlBaseline,
 } from "../../application/proposal-generate/baseline-snapshot";
 import { createTrustedExternalStatusEvidenceSchema, parseWorkflowOptions } from "../../application/proposal-generate/workflow-options";
@@ -111,6 +108,8 @@ import {
   type PendingWithdrawConfirmation as WorkflowPendingWithdrawConfirmation,
   type UserMessageSourceSummary as WorkflowUserMessageSourceSummary,
 } from "../../application/proposal-generate/evidence-sources";
+import { ProposalGenerationState } from "../../application/proposal-generate/workflow-state";
+import type { ProposalGenerationSessionPort } from "../../application/common/ports/proposal-generation-session";
 
 const maximumWorkflowProposals = 32;
 const maximumPromptStatusEvidenceReferences = 256;
@@ -247,26 +246,21 @@ export interface AiWorkflowExternalStatusEvidenceCollector {
 }
 
 /** AIセッションのターン開始と差分購読を利用する境界です。 */
-export interface AiWorkflowSessionPort {
-  startTurnWithPreparation(
-    prepareInput: CodexSessionTurnInputFactory,
-    signal: AbortSignal,
-  ): Promise<CodexSessionTurnResult>;
-  freezeTaskctlSnapshot(snapshot: TaskctlSnapshot): void;
-  releaseTaskctlSnapshot(): void;
-  activateProposalWorkspace(
-    workspace: ProposalWorkspace,
-    validate: (proposal: Proposal) => ProposalWorkspaceValidation<null>,
-  ): void;
-  onDelta(listener: CodexSessionDeltaListener): () => void;
-}
+export type AiWorkflowSessionPort = ProposalGenerationSessionPort<
+  CodexSessionTurnInput,
+  CodexSessionTurnResult,
+  TaskctlSnapshot,
+  ProposalWorkspace,
+  Proposal,
+  ProposalWorkspaceValidation<null>,
+  CodexSessionDelta
+>;
 
-/** 最新状態を再取得してAsana適用入力を作る関数の型です。 */
-export type AiWorkflowApprovalInputProvider = (input: ApprovalPreparationInput, signal: AbortSignal) =>
-  AsanaProposalApplicationInput | PromiseLike<AsanaProposalApplicationInput>;
-
-/** オンライン接続の有無を返す関数の型です。 */
-export type AiWorkflowOnlineStateProvider = () => boolean;
+/** 承認ワークフローに提案を受け渡す境界です。 */
+export type AiWorkflowApprovalStore = {
+  readonly getStoredProposal: (proposalId: string) => StoredProposal;
+  readonly forgetProposal: (proposalId: string) => void;
+};
 
 /** AIワークフローの依存境界を検証する入力型です。 */
 export interface AiWorkflowOptions {
@@ -276,10 +270,13 @@ export interface AiWorkflowOptions {
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
   readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
   readonly externalStatusEvidenceCollector: AiWorkflowExternalStatusEvidenceCollector;
-  readonly applicationCoordinator: Pick<AsanaProposalApplicationCoordinator, "apply">;
-  readonly prepareApprovalInput: AiWorkflowApprovalInputProvider;
-  readonly isOnline: AiWorkflowOnlineStateProvider;
+  readonly executeApproval: (
+    input: AiWorkflowApprovalRequest,
+    signal: AbortSignal,
+    store: AiWorkflowApprovalStore,
+  ) => Promise<AiWorkflowApprovalResult>;
   readonly logRetryEvent: (event: AiWorkflowRetryLogEvent) => void;
+  readonly reportListenerError: (error: unknown) => void;
 }
 
 const trustedExternalStatusEvidenceSchema = createTrustedExternalStatusEvidenceSchema(gidSchema);
@@ -547,52 +544,50 @@ function proposalValidationIssues(stored: StoredProposal): AiWorkflowValidationI
 /** AI変更案をメモリ上で検証、選択、承認するサービスです。 */
 export class AiWorkflowService {
   private readonly options: AiWorkflowOptions;
-  private readonly proposals = new ProposalStore<StoredProposal, AiWorkflowProposalView, AiWorkflowSelectionRequest>(
-    maximumWorkflowProposals,
-    (value) => identifierSchema.parse(value),
-    AiWorkflowProposalNotFoundError,
-    AiWorkflowError,
-    AiWorkflowStateError,
-    {
-      parseRequest: (value) => aiWorkflowSelectionRequestSchema.parse(value),
-      resolveSelected: resolveSelectedOperationIds,
-      assertGraphSafe: assertSelectedProposalGraphIsSafe,
-      createView: createWorkflowProposalView,
-    },
-  );
-  private readonly completedEvidenceSources = new Map<string, EvidenceSource>();
-  private readonly deltaListeners = new Set<CodexSessionDeltaListener>();
-  private readonly removeSessionDelta: () => void;
-  private listenerErrorCount = 0;
-  private lifecycle: "active" | "disposed" = "active";
-  private pendingWithdrawConfirmation: PendingWithdrawConfirmation | undefined;
-  private sessionGeneration = 0;
+  private readonly state: ProposalGenerationState<
+    StoredProposal,
+    AiWorkflowProposalView,
+    AiWorkflowSelectionRequest,
+    EvidenceSource,
+    PendingWithdrawConfirmation,
+    CodexSessionDelta
+  >;
 
   public constructor(options: AiWorkflowOptions) {
     this.options = parseWorkflowOptions(options, identifierSchema);
-    this.removeSessionDelta = this.options.session.onDelta((delta) => {
-      this.emitDelta(delta);
+    this.state = new ProposalGenerationState<
+      StoredProposal,
+      AiWorkflowProposalView,
+      AiWorkflowSelectionRequest,
+      EvidenceSource,
+      PendingWithdrawConfirmation,
+      CodexSessionDelta
+    >({
+      maximumProposals: maximumWorkflowProposals,
+      parseProposalId: (value) => identifierSchema.parse(value),
+      ProposalNotFoundError: AiWorkflowProposalNotFoundError,
+      WorkflowError: AiWorkflowError,
+      StateError: AiWorkflowStateError,
+      selection: {
+        parseRequest: (value) => aiWorkflowSelectionRequestSchema.parse(value),
+        resolveSelected: resolveSelectedOperationIds,
+        assertGraphSafe: assertSelectedProposalGraphIsSafe,
+        createView: createWorkflowProposalView,
+      },
+      onSessionDelta: (listener) => this.options.session.onDelta(listener),
+      releaseTaskctlSnapshot: () => this.options.session.releaseTaskctlSnapshot(),
+      reportListenerError: (error) => this.options.reportListenerError(error),
     });
   }
 
   /** CodexのagentMessage差分を購読します。 */
   public onDelta(listener: CodexSessionDeltaListener): () => void {
-    if (typeof listener !== "function") {
-      throw new TypeError("差分購読関数が必要です。");
-    }
-    if (this.lifecycle === "disposed") {
-      throw new AiWorkflowStateError("AIワークフローは終了しています。");
-    }
-    this.deltaListeners.add(listener);
-    return () => {
-      this.deltaListeners.delete(listener);
-    };
+    return this.state.onDelta(listener);
   }
 
   /** 新しいCodexセッション開始時に保留中の取り下げ確認を破棄します。 */
   public resetPendingWithdrawConfirmation(): void {
-    this.sessionGeneration += 1;
-    this.pendingWithdrawConfirmation = undefined;
+    this.state.resetPendingWithdrawConfirmation();
   }
 
   /** 同期後の基準値を固定してCodexターンを実行します。 */
@@ -600,31 +595,13 @@ export class AiWorkflowService {
     input: AiWorkflowTurnRequest,
     signal: AbortSignal,
   ): Promise<AiWorkflowTurnResult> {
-    if (this.lifecycle === "disposed") {
-      throw new AiWorkflowStateError("AIワークフローは終了しています。");
-    }
-    const request = aiWorkflowTurnRequestSchema.parse(input);
-    const baseProposal = request.base_proposal_id == null
-      ? undefined
-      : this.proposals.getStoredProposal(request.base_proposal_id);
-    throwIfAborted(signal);
-    this.proposals.assertProposalCapacity(request.base_proposal_id);
-    const turnGeneration = this.sessionGeneration;
-    const pendingWithdrawConfirmation = this.pendingWithdrawConfirmation;
-    const logicalTurnId = identifierSchema.parse(randomUUID());
-    const execution = await this.executeTurn({
-      request,
-      signal,
-      baseProposal,
-      turnGeneration,
-      pendingWithdrawConfirmation,
-      logicalTurnId,
-      retryProposal: undefined,
+    return this.state.startTurn<AiWorkflowTurnRequest, AiWorkflowTurnResult, TurnCommit>(input, signal, {
+      parseRequest: (value) => aiWorkflowTurnRequestSchema.parse(value),
+      throwIfAborted,
+      createTurnId: () => identifierSchema.parse(randomUUID()),
+      executeTurn: (turnInput) => this.executeTurn(turnInput),
+      commitTurn: (commit) => this.state.commitTurn(commit, rememberSuccessfulTurnEvidence),
     });
-    if (execution.kind === "failed") {
-      throw execution.error;
-    }
-    return this.commitTurn(execution.commit);
   }
 
   private async executeTurn(input: TurnExecutionInput): Promise<TurnExecutionResult> {
@@ -733,9 +710,9 @@ export class AiWorkflowService {
           message: request.message,
           logicalTurnId,
           turnGeneration,
-          sessionGeneration: this.sessionGeneration,
+          sessionGeneration: this.state.generation(),
           pendingWithdrawConfirmation,
-          completedEvidenceSources: this.completedEvidenceSources,
+          completedEvidenceSources: this.state.evidenceSources(),
         }, {
           snapshotProvider: (currentSignal) => this.options.snapshotProvider(currentSignal),
           parseSnapshot: (value) => aiWorkflowSnapshotSchema.parse(value),
@@ -836,7 +813,7 @@ export class AiWorkflowService {
         WorkflowError: AiWorkflowError,
       },
     );
-    if (turnGeneration !== this.sessionGeneration) {
+    if (turnGeneration !== this.state.generation()) {
       throw new AiWorkflowStateError("AIセッションが切り替わったため、AIターンを破棄しました。");
     }
     if (validatedResponse.kind === "no_proposal") {
@@ -874,31 +851,20 @@ export class AiWorkflowService {
     );
   }
 
-  private commitTurn(commit: TurnCommit): AiWorkflowTurnResult {
-    return applyTurnCommit(commit, {
-      storeProposal: (stored, replacingId) => this.proposals.storeProposal(stored, replacingId),
-      rememberSuccessfulTurnEvidence: (prepared) =>
-        rememberSuccessfulTurnEvidence(this.completedEvidenceSources, prepared),
-      setPendingWithdrawConfirmation: (value) => {
-        this.pendingWithdrawConfirmation = value;
-      },
-    });
-  }
-
   /** 保持中の変更案を取得してRenderer向けDTOへ変換します。 */
   public getProposal(proposalId: string): AiWorkflowProposalView {
-    return this.proposals.getProposal(proposalId);
+    return this.state.getProposal(proposalId);
   }
 
   /** 変更案の選択状態を更新してRenderer向けDTOを返します。 */
   public select(input: AiWorkflowSelectionRequest): AiWorkflowProposalView {
-    return this.proposals.select(input);
+    return this.state.select(input);
   }
 
   /** 変更案の操作後値だけを利用者編集して再検証します。 */
   public editOperation(input: AiWorkflowOperationEdit): AiWorkflowProposalView {
     const request = aiWorkflowOperationEditSchema.parse(input);
-    const stored = this.proposals.getStoredProposal(request.proposal_id);
+    const stored = this.state.getStoredProposal(request.proposal_id);
     const edited = editStoredProposal(request, stored, {
       operationMap: (proposal) => indexProposalOperations(proposal, AiWorkflowError),
       parseOperation: (value) => proposalOperationSchema.parse(value),
@@ -912,13 +878,13 @@ export class AiWorkflowService {
       EditError: AiWorkflowEditError,
     });
     const updated: StoredProposal = { ...stored, ...edited };
-    this.proposals.set(updated.proposal_id, updated);
+    this.state.setProposal(updated.proposal_id, updated);
     return createWorkflowProposalView(updated);
   }
 
   /** 変更案をメモリから破棄します。 */
   public rejectProposal(proposalId: string): void {
-    this.proposals.rejectProposal(proposalId);
+    this.state.rejectProposal(proposalId);
   }
 
   /** オンライン再取得後に選択済み変更案をAsanaへ適用します。 */
@@ -926,57 +892,14 @@ export class AiWorkflowService {
     input: AiWorkflowApprovalRequest,
     signal: AbortSignal,
   ): Promise<AiWorkflowApprovalResult> {
-    return this.proposals.approve(input, signal, {
-      parseRequest: (value) => aiWorkflowApprovalRequestSchema.parse(value),
-      throwIfAborted,
-      resolveSelection: (stored, selection) => resolveSelectedOperationIds(stored, selection),
-      assertGraphSafe: assertSelectedProposalGraphIsSafe,
-      isOnline: () => this.options.isOnline(),
-      OfflineError: AiWorkflowOfflineError,
-      createPreparationInput: createApprovalPreparationInput,
-      prepareApprovalInput: (prepared: ApprovalPreparationInput, currentSignal) =>
-        this.options.prepareApprovalInput(prepared, currentSignal),
-      parseApprovalInput: (value) => asanaProposalApplicationInputSchema.parse(value),
-      assertApprovalInputMatchesStored: (validated, stored, selected) =>
-        assertApprovalInputMatchesStored(validated, stored, selected, {
-          canonicalizeJson,
-          createBaselineTaskSnapshots,
-          WorkflowError: AiWorkflowError,
-        }),
-      apply: (validated, currentSignal) =>
-        this.options.applicationCoordinator.apply(validated, currentSignal),
-      parseApplication: (value) => asanaProposalApplicationResultSchema.parse(value),
-      createResult: (stored, application) => aiWorkflowApprovalResultSchema.parse({
-        proposal_id: stored.proposal_id,
-        application: createApplicationSummary(application),
-      }),
+    return this.options.executeApproval(input, signal, {
+      getStoredProposal: (proposalId) => this.state.getStoredProposal(proposalId),
+      forgetProposal: (proposalId) => this.state.forgetProposal(proposalId),
     });
   }
 
   /** AIワークフローの購読と保持中変更案を終了時に破棄します。 */
   public dispose(): void {
-    if (this.lifecycle === "disposed") {
-      return;
-    }
-    this.removeSessionDelta();
-    this.options.session.releaseTaskctlSnapshot();
-    this.deltaListeners.clear();
-    this.proposals.clear();
-    this.completedEvidenceSources.clear();
-    this.pendingWithdrawConfirmation = undefined;
-    this.sessionGeneration += 1;
-    this.lifecycle = "disposed";
-  }
-
-  private emitDelta(delta: CodexSessionDelta): void {
-    for (const listener of this.deltaListeners) {
-      const result = listener(delta);
-      if (result != null) {
-        void Promise.resolve(result).catch((error: unknown) => {
-          this.listenerErrorCount = Math.min(this.listenerErrorCount + 1, 256);
-          return error;
-        });
-      }
-    }
+    this.state.dispose();
   }
 }
