@@ -1,4 +1,6 @@
 import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent, WebContents } from "electron";
+import { z } from "zod";
+import { ipcFailureSchema } from "../../shared/ipc-contracts/common";
 import { diagnosticsContracts } from "../../shared/ipc-contracts/diagnostics";
 import { githubIntegrationContracts } from "../../shared/ipc-contracts/github-integration";
 import { obsidianIntegrationContracts } from "../../shared/ipc-contracts/obsidian-integration";
@@ -6,6 +8,7 @@ import { proposalsContracts } from "../../shared/ipc-contracts/proposals";
 import { settingsContracts } from "../../shared/ipc-contracts/settings";
 import { systemContracts } from "../../shared/ipc-contracts/system";
 import { tasksContracts } from "../../shared/ipc-contracts/tasks";
+import { DiagnosticFailureDispositionError, individualDiagnosticErrors } from "../application/common/errors/diagnostic-failure";
 import type { GuiEditExecution } from "../application/gui-edit";
 import type { StoredProposalExecution } from "../application/proposal-apply";
 import type { DiagnosticsHandlers } from "./handlers/diagnostics";
@@ -39,12 +42,33 @@ import {
 } from "./handlers/tasks";
 
 type InvokeHandler = (payload: unknown, signal: AbortSignal) => Promise<unknown>;
+type InvokeContract = {
+  readonly channel: string;
+  readonly request: { parse(value: unknown): unknown };
+  readonly response: { parse(value: unknown): unknown };
+};
+type InvokeFailureCode = "invalid_request" | "invalid_response" | "sender_untrusted" | "operation_failed";
 type EventSource<Value> = (listener: (value: Value) => void) => () => void;
 type SubscriptionParser = (payload: unknown) => { readonly subscription_id: string };
+type IpcErrorReporter = {
+  readonly reportErrorOnce: (error: unknown, context: {
+    readonly source: "ipc";
+    readonly diagnosticCode: string;
+    readonly context: "ipc_diagnostic";
+    readonly level: "error";
+  }) => string;
+};
+
+const invokeFailureMessages = {
+  invalid_request: "IPC入力が不正です。",
+  invalid_response: "IPC応答が不正です。",
+  sender_untrusted: "IPC送信元が信頼できません。",
+  operation_failed: "IPC操作に失敗しました。",
+} satisfies Record<InvokeFailureCode, string>;
 
 type FeatureIpcRegistryOptions = {
   readonly signal: AbortSignal;
-  readonly record: (error: unknown, channel: string) => void;
+  readonly reporter: IpcErrorReporter;
   readonly assertTrustedSender: (event: IpcMainInvokeEvent, webContents: WebContents, rendererUrl: string) => void;
   readonly isApplicationUrl: (url: string, rendererUrl: string) => boolean;
   readonly handlers: {
@@ -179,87 +203,142 @@ export class FeatureIpcRegistry {
 
   private registerInvokes(ipcMain: IpcMain): void {
     const { system, tasks, settings, proposals, githubIntegration, obsidianIntegration, diagnostics } = this.options.handlers;
-    const invokes: readonly (readonly [string, InvokeHandler])[] = [
-      [systemContracts.getVersion.channel, system.getVersion],
-      [systemContracts.waitForStartup.channel, system.waitForStartup],
-      [systemContracts.getUpdateState.channel, system.getUpdateState],
-      [tasksContracts.getOverview.channel, tasks.getOverview],
-      [tasksContracts.getDetail.channel, tasks.getDetail],
-      [tasksContracts.getSyncState.channel, tasks.getSyncState],
-      [tasksContracts.runSync.channel, tasks.runSync],
-      [tasksContracts.applyEdit.channel, tasks.applyEdit],
-      [tasksContracts.getExecution.channel, tasks.getExecution],
-      [tasksContracts.retryExecution.channel, tasks.retryExecution],
-      [settingsContracts.getState.channel, settings.getState],
-      [settingsContracts.start.channel, settings.start],
-      [settingsContracts.completeCodexAuthentication.channel, settings.completeCodexAuthentication],
-      [settingsContracts.beginAsanaAuthorization.channel, settings.beginAsanaAuthorization],
-      [settingsContracts.completeAsanaAuthorization.channel, settings.completeAsanaAuthorization],
-      [settingsContracts.cancelAsanaAuthorization.channel, settings.cancelAsanaAuthorization],
-      [settingsContracts.listWorkspaces.channel, settings.listWorkspaces],
-      [settingsContracts.selectWorkspace.channel, settings.selectWorkspace],
-      [settingsContracts.selectProject.channel, settings.selectProject],
-      [settingsContracts.retryResources.channel, settings.retryResources],
-      [settingsContracts.runCapability.channel, settings.runCapability],
-      [settingsContracts.chooseVault.channel, settings.chooseVault],
-      [settingsContracts.chooseExternalTool.channel, settings.chooseExternalTool],
-      [settingsContracts.runFullSync.channel, settings.runFullSync],
-      [settingsContracts.runCodexCapability.channel, settings.runCodexCapability],
-      [settingsContracts.getAsanaAuthenticationState.channel, settings.getAsanaAuthenticationState],
-      [settingsContracts.beginAsanaReauthentication.channel, settings.beginAsanaReauthentication],
-      [settingsContracts.completeAsanaReauthentication.channel, settings.completeAsanaReauthentication],
-      [settingsContracts.cancelAsanaReauthentication.channel, settings.cancelAsanaReauthentication],
-      [proposalsContracts.getAiStatus.channel, proposals.getAiStatus],
-      [proposalsContracts.startSession.channel, proposals.startSession],
-      [proposalsContracts.startTurn.channel, proposals.startTurn],
-      [proposalsContracts.getProposal.channel, proposals.getProposal],
-      [proposalsContracts.select.channel, proposals.select],
-      [proposalsContracts.editOperation.channel, proposals.editOperation],
-      [proposalsContracts.reject.channel, proposals.reject],
-      [proposalsContracts.approve.channel, proposals.approve],
-      [proposalsContracts.closeSession.channel, proposals.closeSession],
-      [proposalsContracts.getExternalState.channel, proposals.getExternalState],
-      [proposalsContracts.setExternalEnabled.channel, proposals.setExternalEnabled],
-      [proposalsContracts.editExternalOperation.channel, proposals.editExternalOperation],
-      [proposalsContracts.selectExternal.channel, proposals.selectExternal],
-      [proposalsContracts.approveExternal.channel, proposals.approveExternal],
-      [proposalsContracts.rejectExternal.channel, proposals.rejectExternal],
-      [proposalsContracts.getHistoryStatus.channel, proposals.getHistoryStatus],
-      [proposalsContracts.confirmHistory.channel, proposals.confirmHistory],
-      [proposalsContracts.synchronizeHistory.channel, proposals.synchronizeHistory],
-      [proposalsContracts.getExecution.channel, proposals.getExecution],
-      [proposalsContracts.retryExecution.channel, proposals.retryExecution],
-      [githubIntegrationContracts.getStatus.channel, githubIntegration.getStatus],
-      [obsidianIntegrationContracts.validateVault.channel, obsidianIntegration.validateVault],
-      [obsidianIntegrationContracts.listVaults.channel, obsidianIntegration.listVaults],
-      [obsidianIntegrationContracts.listVaultMappings.channel, obsidianIntegration.listVaultMappings],
-      [obsidianIntegrationContracts.saveVaultMapping.channel, obsidianIntegration.saveVaultMapping],
-      [obsidianIntegrationContracts.resolvePath.channel, obsidianIntegration.resolvePath],
-      [obsidianIntegrationContracts.noteExists.channel, obsidianIntegration.noteExists],
-      [obsidianIntegrationContracts.openNote.channel, obsidianIntegration.openNote],
-      [diagnosticsContracts.report.channel, diagnostics.report],
+    const invokes: readonly (readonly [InvokeContract, InvokeHandler])[] = [
+      [systemContracts.getVersion, system.getVersion],
+      [systemContracts.waitForStartup, system.waitForStartup],
+      [systemContracts.getUpdateState, system.getUpdateState],
+      [tasksContracts.getOverview, tasks.getOverview],
+      [tasksContracts.getDetail, tasks.getDetail],
+      [tasksContracts.getSyncState, tasks.getSyncState],
+      [tasksContracts.runSync, tasks.runSync],
+      [tasksContracts.applyEdit, tasks.applyEdit],
+      [tasksContracts.getExecution, tasks.getExecution],
+      [tasksContracts.retryExecution, tasks.retryExecution],
+      [settingsContracts.getState, settings.getState],
+      [settingsContracts.start, settings.start],
+      [settingsContracts.completeCodexAuthentication, settings.completeCodexAuthentication],
+      [settingsContracts.beginAsanaAuthorization, settings.beginAsanaAuthorization],
+      [settingsContracts.completeAsanaAuthorization, settings.completeAsanaAuthorization],
+      [settingsContracts.cancelAsanaAuthorization, settings.cancelAsanaAuthorization],
+      [settingsContracts.listWorkspaces, settings.listWorkspaces],
+      [settingsContracts.selectWorkspace, settings.selectWorkspace],
+      [settingsContracts.selectProject, settings.selectProject],
+      [settingsContracts.retryResources, settings.retryResources],
+      [settingsContracts.runCapability, settings.runCapability],
+      [settingsContracts.chooseVault, settings.chooseVault],
+      [settingsContracts.chooseExternalTool, settings.chooseExternalTool],
+      [settingsContracts.runFullSync, settings.runFullSync],
+      [settingsContracts.runCodexCapability, settings.runCodexCapability],
+      [settingsContracts.getAsanaAuthenticationState, settings.getAsanaAuthenticationState],
+      [settingsContracts.beginAsanaReauthentication, settings.beginAsanaReauthentication],
+      [settingsContracts.completeAsanaReauthentication, settings.completeAsanaReauthentication],
+      [settingsContracts.cancelAsanaReauthentication, settings.cancelAsanaReauthentication],
+      [proposalsContracts.getAiStatus, proposals.getAiStatus],
+      [proposalsContracts.startSession, proposals.startSession],
+      [proposalsContracts.startTurn, proposals.startTurn],
+      [proposalsContracts.getProposal, proposals.getProposal],
+      [proposalsContracts.select, proposals.select],
+      [proposalsContracts.editOperation, proposals.editOperation],
+      [proposalsContracts.reject, proposals.reject],
+      [proposalsContracts.approve, proposals.approve],
+      [proposalsContracts.closeSession, proposals.closeSession],
+      [proposalsContracts.getExternalState, proposals.getExternalState],
+      [proposalsContracts.setExternalEnabled, proposals.setExternalEnabled],
+      [proposalsContracts.editExternalOperation, proposals.editExternalOperation],
+      [proposalsContracts.selectExternal, proposals.selectExternal],
+      [proposalsContracts.approveExternal, proposals.approveExternal],
+      [proposalsContracts.rejectExternal, proposals.rejectExternal],
+      [proposalsContracts.getHistoryStatus, proposals.getHistoryStatus],
+      [proposalsContracts.confirmHistory, proposals.confirmHistory],
+      [proposalsContracts.synchronizeHistory, proposals.synchronizeHistory],
+      [proposalsContracts.getExecution, proposals.getExecution],
+      [proposalsContracts.retryExecution, proposals.retryExecution],
+      [githubIntegrationContracts.getStatus, githubIntegration.getStatus],
+      [obsidianIntegrationContracts.validateVault, obsidianIntegration.validateVault],
+      [obsidianIntegrationContracts.listVaults, obsidianIntegration.listVaults],
+      [obsidianIntegrationContracts.listVaultMappings, obsidianIntegration.listVaultMappings],
+      [obsidianIntegrationContracts.saveVaultMapping, obsidianIntegration.saveVaultMapping],
+      [obsidianIntegrationContracts.resolvePath, obsidianIntegration.resolvePath],
+      [obsidianIntegrationContracts.noteExists, obsidianIntegration.noteExists],
+      [obsidianIntegrationContracts.openNote, obsidianIntegration.openNote],
+      [diagnosticsContracts.report, diagnostics.report],
     ];
-    for (const [channel, handler] of invokes) {
-      ipcMain.handle(channel, async (event, payload: unknown) => {
-        const rendererUrl = this.windows.get(event.sender);
-        if (rendererUrl == null) {
-          throw new Error("不正なIPC送信元です。");
-        }
-        this.options.assertTrustedSender(event, event.sender, rendererUrl);
-        const controllers = this.activeInvokes.get(event.sender);
-        if (controllers == null) {
-          throw new Error("IPC送信元のウィンドウがありません。");
-        }
-        const controller = new AbortController();
-        controllers.add(controller);
+    for (const [contract, handler] of invokes) {
+      ipcMain.handle(contract.channel, async (event, payload: unknown) => {
+        let failureCode: InvokeFailureCode = "sender_untrusted";
         try {
-          return await handler(payload, controller.signal);
-        } finally {
-          controllers.delete(controller);
+          const rendererUrl = this.windows.get(event.sender);
+          if (rendererUrl == null) {
+            throw new Error("不正なIPC送信元です。");
+          }
+          this.options.assertTrustedSender(event, event.sender, rendererUrl);
+          const controllers = this.activeInvokes.get(event.sender);
+          if (controllers == null) {
+            throw new Error("IPC送信元のウィンドウがありません。");
+          }
+          failureCode = "invalid_request";
+          const request = contract.request.parse(payload);
+          const controller = new AbortController();
+          controllers.add(controller);
+          try {
+            failureCode = "operation_failed";
+            const response = await handler(request, controller.signal);
+            failureCode = "invalid_response";
+            return contract.response.parse(response);
+          } finally {
+            controllers.delete(controller);
+          }
+        } catch (error) {
+          const code = failureCode === "operation_failed" && error instanceof z.ZodError
+            ? "invalid_response"
+            : failureCode;
+          const errorId = this.recordFailure(error);
+          return contract.response.parse(ipcFailureSchema.parse({
+            kind: "error",
+            code,
+            message: invokeFailureMessages[code],
+            error_id: errorId,
+          }));
         }
       });
-      this.removers.push(() => ipcMain.removeHandler(channel));
+      this.removers.push(() => ipcMain.removeHandler(contract.channel));
     }
+  }
+
+  private recordFailure(error: unknown): string {
+    if (error instanceof DiagnosticFailureDispositionError) {
+      const disposition = error.disposition;
+      switch (disposition.kind) {
+        case "recorded_only":
+          return this.recordIndividualErrors(disposition.recorded_error);
+        case "unrecorded_only":
+          return this.record(disposition.unrecorded_error);
+        case "recorded_and_unrecorded": {
+          const errorId = this.recordIndividualErrors(disposition.recorded_error);
+          this.record(disposition.unrecorded_error);
+          return errorId;
+        }
+      }
+    }
+    return this.record(error);
+  }
+
+  private recordIndividualErrors(error: unknown): string {
+    const [primary, ...additional] = individualDiagnosticErrors(error);
+    const errorId = this.record(primary);
+    for (const recorded of additional) {
+      this.record(recorded);
+    }
+    return errorId;
+  }
+
+  private record(error: unknown): string {
+    return this.options.reporter.reportErrorOnce(error, {
+      source: "ipc",
+      diagnosticCode: "ipc.error",
+      context: "ipc_diagnostic",
+      level: "error",
+    });
   }
 
   private registerEvents(ipcMain: IpcMain): void {
@@ -307,7 +386,7 @@ export class FeatureIpcRegistry {
         }
         subscriptions.set(id, eventChannel);
       } catch (error) {
-        this.options.record(error, subscribeChannel);
+        this.recordFailure(error);
       }
     };
     ipcMain.on(subscribeChannel, subscribeListener);
@@ -321,7 +400,7 @@ export class FeatureIpcRegistry {
         }
         subscriptions.delete(id);
       } catch (error) {
-        this.options.record(error, unsubscribeChannel);
+        this.recordFailure(error);
       }
     };
     ipcMain.on(unsubscribeChannel, unsubscribeListener);
@@ -338,7 +417,7 @@ export class FeatureIpcRegistry {
           try {
             webContents.send(eventChannel, serialize(id, value));
           } catch (error) {
-            this.options.record(error, eventChannel);
+            this.recordFailure(error);
           }
         }
       }

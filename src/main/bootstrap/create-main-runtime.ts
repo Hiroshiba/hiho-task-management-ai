@@ -213,14 +213,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const featureIpc = new FeatureIpcRegistry({
       signal: controller.signal,
       ...options.ipcSecurity,
-      record: (error) => {
-        engineReporter.reportErrorOnce(error, {
-          source: "ipc",
-          diagnosticCode: "ipc.error",
-          context: "ipc_diagnostic",
-          level: "error",
-        });
-      },
+      reporter: engineReporter,
       handlers: {
         system: systemHandlers,
         tasks: tasksHandlers,

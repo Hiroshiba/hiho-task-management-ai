@@ -10,7 +10,7 @@ export const emptyRequestSchema = z.object({}).strict();
 export const completedSchema = z.object({ completed: z.literal(true) }).strict();
 export const subscriptionRequestSchema = z.object({ subscription_id: identifierSchema }).strict();
 
-export const expectedErrorSchema = z
+export const ipcFailureSchema = z
   .object({
     kind: z.literal("error"),
     code: z.enum([
@@ -20,15 +20,18 @@ export const expectedErrorSchema = z
       "conflict",
       "not_found",
       "unavailable",
+      "invalid_response",
+      "sender_untrusted",
+      "operation_failed",
     ]),
     message: z.string().min(1).max(160),
     error_id: errorIdSchema.optional(),
   })
   .strict();
 
-/** 成功値と呼び出し元が処理する既知の失敗だけを検証します。 */
+/** 成功値と分類済みの失敗を検証します。 */
 export function responseSchema<Value extends z.ZodType>(value: Value) {
-  return z.discriminatedUnion("kind", [z.object({ kind: z.literal("ok"), value }).strict(), expectedErrorSchema]);
+  return z.discriminatedUnion("kind", [z.object({ kind: z.literal("ok"), value }).strict(), ipcFailureSchema]);
 }
 
 /** 購読ごとの識別子を付けた通知を検証します。 */
@@ -36,6 +39,6 @@ export function subscriptionEventSchema<Value extends z.ZodType>(value: Value) {
   return z.object({ subscription_id: identifierSchema, value }).strict();
 }
 
-export type IpcResult<Value> = { readonly kind: "ok"; readonly value: Value } | z.infer<typeof expectedErrorSchema>;
+export type IpcResult<Value> = { readonly kind: "ok"; readonly value: Value } | z.infer<typeof ipcFailureSchema>;
 
 export type IpcSubscription<Value> = (listener: (value: Value) => void) => () => void;

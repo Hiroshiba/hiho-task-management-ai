@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { errorIdSchema, identifierSchema } from "./common";
+import { errorIdSchema, identifierSchema, responseSchema, type IpcResult } from "./common";
 
 export const diagnosticsChannels = {
   report: "diagnostics:report",
@@ -13,18 +13,18 @@ const diagnosticRequestSchema = z
     operation_id: identifierSchema.optional(),
   })
   .strict();
-const diagnosticResponseSchema = z.object({ error_id: errorIdSchema }).strict();
+const diagnosticResultSchema = z.object({ error_id: errorIdSchema }).strict();
 
 export const diagnosticsContracts = {
   report: {
     channel: diagnosticsChannels.report,
     request: diagnosticRequestSchema,
-    response: diagnosticResponseSchema,
+    response: responseSchema(diagnosticResultSchema),
   },
 };
 
 export type DiagnosticsApi = {
   readonly report: (
     input: z.infer<typeof diagnosticRequestSchema>,
-  ) => Promise<z.infer<typeof diagnosticResponseSchema>>;
+  ) => Promise<IpcResult<z.infer<typeof diagnosticResultSchema>>>;
 };

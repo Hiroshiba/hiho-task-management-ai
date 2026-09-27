@@ -11,7 +11,7 @@ import { settingsChannels, settingsContracts, type SettingsApi } from "./setting
 import { systemChannels, systemContracts, type SystemApi } from "./system";
 import { tasksChannels, tasksContracts, type TasksApi } from "./tasks";
 
-export { expectedErrorSchema, subscriptionRequestSchema } from "./common";
+export { ipcFailureSchema, subscriptionRequestSchema } from "./common";
 export { executionDtoSchema, type ExecutionDto } from "./execution";
 export { githubIntegrationStatusSchema } from "./github-integration";
 export { proposalOperationKindSchema } from "./proposal-values";

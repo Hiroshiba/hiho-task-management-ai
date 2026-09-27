@@ -62,6 +62,8 @@ AI変更案の保持、会話根拠、取り下げ確認、生成世代は`Propo
 
 `create-main-runtime.ts`だけがconcrete adapter、repository、logger、clock、ID生成器、外部clientを生成してportへ注入します。module import時に外部clientを作らず、実行時の設定値をmoduleの可変変数へ保持しません。診断記録状態は`application/common/errors/diagnostic-failure.ts`を共通契約として、workflow、infrastructure、IPC、bootstrapが参照します。IPCは入力をZodで検証してuse caseを呼び、返り値をDTOへ変換します。preloadはtransportのみ、Rendererは表示とUI状態のみを担当します。
 
+最終IPCのinvokeは送信元、要求、応答を検証し、検証やhandlerが例外を投げた場合は元のエラーをMainのerror reporterへ一度記録します。記録済みの失敗は同じerror IDを再利用します。Rendererへ返す例外時の応答は分類コード、短い日本語説明、error IDを含み、stackとcauseはMainの診断ログに保持します。Rendererからの診断送信も同じ成功・失敗応答形式を使います。
+
 初回設定の実行時Zod契約は`shared/ipc-contracts`に一元化し、`main/domain`には内部状態の型だけを置きます。settings workflowの検証は起動側からparser portとして注入し、workflowからIPC契約を直接参照しません。移行中の`shared/setup`は旧import向けの再exportであり、旧wrapperを削除するときは基本schemaの組立ても`shared/ipc-contracts`内で完結させます。最終形で`shared/ipc-contracts`からMainのdomainや他の旧shared moduleへの依存を残しません。
 
 ObsidianのVault設定と読取は`application/obsidian-integration`が操作順と競合を管理し、`infrastructure/obsidian`がfilesystemを参照します。Vaultの実体パス検証後だけマッピングを保存し、保存後にCodexへ読取専用パスを反映します。ノートの本文をAsana external dataへ書き込まず、Obsidianリンクの更新はAsana側の責務とします。GitHub App clientがない現行構成は`settings`の連携状態で利用不可と表し、起動の成否へ混ぜません。

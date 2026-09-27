@@ -68,6 +68,16 @@ export function diagnosticFailureDispositionFromError(
   };
 }
 
+class CombinedDiagnosticErrors extends AggregateError {}
+
+/** 記録状態を保って結合したエラーを個別のエラーへ戻します。 */
+export function individualDiagnosticErrors(error: unknown): readonly unknown[] {
+  if (error instanceof CombinedDiagnosticErrors) {
+    return error.errors.flatMap(individualDiagnosticErrors);
+  }
+  return [error];
+}
+
 function aggregateDispositionErrors(
   errors: readonly unknown[],
   message: string,
@@ -79,7 +89,7 @@ function aggregateDispositionErrors(
     const [error] = errors;
     return error;
   }
-  return new AggregateError(errors, message, { cause: errors[0] });
+  return new CombinedDiagnosticErrors(errors, message, { cause: errors[0] });
 }
 
 /** 型付きDispositionを記録状態ごとにまとめます。 */

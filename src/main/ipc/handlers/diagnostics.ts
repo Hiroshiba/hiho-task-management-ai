@@ -29,7 +29,7 @@ export function createDiagnosticsHandlers(reporter: DiagnosticsReporter): Diagno
         level: request.level,
         ...(request.operation_id == null ? {} : { operationId: request.operation_id }),
       });
-      return diagnosticsContracts.report.response.parse({ error_id: errorId });
+      return diagnosticsContracts.report.response.parse({ kind: "ok", value: { error_id: errorId } });
     }),
   };
 }
