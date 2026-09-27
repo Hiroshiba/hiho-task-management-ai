@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { compareOperationContexts } from "./operation-order";
+
 type Group<TOperation extends { readonly operation_id: string }> = {
   readonly group_id: string;
   readonly atomic: boolean;
@@ -133,4 +136,45 @@ export function addTemporaryMapping(
     }
   }
   mappings.set(temporaryRef, taskGid);
+}
+
+/** 選択された作成操作へ重複しないUUIDを発行します。 */
+export function issueCreateUuids<TOperation extends {
+  readonly operation: string;
+  readonly operation_id: string;
+}>(
+  contexts: readonly Context<TOperation>[],
+  selectedOperationIds: ReadonlySet<string>,
+  uuidGenerator: () => string,
+): ReadonlyMap<string, string> {
+  const result = new Map<string, string>();
+  const seen = new Set<string>();
+  const createContexts = contexts
+    .filter((context) =>
+      selectedOperationIds.has(context.operation.operation_id)
+      && context.operation.operation === "create_task")
+    .sort(compareOperationContexts);
+  for (const context of createContexts) {
+    const uuid = z.uuid().parse(uuidGenerator());
+    if (seen.has(uuid)) {
+      throw new Error("作成UUIDが重複しています。");
+    }
+    seen.add(uuid);
+    result.set(context.operation.operation_id, uuid);
+  }
+  return result;
+}
+
+/** 適用基準の外部データをタスクGIDで索引化します。 */
+export function baselineExternalMap<TBaseline>(
+  entries: readonly { readonly task_gid: string; readonly external: TBaseline }[],
+): Map<string, TBaseline> {
+  const result = new Map<string, TBaseline>();
+  for (const entry of entries) {
+    if (result.has(entry.task_gid)) {
+      throw new Error("適用基準外部データのタスクGIDが重複しています。");
+    }
+    result.set(entry.task_gid, entry.external);
+  }
+  return result;
 }
