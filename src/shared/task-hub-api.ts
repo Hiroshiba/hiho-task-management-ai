@@ -1,3 +1,4 @@
+import type { FinalTaskHubApi } from "./ipc-contracts";
 import type {
   IpcAiApprovalInput,
   IpcAiApprovalResult,
@@ -152,6 +153,6 @@ export interface TaskHubApi {
 
 declare global {
   interface Window {
-    readonly taskHub?: TaskHubApi;
+    readonly taskHub?: TaskHubApi & FinalTaskHubApi;
   }
 }
