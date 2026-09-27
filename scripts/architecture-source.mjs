@@ -38,7 +38,7 @@ const ownerRules = [
   [/^src\/main\/storage\//, "main/infrastructure/persistence"],
   [/^src\/main\/bootstrap\//, "main/bootstrap"],
   [/^src\/main\/application\/common\//, "main/application/common"],
-  [/^src\/main\/application\/(task-read|task-write|proposal-generate|proposal-apply|gui-edit|settings|github-integration|obsidian-integration)\//, null],
+  [/^src\/main\/application\/(task-read|task-write|proposal-generate|proposal-apply|gui-edit|settings|system|github-integration|obsidian-integration)\//, null],
   [/^src\/main\/infrastructure\/(asana|github|obsidian|ai|persistence|logging|clock)\//, null],
   [/^src\/main\/ipc\//, "main/ipc"],
   [/^src\/preload\//, "preload"],

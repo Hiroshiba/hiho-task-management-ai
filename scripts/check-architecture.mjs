@@ -30,7 +30,7 @@ function isFinalPath(path) {
   if (path.startsWith("src/main/domain/")) return true;
   if (path.startsWith("src/main/bootstrap/")) return true;
   if (path.startsWith("src/main/application/common/")) return true;
-  if (/^src\/main\/application\/(task-read|task-write|proposal-generate|proposal-apply|gui-edit|settings|github-integration|obsidian-integration)\//.test(path)) return true;
+  if (/^src\/main\/application\/(task-read|task-write|proposal-generate|proposal-apply|gui-edit|settings|system|github-integration|obsidian-integration)\//.test(path)) return true;
   if (/^src\/main\/infrastructure\/(asana|github|obsidian|ai|persistence|logging|clock)\//.test(path)) return true;
   if (path === "src/main/ipc/register-ipc.ts" || path.startsWith("src/main/ipc/handlers/")) return true;
   if (path === "src/preload/bridge.ts") return true;
