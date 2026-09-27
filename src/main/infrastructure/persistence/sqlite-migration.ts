@@ -1,9 +1,15 @@
 import type { SqliteConnection, SqliteTransaction } from "./sqlite-connection";
 import {
+  proposalExecutionColumns,
+  proposalExecutionStepColumns,
+  proposalExecutionTablesSql,
+} from "./proposal-execution-schema";
+import {
   applicationJournalTableSql,
   applicationJournalV3Columns,
   applicationJournalV4ColumnsWithoutRecoveryReason,
   applicationJournalV5Columns,
+  storageLegacyTableNames,
   storageSchemaSql,
   storageSchemaVersion,
   storageTableNames,
@@ -25,20 +31,34 @@ function readTableNames(database: SqliteDatabase): readonly string[] {
   return rows.map((row) => row.name);
 }
 
-function assertStorageTableNames(tableNames: readonly string[]): void {
+function assertStorageTableNames(
+  tableNames: readonly string[],
+  expectedTableNames: readonly string[],
+): void {
   const tableNameSet = new Set(tableNames);
-  const expectedTableNameSet = new Set<string>(storageTableNames);
+  const expectedTableNameSet = new Set(expectedTableNames);
   if (
-    tableNames.length !== storageTableNames.length
+    tableNames.length !== expectedTableNames.length
     || tableNames.some((tableName) => !expectedTableNameSet.has(tableName))
   ) {
     throw new Error("SQLiteに未対応の追加テーブルが存在します。");
   }
-  storageTableNames.forEach((tableName) => {
+  expectedTableNames.forEach((tableName) => {
     if (!tableNameSet.has(tableName)) {
       throw new Error(`SQLiteのテーブルが不足しています: ${tableName}`);
     }
   });
+}
+
+function assertExecutionTableColumns(database: SqliteDatabase): void {
+  assertTableColumns(database, "proposal_executions", proposalExecutionColumns);
+  assertTableColumns(database, "proposal_execution_steps", proposalExecutionStepColumns);
+}
+
+function createExecutionTables(database: SqliteDatabase): void {
+  database.exec(proposalExecutionTablesSql);
+  assertStorageTableNames(readTableNames(database), storageTableNames);
+  assertExecutionTableColumns(database);
 }
 
 function readTableColumns(
@@ -112,7 +132,7 @@ function migrateSchemaFromV3(
   migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const migrate = transaction(() => {
-    assertStorageTableNames(readTableNames(database));
+    assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
     assertTableColumns(
       database,
       "application_journal",
@@ -192,13 +212,14 @@ function migrateSchemaFromV3(
     assertTableRowCount(database, "application_journal_v3", sourceRowCount);
     assertTableRowCount(database, "application_journal", sourceRowCount);
     database.exec("DROP TABLE application_journal_v3");
-    assertStorageTableNames(readTableNames(database));
+    assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
     assertTableColumns(
       database,
       "application_journal",
       applicationJournalV5Columns,
     );
     assertTableRowCount(database, "application_journal", sourceRowCount);
+    createExecutionTables(database);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
   migrate();
@@ -210,7 +231,7 @@ function migrateSchemaFromV4(
   migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const migrate = transaction(() => {
-    assertStorageTableNames(readTableNames(database));
+    assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
     const sourceColumns = readTableColumns(database, "application_journal");
     const hasRecoveryReason = hasExpectedTableColumns(
       sourceColumns,
@@ -301,12 +322,28 @@ function migrateSchemaFromV4(
     assertTableRowCount(database, "application_journal_v4", sourceRowCount);
     assertTableRowCount(database, "application_journal", sourceRowCount);
     database.exec("DROP TABLE application_journal_v4");
-    assertStorageTableNames(readTableNames(database));
+    assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
     assertTableColumns(
       database,
       "application_journal",
       applicationJournalV5Columns,
     );
+    assertTableRowCount(database, "application_journal", sourceRowCount);
+    createExecutionTables(database);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
+function migrateSchemaFromV5(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    const sourceRowCount = readTableRowCount(database, "application_journal");
+    createExecutionTables(database);
     assertTableRowCount(database, "application_journal", sourceRowCount);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
@@ -332,12 +369,13 @@ export function initializeSqliteSchema(
 
     const createSchema = transaction(() => {
       database.exec(storageSchemaSql);
-      assertStorageTableNames(readTableNames(database));
+      assertStorageTableNames(readTableNames(database), storageTableNames);
       assertTableColumns(
         database,
         "application_journal",
         applicationJournalV5Columns,
       );
+      assertExecutionTableColumns(database);
       database.pragma(`user_version = ${storageSchemaVersion}`);
     });
     createSchema();
@@ -354,9 +392,16 @@ export function initializeSqliteSchema(
     return;
   }
 
+  if (userVersion === 5) {
+    migrateSchemaFromV5(database, transaction);
+    return;
+  }
+
   if (userVersion !== storageSchemaVersion) {
     throw new Error(`未対応のSQLite schema versionです: ${userVersion}`);
   }
 
-  assertStorageTableNames(tableNames);
+  assertStorageTableNames(tableNames, storageTableNames);
+  assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+  assertExecutionTableColumns(database);
 }

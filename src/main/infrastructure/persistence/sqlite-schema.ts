@@ -1,6 +1,8 @@
-export const storageSchemaVersion = 5;
+import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageTableNames = [
+export const storageSchemaVersion = 6;
+
+export const storageLegacyTableNames = [
   "task_cache",
   "project_metadata_cache",
   "ranking_cache",
@@ -11,6 +13,12 @@ export const storageTableNames = [
   "application_journal",
   "diagnostic_log",
   "external_tool_definitions",
+] as const;
+
+export const storageTableNames = [
+  ...storageLegacyTableNames,
+  "proposal_executions",
+  "proposal_execution_steps",
 ] as const;
 
 export const applicationJournalTableSql = `
@@ -265,6 +273,7 @@ CREATE TABLE external_tool_definitions (
   definition_json TEXT NOT NULL,
   credential_reference_names_json TEXT NOT NULL
 );
+${proposalExecutionTablesSql}
 `;
 
 export interface TableNameRow {
