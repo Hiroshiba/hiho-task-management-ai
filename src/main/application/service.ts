@@ -130,8 +130,10 @@ import {
   ingestAsanaExternalData,
   normalizeAsanaSnapshot,
   normalizeTaskGraph,
-  type NormalizationTask,
 } from "../domain";
+import { collectApprovalProjectTasks } from "./proposal-generate";
+import { buildDisplayOrderInput } from "./task-write";
+import { validateRelationGraph } from "./gui-edit";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -427,7 +429,6 @@ type ExternalToolConfigurationStopReason = {
   readonly kind: "application_stop";
 };
 
-const maximumApprovalTaskCount = 10_000;
 const diagnosticLogRetentionLimit = 1_000;
 const serviceErrorDiagnostic = {
   kind: "service",
@@ -921,34 +922,6 @@ function externalDataIsValid(task: AsanaTaskResponse): boolean {
     && ingestion.kind === "valid"
     && task.external.gid === `TaskHub:v1:task:${ingestion.data.id}`
     && task.external.data === serializeCustomExternalData(ingestion.data);
-}
-
-function mergeApprovalTaskResponse(
-  tasks: Map<string, AsanaTaskResponse>,
-  value: AsanaTaskResponse,
-): boolean {
-  const candidate = asanaTaskResponseSchema.parse(value);
-  const current = tasks.get(candidate.gid);
-  if (current == null) {
-    tasks.set(candidate.gid, candidate);
-    return true;
-  }
-  const currentModifiedAt = Date.parse(current.modified_at);
-  const candidateModifiedAt = Date.parse(candidate.modified_at);
-  if (!Number.isFinite(currentModifiedAt) || !Number.isFinite(candidateModifiedAt)) {
-    throw new Error("承認前再取得タスクの更新時刻を比較できません。");
-  }
-  if (currentModifiedAt === candidateModifiedAt) {
-    if (canonicalizeJson(current) !== canonicalizeJson(candidate)) {
-      throw new Error("同じ更新時刻の承認前再取得タスクが一致しません。");
-    }
-    return false;
-  }
-  if (candidateModifiedAt > currentModifiedAt) {
-    tasks.set(candidate.gid, candidate);
-    return true;
-  }
-  return false;
 }
 
 function toIpcSyncState(state: AsanaSyncRuntimeState): IpcSyncStateEvent {
@@ -3583,44 +3556,11 @@ export class TaskHubApplication {
   ): Promise<AsanaDisplayOrderInput> {
     const context = this.requireContext();
     const tasks = await this.readClient.listProjectTasks(context.project_gid, signal);
-    const notStartedOrder: string[] = [];
-    const inProgressOrder: string[] = [];
-    const currentOrder = {
-      not_started: notStartedOrder,
-      in_progress: inProgressOrder,
-    };
-    const activeGids = new Set<string>();
-    for (const task of tasks) {
-      const memberships = task.memberships.filter(
-        (membership) => membership.project.gid === context.project_gid,
-      );
-      if (memberships.length !== 1) {
-        continue;
-      }
-      const sectionGid = memberships[0]?.section?.gid;
-      if (sectionGid == null) {
-        continue;
-      }
-      if (sectionGid === context.section_gids.not_started) {
-        currentOrder.not_started.push(task.gid);
-        activeGids.add(task.gid);
-      } else if (sectionGid === context.section_gids.in_progress) {
-        currentOrder.in_progress.push(task.gid);
-        activeGids.add(task.gid);
-      }
-    }
     const ranking = this.database.getRankingCache()?.ranked_tasks
-      .map((task) => task.gid)
-      .filter((gid) => activeGids.has(gid)) ?? [];
-    return asanaDisplayOrderInputSchema.parse({
-      project_gid: context.project_gid,
-      section_gids: {
-        not_started: context.section_gids.not_started,
-        in_progress: context.section_gids.in_progress,
-      },
-      current_order: currentOrder,
-      ranking,
-    });
+      .map((task) => task.gid) ?? [];
+    return asanaDisplayOrderInputSchema.parse(
+      buildDisplayOrderInput(context, tasks, ranking),
+    );
   }
 
   private createTaskctlSnapshot(): TaskctlSnapshot {
@@ -3808,87 +3748,6 @@ export class TaskHubApplication {
     return snapshot;
   }
 
-  private async collectApprovalProjectTasks(
-    projectGid: string,
-    signal: AbortSignal,
-  ): Promise<readonly AsanaTaskResponse[]> {
-    const validatedProjectGid = gidSchema.parse(projectGid);
-    const projectTasks = await this.interactiveReadClient.listProjectTasks(
-      validatedProjectGid,
-      signal,
-    );
-    const tasks = new Map<string, AsanaTaskResponse>();
-    const pendingTaskGids: string[] = [];
-    const queuedTaskGids = new Set<string>();
-    const expandedTaskGids = new Set<string>();
-    for (const task of projectTasks) {
-      mergeApprovalTaskResponse(tasks, task);
-      if (!queuedTaskGids.has(task.gid)) {
-        queuedTaskGids.add(task.gid);
-        pendingTaskGids.push(task.gid);
-      }
-    }
-    while (pendingTaskGids.length > 0) {
-      signal.throwIfAborted();
-      const taskGid = pendingTaskGids.shift();
-      if (taskGid == null) {
-        throw new Error("承認前再取得の探索キューを進行できません。");
-      }
-      if (expandedTaskGids.has(taskGid)) {
-        continue;
-      }
-      const task = tasks.get(taskGid);
-      if (task == null) {
-        throw new Error("承認前再取得の探索対象タスクがありません。");
-      }
-      expandedTaskGids.add(taskGid);
-      if (expandedTaskGids.size > maximumApprovalTaskCount) {
-        throw new Error("承認前再取得のタスク件数が上限を超えました。");
-      }
-      if (task.num_subtasks === 0) {
-        continue;
-      }
-      const subtasks = await this.interactiveReadClient.listSubtasks(
-        task.gid,
-        signal,
-      );
-      if (subtasks.length !== task.num_subtasks) {
-        throw new Error("承認前再取得のサブタスク件数がAsana応答と一致しません。");
-      }
-      const childGids = new Set<string>();
-      for (const subtask of subtasks) {
-        const validatedSubtask = asanaTaskResponseSchema.parse(subtask);
-        if (childGids.has(validatedSubtask.gid)) {
-          throw new Error("承認前再取得のサブタスクGIDが重複しています。");
-        }
-        childGids.add(validatedSubtask.gid);
-        if (validatedSubtask.parent?.gid !== task.gid) {
-          throw new Error("承認前再取得のサブタスク親参照が一致しません。");
-        }
-        const selectedCandidate = mergeApprovalTaskResponse(tasks, validatedSubtask);
-        if (
-          selectedCandidate
-          && validatedSubtask.num_subtasks > 0
-          && expandedTaskGids.delete(validatedSubtask.gid)
-        ) {
-          pendingTaskGids.push(validatedSubtask.gid);
-        }
-        if (
-          !queuedTaskGids.has(validatedSubtask.gid)
-          && !expandedTaskGids.has(validatedSubtask.gid)
-        ) {
-          queuedTaskGids.add(validatedSubtask.gid);
-          pendingTaskGids.push(validatedSubtask.gid);
-        }
-      }
-      if (tasks.size > maximumApprovalTaskCount) {
-        throw new Error("承認前再取得のタスク件数が上限を超えました。");
-      }
-    }
-    return [...tasks.values()].sort((left, right) =>
-      compareStrings(left.gid, right.gid));
-  }
-
   private async prepareApprovalInput(
     input: ApprovalPreparationInput,
     signal: AbortSignal,
@@ -3906,10 +3765,12 @@ export class TaskHubApplication {
     }
     const baselineExternalData = input.baseline_external_data;
     const baselineTasks = baseline.tasks.map((task) => taskSchema.parse(task));
-    const currentResponses = await this.collectApprovalProjectTasks(
-      context.project_gid,
-      signal,
-    );
+    const currentResponses = await collectApprovalProjectTasks(context.project_gid, signal, {
+      gidSchema,
+      taskSchema: asanaTaskResponseSchema,
+      source: this.interactiveReadClient,
+      canonicalizeJson,
+    });
     const normalized = normalizeAsanaSnapshot({
       project_gid: context.project_gid,
       section_gids: context.section_gids,
@@ -3950,46 +3811,11 @@ export class TaskHubApplication {
   ): Promise<AsanaGuiEditRelationGraphValidationResult> {
     validateAbortSignal(signal);
     throwIfAborted(signal);
-    const tasks: NormalizationTask[] = parseTaskCache(this.database.getTaskCache())
-      .map((entry) => {
-        const task = taskSchema.parse(entry.task);
-        if (task.gid !== request.task_gid) {
-          return {
-            gid: task.gid,
-            status: task.status,
-            dependencies: task.dependencies,
-            parent_work_mode: task.parent_work_mode,
-            ...(task.parent_gid == null ? {} : { parent_gid: task.parent_gid }),
-          };
-        }
-        if (request.kind === "dependencies") {
-          return {
-            gid: task.gid,
-            status: task.status,
-            dependencies: request.dependencies,
-            parent_work_mode: task.parent_work_mode,
-            ...(task.parent_gid == null ? {} : { parent_gid: task.parent_gid }),
-          };
-        }
-        return {
-          gid: task.gid,
-          status: task.status,
-          dependencies: task.dependencies,
-          parent_work_mode: task.parent_work_mode,
-          ...(request.parent_gid == null ? {} : { parent_gid: request.parent_gid }),
-        };
-      });
-    if (!tasks.some((task) => task.gid === request.task_gid)) {
-      throw new Error("関係グラフの編集対象タスクがありません。");
-    }
-    const result = normalizeTaskGraph({ tasks, inaccessible_gids: [] });
-    if (result.dependency_cycles.length > 0 || result.parent_cycles.length > 0) {
-      return Promise.resolve({
-        kind: "conflict",
-        reason_code: "relationship_cycle",
-      });
-    }
-    return Promise.resolve({ kind: "valid" });
+    const tasks = parseTaskCache(this.database.getTaskCache())
+      .map((entry) => taskSchema.parse(entry.task));
+    const result = validateRelationGraph(request, tasks, (projected) =>
+      normalizeTaskGraph({ tasks: projected, inaccessible_gids: [] }));
+    return Promise.resolve(result);
   }
 
   private assertWritesAllowed(): void {
