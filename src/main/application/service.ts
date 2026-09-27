@@ -134,6 +134,10 @@ import {
 import { collectApprovalProjectTasks } from "./proposal-generate";
 import { buildDisplayOrderInput } from "./task-write";
 import { validateRelationGraph } from "./gui-edit";
+import {
+  createCodexObsidianReadPort,
+  createObsidianPort,
+} from "../bootstrap/obsidian-ports";
 import { ReadModelService } from "../read-model";
 import {
   createObsidianOpenUri,
@@ -5040,84 +5044,27 @@ export class TaskHubApplication {
   }
 
   private createObsidianPort(): IpcObsidianPort {
-    return {
-      listVaults: (signal) => {
-        this.assertOperationalReady();
-        validateAbortSignal(signal);
-        throwIfAborted(signal);
-        return this.database.getVaultMappings()
-          .map((mapping) => mapping.vault_id)
-          .sort(compareStrings);
-      },
-      listVaultMappings: (signal) => {
-        this.assertOperationalReady();
-        validateAbortSignal(signal);
-        throwIfAborted(signal);
-        return this.database.getVaultMappings();
-      },
+    return createObsidianPort({
+      assertOperationalReady: () => this.assertOperationalReady(),
+      validateAbortSignal,
+      throwIfAborted,
+      getVaultMappings: () => this.database.getVaultMappings(),
       saveVaultMapping: (input, signal) => this.saveVaultMapping(input, signal),
-      validateVault: async (vaultId, signal) => {
-        this.assertOperationalReady();
-        const result = await this.obsidian.validateVault(vaultId, signal);
-        return { vault_id: result.vault_id, kind: "valid" };
-      },
-      resolvePath: async (vaultId, relativePath, signal) => {
-        this.assertOperationalReady();
-        const result = await this.obsidian.resolveRelativePath(
-          vaultId,
-          relativePath,
-          signal,
-        );
-        if (result.kind === "missing") {
-          return result;
-        }
-        return {
-          kind: "resolved",
-          vault_id: result.vault_id,
-          relative_path: result.relative_path,
-        };
-      },
-      noteExists: async (vaultId, relativePath, signal) => {
-        this.assertOperationalReady();
-        const result = await this.obsidian.noteExists(vaultId, relativePath, signal);
-        if (result.kind === "missing") {
-          return result;
-        }
-        return {
-          kind: "resolved",
-          vault_id: result.vault_id,
-          relative_path: result.relative_path,
-        };
-      },
-      openNote: async (vaultId, relativePath, signal) => {
-        this.assertOperationalReady();
-        const result = await this.obsidian.resolveRelativePath(
-          vaultId,
-          relativePath,
-          signal,
-        );
-        if (result.kind === "missing") {
-          throw new Error("開くObsidianノートが見つかりません。");
-        }
-        throwIfAborted(signal);
-        const uri = createObsidianOpenUri({
-          vault_id: result.vault_id,
-          relative_path: result.relative_path,
-        });
-        await this.options.open_obsidian_url(uri, signal);
-      },
-    };
+      validateVault: (vaultId, signal) => this.obsidian.validateVault(vaultId, signal),
+      resolveRelativePath: (vaultId, relativePath, signal) =>
+        this.obsidian.resolveRelativePath(vaultId, relativePath, signal),
+      noteExists: (vaultId, relativePath, signal) =>
+        this.obsidian.noteExists(vaultId, relativePath, signal),
+      createOpenUri: createObsidianOpenUri,
+      openObsidianUrl: (uri, signal) => this.options.open_obsidian_url(uri, signal),
+    });
   }
 
   private createCodexObsidianReadPort(): CodexObsidianReadPort {
-    return {
-      listVaults: (signal) => {
-        validateAbortSignal(signal);
-        throwIfAborted(signal);
-        return this.database.getVaultMappings()
-          .map((mapping) => mapping.vault_id)
-          .sort(compareStrings);
-      },
+    return createCodexObsidianReadPort({
+      validateAbortSignal,
+      throwIfAborted,
+      getVaultMappings: () => this.database.getVaultMappings(),
       listNotes: (vaultId, signal) => this.obsidian.listNotes(vaultId, signal),
       searchNotes: (vaultId, query, signal) =>
         this.obsidian.searchNotes(vaultId, query, signal),
@@ -5125,6 +5072,6 @@ export class TaskHubApplication {
         this.obsidian.readNote(vaultId, relativePath, signal),
       recentNotes: (vaultId, limit, signal) =>
         this.obsidian.recentNotes(vaultId, limit, signal),
-    };
+    });
   }
 }
