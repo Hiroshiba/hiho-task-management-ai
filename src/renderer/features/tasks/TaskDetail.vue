@@ -251,9 +251,6 @@ function processTaskEditMarker(
   if (marker == null) {
     return;
   }
-  if (marker.kind === "saved" && marker.detail == null) {
-    return;
-  }
   if (!props.draftStore.markProcessed(taskGid, marker.generation)) return;
   if (marker.kind === "conflict" || marker.kind === "missing") {
     moveDraftToStale(taskGid);
@@ -266,9 +263,6 @@ function processTaskEditMarker(
   }
   const draft = props.draftStore.get(taskGid);
   if (draft == null) {
-    return;
-  }
-  if (marker.detail == null) {
     return;
   }
   const savedTask = marker.detail;

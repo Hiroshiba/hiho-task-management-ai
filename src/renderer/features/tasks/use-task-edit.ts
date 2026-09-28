@@ -8,7 +8,13 @@ import type { useTaskRead } from "./use-task-read";
 import type { useTaskSync } from "./use-task-sync";
 
 type TaskEditInput = Parameters<TasksApi["applyEdit"]>[0];
+type ExecutionInput = { readonly request: TaskEditInput; readonly sequence: number };
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
+type ExecutionSettlement =
+  | { readonly kind: "settling"; readonly completion: Promise<void> }
+  | { readonly kind: "settled" }
+  | { readonly kind: "detail_unconfirmed"; readonly message: string };
+type ExecutionSettlementResult = Exclude<ExecutionSettlement, { readonly kind: "settling" }>;
 type TaskEditOptions = {
   readonly onToast: (kind: "success" | "warning", message: string) => void;
 };
@@ -50,14 +56,13 @@ function notStartedMessage(result: Extract<Extract<Awaited<ReturnType<TasksApi["
 /** GUI直接編集の送信、保存済み実行、結果表示を管理します。 */
 export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>, sync: ReturnType<typeof useTaskSync>, options: TaskEditOptions) {
   const diagnostics = useDiagnosticsApi();
-  const executionInputs = new Map<string, TaskEditInput>();
-  const settledExecutionIds = new Set<string>();
-  const settlingExecutions = new Map<string, Promise<void>>();
-  const detailConfirmationFailures = ref(new Map<string, string>());
+  const executionInputs = new Map<string, ExecutionInput>();
+  const settlements = ref(new Map<string, ExecutionSettlement>());
   const editStates = ref(new Map<string, "waiting_sync" | "saving">());
   const executions = ref(new Map<string, ExecutionDto>());
   const taskEditMarkers = ref(new Map<string, TaskEditMarker>());
   let markerGeneration = 0;
+  let executionSequence = 0;
   let removeExecutionSubscription: (() => void) | undefined;
   let disposed = false;
 
@@ -73,13 +78,13 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   const selectedExecutionFeedback = computed<ReturnType<typeof executionMessage> | undefined>(() => {
     const execution = selectedExecution.value;
     if (execution == null) return undefined;
-    const detailFailure = detailConfirmationFailures.value.get(execution.execution_id);
-    return detailFailure == null ? executionMessage(execution) : { kind: "warning", text: detailFailure };
+    const settlement = settlements.value.get(execution.execution_id);
+    return settlement?.kind === "detail_unconfirmed" ? { kind: "warning", text: settlement.message } : executionMessage(execution);
   });
   const canSubmitSelectedEdit = computed(() => {
     if (selectedEditState.value !== "idle") return false;
     const execution = selectedExecution.value;
-    if (execution != null && detailConfirmationFailures.value.has(execution.execution_id)) return false;
+    if (execution != null && settlements.value.get(execution.execution_id)?.kind === "detail_unconfirmed") return false;
     if (execution?.state === "confirmation_required") return false;
     if (execution?.state === "failed" && execution.operation_results[0]?.outcome === "unknown") return false;
     return true;
@@ -88,7 +93,7 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   onMounted(() => {
     try {
       removeExecutionSubscription = api.onExecution((value) => {
-        void receiveExecution(value).catch(async (error: unknown) => {
+        void receiveExecution(value, false).catch(async (error: unknown) => {
           await reportRendererError(diagnostics, error, "error");
           read.setTaskFeedback("failure", "実行状態を確認できませんでした。");
         });
@@ -146,51 +151,48 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     }
   }
 
-  function setDetailConfirmationFailure(executionId: string, message: string): void {
-    detailConfirmationFailures.value = new Map(detailConfirmationFailures.value).set(executionId, message);
+  function setSettlement(executionId: string, settlement: ExecutionSettlement): void {
+    settlements.value = new Map(settlements.value).set(executionId, settlement);
   }
 
-  function clearDetailConfirmationFailure(executionId: string): void {
-    const next = new Map(detailConfirmationFailures.value);
-    next.delete(executionId);
-    detailConfirmationFailures.value = next;
+  function recordExecutionInput(executionId: string, request: TaskEditInput): void {
+    executionSequence += 1;
+    executionInputs.set(executionId, { request, sequence: executionSequence });
   }
 
-  async function settleExecution(execution: ExecutionDto, input: TaskEditInput): Promise<void> {
+  async function settleExecution(execution: ExecutionDto, input: TaskEditInput): Promise<ExecutionSettlementResult> {
     const taskGid = execution.task_gid;
     if (taskGid == null) throw new Error("GUI編集の実行対象がありません。");
+    let detailConfirmed = false;
     try {
       if (execution.state === "succeeded") {
-        const detailResult = tasksContracts.getDetail.response.parse(await api.getDetail(taskGid));
-        if (!isCurrentExecution(execution)) return;
-        let refresh = await read.reloadTaskData();
-        if (refresh.kind === "superseded" && isCurrentExecution(execution)) refresh = await read.reloadTaskData();
-        if (!isCurrentExecution(execution)) return;
-        if (refresh.kind === "applied" && refresh.detail?.gid === taskGid
-          && read.isCurrentTaskDetailContext({ generation: refresh.detailGeneration, taskGid })) {
-          setMarker(taskGid, { kind: "saved", operation: input.operation, detail: refresh.detail });
-          clearDetailConfirmationFailure(execution.execution_id);
-          settledExecutionIds.add(execution.execution_id);
+        const confirmation = await read.confirmTaskDetail(taskGid, () => isCurrentExecution(execution));
+        if (!isCurrentExecution(execution)) return { kind: "settled" };
+        if (confirmation.kind === "found") {
+          setMarker(taskGid, { kind: "saved", operation: input.operation, detail: confirmation.detail });
+          detailConfirmed = true;
           const message = executionMessage(execution);
           show(taskGid, message.kind, message.text);
-          return;
+          await read.reloadTaskData();
+          return { kind: "settled" };
         }
-        const detailMessage = detailResult.kind === "error"
-          ? `${detailResult.message}${detailResult.error_id == null ? "" : ` エラーID ${detailResult.error_id}`} `
-          : "";
-        const detailFailure = `変更は反映されましたが、最新状態を確認できません。${detailMessage}実行ID ${execution.execution_id} から再確認してください。未保存の入力を保持しています。`;
-        setDetailConfirmationFailure(execution.execution_id, detailFailure);
+        if (confirmation.kind === "missing") {
+          show(taskGid, "warning", `対象タスクが見つかりません。実行ID ${execution.execution_id} の変更結果を確認してください。`);
+          await read.reloadTaskData();
+          return { kind: "settled" };
+        }
+        const reason = confirmation.kind === "failed" ? `${confirmation.message} ` : "";
+        const detailFailure = `変更は反映されましたが、最新状態を確認できません。${reason}実行ID ${execution.execution_id} から再確認してください。未保存の入力を保持しています。`;
         show(taskGid, "warning", detailFailure);
-        return;
+        return { kind: "detail_unconfirmed", message: detailFailure };
       }
-      if (!isCurrentExecution(execution)) return;
+      if (!isCurrentExecution(execution)) return { kind: "settled" };
       if (execution.state === "failed" && execution.operation_results[0]?.outcome !== "pending"
         && execution.operation_results[0]?.reason_code === "baseline_changed") {
         setMarker(taskGid, { kind: "conflict" });
       }
-      settledExecutionIds.add(execution.execution_id);
       const refresh = await read.reloadTaskData();
-      if (!isCurrentExecution(execution)) return;
+      if (!isCurrentExecution(execution)) return { kind: "settled" };
       if (execution.state === "failed" || execution.state === "confirmation_required") {
         const message = executionMessage(execution);
         show(taskGid, message.kind, message.text);
@@ -200,44 +202,46 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
         const message = executionMessage(execution);
         show(taskGid, message.kind, message.text);
       }
+      return { kind: "settled" };
     } catch (error) {
       const errorId = await reportRendererError(diagnostics, error, "error");
-      if (!isCurrentExecution(execution)) return;
-      const detailConfirmed = settledExecutionIds.has(execution.execution_id);
+      if (!isCurrentExecution(execution)) return { kind: "settled" };
       const message = detailConfirmed
         ? `最新のタスク一覧を取得できませんでした。実行ID ${execution.execution_id}${errorId == null ? "" : `、エラーID ${errorId}`}。再同期してください。`
         : `実行後のタスク状態を確認できません。実行ID ${execution.execution_id}${errorId == null ? "" : `、エラーID ${errorId}`}。未保存の入力を保持しています。`;
-      if (execution.state === "succeeded" && !detailConfirmed) {
-        setDetailConfirmationFailure(execution.execution_id, message);
-      }
       show(taskGid, "warning", message);
+      return execution.state === "succeeded" && !detailConfirmed
+        ? { kind: "detail_unconfirmed", message }
+        : { kind: "settled" };
     } finally {
       finishExecution(execution);
     }
   }
 
-  async function settle(execution: ExecutionDto, input: TaskEditInput): Promise<void> {
-    if (settledExecutionIds.has(execution.execution_id)) return;
-    const inFlight = settlingExecutions.get(execution.execution_id);
-    if (inFlight != null) return inFlight;
-    const confirmation = settleExecution(execution, input);
-    settlingExecutions.set(execution.execution_id, confirmation);
-    try {
-      await confirmation;
-    } finally {
-      settlingExecutions.delete(execution.execution_id);
-    }
+  async function settle(execution: ExecutionDto, input: TaskEditInput, reconfirm: boolean): Promise<void> {
+    const previous = settlements.value.get(execution.execution_id);
+    if (previous?.kind === "settled" || previous?.kind === "detail_unconfirmed" && !reconfirm) return;
+    if (previous?.kind === "settling") return previous.completion;
+    const completion = settleExecution(execution, input).then((result) => {
+      setSettlement(execution.execution_id, result);
+    });
+    setSettlement(execution.execution_id, { kind: "settling", completion });
+    await completion;
   }
 
-  async function receiveExecution(value: ExecutionDto): Promise<void> {
+  async function receiveExecution(value: ExecutionDto, reconfirm: boolean): Promise<void> {
     const execution = executionDtoSchema.parse(value);
     if (execution.origin !== "gui-edit" || execution.task_gid == null) throw new Error("GUI編集以外の実行通知を受け取りました。");
     const input = executionInputs.get(execution.execution_id);
-    if (input != null && input.task_gid !== execution.task_gid) throw new Error("GUI編集の実行対象が要求と一致しません。");
+    if (input != null && input.request.task_gid !== execution.task_gid) throw new Error("GUI編集の実行対象が要求と一致しません。");
     if (editStates.value.has(execution.task_gid) && !executionInputs.has(execution.execution_id)) return;
     const previous = executions.value.get(execution.task_gid);
     if (previous != null) {
-      if (Date.parse(previous.created_at) > Date.parse(execution.created_at)) return;
+      const previousInput = executionInputs.get(previous.execution_id);
+      if (previous.execution_id !== execution.execution_id) {
+        if (previousInput != null && input != null && previousInput.sequence > input.sequence) return;
+        if ((previousInput == null || input == null) && Date.parse(previous.created_at) >= Date.parse(execution.created_at)) return;
+      }
       if (previous.execution_id === execution.execution_id && Date.parse(previous.updated_at) > Date.parse(execution.updated_at)) return;
       if (previous.execution_id === execution.execution_id
         && (previous.state === "succeeded" || previous.state === "failed" || previous.state === "confirmation_required")
@@ -250,22 +254,27 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
       show(execution.task_gid, message.kind, message.text);
       return;
     }
-    if (input != null) await settle(execution, input);
+    if (input != null) await settle(execution, input.request, reconfirm);
     else {
       await read.reloadTaskData();
+      if (!isCurrentExecution(execution)) return;
       const message = executionMessage(execution);
       show(execution.task_gid, message.kind, message.text);
     }
   }
 
-  async function refreshExecution(executionId: string): Promise<void> {
+  async function readExecution(executionId: string, reconfirm: boolean): Promise<void> {
     const result = tasksContracts.getExecution.response.parse(await api.getExecution(executionId));
     if (result.kind === "error") {
       const input = executionInputs.get(executionId);
-      if (input != null) show(input.task_gid, "failure", `${result.message}${result.error_id == null ? "" : ` エラーID ${result.error_id}`}`);
+      if (input != null) show(input.request.task_gid, "failure", `${result.message}${result.error_id == null ? "" : ` エラーID ${result.error_id}`}`);
       return;
     }
-    await receiveExecution(result.value);
+    await receiveExecution(result.value, reconfirm);
+  }
+
+  async function refreshExecution(executionId: string): Promise<void> {
+    await readExecution(executionId, true);
   }
 
   async function applyEdit(input: TaskEditInput): Promise<void> {
@@ -275,7 +284,7 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
       return;
     }
     const previous = executions.value.get(request.task_gid);
-    if (previous != null && detailConfirmationFailures.value.has(previous.execution_id)) {
+    if (previous != null && settlements.value.get(previous.execution_id)?.kind === "detail_unconfirmed") {
       show(request.task_gid, "warning", "前回の変更後の最新状態を再確認してから編集してください。");
       return;
     }
@@ -306,9 +315,9 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
         return;
       }
       executionId = result.value.execution.execution_id;
-      executionInputs.set(executionId, request);
-      await receiveExecution(result.value.execution);
-      await refreshExecution(executionId);
+      recordExecutionInput(executionId, request);
+      await receiveExecution(result.value.execution, false);
+      await readExecution(executionId, false);
     } catch (error) {
       await reportRendererError(diagnostics, error, "error");
       if (executionId == null) {
@@ -340,10 +349,10 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
         return;
       }
       const input = executionInputs.get(executionId);
-      if (input != null) executionInputs.set(result.value.execution_id, input);
+      if (input != null) recordExecutionInput(result.value.execution_id, input.request);
       retryExecutionId = result.value.execution_id;
-      await receiveExecution(result.value);
-      await refreshExecution(retryExecutionId);
+      await receiveExecution(result.value, false);
+      await readExecution(retryExecutionId, false);
     } catch (error) {
       await reportRendererError(diagnostics, error, "error");
       if (retryExecutionId == null) {

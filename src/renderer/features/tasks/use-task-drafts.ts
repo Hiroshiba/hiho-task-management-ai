@@ -19,7 +19,7 @@ export type TaskDraft = {
 };
 
 export type TaskEditMarker =
-  | { readonly kind: "saved"; readonly generation: number; readonly operation: GuiEditOperation; readonly detail: TaskDetail | undefined }
+  | { readonly kind: "saved"; readonly generation: number; readonly operation: GuiEditOperation; readonly detail: TaskDetail }
   | { readonly kind: "conflict"; readonly generation: number }
   | { readonly kind: "missing"; readonly generation: number };
 

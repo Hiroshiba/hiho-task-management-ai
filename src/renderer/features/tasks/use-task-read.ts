@@ -10,10 +10,15 @@ import { sortTaskRows, taskSortSchema, type TaskSort } from "./task-presentation
 
 export type TaskDetail = z.infer<typeof detailSchema>;
 export type TaskDataRefreshResult =
-  | { readonly kind: "applied"; readonly detail?: TaskDetail; readonly detailGeneration: number }
+  | { readonly kind: "applied" }
   | { readonly kind: "unchanged" }
   | { readonly kind: "superseded" }
   | { readonly kind: "failed" };
+type TaskDetailConfirmationResult =
+  | { readonly kind: "found"; readonly detail: TaskDetail }
+  | { readonly kind: "missing" }
+  | { readonly kind: "failed"; readonly message: string }
+  | { readonly kind: "cancelled" };
 
 type ActiveSyncReload =
   | { readonly kind: "idle" }
@@ -41,7 +46,9 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     : sortTaskRows(filterTaskRows(overview.value, filter.value, currentAsOf.value), taskSort.value));
   const taskReferences = computed(() => overview.value?.tasks.map((task) => ({ gid: task.gid, title: task.title })) ?? []);
   let taskDataGeneration = 0;
-  let taskDetailGeneration = 0;
+  let selectionGeneration = 0;
+  let detailRequestGeneration = 0;
+  const latestDetailRequests = new Map<string, number>();
   let lastLoadedSuccessfulSyncAt: string | undefined;
   let activeSyncReload: ActiveSyncReload = { kind: "idle" };
   let clockTimer: number | undefined;
@@ -53,7 +60,8 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   });
   onBeforeUnmount(() => {
     taskDataGeneration += 1;
-    taskDetailGeneration += 1;
+    selectionGeneration += 1;
+    latestDetailRequests.clear();
   });
   onUnmounted(() => {
     if (clockTimer != null) window.clearInterval(clockTimer);
@@ -68,7 +76,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   }
 
   function clearTaskSelection(): void {
-    taskDetailGeneration += 1;
+    selectionGeneration += 1;
     selectedTaskGid.value = undefined;
     selectedTask.value = undefined;
   }
@@ -78,68 +86,58 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     clearTaskSelection();
   }
 
-  function captureTaskDetailContext(): { readonly generation: number; readonly taskGid: string } {
-    const taskGid = selectedTaskGid.value;
-    if (taskGid == null) throw new Error("タスクが選択されていません。");
-    return { generation: taskDetailGeneration, taskGid };
-  }
-
-  function isCurrentTaskDetailContext(context: { readonly generation: number; readonly taskGid: string }): boolean {
-    return context.generation === taskDetailGeneration && selectedTaskGid.value === context.taskGid;
-  }
-
   async function selectTask(taskGid: string): Promise<void> {
     clearTaskFeedback();
-    taskDetailGeneration += 1;
-    const detailGeneration = taskDetailGeneration;
+    selectionGeneration += 1;
+    const currentSelectionGeneration = selectionGeneration;
     selectedTaskGid.value = taskGid;
     selectedTask.value = undefined;
-    try {
-      await loadSelectedTask(taskGid, detailGeneration);
-    } catch (error) {
-      const errorId = await reportRendererError(diagnostics, error, "error");
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        options.onTaskFailure(`予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`);
-      }
-    }
-  }
-
-  async function loadSelectedTask(taskGid: string, detailGeneration: number): Promise<void> {
-    const result = apiContractDetail(await api.getDetail(taskGid));
-    if (result.kind === "error") {
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        options.onTaskFailure(failureMessage(result));
-        if (result.code === "not_found") {
-          options.onTaskMissing(taskGid);
-          setTaskFeedback("warning", "対象タスクが見つかりません。未保存の入力は再適用しません。");
-          clearTaskSelection();
-        }
-      }
-      return;
-    }
-    if (detailGeneration !== taskDetailGeneration || selectedTaskGid.value !== taskGid) return;
-    selectedTask.value = result.value;
+    await confirmTaskDetail(taskGid, () => selectionGeneration === currentSelectionGeneration);
   }
 
   function commitOverview(value: TaskOverview): void {
-    const previousOverview = overview.value;
-    if (previousOverview != null) {
-      const nextTaskGids = new Set(value.tasks.map((task) => task.gid));
-      for (const previousTask of previousOverview.tasks) {
-        if (!nextTaskGids.has(previousTask.gid)) options.onTaskMissing(previousTask.gid);
-      }
-    }
     overview.value = value;
     lastLoadedSuccessfulSyncAt = value.last_successful_sync_at;
   }
 
+  async function confirmTaskDetail(taskGid: string, isCurrent: () => boolean): Promise<TaskDetailConfirmationResult> {
+    detailRequestGeneration += 1;
+    const requestGeneration = detailRequestGeneration;
+    const currentSelectionGeneration = selectionGeneration;
+    latestDetailRequests.set(taskGid, requestGeneration);
+    try {
+      const result = apiContractDetail(await api.getDetail(taskGid));
+      if (latestDetailRequests.get(taskGid) !== requestGeneration || !isCurrent()) return { kind: "cancelled" };
+      if (result.kind === "error") {
+        if (result.code === "not_found") {
+          options.onTaskMissing(taskGid);
+          if (selectionGeneration === currentSelectionGeneration && selectedTaskGid.value === taskGid) {
+            setTaskFeedback("warning", "対象タスクが見つかりません。未保存の入力は再適用しません。");
+            clearTaskSelection();
+          }
+          return { kind: "missing" };
+        }
+        const message = failureMessage(result);
+        if (selectionGeneration === currentSelectionGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(message);
+        return { kind: "failed", message };
+      }
+      if (result.value.gid !== taskGid) throw new Error("タスク詳細が要求対象と一致しません。");
+      if (selectionGeneration === currentSelectionGeneration && selectedTaskGid.value === taskGid) selectedTask.value = result.value;
+      return { kind: "found", detail: result.value };
+    } catch (error) {
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      if (latestDetailRequests.get(taskGid) !== requestGeneration || !isCurrent()) return { kind: "cancelled" };
+      const message = `予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`;
+      if (selectionGeneration === currentSelectionGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(message);
+      return { kind: "failed", message };
+    }
+  }
+
   async function executeTaskDataRefresh(
     generation: number,
-    detailGeneration: number,
-    taskGid: string | undefined,
   ): Promise<TaskDataRefreshResult> {
     try {
-      return await performTaskDataRefresh(generation, detailGeneration, taskGid);
+      return await performTaskDataRefresh(generation);
     } catch (error) {
       const errorId = await reportRendererError(diagnostics, error, "error");
       if (generation === taskDataGeneration) options.onFailure(`予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`);
@@ -149,8 +147,6 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
 
   async function performTaskDataRefresh(
     generation: number,
-    detailGeneration: number,
-    taskGid: string | undefined,
   ): Promise<TaskDataRefreshResult> {
     const result = apiContractOverview(await api.getOverview());
     if (result.kind === "error") {
@@ -159,52 +155,19 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     }
     const nextOverview = result.value;
     if (generation !== taskDataGeneration) return { kind: "superseded" };
-    if (taskGid == null) {
-      commitOverview(nextOverview);
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value == null) {
-        selectedTask.value = undefined;
-      }
-      return { kind: "applied", detailGeneration };
-    }
-    if (!nextOverview.tasks.some((task) => task.gid === taskGid)) {
-      commitOverview(nextOverview);
-      options.onTaskMissing(taskGid);
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
-        clearTaskSelection();
-      }
-      return { kind: "applied", detailGeneration };
-    }
-    const detailResult = apiContractDetail(await api.getDetail(taskGid));
-    if (detailResult.kind === "error") {
-      if (detailResult.code === "not_found") {
-        if (generation !== taskDataGeneration) return { kind: "superseded" };
-        commitOverview(nextOverview);
-        options.onTaskMissing(taskGid);
-        if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-          setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
-          clearTaskSelection();
-        }
-        return { kind: "applied", detailGeneration };
-      }
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(failureMessage(detailResult));
-      return { kind: "failed" };
-    }
-    if (detailResult.value.gid !== taskGid) throw new Error("タスク詳細が選択対象と一致しません。");
-    if (generation !== taskDataGeneration) return { kind: "superseded" };
     commitOverview(nextOverview);
-    if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-      selectedTask.value = detailResult.value;
-      return { kind: "applied", detail: detailResult.value, detailGeneration };
-    }
-    return { kind: "applied", detailGeneration };
+    const taskGid = selectedTaskGid.value;
+    if (taskGid == null) return { kind: "applied" };
+    const currentSelectionGeneration = selectionGeneration;
+    const detailResult = await confirmTaskDetail(taskGid, () => selectionGeneration === currentSelectionGeneration);
+    if (generation !== taskDataGeneration) return { kind: "superseded" };
+    return detailResult.kind === "failed" ? { kind: "failed" } : { kind: "applied" };
   }
 
   function startTaskDataRefresh(): { readonly generation: number; readonly completion: Promise<TaskDataRefreshResult> } {
     taskDataGeneration += 1;
-    taskDetailGeneration += 1;
     const generation = taskDataGeneration;
-    return { generation, completion: executeTaskDataRefresh(generation, taskDetailGeneration, selectedTaskGid.value) };
+    return { generation, completion: executeTaskDataRefresh(generation) };
   }
 
   async function reloadTaskData(): Promise<TaskDataRefreshResult> {
@@ -266,7 +229,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   }
 
   return { overview, selectedTask, selectedTaskGid, filter, taskSort, currentAsOf, taskFeedback,
-    visibleRows, taskReferences, setTaskFeedback, clearTaskFeedback, captureTaskDetailContext, isCurrentTaskDetailContext,
+    visibleRows, taskReferences, setTaskFeedback, clearTaskFeedback, confirmTaskDetail,
     selectTask, deselectTask, reloadTaskData, startInitialTaskDataRefresh,
     reloadTaskDataAfterSuccessfulSync };
 }
