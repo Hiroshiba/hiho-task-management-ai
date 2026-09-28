@@ -30,7 +30,7 @@ export function useAppComposition() {
   const toastStore = createToastStore();
   provide(toastStoreInjectionKey, toastStore);
   onBeforeUnmount(toastStore.clearToasts);
-  const { addToast } = toastStore;
+  const { addToast, addPersistentToast } = toastStore;
   const feedback = ref<Feedback | undefined>();
   const proposals = useProposals();
   function setFeedback(kind: FeedbackKind, message: string): void {
@@ -147,6 +147,7 @@ export function useAppComposition() {
     onFailure: (message) => setFeedback("failure", message),
     onFeedback: (kind, message) => showGlobalResultFeedback({ kind, message }),
     onToast: (kind, message) => addToast(kind, message),
+    onSubscriptionFailureToast: (message) => addPersistentToast("warning", message),
     onSyncingChange: (isSyncing) => proposalWorkspace.handleSyncState(isSyncing),
   });
   const proposalWorkspace = useProposalWorkspace({
@@ -158,6 +159,7 @@ export function useAppComposition() {
     closeSettings: settings.closeDialog,
     selectTask,
     onToast: (kind, message) => addToast(kind, message),
+    onSubscriptionFailureToast: (message) => addPersistentToast("warning", message),
     onSettingsFeedback: settings.setDialogFeedback,
   });
   const {

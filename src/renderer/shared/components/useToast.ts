@@ -6,11 +6,18 @@ type ToastMessage = {
   readonly id: number;
   readonly kind: ToastKind;
   readonly message: string;
+  readonly duration: number;
+};
+
+export type PersistentToast = {
+  readonly update: (message: string) => void;
+  readonly dismiss: () => void;
 };
 
 type ToastStore = {
   readonly messages: Readonly<Ref<readonly ToastMessage[]>>;
   readonly addToast: (kind: ToastKind, message: string) => void;
+  readonly addPersistentToast: (kind: ToastKind, message: string) => PersistentToast;
   readonly dismissToast: (id: number) => void;
   readonly clearToasts: () => void;
 };
@@ -28,7 +35,7 @@ export function createToastStore(): ToastStore {
   const messages = ref<readonly ToastMessage[]>([]);
   let nextMessageId = 1;
 
-  function addToast(kind: ToastKind, message: string): void {
+  function addToastMessage(kind: ToastKind, message: string, duration: number): number {
     if (message.trim().length === 0) {
       throw new Error("通知メッセージを空にできません。");
     }
@@ -36,9 +43,26 @@ export function createToastStore(): ToastStore {
       id: nextMessageId,
       kind,
       message,
+      duration,
     };
     nextMessageId += 1;
     messages.value = [...messages.value, toast];
+    return toast.id;
+  }
+
+  function addToast(kind: ToastKind, message: string): void {
+    addToastMessage(kind, message, 5000);
+  }
+
+  function addPersistentToast(kind: ToastKind, message: string): PersistentToast {
+    const id = addToastMessage(kind, message, Number.POSITIVE_INFINITY);
+    return {
+      update: (nextMessage) => {
+        if (nextMessage.trim().length === 0) throw new Error("通知メッセージを空にできません。");
+        messages.value = messages.value.map((toast) => toast.id === id ? { ...toast, message: nextMessage } : toast);
+      },
+      dismiss: () => dismissToast(id),
+    };
   }
 
   function dismissToast(id: number): void {
@@ -49,7 +73,7 @@ export function createToastStore(): ToastStore {
     messages.value = [];
   }
 
-  return { messages, addToast, dismissToast, clearToasts };
+  return { messages, addToast, addPersistentToast, dismissToast, clearToasts };
 }
 
 /** アプリのトースト通知を参照します。 */

@@ -83,9 +83,10 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     } catch (error) {
       subscriptionFailed = true;
       syncStateGeneration += 1;
+      const generation = syncStateGeneration;
       setSyncState({ kind: "error", error_code: "unexpected_error" });
       void reportRendererError(diagnostics, error, "error").then((errorId) => {
-        if (!disposed) setSyncState({ kind: "error", error_code: "unexpected_error",
+        if (!disposed && generation === syncStateGeneration) setSyncState({ kind: "error", error_code: "unexpected_error",
           ...(errorId == null ? {} : { error_id: errorId }) });
       });
     }
@@ -183,10 +184,14 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     normalizationDisplayedAt = syncedAt;
   }
 
-  function handleSyncState(value: SyncStateEvent): void {
-    const state = syncStateSchema.parse(value);
+  function invalidatePendingFailure(): void {
     syncStateGeneration += 1;
     pendingFailureId = undefined;
+  }
+
+  function handleSyncState(value: SyncStateEvent): void {
+    const state = syncStateSchema.parse(value);
+    invalidatePendingFailure();
     if (state.last_successful_sync_at != null && options.configured.value) {
       void read.reloadTaskDataAfterSuccessfulSync(state.last_successful_sync_at);
     }
@@ -213,12 +218,14 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   }
 
   async function completeAuthenticationSync(syncedAt: string): Promise<boolean> {
+    invalidatePendingFailure();
     setConnectionState("online", { kind: "synced", synced_at: syncedAt });
     const refresh = await read.reloadTaskDataAfterSuccessfulSync(syncedAt);
     return refresh.kind !== "failed";
   }
 
   async function completeHistorySync(syncedAt: string): Promise<void> {
+    invalidatePendingFailure();
     setConnectionState(chromiumConnectionState(), { kind: "synced", synced_at: syncedAt });
     const refresh = await read.reloadTaskDataAfterSuccessfulSync(syncedAt);
     if (refresh.kind === "applied" || refresh.kind === "unchanged") {
@@ -251,6 +258,7 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
           : { kind: "error", error_code: "unexpected_error" });
         return;
       }
+      invalidatePendingFailure();
       setConnectionState(chromiumConnectionState(), { kind: "synced", synced_at: result.value.synced_at });
       const refreshResult = await read.reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
       if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {

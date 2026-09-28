@@ -67,6 +67,7 @@
 | `src/renderer/features/settings/SetupWizard.vue` | 初回設定の入力と進捗を表示する | 認証、project、Vaultの入力が同じ段階進行と保存結果に従い、分割すると前段の未保存入力を跨いで同期するため。 |
 | `src/renderer/features/tasks/TaskDetail.vue` | 選択中タスクの詳細と直接編集を表示する | 各項目の入力が同じタスク版と保存状態を使い、分割すると同時編集の競合表示を子間で同期するため。 |
 | `src/renderer/features/tasks/mock-tasks-api.ts` | タスクAPIのmock応答を作る | 一覧、詳細、直接編集が同じfixture状態とIDを使い、分割すると画面ごとのmockが異なるタスクを返すため。 |
+| `src/renderer/features/tasks/use-task-edit.ts` | GUI直接編集の実行状態と結果表示を管理する | 編集要求、実行通知、読戻し、未確定結果を同じ実行IDと更新順で照合しており、分割すると通知と確認要求の競合判定が別ownerに分かれるため。 |
 | `src/shared/ai-workflow/schemas.ts` | AI workflowの要求と結果を検証する | snapshot、操作編集、選択、承認のschemaが同じ上限と識別子を参照し、分割すると各段階の契約がずれるため。 |
 | `src/shared/ai/proposal.ts` | 変更案と操作の共通schemaを定義する | 17操作の判別子、group、証拠、Codex応答が同じ提案契約へ結び付き、分割すると操作追加時の受理範囲が散るため。 |
 | `src/shared/domain/schemas.ts` | タスクdomainの共通値を検証する | 状態、重要度、期限、関係のschemaが同じtask契約で再利用され、分割すると同じ値の制約が複数定義になるため。 |

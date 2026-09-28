@@ -4,6 +4,7 @@ import { tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tas
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { useDiagnosticsApi } from "../../shared/api/feature-apis";
 import { reportRendererError } from "../../shared/logging/report-renderer-error";
+import type { PersistentToast } from "../../shared/components/useToast";
 import type { TaskEditMarker } from "./use-task-drafts";
 import type { useTaskRead } from "./use-task-read";
 import type { useTaskSync } from "./use-task-sync";
@@ -17,8 +18,9 @@ type ExecutionSettlement =
   | { readonly kind: "settled" }
   | { readonly kind: "detail_unconfirmed"; readonly message: string };
 type ExecutionSettlementResult = Exclude<ExecutionSettlement, { readonly kind: "settling" | "reconfirming" }>;
-type TaskEditOptions = {
+export type TaskEditOptions = {
   readonly onToast: (kind: "success" | "warning", message: string) => void;
+  readonly onSubscriptionFailureToast: (message: string) => PersistentToast;
 };
 
 function executionMessage(execution: ExecutionDto): { readonly kind: FeedbackKind; readonly text: string } {
@@ -69,6 +71,7 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   let disposed = false;
   let executionEventGeneration = 0;
   let pendingFailure: { readonly id: string; readonly generation: number } | undefined;
+  let subscriptionFailureToast: PersistentToast | undefined;
 
   const selectedEditState = computed(() => {
     const gid = read.selectedTaskGid.value;
@@ -104,18 +107,23 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
       removeExecutionSubscription = api.onExecution((value) => {
         executionEventGeneration += 1;
         pendingFailure = undefined;
+        subscriptionFailureToast?.dismiss();
+        subscriptionFailureToast = undefined;
         return receiveExecution(value, false);
       }, handleSubscriptionFailure);
     } catch (error) {
+      subscriptionFailureToast = options.onSubscriptionFailureToast("実行状態を購読できませんでした。");
+      const toast = subscriptionFailureToast;
       void reportRendererError(diagnostics, error, "error").then((errorId) => {
-        if (disposed) return;
-        read.setTaskFeedback("failure", `実行状態を購読できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
+        if (disposed || subscriptionFailureToast !== toast || errorId == null) return;
+        toast.update(`実行状態を購読できませんでした。 エラーID ${errorId}`);
       });
     }
   });
   onUnmounted(() => {
     disposed = true;
     removeExecutionSubscription?.();
+    subscriptionFailureToast?.dismiss();
   });
 
   function handleSubscriptionFailure(failure: IpcSubscriptionFailure): void {
@@ -123,11 +131,13 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     if (failure.kind === "started") {
       executionEventGeneration += 1;
       pendingFailure = { id: failure.failure_id, generation: executionEventGeneration };
+      subscriptionFailureToast?.dismiss();
+      subscriptionFailureToast = options.onSubscriptionFailureToast("実行状態を確認できませんでした。");
       return;
     }
     if (pendingFailure?.id !== failure.failure_id || pendingFailure.generation !== executionEventGeneration) return;
     pendingFailure = undefined;
-    options.onToast("warning", `実行状態を確認できませんでした。${failure.kind === "reported" ? ` エラーID ${failure.error_id}` : ""}`);
+    if (failure.kind === "reported") subscriptionFailureToast?.update(`実行状態を確認できませんでした。 エラーID ${failure.error_id}`);
   }
 
   function setMarker(taskGid: string, update: Omit<Extract<TaskEditMarker, { readonly kind: "saved" }>, "generation"> | { readonly kind: "conflict" } | { readonly kind: "missing" }): void {

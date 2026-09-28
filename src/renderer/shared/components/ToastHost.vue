@@ -46,6 +46,7 @@ function handleOpenChange(id: number, open: boolean): void {
       :key="toast.id"
       open
       type="foreground"
+      :duration="toast.duration"
       class="pointer-events-auto flex items-start justify-between gap-4 rounded-lg border px-4 py-3 text-sm shadow-lg"
       :class="toastClass(toast.kind)"
       @update:open="handleOpenChange(toast.id, $event)"

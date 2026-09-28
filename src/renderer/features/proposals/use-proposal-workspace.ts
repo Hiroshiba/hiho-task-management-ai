@@ -5,6 +5,7 @@ import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { SetupState } from "../../../shared/ipc-contracts/setup-schemas";
 import { useDiagnosticsApi } from "../../shared/api/feature-apis";
 import { reportRendererError } from "../../shared/logging/report-renderer-error";
+import type { PersistentToast } from "../../shared/components/useToast";
 import { proposalFromState } from "./proposal-state";
 import { useProposals } from "./use-proposals";
 import type AiSessionDialog from "./AiSessionDialog.vue";
@@ -49,6 +50,7 @@ type Options = {
   readonly closeSettings: () => void;
   readonly selectTask: (gid: string) => void | Promise<void>;
   readonly onToast: (kind: "success" | "warning", message: string) => void;
+  readonly onSubscriptionFailureToast: (message: string) => PersistentToast;
   readonly onSettingsFeedback: (feedback: Feedback | undefined) => void;
 };
 type DialogApi = { readonly focusSessionInput: (sessionId: string) => "focused" | "unavailable" };
@@ -104,14 +106,30 @@ export function useProposalWorkspace(options: Options) {
   const codexHint = ref<ProposalCodexState>({ kind: "connecting" });
   const syncing = ref(false);
   let disposed = false;
+  let subscriptionFailureToast: PersistentToast | undefined;
 
-  onBeforeUnmount(() => { disposed = true; });
+  onBeforeUnmount(() => {
+    disposed = true;
+    subscriptionFailureToast?.dismiss();
+  });
 
-  watch(() => proposals.aiStatusFailure.value, (failure) => {
-    if (!disposed && failure != null) options.onToast("warning", withErrorId(failure.message, failure.error_id));
+  watch(() => proposals.aiStatusFailure.value, (event) => {
+    if (!disposed && event?.source === "request") options.onToast("warning", withErrorId(event.failure.message, event.failure.error_id));
   }, { flush: "sync" });
-  watch(() => proposals.subscriptionFailure.value, (event) => {
-    if (!disposed && event != null) options.onToast("warning", withErrorId(event.failure.message, event.failure.error_id));
+  watch(() => proposals.subscriptionFailure.value, (event, previous) => {
+    if (disposed) return;
+    if (event == null) {
+      subscriptionFailureToast?.dismiss();
+      subscriptionFailureToast = undefined;
+      return;
+    }
+    const message = withErrorId(event.failure.message, event.failure.error_id);
+    if (previous?.failureId === event.failureId && subscriptionFailureToast != null) {
+      subscriptionFailureToast.update(message);
+      return;
+    }
+    subscriptionFailureToast?.dismiss();
+    subscriptionFailureToast = options.onSubscriptionFailureToast(message);
   }, { flush: "sync" });
 
   const codexState = computed<ProposalCodexState>(() => {
