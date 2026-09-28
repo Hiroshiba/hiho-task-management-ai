@@ -3,14 +3,14 @@ import { computed, ref, watch } from "vue";
 import { z } from "zod";
 import { dateSchema } from "../../../shared/ipc-contracts/common";
 import { applyEditRequestSchema } from "../../../shared/ipc-contracts/tasks";
-import { taskStatusSchema } from "../../../shared/ipc-contracts/task-values";
+import { durationSchema, taskStatusSchema } from "../../../shared/ipc-contracts/task-values";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
 import RekaSelect from "../../shared/components/RekaSelect.vue";
-import { isoToJstDatetimeLocal, jstDatetimeLocalToIso, parseJstDatetimeLocal } from "../../shared/format/date-time";
+import { isoToJstDatetimeLocal, parseJstDatetimeLocal } from "../../shared/format/date-time";
 import { deadlineTone, deadlineToneClass, dueRelativeLabel, importanceToneClass } from "./task-presentation";
 import { parseDependencyInput } from "./task-input";
-import { durationMinimum, durationUnitOptions, parseDurationInput, type DurationUnit } from "./task-duration";
+import { durationMinimum, durationUnitOptions, type DurationUnit } from "./task-duration";
 import { applySavedOperation, draftDiffersFromTask, staleDraftDetails } from "./task-detail-draft";
 import type { TaskDetail } from "./use-task-read";
 import type { TaskDraft, TaskDraftStore, TaskEditMarker } from "./use-task-drafts";
@@ -385,11 +385,12 @@ function selectStatus(value: string | number): void {
 }
 
 function submitImportance(): void {
-  try {
-    submitOperation({ kind: "set_importance", value: importanceSchema.parse(importance.value) });
-  } catch {
+  const parsed = importanceSchema.safeParse(importance.value);
+  if (!parsed.success) {
     localError.value = "重要度を確認してください。";
+    return;
   }
+  submitOperation({ kind: "set_importance", value: parsed.data });
 }
 
 function selectImportance(value: string | number): void {
@@ -398,19 +399,25 @@ function selectImportance(value: string | number): void {
 }
 
 function submitDue(): void {
-  try {
-    if (dueKind.value === "none") {
-      submitOperation({ kind: "clear_due" });
-      return;
-    }
-    if (dueKind.value === "due_on") {
-      submitOperation({ kind: "set_due", value: { kind: "on", value: dateSchema.parse(dueValue.value) } });
-      return;
-    }
-    submitOperation({ kind: "set_due", value: { kind: "at", value: jstDatetimeLocalToIso(dueValue.value) } });
-  } catch {
-    localError.value = "期限を確認してください。";
+  if (dueKind.value === "none") {
+    submitOperation({ kind: "clear_due" });
+    return;
   }
+  if (dueKind.value === "due_on") {
+    const parsed = dateSchema.safeParse(dueValue.value);
+    if (!parsed.success) {
+      localError.value = "期限を確認してください。";
+      return;
+    }
+    submitOperation({ kind: "set_due", value: { kind: "on", value: parsed.data } });
+    return;
+  }
+  const parsed = parseJstDatetimeLocal(dueValue.value);
+  if (parsed.kind === "invalid") {
+    localError.value = "期限を確認してください。";
+    return;
+  }
+  submitOperation({ kind: "set_due", value: { kind: "at", value: parsed.value } });
 }
 
 function submitDueKind(): void {
@@ -432,14 +439,12 @@ function submitDuration(): void {
     submitOperation({ kind: "clear_duration" });
     return;
   }
-  try {
-    submitOperation({
-      kind: "set_duration",
-      value: parseDurationInput(durationUnit.value, durationValue.value),
-    });
-  } catch {
+  const parsed = durationSchema.safeParse({ unit: durationUnit.value, value: Number(durationValue.value) });
+  if (!parsed.success) {
     localError.value = "所要時間を確認してください。";
+    return;
   }
+  submitOperation({ kind: "set_duration", value: parsed.data });
 }
 
 function selectDurationUnit(value: string | number): void {
@@ -482,12 +487,12 @@ function submitDependencies(): void {
   if (task == null) {
     return;
   }
-  try {
-    const dependencies = parseDependencyInput(dependencyText.value, currentDependencies(task));
-    submitOperation({ kind: "set_dependencies", value: dependencies });
-  } catch {
+  const parsed = parseDependencyInput(dependencyText.value, currentDependencies(task));
+  if (parsed.kind === "invalid") {
     localError.value = "依存先のGIDを確認してください。";
+    return;
   }
+  submitOperation({ kind: "set_dependencies", value: parsed.value });
 }
 
 function submitParent(): void {
