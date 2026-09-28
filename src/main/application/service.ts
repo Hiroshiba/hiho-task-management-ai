@@ -228,6 +228,7 @@ import {
   dateSchema,
   gidSchema,
   identifierSchema,
+  importanceSchema,
   isoDateTimeSchema,
   parseCustomExternalData,
   serializeCustomExternalData,
@@ -248,7 +249,8 @@ import {
 import {
   TaskctlAbortError,
   taskHubExecutablePathEnvironmentVariable,
-  taskctlSnapshotSchema,
+  createTaskctlRankingSchemas,
+  type TaskctlRankingSchemas,
   type TaskctlSnapshot,
 } from "../codex/taskctl";
 import {
@@ -266,12 +268,10 @@ import {
 import {
   deviceSettingsSchema,
   externalToolCredentialReferenceNamesSchema,
-  rankingCacheSchema,
   vaultMappingSchema,
   type DeviceSettings,
   type DiagnosticLogEntry,
   type ExternalToolCredentialReferenceNames,
-  type RankingCache,
 } from "../../shared/storage";
 import {
   SqliteExternalToolDefinitionRepository,
@@ -282,6 +282,7 @@ import {
   TaskReadPersistenceRepository,
   createSyncStateSchema,
   createTaskReadCacheContracts,
+  createRankingCacheSchema,
   createTaskReadCacheSchemas,
   type PersistenceRuntime,
   type TaskReadPersistenceContracts,
@@ -292,6 +293,7 @@ import type {
   TaskCacheDiffRecord as TaskCacheDiff,
   TaskCacheRecord as TaskCacheEntry,
   TaskReadEntry,
+  TaskReadRanking as RankingCache,
 } from "./common/ports/task-read-repository";
 
 type AiStatus = z.output<typeof proposalsContracts.aiStatus.event.shape.value>;
@@ -409,7 +411,7 @@ function createExternalToolDefinitionRecordSchema(): z.ZodType<ExternalToolDefin
   }).strict();
 }
 
-function createTaskReadPersistenceContracts(): TaskReadPersistenceContracts<
+function createTaskReadPersistenceContracts(rankingCacheSchema: z.ZodType<RankingCache>): TaskReadPersistenceContracts<
   TaskCacheEntry,
   ProjectMetadataCache,
   RankingCache,
@@ -965,6 +967,7 @@ type TaskReadCompositionDependencies = TaskReadCompositionPort<
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
   private readonly taskReadPersistenceContracts: ReturnType<typeof createTaskReadPersistenceContracts>;
+  private readonly taskctlSchemas: TaskctlRankingSchemas;
   private readonly taskReadRepository: TaskReadPersistenceRepository<
     TaskCacheEntry,
     ProjectMetadataCache,
@@ -1094,8 +1097,16 @@ export class TaskHubApplication {
     });
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
-    const taskReadPersistenceContracts = createTaskReadPersistenceContracts();
+    const rankingCacheSchema = createRankingCacheSchema({
+      dateSchema,
+      gidSchema,
+      identifierSchema,
+      importanceSchema,
+      isoDateTimeSchema,
+    });
+    const taskReadPersistenceContracts = createTaskReadPersistenceContracts(rankingCacheSchema);
     this.taskReadPersistenceContracts = taskReadPersistenceContracts;
+    this.taskctlSchemas = createTaskctlRankingSchemas(rankingCacheSchema);
     this.taskReadRepository = new TaskReadPersistenceRepository(
       persistence,
       taskReadPersistenceContracts,
@@ -1145,6 +1156,7 @@ export class TaskHubApplication {
       this.taskReadRepository,
       () => createNowIso(this.options.now_provider),
       taskReadPersistenceContracts,
+      rankingCacheSchema,
     );
     this.codexWorkspace = initializeCodexWorkspace({
       userDataPath: options.user_data_path,
@@ -1184,7 +1196,7 @@ export class TaskHubApplication {
       onError: onCodexError,
       snapshotProvider: () => this.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.synchronizationOperations.requireSynchronizedBeforeAi(signal),
-    });
+    }, this.taskctlSchemas);
     this.codexAdapter = new CodexSetupAdapter({
       session: this.codexSession,
       executable: options.codex_executable,
@@ -1392,6 +1404,7 @@ export class TaskHubApplication {
       now_provider: this.options.now_provider,
       online_provider: () => this.isOnline(),
       get_taskctl_snapshot: () => this.createTaskctlSnapshot(),
+      taskctl_schemas: this.taskctlSchemas,
       operation_queue: this.operationQueue,
       get_runtime_state: () => this.operationalServices.getRuntime()?.getState(),
       create_baseline: (signal) => this.createExternalBaseline(signal),
@@ -2502,7 +2515,7 @@ export class TaskHubApplication {
       ? undefined
       : this.taskReadRepository.getSyncState(context.project_gid);
     const ranking = this.taskReadRepository.getRankingCache();
-    return taskctlSnapshotSchema.parse({
+    return this.taskctlSchemas.taskctlSnapshotSchema.parse({
       sync: syncState?.last_successful_sync_at == null
         ? { kind: "unavailable" }
         : { kind: "synced", synced_at: syncState.last_successful_sync_at },
@@ -3247,7 +3260,7 @@ export class TaskHubApplication {
       },
       snapshotProvider: () => this.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.synchronizationOperations.requireSynchronizedBeforeAi(signal),
-    });
+    }, this.taskctlSchemas);
   }
 
   private createAiWorkflow(
@@ -3262,6 +3275,7 @@ export class TaskHubApplication {
       snapshotProvider: (signal) => this.createAiSnapshot(signal, baselineStore),
       taskctlSnapshotProvider: (signal) =>
         this.requireAiTaskctlSnapshot(signal, baselineStore),
+      parseTaskctlSnapshot: (value) => this.taskctlSchemas.taskctlSnapshotSchema.parse(value),
       baselineExternalDataProvider: (baseline) => {
         const value = baselineStore.externalData.get(canonicalizeJson(baseline));
         if (value == null) {

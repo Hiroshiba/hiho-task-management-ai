@@ -20,7 +20,6 @@ import {
   AsanaSyncCoordinator,
   AsanaSyncInProgressError,
   asanaSyncCoordinatorInputSchema,
-  asanaSyncCoordinatorResultSchema,
 } from "../sync";
 import { isoDateTimeSchema } from "../../../shared/domain";
 import type { TaskReadSyncState } from "../../application/common/ports/task-read-repository";
@@ -55,7 +54,7 @@ import {
 const fullSyncIntervalMilliseconds = 24 * 60 * 60 * 1000;
 const onlineSyncIntervalMilliseconds = 60 * 1000;
 
-type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
+type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate" | "resultSchema">;
 type SyncStateRepository = { getSyncState(projectGid: string): TaskReadSyncState | undefined };
 type BeforeSynchronization = (
   signal: AbortSignal,
@@ -862,7 +861,7 @@ export class AsanaSyncRuntime {
         this.recordAbortState();
         return createAbortResult();
       }
-      const result = asanaSyncCoordinatorResultSchema.parse(coordinated);
+      const result = this.coordinator.resultSchema.parse(coordinated);
       this.lastSuccessfulSyncAt = result.synced_at;
       this.lastErrorCode = undefined;
       this.publishState(
@@ -872,7 +871,7 @@ export class AsanaSyncRuntime {
           result.normalization_notifications,
         ),
       );
-      return createSynchronizedResult(mode, result);
+      return createSynchronizedResult(mode, result, this.coordinator.resultSchema);
     } catch (error: unknown) {
       if (signal.aborted || error instanceof AsanaRequestAbortedError) {
         this.operationQueue.invalidatePendingMutations("synchronization_failed");

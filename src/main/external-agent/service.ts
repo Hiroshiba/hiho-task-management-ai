@@ -74,8 +74,8 @@ import type {
   ExternalAgentProposalStatus,
   ExternalAgentProposalStatusResult,
   ExternalAgentRequestInput,
-  ExternalAgentResponse,
-  ExternalAgentTaskQueryResponse,
+  ExternalAgentResponse as ExternalAgentResponseRecord,
+  ExternalAgentTaskQueryResponse as ExternalAgentTaskQueryResponseRecord,
   ExternalAgentTaskListInput,
   ExternalAgentTaskDetailInput,
   ExternalAgentTaskRankInput,
@@ -112,7 +112,7 @@ import {
   externalAgentProposalStatusResultSchema,
   externalAgentRequestInputSchema,
   externalAgentReviewOpenResponseSchema,
-  externalAgentTaskQueryResponseSchema,
+  createExternalAgentResponseSchemas,
   externalAgentProtocolVersion,
   maximumExternalAgentMessageBytes,
   maximumWorkspaceCliResponseBytes,
@@ -123,7 +123,8 @@ import type {
 import { hashBaselineSnapshot } from "../domain/snapshot-hash";
 import {
   executeTaskctlQuery,
-  taskctlSnapshotSchema,
+  type TaskctlRankingSchemas,
+  type TaskctlResponse,
   type TaskctlSnapshot,
 } from "../codex/taskctl";
 import {
@@ -174,6 +175,9 @@ import {
 const maximumRequests = 100;
 const externalAgentOperationKind: AsanaOperationKind = "external_apply";
 
+type ExternalAgentResponse = ExternalAgentResponseRecord<TaskctlResponse>;
+type ExternalAgentTaskQueryResponse = ExternalAgentTaskQueryResponseRecord<TaskctlResponse>;
+
 type SavedOperationStatusResult = Extract<Extract<ExternalAgentProposalStatusResult, { kind: "journals" }>["results"][number]["result"], { kind: "execution" | "unknown" | "legacy_history" }>;
 
 export type ExternalAgentBaseline = {
@@ -195,6 +199,7 @@ export type ExternalAgentServiceOptions = {
   readonly now_provider: () => Date;
   readonly online_provider: () => boolean;
   readonly get_taskctl_snapshot: () => TaskctlSnapshot;
+  readonly taskctl_schemas: TaskctlRankingSchemas;
   readonly operation_queue: Pick<AsanaOperationQueue, "enqueue" | "invalidatePendingMutations">;
   readonly get_runtime_state: () => AsanaSyncRuntimeState | undefined;
   readonly create_baseline: (
@@ -633,13 +638,15 @@ export class ExternalAgentService {
     let snapshot: TaskctlSnapshot;
     if (contextId == null) {
       this.assertReadReady();
-      snapshot = taskctlSnapshotSchema.parse(this.options.get_taskctl_snapshot());
+      snapshot = this.options.taskctl_schemas.taskctlSnapshotSchema.parse(this.options.get_taskctl_snapshot());
     } else {
       snapshot = this.preparation.requireContext(contextId).taskctl_snapshot;
     }
     const query = externalAgentTaskctlQuery(input);
-    const result = executeTaskctlQuery(query, snapshot);
-    return externalAgentTaskQueryResponseSchema.parse({
+    const result = executeTaskctlQuery(query, snapshot, this.options.taskctl_schemas);
+    return createExternalAgentResponseSchemas(
+      this.options.taskctl_schemas.taskctlResponseSchema,
+    ).externalAgentTaskQueryResponseSchema.parse({
       operation: input.operation,
       ...(contextId == null ? {} : { proposal_context_id: contextId }),
       result,
@@ -679,7 +686,7 @@ export class ExternalAgentService {
       stopped: () => this.lifecycle.stopped,
       currentContextId: () => this.lifecycle.context?.context_id,
       parseBaseline: (value) => baselineSnapshotSchema.parse(value),
-      parseTaskctl: (value) => taskctlSnapshotSchema.parse(value),
+      parseTaskctl: (value) => this.options.taskctl_schemas.taskctlSnapshotSchema.parse(value),
       taskctlSummary: (snapshot) => ({
         sync_kind: snapshot.sync.kind,
         ...(snapshot.sync.kind === "synced" ? { synced_at: snapshot.sync.synced_at } : {}),

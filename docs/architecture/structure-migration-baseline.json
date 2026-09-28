@@ -3499,11 +3499,6 @@
     },
     {
       "path": "src/shared/taskctl/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/shared/taskctl/schemas.ts",
       "rule": "old-path",
       "symbol": "src/shared/taskctl/schemas.ts"
     }

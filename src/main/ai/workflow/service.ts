@@ -35,7 +35,7 @@ import {
   type CodexSessionDeltaListener, type CodexSessionTurnInput,
   type CodexSessionTurnResult,
 } from "../../codex/session";
-import { taskctlSnapshotSchema, type TaskctlSnapshot } from "../../codex/taskctl";
+import type { TaskctlSnapshot } from "../../codex/taskctl";
 import {
   AiWorkflowEditError, AiWorkflowError, AiWorkflowProposalNotFoundError,
   AiWorkflowRetryableFailureError, AiWorkflowSelectionError, AiWorkflowStateError,
@@ -269,6 +269,7 @@ export interface AiWorkflowOptions {
   readonly session: AiWorkflowSessionPort;
   readonly snapshotProvider: AiWorkflowSnapshotProvider;
   readonly taskctlSnapshotProvider: AiWorkflowTaskctlSnapshotProvider;
+  readonly parseTaskctlSnapshot: (value: unknown) => TaskctlSnapshot;
   readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
   readonly externalStatusEvidenceCollector: AiWorkflowExternalStatusEvidenceCollector;
   readonly executeApproval: (
@@ -724,7 +725,7 @@ export class AiWorkflowService {
           parseBaselineExternalData: (value) => asanaProposalApplicationInputSchema
             .shape.baseline_external_data.parse(value),
           taskctlSnapshotProvider: (currentSignal) => this.options.taskctlSnapshotProvider(currentSignal),
-          parseTaskctlSnapshot: (value) => taskctlSnapshotSchema.parse(value),
+          parseTaskctlSnapshot: (value) => this.options.parseTaskctlSnapshot(value),
           assertTaskctlSnapshotMatchesBaseline: (snapshot, baseline, taskctlSnapshot) =>
             verifyTaskctlBaseline(snapshot, baseline, taskctlSnapshot, {
               parseBaselineSnapshot: (value) => baselineSnapshotSchema.parse(value),

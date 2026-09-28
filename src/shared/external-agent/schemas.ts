@@ -19,10 +19,7 @@ import {
   proposalWorkspaceEditSchema,
   proposalWorkspaceReadTargetSchema,
 } from "../ai";
-import {
-  taskctlResponseSchema,
-  taskctlSearchQuerySchema,
-} from "../taskctl";
+import { taskctlSearchQuerySchema } from "../taskctl";
 
 export const maximumExternalAgentMessageBytes = 4 * 1_024;
 const maximumRegistrationBytes = 4 * 1_024;
@@ -468,20 +465,6 @@ export const externalAgentProposalStatusResultSchema = z.discriminatedUnion("kin
     .strict(),
 ]);
 
-/** 外部連携のtaskctl読み取り応答を検証するスキーマです。 */
-export const externalAgentTaskQueryResponseSchema = z.object({
-  operation: z.enum([
-    "tasks.list",
-    "tasks.get",
-    "tasks.rank",
-    "tasks.graph",
-    "tasks.areas",
-    "tasks.search-local",
-  ]),
-  proposal_context_id: identifierSchema.optional(),
-  result: taskctlResponseSchema,
-}).strict();
-
 /** 外部連携の提案基準準備応答を検証するスキーマです。 */
 export const externalAgentProposalPrepareResponseSchema = z.object({
   operation: z.literal("proposals.prepare"),
@@ -720,18 +703,33 @@ export const externalAgentReviewOpenResponseSchema = z
   })
   .strict();
 
-/** 外部連携の要求応答を操作種別ごとに検証するスキーマです。 */
-export const externalAgentResponseSchema = z.discriminatedUnion("operation", [
-  externalAgentTaskQueryResponseSchema,
-  externalAgentProposalPrepareResponseSchema,
-  externalAgentProposalReadResponseSchema,
-  externalAgentProposalApplyEditsResponseSchema,
-  externalAgentProposalDiffResponseSchema,
-  externalAgentProposalValidateResponseSchema,
-  externalAgentProposalSubmitResponseSchema,
-  externalAgentProposalStatusResponseSchema,
-  externalAgentReviewOpenResponseSchema,
-]);
+/** taskctlの応答検証を注入して外部連携の応答を作ります。 */
+export function createExternalAgentResponseSchemas<Response>(taskctlResponseSchema: z.ZodType<Response>) {
+  const externalAgentTaskQueryResponseSchema = z.object({
+    operation: z.enum([
+      "tasks.list",
+      "tasks.get",
+      "tasks.rank",
+      "tasks.graph",
+      "tasks.areas",
+      "tasks.search-local",
+    ]),
+    proposal_context_id: identifierSchema.optional(),
+    result: taskctlResponseSchema,
+  }).strict();
+  const externalAgentResponseSchema = z.discriminatedUnion("operation", [
+    externalAgentTaskQueryResponseSchema,
+    externalAgentProposalPrepareResponseSchema,
+    externalAgentProposalReadResponseSchema,
+    externalAgentProposalApplyEditsResponseSchema,
+    externalAgentProposalDiffResponseSchema,
+    externalAgentProposalValidateResponseSchema,
+    externalAgentProposalSubmitResponseSchema,
+    externalAgentProposalStatusResponseSchema,
+    externalAgentReviewOpenResponseSchema,
+  ]);
+  return { externalAgentTaskQueryResponseSchema, externalAgentResponseSchema };
+}
 
 /** 外部連携の失敗応答を検証するスキーマです。 */
 export const externalAgentErrorResponseSchema = z
@@ -881,8 +879,8 @@ export type ExternalAgentProposal = z.infer<typeof externalAgentProposalSchema>;
 export type ExternalAgentProposalStatusResult = z.infer<
   typeof externalAgentProposalStatusResultSchema
 >;
-export type ExternalAgentTaskQueryResponse = z.infer<
-  typeof externalAgentTaskQueryResponseSchema
+export type ExternalAgentTaskQueryResponse<Response> = z.infer<
+  ReturnType<typeof createExternalAgentResponseSchemas<Response>>["externalAgentTaskQueryResponseSchema"]
 >;
 export type ExternalAgentProposalPrepareResponse = z.infer<
   typeof externalAgentProposalPrepareResponseSchema
@@ -909,7 +907,9 @@ export type ExternalAgentReviewOpenResponse = z.infer<
   typeof externalAgentReviewOpenResponseSchema
 >;
 export type ExternalAgentReviewTarget = z.infer<typeof externalAgentReviewTargetSchema>;
-export type ExternalAgentResponse = z.infer<typeof externalAgentResponseSchema>;
+export type ExternalAgentResponse<Response> = z.infer<
+  ReturnType<typeof createExternalAgentResponseSchemas<Response>>["externalAgentResponseSchema"]
+>;
 export type ExternalAgentErrorResponse = z.infer<typeof externalAgentErrorResponseSchema>;
 export type ExternalAgentGuiEditInput = z.infer<typeof externalAgentGuiEditInputSchema>;
 export type ExternalAgentGuiApproveInput = z.infer<

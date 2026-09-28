@@ -19,8 +19,6 @@ import {
 } from "../../domain";
 import {
   deviceSectionGidsSchema,
-  rankingCacheSchema,
-  type RankingCache,
 } from "../../../shared/storage";
 import { AsanaReadClient } from "../client/client";
 import { setupManifest } from "../setup/manifest";
@@ -43,6 +41,7 @@ import type {
   ProjectMetadataRecord as ProjectMetadataCache,
   TaskCacheRecord as TaskCacheEntry,
   TaskReadSyncState,
+  TaskReadRanking,
   TaskSyncRepository,
 } from "../../application/common/ports/task-read-repository";
 import { asanaSyncTokenSchema } from "../sync-token";
@@ -94,8 +93,9 @@ const coordinatorInputSchema = z
   })
   .strict();
 
-const coordinatorResultSchema = z
-  .object({
+/** 順位キャッシュの保存形式を注入してAsana同期結果を検証します。 */
+function createAsanaSyncCoordinatorResultSchema(rankingCacheSchema: z.ZodType<TaskReadRanking>) {
+  return z.object({
     requested_mode: synchronizationModeSchema,
     performed_mode: synchronizationModeSchema,
     fallback_reason: fallbackReasonSchema.optional(),
@@ -114,12 +114,12 @@ const coordinatorResultSchema = z
     ),
     cleanup_items: cleanupItemsSchema,
     ranking_cache: rankingCacheSchema,
-  })
-  .strict();
+  }).strict();
+}
 
 export type AsanaSyncCoordinatorInput = z.infer<typeof coordinatorInputSchema>;
 export type AsanaSyncCoordinatorResult = z.infer<
-  typeof coordinatorResultSchema
+  ReturnType<typeof createAsanaSyncCoordinatorResultSchema>
 >;
 export type SyncTimestampProvider = () => string;
 
@@ -133,9 +133,6 @@ export class AsanaSyncInProgressError extends Error {
 
 /** Asana同期コーディネーターの入力を検証するスキーマです。 */
 export const asanaSyncCoordinatorInputSchema = coordinatorInputSchema;
-
-/** Asana同期コーディネーターの結果を検証するスキーマです。 */
-export const asanaSyncCoordinatorResultSchema = coordinatorResultSchema;
 
 /** Asana同期で利用者へ伝える正規化通知を検証するスキーマです。 */
 export const asanaSyncNormalizationNotificationsSchema =
@@ -579,12 +576,13 @@ export class AsanaSyncCoordinator {
   private readonly repository: TaskSyncRepository<
     TaskCacheEntry,
     ProjectMetadataCache,
-    RankingCache,
+    TaskReadRanking,
     SyncState,
     CleanupItemsCache
   >;
   private readonly timestampProvider: SyncTimestampProvider;
   private readonly cacheParsers: CacheParsers;
+  public readonly resultSchema: ReturnType<typeof createAsanaSyncCoordinatorResultSchema>;
   private synchronizationInProgress = false;
 
   public constructor(
@@ -595,12 +593,13 @@ export class AsanaSyncCoordinator {
     repository: TaskSyncRepository<
       TaskCacheEntry,
       ProjectMetadataCache,
-      RankingCache,
+      TaskReadRanking,
       SyncState,
       CleanupItemsCache
     >,
     timestampProvider: SyncTimestampProvider,
     cacheParsers: CacheParsers,
+    rankingCacheSchema: z.ZodType<TaskReadRanking>,
   ) {
     this.readClient = readClient;
     this.fullSyncSource = fullSyncSource;
@@ -609,6 +608,7 @@ export class AsanaSyncCoordinator {
     this.repository = repository;
     this.timestampProvider = timestampProvider;
     this.cacheParsers = cacheParsers;
+    this.resultSchema = createAsanaSyncCoordinatorResultSchema(rankingCacheSchema);
   }
 
   /** 指定された方式でAsana同期を実行し、実状態をキャッシュします。 */
@@ -721,7 +721,7 @@ export class AsanaSyncCoordinator {
           existingCleanupItems,
         ),
       );
-      const rankingCache = rankingCacheSchema.parse(
+      const rankingCache = this.resultSchema.shape.ranking_cache.parse(
         createRankingCacheData(
           finalNormalization,
           validatedInput.app_version,
@@ -771,7 +771,7 @@ export class AsanaSyncCoordinator {
           ? {}
           : { events_token: collection.events_token }),
       };
-      return coordinatorResultSchema.parse(result);
+      return this.resultSchema.parse(result);
     } finally {
       this.synchronizationInProgress = false;
     }

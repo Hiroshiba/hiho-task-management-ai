@@ -23,13 +23,12 @@ import {
   taskctlQuerySchema,
   taskctlProtocolVersion,
   taskctlRequestSchema,
-  taskctlResponseSchema,
-  taskctlSnapshotSchema,
   type TaskctlBrokerOptions,
   type TaskctlBrokerStartResult,
   type TaskctlConnectionInfo,
   type TaskctlDiagnostic,
   type TaskctlQuery,
+  type TaskctlRankingSchemas,
   type TaskctlRequest,
   type TaskctlResponse,
   type TaskctlSnapshot,
@@ -207,8 +206,8 @@ function decodeUtf8(line: Buffer): string {
   }
 }
 
-function serializeResponse(response: TaskctlResponse): string {
-  const validatedResponse = taskctlResponseSchema.parse(response);
+function serializeResponse(response: TaskctlResponse, schemas: TaskctlRankingSchemas): string {
+  const validatedResponse = schemas.taskctlResponseSchema.parse(response);
   const serialized = JSON.stringify(validatedResponse);
   if (serialized == null) {
     throw new TaskctlBrokerError("taskctl応答をJSON化できません。");
@@ -246,6 +245,7 @@ export class TaskctlBroker {
   private readonly files: ReturnType<typeof createTaskctlLocalIpcFiles>;
   private readonly tmpDirectoryPath: string;
   private readonly snapshotProvider: TaskctlBrokerOptions["snapshotProvider"];
+  private readonly schemas: TaskctlRankingSchemas;
   private readonly connectionInfoPath: string;
   private state: BrokerState = "created";
   private server: Server | undefined;
@@ -259,7 +259,7 @@ export class TaskctlBroker {
   private internalError: Error | undefined;
   private readonly diagnostics: InternalDiagnostic[] = [];
 
-  public constructor(options: TaskctlBrokerOptions) {
+  public constructor(options: TaskctlBrokerOptions, schemas: TaskctlRankingSchemas) {
     const validatedOptions = taskctlBrokerOptionsSchema.parse(options);
     this.files = createTaskctlLocalIpcFiles(
       TaskctlBrokerError,
@@ -268,6 +268,7 @@ export class TaskctlBroker {
     );
     this.tmpDirectoryPath = validatedOptions.tmpDirectoryPath;
     this.snapshotProvider = validatedOptions.snapshotProvider;
+    this.schemas = schemas;
     this.connectionInfoPath = join(this.tmpDirectoryPath, "taskctl-connection.json");
   }
 
@@ -701,7 +702,7 @@ export class TaskctlBroker {
         createUnavailableSyncState(),
       );
     }
-    const parsedSnapshot = taskctlSnapshotSchema.safeParse(suppliedSnapshot);
+    const parsedSnapshot = this.schemas.taskctlSnapshotSchema.safeParse(suppliedSnapshot);
     if (!parsedSnapshot.success) {
       this.recordInternalError(
         new TaskctlBrokerError(
@@ -716,7 +717,7 @@ export class TaskctlBroker {
         createUnavailableSyncState(),
       );
     }
-    return executeTaskctlQuery(query, parsedSnapshot.data);
+    return executeTaskctlQuery(query, parsedSnapshot.data, this.schemas);
   }
 
   private async writeErrorAndClose(
@@ -772,7 +773,7 @@ export class TaskctlBroker {
   }
 
   private writeSocketResponse(socket: Socket, response: TaskctlResponse): Promise<void> {
-    const serialized = serializeResponse(response);
+    const serialized = serializeResponse(response, this.schemas);
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const onError = (error: Error): void => {
         socket.removeListener("error", onError);

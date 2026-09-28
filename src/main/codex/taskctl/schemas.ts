@@ -2,20 +2,18 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { gidSchema } from "../../../shared/domain";
 import {
+  createTaskctlRankingSchemas,
   maxSnapshotTasks,
   taskctlQuerySchema,
-  taskctlResponseSchema,
   taskctlSearchQuerySchema,
-  taskctlSnapshotSchema,
   taskctlSyncStateSchema,
   type TaskctlQuery,
-  type TaskctlRankingCache,
-  type TaskctlRankingState,
-  type TaskctlResponse,
-  type TaskctlSnapshot,
   type TaskctlSyncState,
   type TaskctlTask,
 } from "../../../shared/taskctl";
+import type { TaskReadRanking } from "../../application/common/ports/task-read-repository";
+
+export type TaskctlRankingSchemas = ReturnType<typeof createTaskctlRankingSchemas<TaskReadRanking>>;
 
 const maxPathLength = 4_096;
 const maxRequestBytes = 64 * 1024;
@@ -200,6 +198,8 @@ export const taskctlDiagnosticsSchema = z
   .max(maxDiagnostics);
 
 export type TaskctlDiagnostic = z.infer<typeof taskctlDiagnosticSchema>;
+export type TaskctlResponse = z.infer<TaskctlRankingSchemas["taskctlResponseSchema"]>;
+export type TaskctlSnapshot = z.infer<TaskctlRankingSchemas["taskctlSnapshotSchema"]>;
 export type TaskctlConnectionInfo = z.infer<typeof taskctlConnectionInfoSchema>;
 export type TaskctlBrokerOptions = z.infer<typeof taskctlBrokerOptionsSchema>;
 export type TaskctlBrokerStartResult = z.infer<
@@ -218,19 +218,14 @@ export {
   maxRequestBytes,
   maxResponseBytes,
   maxSnapshotTasks,
+  createTaskctlRankingSchemas,
   taskctlQuerySchema,
-  taskctlResponseSchema,
-  taskctlSnapshotSchema,
   taskctlSyncStateSchema,
   taskctlProtocolVersion,
 };
 
 export type {
   TaskctlQuery,
-  TaskctlRankingCache,
-  TaskctlRankingState,
-  TaskctlResponse,
-  TaskctlSnapshot,
   TaskctlSyncState,
   TaskctlTask,
 };
@@ -238,9 +233,4 @@ export type {
 /** taskctl要求が正しい読み取り専用要求か判定します。 */
 export function isTaskctlRequest(value: unknown): value is TaskctlRequest {
   return taskctlRequestSchema.safeParse(value).success;
-}
-
-/** taskctl応答が正しい構造化応答か判定します。 */
-export function isTaskctlResponse(value: unknown): value is TaskctlResponse {
-  return taskctlResponseSchema.safeParse(value).success;
 }

@@ -8,7 +8,6 @@ import {
   taskSchema,
   type Task,
 } from "../domain";
-import { rankingCacheSchema, type RankingCache } from "../storage";
 
 export const maxSnapshotTasks = 10_000;
 export const maxListResults = 1_000;
@@ -36,19 +35,6 @@ export const taskctlSyncStateSchema = z.discriminatedUnion("kind", [
   unavailableStateSchema,
 ]);
 
-const availableRankingSchema = z
-  .object({
-    kind: z.literal("available"),
-    cache: rankingCacheSchema,
-  })
-  .strict();
-
-const unavailableRankingSchema = z
-  .object({
-    kind: z.literal("unavailable"),
-  })
-  .strict();
-
 const taskListSchema = z
   .array(taskSchema)
   .max(maxSnapshotTasks)
@@ -66,18 +52,6 @@ const taskListSchema = z
       seen.add(task.gid);
     }
   });
-
-/** taskctlが参照する読み取り専用スナップショットを検証するスキーマです。 */
-export const taskctlSnapshotSchema = z
-  .object({
-    sync: taskctlSyncStateSchema,
-    tasks: taskListSchema,
-    ranking: z.discriminatedUnion("kind", [
-      availableRankingSchema,
-      unavailableRankingSchema,
-    ]),
-  })
-  .strict();
 
 export const taskctlSearchQuerySchema = z
   .string()
@@ -184,22 +158,6 @@ const getResponseSchema = z
   })
   .strict();
 
-const rankResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    command: z.literal("rank"),
-    sync: taskctlSyncStateSchema,
-    data: z
-      .object({
-        ranking: z.discriminatedUnion("kind", [
-          availableRankingSchema,
-          unavailableRankingSchema,
-        ]),
-      })
-      .strict(),
-  })
-  .strict();
-
 const graphResponseSchema = z
   .object({
     ok: z.literal(true),
@@ -252,23 +210,48 @@ const errorResponseSchema = z
   })
   .strict();
 
-/** taskctlの全応答を検証するスキーマです。 */
-export const taskctlResponseSchema = z.union([
-  listResponseSchema,
-  getResponseSchema,
-  rankResponseSchema,
-  graphResponseSchema,
-  areasResponseSchema,
-  searchResponseSchema,
-  errorResponseSchema,
-]);
+/** 順位キャッシュの検証を注入してtaskctlのスナップショットと応答を作ります。 */
+export function createTaskctlRankingSchemas<Ranking>(rankingCacheSchema: z.ZodType<Ranking>) {
+  const availableRankingSchema = z
+    .object({
+      kind: z.literal("available"),
+      cache: rankingCacheSchema,
+    })
+    .strict();
+  const unavailableRankingSchema = z
+    .object({ kind: z.literal("unavailable") })
+    .strict();
+  const rankingStateSchema = z.discriminatedUnion("kind", [
+    availableRankingSchema,
+    unavailableRankingSchema,
+  ]);
+  const taskctlSnapshotSchema = z
+    .object({
+      sync: taskctlSyncStateSchema,
+      tasks: taskListSchema,
+      ranking: rankingStateSchema,
+    })
+    .strict();
+  const rankResponseSchema = z
+    .object({
+      ok: z.literal(true),
+      command: z.literal("rank"),
+      sync: taskctlSyncStateSchema,
+      data: z.object({ ranking: rankingStateSchema }).strict(),
+    })
+    .strict();
+  const taskctlResponseSchema = z.union([
+    listResponseSchema,
+    getResponseSchema,
+    rankResponseSchema,
+    graphResponseSchema,
+    areasResponseSchema,
+    searchResponseSchema,
+    errorResponseSchema,
+  ]);
+  return { taskctlSnapshotSchema, taskctlResponseSchema };
+}
 
 export type TaskctlSyncState = z.infer<typeof taskctlSyncStateSchema>;
-export type TaskctlRankingState = z.infer<
-  typeof availableRankingSchema | typeof unavailableRankingSchema
->;
-export type TaskctlSnapshot = z.infer<typeof taskctlSnapshotSchema>;
 export type TaskctlQuery = z.infer<typeof taskctlQuerySchema>;
-export type TaskctlResponse = z.infer<typeof taskctlResponseSchema>;
 export type TaskctlTask = Task;
-export type TaskctlRankingCache = RankingCache;

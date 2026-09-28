@@ -1,8 +1,7 @@
 import {
   taskctlQuerySchema,
-  taskctlResponseSchema,
-  taskctlSnapshotSchema,
   type TaskctlQuery,
+  type TaskctlRankingSchemas,
   type TaskctlResponse,
   type TaskctlSnapshot,
 } from "./schemas";
@@ -42,8 +41,9 @@ function createError(
 export function executeTaskctlQuery(
   suppliedQuery: TaskctlQuery,
   suppliedSnapshot: TaskctlSnapshot,
+  schemas: TaskctlRankingSchemas,
 ): TaskctlResponse {
-  const snapshot = taskctlSnapshotSchema.parse(suppliedSnapshot);
+  const snapshot = schemas.taskctlSnapshotSchema.parse(suppliedSnapshot);
   const query = taskctlQuerySchema.parse(suppliedQuery);
 
   switch (query.command) {
@@ -52,7 +52,7 @@ export function executeTaskctlQuery(
       if (tasks.length > 1_000) {
         return createError("result_limit", "taskctl一覧の件数が上限を超えました。", snapshot.sync);
       }
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "list",
         sync: snapshot.sync,
@@ -64,7 +64,7 @@ export function executeTaskctlQuery(
       if (task == null) {
         return createError("task_not_found", "指定したタスクが見つかりません。", snapshot.sync);
       }
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "get",
         sync: snapshot.sync,
@@ -72,7 +72,7 @@ export function executeTaskctlQuery(
       });
     }
     case "rank":
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "rank",
         sync: snapshot.sync,
@@ -122,7 +122,7 @@ export function executeTaskctlQuery(
       if (parentRelations.length > 20_000) {
         return createError("result_limit", "taskctlグラフの関係数が上限を超えました。", snapshot.sync);
       }
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "graph",
         sync: snapshot.sync,
@@ -134,7 +134,7 @@ export function executeTaskctlQuery(
       if (areas.length > 500) {
         return createError("result_limit", "taskctl領域の件数が上限を超えました。", snapshot.sync);
       }
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "areas",
         sync: snapshot.sync,
@@ -151,7 +151,7 @@ export function executeTaskctlQuery(
       if (tasks.length > 1_000) {
         return createError("result_limit", "taskctl検索結果の件数が上限を超えました。", snapshot.sync);
       }
-      return taskctlResponseSchema.parse({
+      return schemas.taskctlResponseSchema.parse({
         ok: true,
         command: "search-local",
         sync: snapshot.sync,

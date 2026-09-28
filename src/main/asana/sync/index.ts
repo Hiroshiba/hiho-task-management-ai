@@ -25,7 +25,6 @@ export {
   AsanaSyncInProgressError,
   asanaSyncCoordinatorInputSchema,
   asanaSyncNormalizationNotificationsSchema,
-  asanaSyncCoordinatorResultSchema,
   type AsanaSyncCoordinatorInput,
   type AsanaSyncCoordinatorResult,
   type SyncTimestampProvider,

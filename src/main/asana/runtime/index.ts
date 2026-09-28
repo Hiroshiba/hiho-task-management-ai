@@ -8,7 +8,6 @@ export { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 export {
   asanaSyncRuntimeConfigurationSchema,
   asanaSyncRuntimeErrorCodeSchema,
-  asanaSyncRuntimeResultSchema,
   asanaSyncRuntimeStateSchema,
   type AsanaSyncRuntimeConfiguration,
   type AsanaSyncRuntimeErrorCode,

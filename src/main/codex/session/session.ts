@@ -54,9 +54,8 @@ import {
   TaskctlAbortError,
   taskctlBrokerStartResultSchema,
   taskctlQuerySchema,
-  taskctlResponseSchema,
-  taskctlSnapshotSchema,
   type TaskctlBrokerStartResult,
+  type TaskctlRankingSchemas,
   type TaskctlResponse,
   type TaskctlSnapshot,
 } from "../taskctl";
@@ -261,6 +260,7 @@ export function createCodexAppServerConnectionFactory(
 /** Codex app-serverと一時taskctlを一つのAIセッションとして管理します。 */
 export class CodexSessionService {
   private readonly options: CodexSessionOptions;
+  private readonly taskctlSchemas: TaskctlRankingSchemas;
   private readonly broker: TaskctlBroker;
   private readonly structuredOutputSchema: Record<string, unknown>;
   private readonly modelFormatInstruction: string;
@@ -296,8 +296,9 @@ export class CodexSessionService {
   private stopPromise: Promise<void> | undefined;
   private disablePromise: Promise<AiDisableResult> | undefined;
 
-  public constructor(options: CodexSessionOptions) {
+  public constructor(options: CodexSessionOptions, taskctlSchemas: TaskctlRankingSchemas) {
     this.options = codexSessionOptionsSchema.parse(options);
+    this.taskctlSchemas = taskctlSchemas;
     this.readOnlyVaultPaths = [...this.options.readOnlyVaultPaths];
     this.additionalLocalSocketPaths = [...(this.options.additionalUnixSocketPaths ?? [])];
     this.broker = new TaskctlBroker({
@@ -308,13 +309,13 @@ export class CodexSessionService {
         }
         return this.options.snapshotProvider();
       },
-    });
+    }, taskctlSchemas);
     this.structuredOutputSchema = structuredOutputEnvelopeJsonSchema;
     this.modelFormatInstruction = createModelFormatInstruction(codexGeneratedResponseSchema, codexSessionTurnInputSchema);
     this.responseSerializer = new CodexToolResponseSerializer(
       maximumProposalWorkspaceResponseBytes,
       maximumDynamicToolResponseBytes,
-      taskctlResponseSchema,
+      taskctlSchemas.taskctlResponseSchema,
       codexObsidianResponseSchema,
     );
     this.dynamicToolHandler = new CodexDynamicToolHandler({
@@ -593,7 +594,7 @@ export class CodexSessionService {
     if (this.turnCoordinator.activeTurn == null) {
       throw new CodexSessionStateError();
     }
-    this.frozenTaskctlSnapshot = taskctlSnapshotSchema.parse(snapshot);
+    this.frozenTaskctlSnapshot = this.taskctlSchemas.taskctlSnapshotSchema.parse(snapshot);
   }
 
   /** ターン中に固定したtaskctlスナップショットを解放します。 */

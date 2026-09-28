@@ -2,7 +2,6 @@ import { z } from "zod";
 import { deviceSectionGidsSchema } from "../../../shared/storage";
 import { gidSchema, identifierSchema, isoDateTimeSchema } from "../../../shared/domain";
 import {
-  asanaSyncCoordinatorResultSchema,
   asanaSyncNormalizationNotificationsSchema,
   type AsanaSyncCoordinatorResult,
 } from "../sync";
@@ -77,15 +76,6 @@ const runtimeStateSchema = z.discriminatedUnion("kind", [
   errorStateSchema,
 ]);
 
-const synchronizedResultSchema = z
-  .object({
-    kind: z.literal("synchronized"),
-    requested_mode: synchronizationModeSchema,
-    performed_mode: synchronizationModeSchema,
-    synced_at: isoDateTimeSchema,
-    result: asanaSyncCoordinatorResultSchema,
-  })
-  .strict();
 const rejectedResultSchema = z
   .object({
     kind: z.literal("rejected"),
@@ -102,18 +92,30 @@ const failedResultSchema = z
   })
   .strict();
 
-const runtimeResultSchema = z.discriminatedUnion("kind", [
-  synchronizedResultSchema,
-  rejectedResultSchema,
-  abortedResultSchema,
-  failedResultSchema,
-]);
+/** Asana同期結果の検証を注入してランタイム結果を作ります。 */
+function createAsanaSyncRuntimeResultSchema(
+  coordinatorResultSchema: z.ZodType<AsanaSyncCoordinatorResult>,
+) {
+  const synchronizedResultSchema = z.object({
+    kind: z.literal("synchronized"),
+    requested_mode: synchronizationModeSchema,
+    performed_mode: synchronizationModeSchema,
+    synced_at: isoDateTimeSchema,
+    result: coordinatorResultSchema,
+  }).strict();
+  return z.discriminatedUnion("kind", [
+    synchronizedResultSchema,
+    rejectedResultSchema,
+    abortedResultSchema,
+    failedResultSchema,
+  ]);
+}
 
 export type AsanaSyncRuntimeConfiguration = z.infer<
   typeof runtimeConfigurationSchema
 >;
 export type AsanaSyncRuntimeState = z.infer<typeof runtimeStateSchema>;
-export type AsanaSyncRuntimeResult = z.infer<typeof runtimeResultSchema>;
+export type AsanaSyncRuntimeResult = z.infer<ReturnType<typeof createAsanaSyncRuntimeResultSchema>>;
 export type AsanaSyncRuntimeErrorCode = z.infer<typeof runtimeErrorCodeSchema>;
 export type AsanaSyncRuntimeRejectionReason = z.infer<
   typeof runtimeRejectionReasonSchema
@@ -133,15 +135,12 @@ export const asanaSyncRuntimeConfigurationSchema = runtimeConfigurationSchema;
 /** Asana同期ランタイムの状態を検証するスキーマです。 */
 export const asanaSyncRuntimeStateSchema = runtimeStateSchema;
 
-/** Asana同期ランタイムの結果を検証するスキーマです。 */
-export const asanaSyncRuntimeResultSchema = runtimeResultSchema;
-
 /** Asana同期ランタイムのエラーコードを検証するスキーマです。 */
 export const asanaSyncRuntimeErrorCodeSchema = runtimeErrorCodeSchema;
 
 /** 同期中断結果を検証して作成します。 */
 export function createAbortResult(): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
+  const result = abortedResultSchema.parse({
     kind: "aborted",
     reason: "aborted",
   });
@@ -155,7 +154,7 @@ export function createAbortResult(): AsanaSyncRuntimeInternalResult {
 export function createRejectedResult(
   reason: "offline" | "stopped",
 ): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
+  const result = rejectedResultSchema.parse({
     kind: "rejected",
     reason,
   });
@@ -170,7 +169,7 @@ export function createFailedResult(
   errorCode: AsanaSyncRuntimeErrorCode,
   cause: unknown,
 ): AsanaSyncRuntimeInternalResult {
-  const result = asanaSyncRuntimeResultSchema.parse({
+  const result = failedResultSchema.parse({
     kind: "failed",
     error_code: errorCode,
   });
@@ -184,8 +183,9 @@ export function createFailedResult(
 export function createSynchronizedResult(
   requestedMode: AsanaSyncRuntimeSynchronizationMode,
   result: AsanaSyncCoordinatorResult,
+  coordinatorResultSchema: z.ZodType<AsanaSyncCoordinatorResult>,
 ): AsanaSyncRuntimeInternalResult {
-  const synchronized = asanaSyncRuntimeResultSchema.parse({
+  const synchronized = createAsanaSyncRuntimeResultSchema(coordinatorResultSchema).parse({
     kind: "synchronized",
     requested_mode: requestedMode,
     performed_mode: result.performed_mode,

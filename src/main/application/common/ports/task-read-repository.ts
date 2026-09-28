@@ -1,4 +1,6 @@
 import type {
+  RankingExclusionReason,
+  RankingDetail,
   RankingScoreBreakdown,
   RankingTieBreak,
   SnapshotNormalizationInput,
@@ -8,6 +10,11 @@ import type {
 type TaskReadTieBreak = Omit<RankingTieBreak, "effective_due_at"> & {
   readonly effective_due_at?: string | undefined;
 };
+
+type TaskReadRankingDetail = Omit<
+  Pick<RankingDetail, "exclusion_reasons" | "tie_break" | "reason_chips" | "text">,
+  "tie_break"
+> & { readonly tie_break: TaskReadTieBreak };
 
 /** 読取と同期で使用する保存済みタスクの最小構造です。 */
 export type TaskReadTask = {
@@ -81,14 +88,14 @@ export type TaskCacheDiffRecord = {
   readonly missing_gids: readonly string[];
 };
 
-/** 読取に必要な順位結果の構造です。 */
+/** 保存と公開に共通する順位キャッシュの構造です。 */
 export type TaskReadRanking = {
   readonly app_version: string;
   readonly calculated_at: string;
   readonly ranked_tasks: readonly {
     readonly gid: string;
     readonly rank: number;
-    readonly detail: { readonly text: string; readonly exclusion_reasons: readonly { readonly code: string }[] };
+    readonly detail: TaskReadRankingDetail;
     readonly score_breakdown: RankingScoreBreakdown;
     readonly release_target_gids: readonly string[];
     readonly reason_chips: readonly string[];
@@ -96,8 +103,8 @@ export type TaskReadRanking = {
   }[];
   readonly excluded_tasks: readonly {
     readonly gid: string;
-    readonly exclusion_reasons: readonly { readonly code: string }[];
-    readonly detail: { readonly text: string; readonly exclusion_reasons: readonly { readonly code: string }[] };
+    readonly exclusion_reasons: readonly RankingExclusionReason[];
+    readonly detail: TaskReadRankingDetail;
     readonly score_breakdown?: RankingScoreBreakdown | undefined;
     readonly release_target_gids: readonly string[];
     readonly reason_chips: readonly string[];

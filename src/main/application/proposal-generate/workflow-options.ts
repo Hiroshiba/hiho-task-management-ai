@@ -37,6 +37,7 @@ type WorkflowOptionsShape = {
   readonly session: unknown;
   readonly snapshotProvider: unknown;
   readonly taskctlSnapshotProvider: unknown;
+  readonly parseTaskctlSnapshot: unknown;
   readonly baselineExternalDataProvider: unknown;
   readonly externalStatusEvidenceCollector: unknown;
   readonly executeApproval: unknown;
@@ -53,6 +54,7 @@ export function parseWorkflowOptions<TOptions extends WorkflowOptionsShape>(
   readonly session: TOptions["session"];
   readonly snapshotProvider: TOptions["snapshotProvider"];
   readonly taskctlSnapshotProvider: TOptions["taskctlSnapshotProvider"];
+  readonly parseTaskctlSnapshot: TOptions["parseTaskctlSnapshot"];
   readonly baselineExternalDataProvider: TOptions["baselineExternalDataProvider"];
   readonly externalStatusEvidenceCollector: TOptions["externalStatusEvidenceCollector"];
   readonly executeApproval: TOptions["executeApproval"];
@@ -83,6 +85,11 @@ const snapshotProviderSchema = z.custom<TOptions["snapshotProvider"]>(
 const taskctlSnapshotProviderSchema = z.custom<TOptions["taskctlSnapshotProvider"]>(
   (value) => typeof value === "function",
   "taskctlスナップショット供給関数が必要です。",
+);
+
+const taskctlSnapshotParserSchema = z.custom<TOptions["parseTaskctlSnapshot"]>(
+  (value) => typeof value === "function",
+  "taskctlスナップショット検証関数が必要です。",
 );
 
 const baselineExternalDataProviderSchema = z.custom<TOptions["baselineExternalDataProvider"]>(
@@ -122,6 +129,7 @@ return z
     session: sessionPortSchema,
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
+    parseTaskctlSnapshot: taskctlSnapshotParserSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
     externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
     executeApproval: approvalExecutorSchema,
