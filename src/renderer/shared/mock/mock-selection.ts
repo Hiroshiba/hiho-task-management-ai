@@ -17,6 +17,8 @@ const mockFeatureNameSchema = z.enum([
   "tasks",
   "proposals",
   "settings",
+  "obsidianIntegration",
+  "githubIntegration",
 ]);
 
 export type MockFeatureName = z.infer<typeof mockFeatureNameSchema>;

@@ -69,7 +69,7 @@ AI変更案の保持、会話根拠、取り下げ確認、生成世代は`Propo
 
 初回設定の実行時Zod契約は`shared/ipc-contracts`に一元化し、`main/domain`には内部状態の型だけを置きます。settings workflowの検証は起動側からparser portとして注入し、workflowからIPC契約を直接参照しません。移行中の`shared/setup`は旧import向けの再exportであり、旧wrapperを削除するときは基本schemaの組立ても`shared/ipc-contracts`内で完結させます。最終形で`shared/ipc-contracts`からMainのdomainや他の旧shared moduleへの依存を残しません。
 
-ObsidianのVault設定と読取は`application/obsidian-integration`が操作順と競合を管理し、`infrastructure/obsidian`がfilesystemを参照します。Vaultの実体パス検証後だけマッピングを保存し、保存後にCodexへ読取専用パスを反映します。ノートの本文をAsana external dataへ書き込まず、Obsidianリンクの更新はAsana側の責務とします。GitHub App clientがない現行構成は`settings`の連携状態で利用不可と表し、起動の成否へ混ぜません。
+ObsidianのVault設定と読取は`application/obsidian-integration`が操作順と競合を管理し、`infrastructure/obsidian`がfilesystemを参照します。Vaultの実体パス検証後だけマッピングを保存し、保存後にCodexへ読取専用パスを反映します。ノートの本文をAsana external dataへ書き込まず、Obsidianリンクの更新はAsana側の責務とします。GitHub App clientがない現行構成は`github-integration`の連携状態で利用不可と表し、起動の成否へ混ぜません。
 
 ## 移行中と最終形の不変条件
 

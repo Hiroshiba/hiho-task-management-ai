@@ -4,24 +4,14 @@ import {
   ref,
 } from "vue";
 import { DialogRoot } from "reka-ui";
-import {
-  ipcFailureSchema,
-  ipcIntegrationStatusResponseSchema,
-  ipcObsidianOpenNoteInputSchema,
-  ipcObsidianPathInputSchema,
-  type IpcFailure,
-  type IpcIntegrationStatus,
-} from "../../shared/ipc";
+import type { IpcResult } from "../../shared/ipc-contracts/common";
 import type { SetupState } from "../../shared/ipc-contracts/setup-schemas";
-import {
-  viewModelTaskDetailSchema,
-  type ViewModelTaskDetail,
-} from "../../shared/view-model";
-import type { VaultMapping } from "../../shared/storage";
+import { viewModelTaskDetailSchema } from "../../shared/view-model";
 import { useAppScreen } from "../app/use-app-screen";
 import { useAppStartup } from "../app/use-app-startup";
 import { useSystemUpdate } from "../features/system";
-import { VaultSettings } from "../features/obsidian-integration";
+import { VaultSettings, useObsidianIntegration } from "../features/obsidian-integration";
+import { GithubStatus, useGithubIntegration } from "../features/github-integration";
 import { ProposalHistoryPanel, useProposals, useProposalWorkspace } from "../features/proposals";
 import {
   TaskFilters,
@@ -31,27 +21,19 @@ import {
   cleanupScopeLabel,
   cleanupRelatedGids,
   useTasks,
-  type TaskDetail as TaskDetailDto,
 } from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
 import { AsanaReauthenticationPanel, SettingsDialog, SetupWizard, useSettings } from "../features/settings";
 import TaskDetail from "./TaskDetail.vue";
 import ToastHost from "./ToastHost.vue";
 import {
-  rendererFailureSchema,
   rendererSyncStateSchema,
   type RendererFailure,
 } from "./state";
-import { useTaskHub } from "./task-hub";
 import { useToast } from "./useToast";
 
-const taskHub = useTaskHub();
-
-type ObsidianLinkStatus = "exists" | "missing" | "unavailable";
-
-type TaskObsidianLink = TaskDetailDto["obsidian_links"][number];
-
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
+type IpcFailure = Extract<IpcResult<unknown>, { readonly kind: "error" }>;
 
 type Feedback = {
   readonly kind: FeedbackKind;
@@ -60,19 +42,10 @@ type Feedback = {
 
 const { screen, showSetup, showDashboard, showError } = useAppScreen();
 const appUpdateState = useSystemUpdate();
-const integrationStatus = ref<IpcIntegrationStatus | undefined>();
-const integrationStatusLoading = ref(false);
-const integrationStatusError = ref<string | undefined>();
-const vaultMappings = ref<readonly VaultMapping[]>([]);
-const vaultMappingsLoading = ref(false);
-const vaultMappingBusy = ref(false);
-const vaultMappingFeedback = ref<Feedback | undefined>();
-const vaultSaveGeneration = ref(0);
+const github = useGithubIntegration();
 const { addToast } = useToast();
 const feedback = ref<Feedback | undefined>();
 const proposals = useProposals();
-const registeredVaultIds = ref<readonly string[]>([]);
-let vaultMappingsLoadGeneration = 0;
 function setFeedback(kind: FeedbackKind, message: string): void {
   feedback.value = { kind, message };
 }
@@ -129,8 +102,8 @@ const settings = useSettings({
   onCodexAuthentication: () => proposalWorkspace.refreshCodexStatus(),
   onDialogOpen: () => {
     closeProposalAssistant();
-    void loadVaultMappings();
-    void loadIntegrationStatus();
+    void obsidian.loadVaultMappings();
+    void github.loadStatus();
   },
   authenticationRequired: () => syncState.value.kind === "authentication_required",
   onAuthenticationRequired: () => setSyncState(rendererSyncStateSchema.parse({ kind: "authentication_required" })),
@@ -159,7 +132,6 @@ const {
   taskSort,
   currentAsOf,
   taskFeedback,
-  obsidianStatuses,
   visibleRows,
   connectionState,
   syncState,
@@ -168,14 +140,8 @@ const {
   canAcceptWrite,
   setTaskFeedback,
   clearTaskFeedback,
-  captureTaskDetailContext,
-  isCurrentTaskDetailContext,
   selectTask,
   deselectTask,
-  checkObsidianLinks,
-  captureObsidianStatusContext,
-  isCurrentObsidianStatusContext,
-  setObsidianStatus,
   startInitialTaskDataRefresh,
   reloadTaskDataAfterSuccessfulSync,
   setConnectionState,
@@ -201,7 +167,6 @@ const {
   configured,
   historyClear: proposals.history.clear,
   authenticationBusy: asanaAuthenticationBusy,
-  checkLinks: (links) => collectObsidianStatuses(links, registeredVaultIds.value),
   onFailure: (message) => setFeedback("failure", message),
   onTaskFailure: (message) => setTaskFeedback("failure", message),
   onTaskMissing: (taskGid) => markTaskMissing(taskGid),
@@ -264,23 +229,29 @@ const {
   refreshExecutions: refreshProposalExecutions,
   retryExecution: retryProposalExecution,
 } = proposalWorkspace;
+const obsidian = useObsidianIntegration({
+  selectedTask,
+  saveBlocked: proposalExternalBusy,
+  onToast: (kind, message) => addToast(kind, message),
+  onFeedback: setFeedback,
+  onTaskFeedback: setTaskFeedback,
+  clearTaskFeedback,
+});
+const {
+  vaultMappings,
+  vaultMappingsLoading,
+  vaultMappingBusy,
+  vaultMappingFeedback,
+  vaultSaveGeneration,
+  registeredVaultIds,
+  noteStatuses: obsidianStatuses,
+} = obsidian;
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
 const canReanalyzeObsidianNotes = computed(() => {
   return canAcceptWrite.value
     && codexState.value.kind === "ready"
     && registeredVaultIds.value.length > 0;
 });
-function isFailure(value: unknown): value is IpcFailure {
-  const parsed = ipcFailureSchema.safeParse(value);
-  if (parsed.success) {
-    return true;
-  }
-  if (typeof value === "object" && value != null && "kind" in value && value.kind === "error") {
-    throw new Error("IPC失敗応答の形式が不正です。");
-  }
-  return false;
-}
-
 function failureText(code: RendererFailure["code"]): string {
   switch (code) {
     case "invalid_request":
@@ -324,30 +295,6 @@ function failureText(code: RendererFailure["code"]): string {
   }
 }
 
-function displayFailure(value: IpcFailure): RendererFailure {
-  return rendererFailureSchema.parse({
-    kind: "error",
-    code: value.code,
-    message: failureText(value.code),
-  });
-}
-
-function showFailure(value: IpcFailure): void {
-  setFeedback("failure", displayFailure(value).message);
-}
-
-function showUnexpectedFailure(): void {
-  setFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
-}
-
-function showTaskFailure(value: IpcFailure): void {
-  setTaskFeedback("failure", displayFailure(value).message);
-}
-
-function showTaskUnexpectedFailure(): void {
-  setTaskFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
-}
-
 function setScreenError(value: IpcFailure): void {
   showError(failureText(value.code));
 }
@@ -366,35 +313,6 @@ function setCodexFromSetup(state: SetupState): void {
   }
 }
 
-async function collectObsidianStatuses(
-  links: readonly TaskObsidianLink[],
-  vaultIds: readonly string[],
-): Promise<ReadonlyMap<string, ObsidianLinkStatus>> {
-  const statuses = new Map<string, ObsidianLinkStatus>();
-  for (const link of links) {
-    const key = `${link.vault_id}\0${link.path}`;
-    if (!vaultIds.includes(link.vault_id)) {
-      statuses.set(key, "unavailable");
-      continue;
-    }
-    try {
-      const input = ipcObsidianPathInputSchema.parse({
-        vault_id: link.vault_id,
-        relative_path: link.path,
-      });
-      const result = await taskHub.obsidian.noteExists(input);
-      if (isFailure(result)) {
-        statuses.set(key, "unavailable");
-        continue;
-      }
-      statuses.set(key, result.value.kind === "resolved" ? "exists" : "missing");
-    } catch {
-      statuses.set(key, "unavailable");
-    }
-  }
-  return statuses;
-}
-
 async function handleHistorySynchronized(syncedAt: string): Promise<void> {
   setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
     kind: "synced",
@@ -403,201 +321,6 @@ async function handleHistorySynchronized(syncedAt: string): Promise<void> {
   const refresh = await reloadTaskDataAfterSuccessfulSync(syncedAt);
   if (refresh.kind === "applied" || refresh.kind === "unchanged") {
     addToast("success", "旧適用履歴の読取同期が完了しました。書き込みを再開できます。");
-  }
-}
-
-function applyVaultMappings(mappings: readonly VaultMapping[]): void {
-  vaultMappings.value = mappings;
-  registeredVaultIds.value = mappings.map((mapping) => mapping.vault_id);
-}
-
-async function loadVaultMappings(): Promise<void> {
-  const generation = vaultMappingsLoadGeneration + 1;
-  vaultMappingsLoadGeneration = generation;
-  vaultMappingsLoading.value = true;
-  vaultMappingFeedback.value = undefined;
-  try {
-    const result = await taskHub.obsidian.listVaultMappings();
-    if (generation !== vaultMappingsLoadGeneration) {
-      return;
-    }
-    if (isFailure(result)) {
-      vaultMappingFeedback.value = {
-        kind: "failure",
-        message: displayFailure(result).message,
-      };
-      return;
-    }
-    applyVaultMappings(result.value);
-    if (selectedTask.value != null) {
-      await checkObsidianLinks(selectedTask.value.obsidian_links);
-    }
-  } catch {
-    if (generation === vaultMappingsLoadGeneration) {
-      vaultMappingFeedback.value = {
-        kind: "failure",
-        message: "Vault設定を読み込めませんでした。もう一度お試しください。",
-      };
-    }
-  } finally {
-    if (generation === vaultMappingsLoadGeneration) {
-      vaultMappingsLoading.value = false;
-    }
-  }
-}
-
-function vaultMappingFailureMessage(value: IpcFailure): string {
-  if (value.code === "conflict") {
-    return "AI依頼が残っている場合は「確認して閉じる」または「依頼を中止」を行い、別の処理中なら完了を待ってからVault設定を変更してください。";
-  }
-  return displayFailure(value).message;
-}
-
-async function saveVaultMapping(mapping: VaultMapping): Promise<void> {
-  if (vaultMappingBusy.value || proposalExternalBusy.value) {
-    return;
-  }
-  const wasRegistered = vaultMappings.value.some((candidate) => candidate.vault_id === mapping.vault_id);
-  vaultMappingBusy.value = true;
-  vaultMappingFeedback.value = {
-    kind: "progress",
-    message: "Vault設定を保存しています。",
-  };
-  let savedMappings: readonly VaultMapping[];
-  try {
-    try {
-      const result = await taskHub.obsidian.saveVaultMapping(mapping);
-      if (isFailure(result)) {
-        vaultMappingFeedback.value = {
-          kind: "failure",
-          message: vaultMappingFailureMessage(result),
-        };
-        return;
-      }
-      savedMappings = result.value;
-    } catch {
-      vaultMappingFeedback.value = {
-        kind: "failure",
-        message: "Vault設定を保存できませんでした。入力内容を確認して再試行してください。",
-      };
-      return;
-    }
-    applyVaultMappings(savedMappings);
-    vaultSaveGeneration.value += 1;
-    vaultMappingFeedback.value = undefined;
-    addToast(
-      "success",
-      wasRegistered
-        ? `Vault「${mapping.vault_id}」のパスを更新しました。`
-        : `Vault「${mapping.vault_id}」を登録しました。`,
-    );
-    try {
-      if (selectedTask.value != null) {
-        await checkObsidianLinks(selectedTask.value.obsidian_links);
-      }
-    } catch {
-      setFeedback("warning", "Vaultを保存しましたが、ノートの状態を更新できませんでした。");
-    }
-  } finally {
-    vaultMappingBusy.value = false;
-  }
-}
-
-async function loadObsidianVaults(): Promise<void> {
-  try {
-    const result = await taskHub.obsidian.listVaults();
-    if (isFailure(result)) {
-      showFailure(result);
-      registeredVaultIds.value = [];
-      if (selectedTask.value != null) {
-        await checkObsidianLinks(selectedTask.value.obsidian_links);
-      }
-      return;
-    }
-    registeredVaultIds.value = result.value.vault_ids;
-    if (selectedTask.value != null) {
-      await checkObsidianLinks(selectedTask.value.obsidian_links);
-    }
-  } catch {
-    showUnexpectedFailure();
-    registeredVaultIds.value = [];
-    if (selectedTask.value != null) {
-      await checkObsidianLinks(selectedTask.value.obsidian_links);
-    }
-  }
-}
-
-async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
-  const generation = captureObsidianStatusContext();
-  if (!registeredVaultIds.value.includes(link.vault_id)) {
-    if (!isCurrentObsidianStatusContext(generation)) {
-      return;
-    }
-    setObsidianStatus(link, "unavailable");
-    return;
-  }
-  try {
-    const input = ipcObsidianPathInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await taskHub.obsidian.noteExists(input);
-    if (!isCurrentObsidianStatusContext(generation)) {
-      return;
-    }
-    if (isFailure(result)) {
-      showTaskFailure(result);
-      return;
-    }
-    setObsidianStatus(link, result.value.kind === "resolved" ? "exists" : "missing");
-  } catch {
-    if (isCurrentObsidianStatusContext(generation)) {
-      showTaskUnexpectedFailure();
-    }
-  }
-}
-
-async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
-  const context = captureTaskDetailContext();
-  if (!registeredVaultIds.value.includes(link.vault_id)) {
-    if (isCurrentTaskDetailContext(context)) {
-      setTaskFeedback("warning", "このVaultは登録されていません。");
-    }
-    return;
-  }
-  try {
-    const input = ipcObsidianOpenNoteInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
-    const result = await taskHub.obsidian.openNote(input);
-    if (!isCurrentTaskDetailContext(context)) {
-      return;
-    }
-    if (isFailure(result)) {
-      showTaskFailure(result);
-      return;
-    }
-    clearTaskFeedback();
-    addToast("success", "Obsidianへノートを開く要求を送信しました。");
-  } catch {
-    if (isCurrentTaskDetailContext(context)) {
-      showTaskUnexpectedFailure();
-    }
-  }
-}
-
-async function loadIntegrationStatus(): Promise<void> {
-  integrationStatusLoading.value = true;
-  integrationStatusError.value = undefined;
-  try {
-    const result = ipcIntegrationStatusResponseSchema.parse(
-      await taskHub.setup.getIntegrationStatus(),
-    );
-    if (isFailure(result)) {
-      integrationStatusError.value = displayFailure(result).message;
-      return;
-    }
-    integrationStatus.value = result.value;
-  } catch (error) {
-    integrationStatusError.value = "GitHub連携の状態を確認できませんでした。";
-    throw error;
-  } finally {
-    integrationStatusLoading.value = false;
   }
 }
 
@@ -610,7 +333,7 @@ async function initialize(): Promise<void> {
     return;
   }
   if (state.kind === "ready") {
-    await loadObsidianVaults();
+    await obsidian.loadVaults();
   }
   await loadInitialSyncState();
   if (state.kind === "ready") {
@@ -653,9 +376,6 @@ useAppStartup(initialize, setScreenError, () => {
         @recheck-authentication-state="authentication.recheck"
       />
       <SettingsDialog
-        :integration-status="integrationStatus"
-        :integration-status-loading="integrationStatusLoading"
-        :integration-status-error="integrationStatusError"
         :state="proposalExternalState"
         :busy="proposalExternalBusy"
         :restore-focus="!proposalDialogVisible"
@@ -663,6 +383,9 @@ useAppStartup(initialize, setScreenError, () => {
         :vault-busy="vaultMappingBusy"
         @set-enabled="setProposalExternalEnabled"
       >
+        <template #github>
+          <GithubStatus :state="github.state.value" />
+        </template>
         <template #vault>
           <VaultSettings
             :open="settingsDialogVisible"
@@ -672,7 +395,7 @@ useAppStartup(initialize, setScreenError, () => {
             :vault-busy="vaultMappingBusy"
             :vault-feedback="vaultMappingFeedback"
             :vault-save-generation="vaultSaveGeneration"
-            @save-vault-mapping="saveVaultMapping"
+            @save-vault-mapping="obsidian.saveVaultMapping"
           />
         </template>
       </SettingsDialog>
@@ -855,8 +578,8 @@ useAppStartup(initialize, setScreenError, () => {
                 @edit="applyEdit"
                 @check-execution="refreshExecution"
                 @retry-execution="retryExecution"
-                @check-obsidian="checkObsidianLink"
-                @open-obsidian="openObsidianLink"
+                @check-obsidian="obsidian.checkNote"
+                @open-obsidian="obsidian.openNote"
                 @reanalyze-obsidian-notes="requestTaskNoteAnalysis"
               />
             </div>

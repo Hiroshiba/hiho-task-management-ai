@@ -5,7 +5,9 @@ import { createMockSystemApi } from "../features/system";
 import { createMockTasksApi } from "../features/tasks";
 import { createMockProposalsApi } from "../features/proposals";
 import { createMockSettingsApi } from "../features/settings";
-import { diagnosticsApiInjectionKey, proposalsApiInjectionKey, selectFeatureApi, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
+import { createMockObsidianIntegrationApi } from "../features/obsidian-integration";
+import { createMockGithubIntegrationApi } from "../features/github-integration";
+import { diagnosticsApiInjectionKey, githubIntegrationApiInjectionKey, obsidianIntegrationApiInjectionKey, proposalsApiInjectionKey, selectFeatureApi, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { createMockDiagnosticsApi } from "../shared/mock/diagnostics";
 import { parseMockSelection } from "../shared/mock/mock-selection";
@@ -31,6 +33,10 @@ const proposalsApi = selectFeatureApi("proposals", mockSelection.features, windo
   () => createMockProposalsApi("confirmable", (syncedAt) => mockTasksApi?.completeReadOnlyHistorySync(syncedAt)));
 const settingsApi = selectFeatureApi("settings", mockSelection.features, window.taskHub?.settings,
   () => createMockSettingsApi("ready", "idle"));
+const obsidianIntegrationApi = selectFeatureApi("obsidianIntegration", mockSelection.features,
+  window.taskHub?.obsidianIntegration, createMockObsidianIntegrationApi);
+const githubIntegrationApi = selectFeatureApi("githubIntegration", mockSelection.features,
+  window.taskHub?.githubIntegration, createMockGithubIntegrationApi);
 const app = createApp(App);
 app.provide(taskHubApiInjectionKey, taskHubApi);
 app.provide(systemApiInjectionKey, systemApi);
@@ -38,6 +44,8 @@ app.provide(diagnosticsApiInjectionKey, diagnosticsApi);
 app.provide(tasksApiInjectionKey, tasksApi);
 app.provide(proposalsApiInjectionKey, proposalsApi);
 app.provide(settingsApiInjectionKey, settingsApi);
+app.provide(obsidianIntegrationApiInjectionKey, obsidianIntegrationApi);
+app.provide(githubIntegrationApiInjectionKey, githubIntegrationApi);
 installErrorBoundary(app, diagnosticsApi, window);
 app.onUnmount(useSystemTheme(window.matchMedia("(prefers-color-scheme: dark)"), document.documentElement));
 app.mount("#app");

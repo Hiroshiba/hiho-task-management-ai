@@ -1,6 +1,8 @@
 import { inject, type InjectionKey } from "vue";
 import type { FinalTaskHubApi } from "../../../shared/ipc-contracts";
 import type { DiagnosticsApi } from "../../../shared/ipc-contracts/diagnostics";
+import type { GithubIntegrationApi } from "../../../shared/ipc-contracts/github-integration";
+import type { ObsidianIntegrationApi } from "../../../shared/ipc-contracts/obsidian-integration";
 import type { ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { SettingsApi } from "../../../shared/ipc-contracts/settings";
 import type { SystemApi } from "../../../shared/ipc-contracts/system";
@@ -11,6 +13,8 @@ export const diagnosticsApiInjectionKey: InjectionKey<DiagnosticsApi> = Symbol("
 export const tasksApiInjectionKey: InjectionKey<TasksApi> = Symbol("tasksApi");
 export const proposalsApiInjectionKey: InjectionKey<ProposalsApi> = Symbol("proposalsApi");
 export const settingsApiInjectionKey: InjectionKey<SettingsApi> = Symbol("settingsApi");
+export const obsidianIntegrationApiInjectionKey: InjectionKey<ObsidianIntegrationApi> = Symbol("obsidianIntegrationApi");
+export const githubIntegrationApiInjectionKey: InjectionKey<GithubIntegrationApi> = Symbol("githubIntegrationApi");
 
 /** 指定した機能の実APIかmock APIを選びます。 */
 export function selectFeatureApi<Api>(
@@ -71,6 +75,24 @@ export function useSettingsApi(): SettingsApi {
   const api = inject(settingsApiInjectionKey);
   if (api == null) {
     throw new Error("設定APIが提供されていません。");
+  }
+  return api;
+}
+
+/** VueからObsidian連携APIを取得します。 */
+export function useObsidianIntegrationApi(): ObsidianIntegrationApi {
+  const api = inject(obsidianIntegrationApiInjectionKey);
+  if (api == null) {
+    throw new Error("Obsidian連携APIが提供されていません。");
+  }
+  return api;
+}
+
+/** VueからGitHub連携APIを取得します。 */
+export function useGithubIntegrationApi(): GithubIntegrationApi {
+  const api = inject(githubIntegrationApiInjectionKey);
+  if (api == null) {
+    throw new Error("GitHub連携APIが提供されていません。");
   }
   return api;
 }

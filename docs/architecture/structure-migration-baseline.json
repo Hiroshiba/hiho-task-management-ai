@@ -3705,11 +3705,6 @@
     {
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
-      "symbol": "src/renderer/src/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
       "symbol": "src/renderer/src/TaskDetail.vue"
     },
     {
@@ -3721,16 +3716,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/useToast.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/renderer/src/App.vue",
