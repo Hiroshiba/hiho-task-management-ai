@@ -9,9 +9,11 @@ export function installErrorBoundary(app: App, diagnostics: DiagnosticsApi, targ
   };
 
   const onError = (event: ErrorEvent): void => {
+    event.preventDefault();
     void reportRendererError(diagnostics, event.error, "error");
   };
   const onUnhandledRejection = (event: PromiseRejectionEvent): void => {
+    event.preventDefault();
     void reportRendererError(diagnostics, event.reason, "error");
   };
   target.addEventListener("error", onError);

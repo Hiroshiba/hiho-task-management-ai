@@ -26,7 +26,7 @@ function redactSensitiveText(value: string): string {
 function nonErrorName(value: unknown): string {
   if (value === null) return "Null";
   if (value === undefined) return "Undefined";
-  if (typeof value === "object") return "Object";
+  if (typeof value === "object") return Array.isArray(value) ? "Array" : "Object";
   if (typeof value === "function") return "Function";
   if (typeof value === "string") return "String";
   if (typeof value === "number") return "Number";
@@ -36,17 +36,7 @@ function nonErrorName(value: unknown): string {
 }
 
 function nonErrorMessage(value: unknown): string {
-  if (typeof value === "object" && value != null) {
-    const ancestors = new WeakSet<object>();
-    return JSON.stringify(value, (_key, nested: unknown) => {
-      if (typeof nested === "bigint") return nested.toString();
-      if (typeof nested === "object" && nested != null) {
-        if (ancestors.has(nested)) return "[Circular]";
-        ancestors.add(nested);
-      }
-      return nested;
-    }) ?? "Object";
-  }
+  if (typeof value === "object" && value != null) return "Error以外のオブジェクトです。";
   if (typeof value === "function") return "[function]";
   return String(value);
 }
@@ -58,11 +48,23 @@ function errorStack(value: unknown): string | undefined {
   return typeof stack === "string" ? stack : undefined;
 }
 
-function serializeError(value: unknown, ancestors: WeakSet<Error>): DiagnosticError {
-  if (value instanceof Error && ancestors.has(value)) {
+function errorCause(value: unknown): { value: unknown } | undefined {
+  if (typeof value !== "object" || value == null) return undefined;
+  const cause = Object.getOwnPropertyDescriptor(value, "cause");
+  return cause != null && "value" in cause ? { value: cause.value } : undefined;
+}
+
+function summarizeNonErrorCause(value: unknown): DiagnosticError {
+  const name = nonErrorName(value);
+  const message = "Error以外の原因値です。";
+  return { name, message, stack: `${name}: ${message}` };
+}
+
+function serializeError(value: unknown, ancestors: WeakSet<object>): DiagnosticError {
+  if (typeof value === "object" && value != null && ancestors.has(value)) {
     return { name: "CyclicError", message: "原因が循環しています。", stack: "CyclicError: 原因が循環しています。" };
   }
-  if (value instanceof Error) ancestors.add(value);
+  if (typeof value === "object" && value != null) ancestors.add(value);
   try {
     const redactedName = redactSensitiveText(value instanceof Error ? value.name : nonErrorName(value)).slice(0, 200);
     const name = redactedName.length === 0 ? "Error" : redactedName;
@@ -71,19 +73,23 @@ function serializeError(value: unknown, ancestors: WeakSet<Error>): DiagnosticEr
     const rawStack = errorStack(value);
     const redactedStack = rawStack == null ? "" : redactSensitiveText(rawStack).slice(0, 16_384);
     const stack = redactedStack.length === 0 ? `${name}: ${message}` : redactedStack;
+    const rawCause = errorCause(value);
     let cause: DiagnosticError | undefined;
-    if (value instanceof Error && Object.prototype.hasOwnProperty.call(value, "cause")) {
-      cause = serializeError(value.cause, ancestors);
+    if (rawCause != null) {
+      const causeValue = rawCause.value;
+      cause = value instanceof Error || (typeof causeValue === "object" && causeValue != null)
+        ? serializeError(causeValue, ancestors)
+        : summarizeNonErrorCause(causeValue);
     }
     return { name, message, stack, ...(cause == null ? {} : { cause }) };
   } finally {
-    if (value instanceof Error) ancestors.delete(value);
+    if (typeof value === "object" && value != null) ancestors.delete(value);
   }
 }
 
 /** 例外の値と原因を伏せ字済みの診断情報へ直列化します。 */
 export function serializeDiagnosticError(value: unknown): DiagnosticError {
-  return serializeError(value, new WeakSet<Error>());
+  return serializeError(value, new WeakSet<object>());
 }
 
 export const diagnosticsChannels = {
