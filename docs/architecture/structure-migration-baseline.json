@@ -3700,11 +3700,6 @@
     {
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
       "symbol": "src/renderer/src/TaskDetail.vue"
     },
     {

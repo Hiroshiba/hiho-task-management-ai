@@ -35,7 +35,7 @@ export type TaskSyncOptions = {
   readonly authenticationBusy: Ref<boolean>;
   readonly onFeedback: (kind: "success" | "progress" | "warning" | "failure", message: string) => void;
   readonly onToast: (kind: "success" | "warning", message: string) => void;
-  readonly onStateChange: (sync: TaskSyncState) => void;
+  readonly onSyncingChange: (isSyncing: boolean) => void;
 };
 
 /** 同期状態と同期要求を管理します。 */
@@ -44,6 +44,7 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   const connectionState = ref<TaskConnectionState>(connectionStateSchema.parse({ kind: "checking", sync: { kind: "waiting" } }));
   const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
   const syncState = computed(() => connectionState.value.sync);
+  const authenticationRequired = computed(() => syncState.value.kind === "authentication_required");
   const canManualSync = computed(() => options.configured.value
     && options.historyClear.value
     && activeSyncMode.value === "idle"
@@ -87,11 +88,15 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
 
   function setConnectionState(kind: TaskConnectionState["kind"], sync: TaskSyncState): void {
     connectionState.value = connectionStateSchema.parse({ kind, sync });
-    options.onStateChange(sync);
+    options.onSyncingChange(sync.kind === "syncing");
   }
 
   function setSyncState(sync: TaskSyncState): void {
     setConnectionState(connectionState.value.kind, sync);
+  }
+
+  function markAuthenticationRequired(): void {
+    setSyncState({ kind: "authentication_required" });
   }
 
   function chromiumConnectionState(): TaskConnectionState["kind"] {
@@ -181,6 +186,24 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     if (result.kind === "received") handleSyncState(result.value);
   }
 
+  async function reconcileAuthenticationFailure(): Promise<void> {
+    await reconcileSyncStateAfterFailure({ kind: "authentication_required" });
+  }
+
+  async function completeAuthenticationSync(syncedAt: string): Promise<boolean> {
+    setConnectionState("online", { kind: "synced", synced_at: syncedAt });
+    const refresh = await read.reloadTaskDataAfterSuccessfulSync(syncedAt);
+    return refresh.kind !== "failed";
+  }
+
+  async function completeHistorySync(syncedAt: string): Promise<void> {
+    setConnectionState(chromiumConnectionState(), { kind: "synced", synced_at: syncedAt });
+    const refresh = await read.reloadTaskDataAfterSuccessfulSync(syncedAt);
+    if (refresh.kind === "applied" || refresh.kind === "unchanged") {
+      options.onToast("success", "旧適用履歴の読取同期が完了しました。書き込みを再開できます。");
+    }
+  }
+
   async function loadInitialSyncState(): Promise<void> {
     const result = tasksContracts.getSyncState.response.parse(await api.getSyncState());
     if (result.kind === "error") {
@@ -227,11 +250,9 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     await runSynchronization("full");
   }
 
-  return { connectionState, syncState, activeSyncMode, canManualSync, canAcceptWrite,
-    setConnectionState, setSyncState, applySyncStateDisplay, handleSyncState, readCurrentSyncState,
-    reloadTaskDataAfterSuccessfulSync: read.reloadTaskDataAfterSuccessfulSync,
-    reconcileSyncStateAfterFailure, showNormalizationNotificationToast, normalizationNotificationMessage,
-    subscribeSyncState, loadInitialSyncState, manualSync, fullSync, chromiumConnectionState };
+  return { connectionState, syncState, activeSyncMode, canManualSync, canAcceptWrite, authenticationRequired,
+    markAuthenticationRequired, reconcileAuthenticationFailure, completeAuthenticationSync, completeHistorySync,
+    showNormalizationNotificationToast, subscribeSyncState, loadInitialSyncState, manualSync, fullSync };
 }
 
 function syncTimestamp(value: string): number {

@@ -1,3 +1,4 @@
+import { computed } from "vue";
 import { useTasksApi } from "../../shared/api/feature-apis";
 import { useTaskRead, type TaskReadOptions } from "./use-task-read";
 import { useTaskSync, type TaskSyncOptions } from "./use-task-sync";
@@ -13,11 +14,17 @@ export type { TaskDetail, TaskDataRefreshResult } from "./use-task-read";
 export type { TaskDraft, TaskDraftStore, TaskEditMarker } from "./use-task-drafts";
 
 /** タスク閲覧と同期の唯一の画面状態を生成します。 */
-export function useTasks(options: TaskReadOptions & TaskSyncOptions) {
+export function useTasks(options: Omit<TaskReadOptions, "onTaskFailure" | "onTaskMissing"> & TaskSyncOptions) {
   const api = useTasksApi();
-  const read = useTaskRead(api, options);
+  const read = useTaskRead(api, {
+    ...options,
+    onTaskFailure: (message) => read.setTaskFeedback("failure", message),
+    onTaskMissing: (taskGid) => markTaskMissing(taskGid),
+  });
   const sync = useTaskSync(api, read, options);
   const drafts = useTaskDrafts();
   const edit = useTaskEdit(api, read, sync, options);
-  return { ...read, ...sync, ...edit, drafts };
+  const canWriteSelectedTask = computed(() => sync.canAcceptWrite.value && edit.canSubmitSelectedEdit.value);
+  const { markTaskMissing, ...editCommands } = edit;
+  return { ...read, ...sync, ...editCommands, drafts, canWriteSelectedTask };
 }

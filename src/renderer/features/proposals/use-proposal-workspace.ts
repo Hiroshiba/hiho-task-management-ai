@@ -2,6 +2,7 @@ import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch, type Ref }
 import { gidSchema } from "../../../shared/ipc-contracts/common";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
+import type { SetupState } from "../../../shared/ipc-contracts/setup-schemas";
 import { proposalFromState } from "./proposal-state";
 import { useProposals } from "./use-proposals";
 import type AiSessionDialog from "./AiSessionDialog.vue";
@@ -38,6 +39,7 @@ type CodexState =
 type Options = {
   readonly proposals: ReturnType<typeof useProposals>;
   readonly canWrite: Readonly<Ref<boolean>>;
+  readonly hasRegisteredVaults: () => boolean;
   readonly tasks: Readonly<Ref<readonly TaskReference[]>>;
   readonly selectedTaskGid: Readonly<Ref<string | undefined>>;
   readonly closeSettings: () => void;
@@ -114,9 +116,12 @@ export function useProposalWorkspace(options: Options) {
     if (proposals.externalStateFailure.value != null) return { kind: "error", message: proposals.externalStateFailure.value.message };
     return { kind: "loading" };
   });
+  const externalReviewRequestId = computed(() => externalState.value.kind === "ready"
+    ? externalState.value.value.review_target?.request_id : undefined);
   const executions = computed(() => Object.values(proposals.executions.value).sort((left, right) =>
     right.created_at.localeCompare(left.created_at) || right.execution_id.localeCompare(left.execution_id)));
   const canStartNewSession = computed(() => options.canWrite.value && codexState.value.kind === "ready");
+  const canReanalyzeObsidianNotes = computed(() => canStartNewSession.value && options.hasRegisteredVaults());
   const sessionViews = computed<readonly AiSessionView[]>(() => proposals.sessions.value.map((session) => {
     const record = records.value.find((candidate) => candidate.session_id === session.session_id);
     if (record == null) throw new Error("AI依頼の表示情報が見つかりません。");
@@ -212,6 +217,20 @@ export function useProposalWorkspace(options: Options) {
 
   function setCodexHint(value: CodexState): void {
     codexHint.value = value;
+  }
+
+  function applySetupState(state: SetupState): void {
+    if (state.kind === "codex_authentication_required") {
+      setCodexHint({ kind: "authentication_required" });
+      return;
+    }
+    if ("codex" in state && state.codex.kind === "unavailable") {
+      setCodexHint({ kind: "unavailable", reason_code: state.codex.reason_code });
+      return;
+    }
+    if ("context" in state && state.context.codex.kind === "unavailable") {
+      setCodexHint({ kind: "unavailable", reason_code: state.context.codex.reason_code });
+    }
   }
 
   async function initialize(): Promise<void> {
@@ -575,6 +594,7 @@ export function useProposalWorkspace(options: Options) {
     history: proposals.history,
     codexState,
     externalState,
+    externalReviewRequestId,
     externalBusy,
     externalEditResult,
     externalApprovalResults,
@@ -593,12 +613,13 @@ export function useProposalWorkspace(options: Options) {
     sessionViews,
     selectedSessionId,
     canStartNewSession,
+    canReanalyzeObsidianNotes,
     waitingCount,
     runningCount,
     initialize,
     refreshCodexStatus,
     handleSyncState,
-    setCodexHint,
+    applySetupState,
     openAssistant,
     closeAssistant,
     startSession,

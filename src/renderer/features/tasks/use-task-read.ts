@@ -38,6 +38,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   const visibleRows = computed(() => overview.value == null
     ? []
     : sortTaskRows(filterTaskRows(overview.value, filter.value, currentAsOf.value), taskSort.value));
+  const taskReferences = computed(() => overview.value?.tasks.map((task) => ({ gid: task.gid, title: task.title })) ?? []);
   let taskDataGeneration = 0;
   let taskDetailGeneration = 0;
   let lastLoadedSuccessfulSyncAt: string | undefined;
@@ -262,7 +263,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   }
 
   return { overview, selectedTask, selectedTaskGid, filter, taskSort, currentAsOf, taskFeedback,
-    visibleRows, setTaskFeedback, clearTaskFeedback, captureTaskDetailContext, isCurrentTaskDetailContext,
+    visibleRows, taskReferences, setTaskFeedback, clearTaskFeedback, captureTaskDetailContext, isCurrentTaskDetailContext,
     selectTask, deselectTask, reloadTaskData, startInitialTaskDataRefresh,
     reloadTaskDataAfterSuccessfulSync };
 }

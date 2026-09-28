@@ -1,14 +1,8 @@
 <script setup lang="ts">
-import {
-  computed,
-  ref,
-} from "vue";
+import { ref } from "vue";
 import { DialogRoot } from "reka-ui";
-import type { IpcResult } from "../../shared/ipc-contracts/common";
-import type { SetupState } from "../../shared/ipc-contracts/setup-schemas";
 import { viewModelTaskDetailSchema } from "../../shared/view-model";
-import { useAppScreen } from "../app/use-app-screen";
-import { useAppStartup } from "../app/use-app-startup";
+import { useAppBootstrap } from "../app/use-app-bootstrap";
 import { useSystemUpdate } from "../features/system";
 import { VaultSettings, useObsidianIntegration } from "../features/obsidian-integration";
 import { GithubStatus, useGithubIntegration } from "../features/github-integration";
@@ -26,21 +20,23 @@ import AppHeader from "./AppHeader.vue";
 import { AsanaReauthenticationPanel, SettingsDialog, SetupWizard, useSettings } from "../features/settings";
 import TaskDetail from "./TaskDetail.vue";
 import ToastHost from "./ToastHost.vue";
-import {
-  rendererSyncStateSchema,
-  type RendererFailure,
-} from "./state";
 import { useToast } from "./useToast";
 
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
-type IpcFailure = Extract<IpcResult<unknown>, { readonly kind: "error" }>;
-
 type Feedback = {
   readonly kind: FeedbackKind;
   readonly message: string;
 };
 
-const { screen, showSetup, showDashboard, showError } = useAppScreen();
+const { screen, handleSetupState } = useAppBootstrap({
+  subscribeSyncState: () => subscribeSyncState(),
+  initializeProposals: () => proposalWorkspace.initialize(),
+  loadSetup: () => setup.load(),
+  loadVaults: () => obsidian.loadVaults(),
+  loadSyncState: () => loadInitialSyncState(),
+  loadAuthentication: () => authentication.load(),
+  onSetupReady: () => { void startInitialTaskDataRefresh(); },
+});
 const appUpdateState = useSystemUpdate();
 const github = useGithubIntegration();
 const { addToast } = useToast();
@@ -89,13 +85,8 @@ function showGlobalResultFeedback(value: Feedback): void {
 
 const settings = useSettings({
   onSetupState: (state) => {
-    setCodexFromSetup(state);
-    if (state.kind === "ready") {
-      showDashboard();
-      void startInitialTaskDataRefresh();
-    } else {
-      showSetup();
-    }
+    proposalWorkspace.applySetupState(state);
+    handleSetupState(state);
   },
   onFeedback: setFeedback,
   onToast: (kind, message) => addToast(kind, message),
@@ -105,15 +96,11 @@ const settings = useSettings({
     void obsidian.loadVaultMappings();
     void github.loadStatus();
   },
-  authenticationRequired: () => syncState.value.kind === "authentication_required",
-  onAuthenticationRequired: () => setSyncState(rendererSyncStateSchema.parse({ kind: "authentication_required" })),
+  authenticationRequired: () => authenticationRequired.value,
+  onAuthenticationRequired: () => markAuthenticationRequired(),
   onAuthenticationIdle: () => loadInitialSyncState(),
-  onAuthenticationFailure: () => reconcileSyncStateAfterFailure(rendererSyncStateSchema.parse({ kind: "authentication_required" })),
-  onSynchronized: async (result) => {
-    setConnectionState("online", rendererSyncStateSchema.parse({ kind: "synced", synced_at: result.synced_at }));
-    const refresh = await reloadTaskDataAfterSuccessfulSync(result.synced_at);
-    return refresh.kind !== "failed";
-  },
+  onAuthenticationFailure: () => reconcileAuthenticationFailure(),
+  onSynchronized: (result) => completeAuthenticationSync(result.synced_at),
   onNormalizationNotifications: (result) => showNormalizationNotificationToast(
     result.synced_at, result.normalization_notifications,
   ),
@@ -134,51 +121,48 @@ const {
   taskFeedback,
   visibleRows,
   connectionState,
-  syncState,
   activeSyncMode,
   canManualSync,
   canAcceptWrite,
+  canWriteSelectedTask,
+  authenticationRequired,
   setTaskFeedback,
   clearTaskFeedback,
   selectTask,
   deselectTask,
   startInitialTaskDataRefresh,
-  reloadTaskDataAfterSuccessfulSync,
-  setConnectionState,
-  setSyncState,
+  taskReferences,
+  completeAuthenticationSync,
+  completeHistorySync,
+  markAuthenticationRequired,
   subscribeSyncState,
-  reconcileSyncStateAfterFailure,
+  reconcileAuthenticationFailure,
   showNormalizationNotificationToast,
   loadInitialSyncState,
   manualSync,
   fullSync,
-  chromiumConnectionState,
   applyEdit,
   refreshExecution,
   retryExecution,
-  canSubmitSelectedEdit,
   selectedEditState,
   selectedExecution,
   selectedExecutionFeedback,
   taskEditMarkers,
-  markTaskMissing,
   drafts,
 } = useTasks({
   configured,
   historyClear: proposals.history.clear,
   authenticationBusy: asanaAuthenticationBusy,
   onFailure: (message) => setFeedback("failure", message),
-  onTaskFailure: (message) => setTaskFeedback("failure", message),
-  onTaskMissing: (taskGid) => markTaskMissing(taskGid),
   onFeedback: (kind, message) => showGlobalResultFeedback({ kind, message }),
   onToast: (kind, message) => addToast(kind, message),
-  onStateChange: (state) => proposalWorkspace.handleSyncState(state.kind === "syncing"),
+  onSyncingChange: (isSyncing) => proposalWorkspace.handleSyncState(isSyncing),
 });
-const proposalTasks = computed(() => overview.value?.tasks.map((task) => ({ gid: task.gid, title: task.title })) ?? []);
 const proposalWorkspace = useProposalWorkspace({
   proposals,
   canWrite: canAcceptWrite,
-  tasks: proposalTasks,
+  hasRegisteredVaults: () => registeredVaultIds.value.length > 0,
+  tasks: taskReferences,
   selectedTaskGid,
   closeSettings: settings.closeDialog,
   selectTask,
@@ -188,6 +172,7 @@ const proposalWorkspace = useProposalWorkspace({
 const {
   codexState,
   externalState: proposalExternalState,
+  externalReviewRequestId: proposalExternalReviewRequestId,
   externalBusy: proposalExternalBusy,
   externalEditResult: proposalExternalEditResult,
   externalApprovalResults: proposalExternalApprovalResults,
@@ -208,6 +193,7 @@ const {
   canStartNewSession: canStartNewProposalSession,
   waitingCount: proposalWaitingCount,
   runningCount: proposalRunningCount,
+  canReanalyzeObsidianNotes,
   openAssistant: openProposalAssistant,
   closeAssistant: closeProposalAssistant,
   startSession: startProposalSession,
@@ -246,105 +232,6 @@ const {
   registeredVaultIds,
   noteStatuses: obsidianStatuses,
 } = obsidian;
-const canReadLocal = computed(() => setupState.value?.kind === "ready");
-const canReanalyzeObsidianNotes = computed(() => {
-  return canAcceptWrite.value
-    && codexState.value.kind === "ready"
-    && registeredVaultIds.value.length > 0;
-});
-function failureText(code: RendererFailure["code"]): string {
-  switch (code) {
-    case "invalid_request":
-      return "入力を確認してください。";
-    case "invalid_response":
-      return "応答を確認できませんでした。";
-    case "sender_untrusted":
-      return "安全な送信元を確認できませんでした。";
-    case "not_configured":
-      return "この機能はまだ設定されていません。";
-    case "operation_failed":
-      return "操作に失敗しました。";
-    case "oauth_invalid_client":
-      return "Client ID、Client Secret、OAuthアプリ設定を確認して認証を最初からやり直してください。";
-    case "oauth_invalid_grant":
-      return "認可コードが期限切れ、使用済み、または別アプリの可能性があるため認証を最初からやり直してください。";
-    case "oauth_token_endpoint_rejected":
-      return "Asanaが認証要求を拒否したためOAuthアプリ設定を確認して最初からやり直してください。";
-    case "oauth_network_error":
-      return "Asanaとの通信に失敗しました。ネットワークを確認して最初からやり直してください。";
-    case "oauth_http_rejected":
-      return "Asanaが認証要求を拒否しました。Client ID、Client Secret、Redirect URLを確認し、新しいコードで再認証してください。";
-    case "oauth_service_unavailable":
-      return "Asana認証サービスを一時利用できません。待ってから最初からやり直してください。";
-    case "oauth_response_invalid":
-      return "Asanaの認証応答形式を確認できません。最初からやり直し、続く場合はこの表示文を共有してください。";
-    case "secure_storage_unavailable":
-      return "OS保護ストレージが使えず秘密情報を保存できません。Windows版またはキーチェーン対応環境で起動してください。";
-    case "oauth_session_error":
-      return "認証セッションを最初からやり直してください。";
-    case "aborted":
-      return "操作を中断しました。";
-    case "conflict":
-      return "最新状態と競合しました。再同期してください。";
-    case "not_found":
-      return "対象が見つかりません。";
-    case "authentication_required":
-      return "認証が必要です。";
-    case "unavailable":
-      return "この機能は現在利用できません。";
-  }
-}
-
-function setScreenError(value: IpcFailure): void {
-  showError(failureText(value.code));
-}
-
-function setCodexFromSetup(state: SetupState): void {
-  if (state.kind === "codex_authentication_required") {
-    proposalWorkspace.setCodexHint({ kind: "authentication_required" });
-    return;
-  }
-  if ("codex" in state && state.codex.kind === "unavailable") {
-    proposalWorkspace.setCodexHint({ kind: "unavailable", reason_code: state.codex.reason_code });
-    return;
-  }
-  if ("context" in state && state.context.codex.kind === "unavailable") {
-    proposalWorkspace.setCodexHint({ kind: "unavailable", reason_code: state.context.codex.reason_code });
-  }
-}
-
-async function handleHistorySynchronized(syncedAt: string): Promise<void> {
-  setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
-    kind: "synced",
-    synced_at: syncedAt,
-  }));
-  const refresh = await reloadTaskDataAfterSuccessfulSync(syncedAt);
-  if (refresh.kind === "applied" || refresh.kind === "unchanged") {
-    addToast("success", "旧適用履歴の読取同期が完了しました。書き込みを再開できます。");
-  }
-}
-
-async function initialize(): Promise<void> {
-  subscribeSyncState();
-  await proposalWorkspace.initialize();
-  const state = await setup.load();
-  if (state == null) {
-    showError("初回設定の状態を読み込めませんでした。");
-    return;
-  }
-  if (state.kind === "ready") {
-    await obsidian.loadVaults();
-  }
-  await loadInitialSyncState();
-  if (state.kind === "ready") {
-    await authentication.load();
-  }
-}
-
-useAppStartup(initialize, setScreenError, () => {
-  showError(failureText("operation_failed"));
-});
-
 </script>
 
 <template>
@@ -409,7 +296,7 @@ useAppStartup(initialize, setScreenError, () => {
       :creating-session="proposalSessionCreating"
       :feedback="proposalDialogFeedback"
       :sessions="proposalSessionViews"
-      :tasks="proposalTasks"
+      :tasks="taskReferences"
       :selected-session-id="proposalSelectedSessionId"
       :external-agent-state="proposalExternalState"
       :external-agent-busy="proposalExternalBusy"
@@ -422,9 +309,7 @@ useAppStartup(initialize, setScreenError, () => {
       :execution-list-failure="proposalExecutionListFailure"
       :execution-request-ids="proposalExecutionRequestIds"
       :retrying-execution-ids="proposalRetryingExecutionIds"
-      :external-review-request-id="proposalExternalState.kind === 'ready'
-        ? proposalExternalState.value.review_target?.request_id
-        : undefined"
+      :external-review-request-id="proposalExternalReviewRequestId"
       @close="closeProposalAssistant"
       @new-session="startProposalSession"
       @select-session="selectProposalSession"
@@ -481,7 +366,7 @@ useAppStartup(initialize, setScreenError, () => {
       <template v-else>
         <ProposalHistoryPanel
           :history="proposalWorkspace.history"
-          @synchronized="handleHistorySynchronized"
+          @synchronized="completeHistorySync"
         />
         <AsanaReauthenticationPanel
           :state="asanaAuthenticationState"
@@ -565,13 +450,13 @@ useAppStartup(initialize, setScreenError, () => {
                 :task="selectedTask == null ? undefined : viewModelTaskDetailSchema.parse(selectedTask)"
                 :as-of="currentAsOf"
                 :areas="overview.areas"
-                :can-write="canAcceptWrite && canSubmitSelectedEdit"
+                :can-write="canWriteSelectedTask"
                 :saving-state="selectedEditState"
                 :execution="selectedExecution"
                 :execution-feedback="selectedExecutionFeedback"
                 :draft-store="drafts"
                 :task-edit-markers="taskEditMarkers"
-                :read-available="canReadLocal"
+                :read-available="configured"
                 :obsidian-vault-ids="registeredVaultIds"
                 :obsidian-statuses="obsidianStatuses"
                 :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
