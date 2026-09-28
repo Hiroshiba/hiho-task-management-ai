@@ -7,7 +7,16 @@ type Request<Contract extends { readonly request: z.ZodType }> = z.output<Contra
 type SetupState = IpcSuccessValue<typeof settingsContracts.getState.response>;
 type AuthenticationState = IpcSuccessValue<typeof settingsContracts.getAsanaAuthenticationState.response>;
 type ReauthenticationResult = IpcSuccessValue<typeof settingsContracts.completeAsanaReauthentication.response>;
-type ReauthenticationSourceResult = Pick<ReauthenticationResult, "synced_at" | "performed_mode"> & {
+type ReauthenticationSourceResult = Pick<ReauthenticationResult, "synced_at" | "performed_mode" | "normalization_notifications"> & {
+  readonly application_result: {
+    readonly operations: readonly { readonly outcome: "applied" | "already_applied" | "conflict" }[];
+  };
+  readonly remaining_plan: {
+    readonly status_write_task_gids: readonly string[];
+    readonly external_write_task_gids: readonly string[];
+    readonly tag_write_task_gids: readonly string[];
+  };
+  readonly critical_errors: readonly unknown[];
   readonly cleanup_items: readonly unknown[];
 };
 export type SettingsHandlers = {
@@ -141,6 +150,12 @@ export function createSettingsHandlers(workflows: SettingsHandlerWorkflows): Set
         return {
           synced_at: result.synced_at,
           performed_mode: result.performed_mode,
+          normalization_notifications: result.normalization_notifications,
+          conflict_count: result.application_result.operations.filter((operation) => operation.outcome === "conflict").length,
+          remaining_write_count: result.remaining_plan.status_write_task_gids.length
+            + result.remaining_plan.external_write_task_gids.length
+            + result.remaining_plan.tag_write_task_gids.length,
+          critical_error_count: result.critical_errors.length,
           cleanup_count: result.cleanup_items.length,
         };
       },

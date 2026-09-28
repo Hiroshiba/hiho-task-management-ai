@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { completedSchema, emptyRequestSchema, identifierSchema, responseSchema, type IpcResult } from "./common";
+import { relativeMarkdownPathSchema, vaultMappingSchema } from "./vault-values";
 
 export const obsidianIntegrationChannels = {
   validateVault: "obsidian-integration:validate-vault",
@@ -12,24 +13,6 @@ export const obsidianIntegrationChannels = {
 } satisfies Record<string, string>;
 
 const vaultRequestSchema = z.object({ vault_id: identifierSchema }).strict();
-const vaultMappingSchema = z
-  .object({
-    vault_id: identifierSchema,
-    absolute_path: z.string().min(1).max(4_096),
-  })
-  .strict();
-const relativeMarkdownPathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine(
-    (value) =>
-      value.endsWith(".md") &&
-      !value.startsWith("/") &&
-      !value.includes("\\") &&
-      value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
-    "Vault内のMarkdownノートへの相対パスを指定してください。",
-  );
 const pathRequestSchema = z
   .object({
     vault_id: identifierSchema,

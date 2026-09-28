@@ -26,7 +26,15 @@ export const finalIpcChannels = {
   diagnostics: diagnosticsChannels,
 };
 
-export const finalIpcContracts = {
+export const finalIpcContracts: {
+  readonly system: typeof systemContracts;
+  readonly tasks: typeof tasksContracts;
+  readonly settings: typeof settingsContracts;
+  readonly proposals: typeof proposalsContracts;
+  readonly obsidianIntegration: typeof obsidianIntegrationContracts;
+  readonly githubIntegration: typeof githubIntegrationContracts;
+  readonly diagnostics: typeof diagnosticsContracts;
+} = {
   system: systemContracts,
   tasks: tasksContracts,
   settings: settingsContracts,

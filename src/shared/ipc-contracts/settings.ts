@@ -1,13 +1,15 @@
 import { z } from "zod";
 import {
   dateTimeSchema,
-  displayTextSchema,
   emptyRequestSchema,
   gidSchema,
   identifierSchema,
   responseSchema,
   type IpcResult,
 } from "./common";
+import { createSetupSchemas } from "./setup-schemas";
+import { syncResultSchema } from "./tasks";
+import { vaultMappingSchema } from "./vault-values";
 
 export const settingsChannels = {
   getState: "settings:get-state",
@@ -31,181 +33,38 @@ export const settingsChannels = {
   cancelAsanaReauthentication: "settings:cancel-asana-reauthentication",
 } satisfies Record<string, string>;
 
-const projectSchema = z.object({ gid: gidSchema, name: displayTextSchema }).strict();
-const codexAvailabilitySchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("available") }).strict(),
-  z
-    .object({
-      kind: z.literal("unavailable"),
-      reason_code: z.enum(["not_installed", "incompatible", "permission_denied", "startup_failed", "disabled"]),
-    })
-    .strict(),
-]);
-const setupContextSchema = z
+const deviceSectionGidsSchema = z
   .object({
-    device_id: identifierSchema,
-    client_id: identifierSchema,
-    workspace_gid: gidSchema,
-    workspace_name: displayTextSchema,
-    project_gid: gidSchema,
-    project_name: displayTextSchema,
-    section_gids: z
-      .object({
-        not_started: gidSchema,
-        in_progress: gidSchema,
-        completed: gidSchema,
-        withdrawn: gidSchema,
-      })
-      .strict(),
-    tag_gids: z
-      .object({
-        importance_1: gidSchema,
-        importance_2: gidSchema,
-        importance_3: gidSchema,
-        importance_4: gidSchema,
-        importance_5: gidSchema,
-        area_unclassified: gidSchema,
-        block_none: gidSchema,
-        block_partial: gidSchema,
-        block_full: gidSchema,
-      })
-      .strict(),
-    codex: codexAvailabilitySchema,
-    test_task_gid: gidSchema.optional(),
+    not_started: gidSchema,
+    in_progress: gidSchema,
+    completed: gidSchema,
+    withdrawn: gidSchema,
   })
-  .strict();
+  .strict()
+  .refine((value) => new Set(Object.values(value)).size === 4, "4つの状態セクションGIDはすべて異なる値で指定してください。");
 
-const setupStateSchema = z
-  .object({
-    kind: z.enum([
-      "created",
-      "codex_cli_ready",
-      "codex_authentication_required",
-      "credentials_required",
-      "asana_authorization_pending",
-      "workspace_listing_required",
-      "workspace_selection_required",
-      "project_selection_required",
-      "project_requires_action",
-      "resources_requires_action",
-      "resources_ready",
-      "asana_capability_failed",
-      "vault_choice_required",
-      "vault_skipped",
-      "vault_configured",
-      "external_tool_skipped",
-      "external_tool_configured",
-      "external_tool_unavailable",
-      "full_sync_required",
-      "codex_capability_required",
-      "ready",
-    ]),
-    step: z.enum([
-      "codex_cli",
-      "codex_authentication",
-      "credentials",
-      "workspace",
-      "project",
-      "resources",
-      "asana_capability",
-      "vault",
-      "external_tool",
-      "full_sync",
-      "codex_capability",
-      "ready",
-    ]),
-    client_id: identifierSchema.optional(),
-    authorization_id: identifierSchema.optional(),
-    expires_at: dateTimeSchema.optional(),
-    codex: codexAvailabilitySchema.optional(),
-    workspace: projectSchema.optional(),
-    workspaces: z.array(projectSchema).max(1_000).optional(),
-    project: projectSchema.optional(),
-    projects: z.array(projectSchema).max(1_000).optional(),
-    context: setupContextSchema.optional(),
-    issues: z
-      .array(
-        z
-          .object({
-            resource: z.enum(["section", "tag"]),
-            name: displayTextSchema,
-            reason: z.enum(["duplicate", "renamed", "configured_missing"]),
-            configured_gid: gidSchema.optional(),
-          })
-          .strict(),
-      )
-      .optional(),
-    test_task_gid: gidSchema.optional(),
-    vault_id: identifierSchema.optional(),
-    tool_id: z.literal("discord-context").optional(),
-    allowed_channel_ids: z.array(identifierSchema).max(16).optional(),
-    external_tool: z
-      .discriminatedUnion("kind", [
-        z.object({ kind: z.literal("skipped") }).strict(),
-        z
-          .object({
-            kind: z.literal("configured"),
-            tool_id: z.literal("discord-context"),
-            allowed_channel_ids: z.array(identifierSchema).min(1).max(16),
-          })
-          .strict(),
-        z
-          .object({
-            kind: z.literal("unavailable"),
-            reason_code: identifierSchema,
-          })
-          .strict(),
-      ])
-      .optional(),
-    reason_code: identifierSchema.optional(),
-  })
-  .strict();
+const {
+  setupStateSchema,
+  setupAsanaAuthorizationBeginInputSchema: authorizationBeginSchema,
+  setupAsanaAuthorizationCompleteInputSchema: authorizationCompleteSchema,
+  setupAsanaAuthorizationCancelInputSchema: authorizationCancelSchema,
+  setupWorkspaceSelectionInputSchema: workspaceSelectionSchema,
+  setupProjectSelectionInputSchema: projectChoiceSchema,
+  setupVaultChoiceInputSchema: vaultChoiceSchema,
+  setupExternalToolChoiceInputSchema: externalToolChoiceSchema,
+} = createSetupSchemas({
+  createUtf8ByteLimitedStringSchema: (maxBytes: number) => z.string().refine(
+    (value) => new TextEncoder().encode(value).byteLength <= maxBytes,
+    `UTF-8換算で${maxBytes}バイト以下の文字列を指定してください。`,
+  ),
+  gidSchema,
+  identifierSchema,
+  isoDateTimeSchema: dateTimeSchema,
+  deviceSectionGidsSchema,
+  vaultMappingSchema,
+});
 
-const authIdSchema = z
-  .string()
-  .length(43)
-  .regex(/^[A-Za-z0-9_-]+$/u);
-const authorizationBeginSchema = z
-  .object({
-    client_id: identifierSchema,
-    client_secret: z.string().min(1).max(1_024),
-  })
-  .strict();
-const authorizationCompleteSchema = z
-  .object({
-    authorization_id: authIdSchema,
-    authorization_code: z.string().min(1).max(8_192),
-  })
-  .strict();
-const authorizationCancelSchema = z.object({ authorization_id: authIdSchema }).strict();
-const projectChoiceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("existing"), project_gid: gidSchema }).strict(),
-  z.object({ kind: z.literal("create"), name: displayTextSchema }).strict(),
-]);
-const vaultChoiceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("skip") }).strict(),
-  z
-    .object({
-      kind: z.literal("configure"),
-      mapping: z
-        .object({
-          vault_id: identifierSchema,
-          absolute_path: z.string().min(1).max(4_096),
-        })
-        .strict(),
-    })
-    .strict(),
-]);
-const externalToolChoiceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("skip") }).strict(),
-  z
-    .object({
-      kind: z.literal("configure_discord"),
-      bot_token: z.string().min(1).max(4_096),
-      allowed_channel_ids: z.array(identifierSchema).min(1).max(16),
-    })
-    .strict(),
-]);
+const authIdSchema = authorizationCompleteSchema.shape.authorization_id;
 
 const asanaAuthenticationStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("idle") }).strict(),
@@ -231,13 +90,15 @@ const asanaAuthenticationStateSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
-const reauthenticationResultSchema = z
-  .object({
-    synced_at: dateTimeSchema,
-    performed_mode: z.enum(["full", "delta"]),
-    cleanup_count: z.number().int().nonnegative(),
-  })
-  .strict();
+const reauthenticationResultSchema = syncResultSchema.pick({
+  synced_at: true,
+  performed_mode: true,
+  normalization_notifications: true,
+  conflict_count: true,
+  remaining_write_count: true,
+  critical_error_count: true,
+  cleanup_count: true,
+});
 
 const setupResponseSchema = responseSchema(setupStateSchema);
 
@@ -279,7 +140,7 @@ export const settingsContracts = {
   },
   selectWorkspace: {
     channel: settingsChannels.selectWorkspace,
-    request: z.object({ workspace_gid: gidSchema }).strict(),
+    request: workspaceSelectionSchema,
     response: setupResponseSchema,
   },
   selectProject: {
