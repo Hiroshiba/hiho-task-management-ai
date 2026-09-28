@@ -17,7 +17,8 @@ import { executionDtoSchema, type ExecutionDto } from "./execution";
 import { externalProposalStateSchema } from "./external-proposal-state";
 import { proposalsChannels } from "./proposals-channels";
 import {
-  proposalAfterSchema,
+  proposalEditValueSchema,
+  proposalOperationKindSchema,
   proposalSelectionSchema,
   proposalViewSchema,
   type ProposalViewDto,
@@ -82,13 +83,27 @@ const turnResultSchema = z.discriminatedUnion("kind", [
 ]);
 const proposalRequestSchema = z.object({ session_id: identifierSchema, proposal_id: identifierSchema }).strict();
 const selectionRequestSchema = proposalRequestSchema.extend({ selection: proposalSelectionSchema }).strict();
+const editLocatorSchema = z.string()
+  .refine((value) => value.trim().length > 0, "根拠locatorを空にできません。")
+  .refine((value) => new TextEncoder().encode(value).byteLength <= 4_096, "根拠locatorはUTF-8で4096バイト以下にしてください。");
 const editRequestSchema = proposalRequestSchema
   .extend({
     operation_id: identifierSchema,
-    after: proposalAfterSchema,
-    evidence_locator: z.string().min(1).max(4_096),
+    operation: proposalOperationKindSchema,
+    after: z.unknown(),
+    evidence_locator: editLocatorSchema,
   })
-  .strict();
+  .strict()
+  .transform((request, context) => {
+    const value = proposalEditValueSchema.safeParse({ operation: request.operation, after: request.after });
+    if (!value.success) {
+      for (const issue of value.error.issues) {
+        context.addIssue({ code: "custom", path: issue.path, message: issue.message });
+      }
+      return z.NEVER;
+    }
+    return { ...request, ...value.data };
+  });
 const externalSelectionRequestSchema = z
   .object({
     proposal_id: identifierSchema,
@@ -101,10 +116,21 @@ const externalEditRequestSchema = z
     proposal_id: identifierSchema,
     revision: z.number().int().positive(),
     operation_id: identifierSchema,
-    after: proposalAfterSchema,
-    evidence_locator: z.string().min(1).max(4_096),
+    operation: proposalOperationKindSchema,
+    after: z.unknown(),
+    evidence_locator: editLocatorSchema,
   })
-  .strict();
+  .strict()
+  .transform((request, context) => {
+    const value = proposalEditValueSchema.safeParse({ operation: request.operation, after: request.after });
+    if (!value.success) {
+      for (const issue of value.error.issues) {
+        context.addIssue({ code: "custom", path: issue.path, message: issue.message });
+      }
+      return z.NEVER;
+    }
+    return { ...request, ...value.data };
+  });
 const externalRejectRequestSchema = z
   .object({
     proposal_id: identifierSchema,

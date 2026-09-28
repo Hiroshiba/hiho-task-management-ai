@@ -31,7 +31,11 @@ const externalProposalSchema = z
     state: externalProposalStatusSchema,
     view: proposalViewSchema,
   })
-  .strict();
+  .strict()
+  .refine((proposal) =>
+    proposal.view.proposal_id === proposal.proposal_id
+    && proposal.view.revision === proposal.revision,
+  "外部変更案のIDまたは表示版が一致しません。");
 
 export const externalProposalStateSchema = z
   .object({

@@ -6,23 +6,18 @@ import {
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
 import { identifierSchema } from "../../../shared/ipc-contracts/common";
-import { proposalViewSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
+import {
+  proposalImpactSchema,
+  proposalOperationSchema,
+  proposalValidationSchema,
+  proposalViewSchema,
+  type ProposalViewDto,
+} from "../../../shared/ipc-contracts/proposal-values";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
 import type { IpcSuccessValue } from "./contract-handler";
 
 type ApprovalDto = IpcSuccessValue<typeof proposalsContracts.approve.response>;
 type ExternalStateDto = z.output<typeof externalProposalStateSchema>;
-
-const validationSourceSchema = z.object({
-  operations: z.array(z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("valid"), operation_id: identifierSchema }).passthrough(),
-    z.object({
-      kind: z.literal("invalid"),
-      operation_id: identifierSchema,
-      errors: z.array(z.object({ code: identifierSchema, message: z.string() }).passthrough()).min(1),
-    }).passthrough(),
-  ])),
-}).passthrough();
 
 const proposalViewSourceSchema = z.object({
   proposal_id: identifierSchema,
@@ -32,25 +27,14 @@ const proposalViewSourceSchema = z.object({
     groups: z.array(z.object({
       group_id: identifierSchema,
       atomic: z.boolean(),
-      operations: z.array(z.object({
-        operation_id: identifierSchema,
-        operation: z.string(),
-        target: z.unknown().optional(),
-        temporary_ref: identifierSchema.optional(),
-        before: z.unknown(),
-        after: z.unknown(),
-        reason: z.string(),
-        basis: z.string(),
-        confidence: z.number(),
-        evidence_refs: z.array(z.unknown()),
-      }).passthrough()),
-    }).passthrough()),
-  }).passthrough(),
-  basic_validation: validationSourceSchema,
-  graph_validation: validationSourceSchema,
+      operations: z.array(proposalOperationSchema),
+    }).strict()),
+  }).strict(),
+  basic_validation: proposalValidationSchema,
+  graph_validation: proposalValidationSchema,
   selected_operation_ids: z.array(identifierSchema),
-  impact: z.object({ impacted_task_count: z.number() }).passthrough(),
-}).passthrough();
+  impact: proposalImpactSchema,
+}).strict();
 
 const approvalSourceSchema = z.object({
   proposal_id: identifierSchema,
@@ -130,40 +114,51 @@ export function externalApprovalSource(source: unknown, proposalId: string): z.o
   const state = externalStateSourceSchema.parse(source);
   const proposal = state.proposals.find((item) => item.proposal_id === proposalId);
   if (proposal?.state.kind !== "finished") throw new Error("外部変更案の承認結果がありません。");
+  if (proposal.state.result.proposal_id !== proposalId) throw new Error("外部変更案のIDと承認結果が一致しません。");
   return proposal.state.result;
 }
 
-/** AI変更案の旧表示値を最終DTOへ変換します。 */
+/** AI変更案の表示値を最終DTOへ変換します。 */
 export function toProposalViewDto(source: unknown, revision: number | undefined): ProposalViewDto {
   const view = proposalViewSourceSchema.parse(source);
-  const issues = [view.basic_validation, view.graph_validation].flatMap((validation) =>
-    validation.operations.flatMap((operation) => operation.kind === "valid" ? [] :
-      operation.errors.map((error) => ({ operation_id: operation.operation_id, code: error.code, message: error.message }))));
   return proposalViewSchema.parse({
     proposal_id: view.proposal_id,
     ...(revision == null ? {} : { revision }),
     baseline_snapshot_hash: view.baseline_snapshot_hash,
     title: view.proposal.title,
-    groups: view.proposal.groups.map((group) => ({
-      group_id: group.group_id,
-      atomic: group.atomic,
-      operations: group.operations.map((operation) => ({
-        operation_id: operation.operation_id,
-        operation: operation.operation,
-        ...(operation.temporary_ref == null ? {} : { temporary_ref: operation.temporary_ref }),
-        ...(operation.target == null ? {} : { target: operation.target }),
-        before: operation.before,
-        after: operation.after,
-        reason: operation.reason,
-        basis: operation.basis,
-        confidence: operation.confidence,
-        evidence_refs: operation.evidence_refs,
-      })),
-    })),
+    groups: view.proposal.groups,
+    basic_validation: view.basic_validation,
+    graph_validation: view.graph_validation,
     selected_operation_ids: view.selected_operation_ids,
-    issues,
-    impacted_task_count: view.impact.impacted_task_count,
+    impact: view.impact,
   });
+}
+
+/** 編集要求の操作種別が保存中の変更案と一致することを確認します。 */
+export function assertProposalEditOperation(source: unknown, operationId: string, operationKind: string): void {
+  const view = proposalViewSourceSchema.parse(source);
+  const operation = view.proposal.groups.flatMap((group) => group.operations)
+    .find((candidate) => candidate.operation_id === operationId);
+  if (operation == null) throw new Error("指定した操作が変更案にありません。");
+  if (operation.operation !== operationKind) throw new Error("編集要求の操作種別が変更案と一致しません。");
+}
+
+/** 外部変更案の編集要求と保存中の版、操作種別を照合します。 */
+export function assertExternalProposalEditOperation(
+  source: unknown,
+  proposalId: string,
+  revision: number,
+  operationId: string,
+  operationKind: string,
+): void {
+  const state = externalStateSourceSchema.parse(source);
+  const proposal = state.proposals.find((candidate) => candidate.proposal_id === proposalId);
+  if (proposal == null) throw new Error("指定した外部変更案がありません。");
+  if (proposal.revision !== revision) throw new Error("外部変更案の表示版が一致しません。");
+  if (proposal.state.kind !== "pending_approval") throw new Error("外部変更案は編集できない状態です。");
+  const view = proposalViewSourceSchema.parse(proposal.view);
+  if (view.proposal_id !== proposalId) throw new Error("外部変更案のIDが表示値と一致しません。");
+  assertProposalEditOperation(view, operationId, operationKind);
 }
 
 /** 保存済み変更案executionを表示DTOへ変換します。 */
@@ -226,17 +221,22 @@ export function toExternalStateDto(source: unknown): ExternalStateDto {
     enabled: state.enabled,
     bridge: state.bridge,
     registration: state.registration,
-    proposals: state.proposals.map((proposal) => ({
-      proposal_id: proposal.proposal_id,
-      request_id: proposal.request_id,
-      revision: proposal.revision,
-      state: proposal.state.kind === "finished" ? {
-        kind: "finished",
-        outcome: proposal.state.result.application.outcome,
-        ...(proposal.state.result.execution_id == null ? {} : { execution_id: proposal.state.result.execution_id }),
-      } : proposal.state,
-      view: toProposalViewDto(proposal.view, proposal.revision),
-    })),
+    proposals: state.proposals.map((proposal) => {
+      if (proposal.state.kind === "finished" && proposal.state.result.proposal_id !== proposal.proposal_id) {
+        throw new Error("外部変更案のIDと承認結果が一致しません。");
+      }
+      return {
+        proposal_id: proposal.proposal_id,
+        request_id: proposal.request_id,
+        revision: proposal.revision,
+        state: proposal.state.kind === "finished" ? {
+          kind: "finished",
+          outcome: proposal.state.result.application.outcome,
+          ...(proposal.state.result.execution_id == null ? {} : { execution_id: proposal.state.result.execution_id }),
+        } : proposal.state,
+        view: toProposalViewDto(proposal.view, proposal.revision),
+      };
+    }),
     ...(state.review_target == null ? {} : { review_target: state.review_target }),
   });
 }

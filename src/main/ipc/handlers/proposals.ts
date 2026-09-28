@@ -3,6 +3,8 @@ import type { StoredProposalExecution } from "../../application/proposal-apply";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
 import { createContractHandler, type ContractHandler, type IpcSuccessValue } from "./contract-handler";
 import {
+  assertExternalProposalEditOperation,
+  assertProposalEditOperation,
   externalApprovalSource,
   parseApprovalSource,
   toApprovalDto,
@@ -33,7 +35,7 @@ export interface ProposalsHandlerWorkflows {
     startTurn(input: Request<typeof proposalsContracts.startTurn>, signal: AbortSignal): MaybePromise<unknown>;
     getProposal(input: Request<typeof proposalsContracts.getProposal>): MaybePromise<unknown>;
     select(input: Request<typeof proposalsContracts.select>): MaybePromise<unknown>;
-    editOperation(input: Request<typeof proposalsContracts.editOperation>): MaybePromise<unknown>;
+    editOperation(input: Omit<Request<typeof proposalsContracts.editOperation>, "operation">): MaybePromise<unknown>;
     reject(input: Request<typeof proposalsContracts.reject>): MaybePromise<void>;
     approve(input: Request<typeof proposalsContracts.approve>, signal: AbortSignal): MaybePromise<unknown>;
     closeSession(sessionId: string): MaybePromise<{ readonly completed: true }>;
@@ -41,7 +43,7 @@ export interface ProposalsHandlerWorkflows {
   readonly external: {
     getState(): MaybePromise<unknown>;
     setEnabled(input: Request<typeof proposalsContracts.setExternalEnabled>, signal: AbortSignal): MaybePromise<unknown>;
-    edit(input: Request<typeof proposalsContracts.editExternalOperation>, signal: AbortSignal): MaybePromise<unknown>;
+    edit(input: Omit<Request<typeof proposalsContracts.editExternalOperation>, "operation">, signal: AbortSignal): MaybePromise<unknown>;
     select(input: Request<typeof proposalsContracts.selectExternal>, signal: AbortSignal): MaybePromise<unknown>;
     approve(input: Request<typeof proposalsContracts.approveExternal>, signal: AbortSignal): MaybePromise<unknown>;
     reject(input: Request<typeof proposalsContracts.rejectExternal>, signal: AbortSignal): MaybePromise<unknown>;
@@ -73,8 +75,20 @@ export function createProposalsHandlers(workflows: ProposalsHandlerWorkflows): P
       toProposalViewDto(await ai.getProposal(request), undefined)),
     select: createContractHandler(proposalsContracts.select, async (request) =>
       toProposalViewDto(await ai.select(request), undefined)),
-    editOperation: createContractHandler(proposalsContracts.editOperation, async (request) =>
-      toProposalViewDto(await ai.editOperation(request), undefined)),
+    editOperation: createContractHandler(proposalsContracts.editOperation, async (request) => {
+      assertProposalEditOperation(
+        await ai.getProposal({ session_id: request.session_id, proposal_id: request.proposal_id }),
+        request.operation_id,
+        request.operation,
+      );
+      return toProposalViewDto(await ai.editOperation({
+        session_id: request.session_id,
+        proposal_id: request.proposal_id,
+        operation_id: request.operation_id,
+        after: request.after,
+        evidence_locator: request.evidence_locator,
+      }), undefined);
+    }),
     reject: createContractHandler(proposalsContracts.reject, async (request) => {
       await ai.reject(request);
       return { completed: true };
@@ -88,8 +102,22 @@ export function createProposalsHandlers(workflows: ProposalsHandlerWorkflows): P
       toExternalStateDto(await external.getState())),
     setExternalEnabled: createContractHandler(proposalsContracts.setExternalEnabled, async (request, signal) =>
       toExternalStateDto(await external.setEnabled(request, signal))),
-    editExternalOperation: createContractHandler(proposalsContracts.editExternalOperation, async (request, signal) =>
-      toExternalStateDto(await external.edit(request, signal))),
+    editExternalOperation: createContractHandler(proposalsContracts.editExternalOperation, async (request, signal) => {
+      assertExternalProposalEditOperation(
+        await external.getState(),
+        request.proposal_id,
+        request.revision,
+        request.operation_id,
+        request.operation,
+      );
+      return toExternalStateDto(await external.edit({
+        proposal_id: request.proposal_id,
+        revision: request.revision,
+        operation_id: request.operation_id,
+        after: request.after,
+        evidence_locator: request.evidence_locator,
+      }, signal));
+    }),
     selectExternal: createContractHandler(proposalsContracts.selectExternal, async (request, signal) =>
       toExternalStateDto(await external.select(request, signal))),
     approveExternal: createContractHandler(proposalsContracts.approveExternal, async (request, signal) => {
