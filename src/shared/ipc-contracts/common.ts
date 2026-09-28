@@ -41,4 +41,12 @@ export function subscriptionEventSchema<Value extends z.ZodType>(value: Value) {
 
 export type IpcResult<Value> = { readonly kind: "ok"; readonly value: Value } | z.infer<typeof ipcFailureSchema>;
 
-export type IpcSubscription<Value> = (listener: (value: Value) => void) => () => void;
+export type IpcSubscriptionFailure =
+  | { readonly kind: "started"; readonly failure_id: string }
+  | { readonly kind: "reported"; readonly failure_id: string; readonly error_id: string }
+  | { readonly kind: "report_unavailable"; readonly failure_id: string };
+
+export type IpcSubscription<Value> = (
+  listener: (value: Value) => void | Promise<void>,
+  onFailure: (failure: IpcSubscriptionFailure) => void,
+) => () => void;

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { IpcRendererEvent } from "electron";
 import { finalIpcContracts, type FinalTaskHubApi } from "../shared/ipc-contracts";
+import type { IpcSubscriptionFailure } from "../shared/ipc-contracts/common";
 import { serializeDiagnosticError } from "../shared/ipc-contracts/diagnostics";
 
 function reportPreloadError(error: unknown): void {
@@ -20,6 +21,24 @@ function reportPreloadError(error: unknown): void {
       .catch(logFailure);
   } catch (failure) {
     logFailure(failure);
+  }
+}
+
+async function reportSubscriptionError(error: unknown, channel: string, subscriptionId: string): Promise<string | undefined> {
+  const contextualError = new Error(`IPC購読通知を処理できませんでした。チャネル ${channel}、購読ID ${subscriptionId}`, { cause: error });
+  const diagnosticError = serializeDiagnosticError(contextualError);
+  try {
+    const contract = finalIpcContracts.diagnostics.report;
+    const input = contract.request.parse({ level: "error", error: diagnosticError });
+    const result = contract.response.parse(await ipcRenderer.invoke(contract.channel, input));
+    if (result.kind === "error") {
+      console.error("preloadの購読エラーをMainに記録できませんでした。", diagnosticError);
+      return undefined;
+    }
+    return result.value.error_id;
+  } catch (failure) {
+    console.error("preloadの購読エラーをMainに記録できませんでした。", diagnosticError, serializeDiagnosticError(failure));
+    return undefined;
   }
 }
 
@@ -50,26 +69,61 @@ function subscribeFinal<Value>(
     readonly request: { parse(value: unknown): { subscription_id: string } };
   },
   listener: (value: Value) => void | Promise<void>,
+  onFailure: (failure: IpcSubscriptionFailure) => void,
 ): () => void {
   if (typeof listener !== "function") {
     throw new TypeError("IPC購読関数が必要です。");
+  }
+  if (typeof onFailure !== "function") {
+    throw new TypeError("IPC購読エラーの通知関数が必要です。");
   }
   const subscriptionId = crypto.randomUUID();
   const request = { subscription_id: subscriptionId };
   const validatedSubscribeRequest = subscribeContract.request.parse(request);
   const validatedUnsubscribeRequest = unsubscribeContract.request.parse(request);
   let active = true;
-  const wrapped = (_event: IpcRendererEvent, payload: unknown): void => {
+  let eventGeneration = 0;
+  const notifyFailure = (failure: IpcSubscriptionFailure): void => {
     try {
-      const event = eventContract.event.parse(payload);
-      if (event.subscription_id === subscriptionId) {
-        const result = listener(event.value);
-        if (result != null) {
-          void Promise.resolve(result).catch(reportPreloadError);
-        }
-      }
+      onFailure(failure);
     } catch (error) {
       reportPreloadError(error);
+    }
+  };
+  const reportFailure = (error: unknown, generation: number): void => {
+    const failureId = crypto.randomUUID();
+    if (active && generation === eventGeneration) {
+      notifyFailure({ kind: "started", failure_id: failureId });
+    }
+    void reportSubscriptionError(error, eventContract.channel, subscriptionId).then((errorId) => {
+      if (!active || generation !== eventGeneration) return;
+      notifyFailure(errorId == null
+        ? { kind: "report_unavailable", failure_id: failureId }
+        : { kind: "reported", failure_id: failureId, error_id: errorId });
+    });
+  };
+  const wrapped = (_event: IpcRendererEvent, payload: unknown): void => {
+    if (!active) return;
+    let event: { subscription_id: string; value: Value };
+    try {
+      event = eventContract.event.parse(payload);
+    } catch (error) {
+      eventGeneration += 1;
+      reportFailure(error, eventGeneration);
+      return;
+    }
+    if (event.subscription_id !== subscriptionId) return;
+    eventGeneration += 1;
+    const generation = eventGeneration;
+    try {
+      const result = listener(event.value);
+      if (result != null) {
+        void Promise.resolve(result).catch((error: unknown) => {
+          reportFailure(error, generation);
+        });
+      }
+    } catch (error) {
+      reportFailure(error, generation);
     }
   };
   const unsubscribe = (): void => {
@@ -98,11 +152,12 @@ const api: FinalTaskHubApi = {
     getVersion: () => invokeFinal(finalIpcContracts.system.getVersion, {}),
     waitForStartup: () => invokeFinal(finalIpcContracts.system.waitForStartup, {}),
     getUpdateState: () => invokeFinal(finalIpcContracts.system.getUpdateState, {}),
-    onUpdateState: (listener) => subscribeFinal(
+    onUpdateState: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.system.updateState,
       finalIpcContracts.system.subscribeUpdateState,
       finalIpcContracts.system.unsubscribeUpdateState,
       listener,
+      onFailure,
     ),
   },
   tasks: {
@@ -119,17 +174,19 @@ const api: FinalTaskHubApi = {
       finalIpcContracts.tasks.retryExecution,
       { retry_of_execution_id: retryOfExecutionId },
     ),
-    onSyncState: (listener) => subscribeFinal(
+    onSyncState: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.tasks.syncState,
       finalIpcContracts.tasks.subscribeSyncState,
       finalIpcContracts.tasks.unsubscribeSyncState,
       listener,
+      onFailure,
     ),
-    onExecution: (listener) => subscribeFinal(
+    onExecution: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.tasks.execution,
       finalIpcContracts.tasks.subscribeExecution,
       finalIpcContracts.tasks.unsubscribeExecution,
       listener,
+      onFailure,
     ),
   },
   settings: {
@@ -217,29 +274,33 @@ const api: FinalTaskHubApi = {
       finalIpcContracts.proposals.retryExecution,
       { retry_of_execution_id: retryOfExecutionId },
     ),
-    onAiStatus: (listener) => subscribeFinal(
+    onAiStatus: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.proposals.aiStatus,
       finalIpcContracts.proposals.subscribeAiStatus,
       finalIpcContracts.proposals.unsubscribeAiStatus,
       listener,
+      onFailure,
     ),
-    onAiDelta: (listener) => subscribeFinal(
+    onAiDelta: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.proposals.aiDelta,
       finalIpcContracts.proposals.subscribeAiDelta,
       finalIpcContracts.proposals.unsubscribeAiDelta,
       listener,
+      onFailure,
     ),
-    onExternalState: (listener) => subscribeFinal(
+    onExternalState: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.proposals.externalState,
       finalIpcContracts.proposals.subscribeExternalState,
       finalIpcContracts.proposals.unsubscribeExternalState,
       listener,
+      onFailure,
     ),
-    onExecution: (listener) => subscribeFinal(
+    onExecution: (listener, onFailure) => subscribeFinal(
       finalIpcContracts.proposals.execution,
       finalIpcContracts.proposals.subscribeExecution,
       finalIpcContracts.proposals.unsubscribeExecution,
       listener,
+      onFailure,
     ),
   },
   obsidianIntegration: {

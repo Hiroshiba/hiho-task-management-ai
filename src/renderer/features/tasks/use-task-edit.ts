@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import type { IpcSubscriptionFailure } from "../../../shared/ipc-contracts/common";
 import { tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tasks";
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { useDiagnosticsApi } from "../../shared/api/feature-apis";
@@ -66,6 +67,8 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   let executionSequence = 0;
   let removeExecutionSubscription: (() => void) | undefined;
   let disposed = false;
+  let executionEventGeneration = 0;
+  let pendingFailure: { readonly id: string; readonly generation: number } | undefined;
 
   const selectedEditState = computed(() => {
     const gid = read.selectedTaskGid.value;
@@ -99,20 +102,33 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   onMounted(() => {
     try {
       removeExecutionSubscription = api.onExecution((value) => {
-        void receiveExecution(value, false).catch(async (error: unknown) => {
-          await reportRendererError(diagnostics, error, "error");
-          read.setTaskFeedback("failure", "実行状態を確認できませんでした。");
-        });
-      });
+        executionEventGeneration += 1;
+        pendingFailure = undefined;
+        return receiveExecution(value, false);
+      }, handleSubscriptionFailure);
     } catch (error) {
-      void reportRendererError(diagnostics, error, "error");
-      read.setTaskFeedback("failure", "実行状態を購読できませんでした。");
+      void reportRendererError(diagnostics, error, "error").then((errorId) => {
+        if (disposed) return;
+        read.setTaskFeedback("failure", `実行状態を購読できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
+      });
     }
   });
   onUnmounted(() => {
     disposed = true;
     removeExecutionSubscription?.();
   });
+
+  function handleSubscriptionFailure(failure: IpcSubscriptionFailure): void {
+    if (disposed) return;
+    if (failure.kind === "started") {
+      executionEventGeneration += 1;
+      pendingFailure = { id: failure.failure_id, generation: executionEventGeneration };
+      return;
+    }
+    if (pendingFailure?.id !== failure.failure_id || pendingFailure.generation !== executionEventGeneration) return;
+    pendingFailure = undefined;
+    options.onToast("warning", `実行状態を確認できませんでした。${failure.kind === "reported" ? ` エラーID ${failure.error_id}` : ""}`);
+  }
 
   function setMarker(taskGid: string, update: Omit<Extract<TaskEditMarker, { readonly kind: "saved" }>, "generation"> | { readonly kind: "conflict" } | { readonly kind: "missing" }): void {
     markerGeneration += 1;

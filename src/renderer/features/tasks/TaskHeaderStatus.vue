@@ -12,7 +12,7 @@ function syncLabel(state: TaskSyncState): string {
     case "synced": return "同期済み";
     case "authentication_required": return "Asana認証が必要";
     case "recovery_pending": return "復旧待ち";
-    case "error": return syncErrorLabel(state.error_code);
+    case "error": return state.error_id == null ? syncErrorLabel(state.error_code) : "同期状態を確認できません";
   }
 }
 
@@ -78,7 +78,9 @@ function networkClass(state: TaskConnectionState): string {
     :class="syncClass(connectionState.sync)"
     aria-live="polite"
     aria-atomic="true"
-  >同期: {{ syncLabel(connectionState.sync) }}</span>
+  >同期: {{ syncLabel(connectionState.sync) }}<template
+    v-if="connectionState.sync.kind === 'error' && connectionState.sync.error_id != null"
+  > エラーID {{ connectionState.sync.error_id }}</template></span>
   <span
     v-if="connectionState.kind === 'offline'"
     class="max-w-full whitespace-normal break-words rounded-full px-3 py-1"

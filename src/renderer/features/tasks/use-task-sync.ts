@@ -1,5 +1,6 @@
 import { computed, onUnmounted, ref, type Ref } from "vue";
 import { z } from "zod";
+import type { IpcSubscriptionFailure } from "../../../shared/ipc-contracts/common";
 import { syncResultSchema, syncStateSchema, tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tasks";
 import { useDiagnosticsApi } from "../../shared/api/feature-apis";
 import { reportRendererError } from "../../shared/logging/report-renderer-error";
@@ -14,7 +15,7 @@ const displaySyncStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("error"), error_code: z.enum([
     "payment_required", "rate_limited", "http_error", "transport_error", "response_error",
     "request_aborted", "sync_in_progress", "unexpected_error",
-  ]) }).strict(),
+  ]), error_id: z.uuid().optional() }).strict(),
 ]);
 const connectionStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("checking"), sync: displaySyncStateSchema }).strict(),
@@ -64,26 +65,44 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   });
   let removeSyncSubscription: (() => void) | undefined;
   let normalizationDisplayedAt: string | undefined;
+  let syncStateGeneration = 0;
+  let pendingFailureId: string | undefined;
+  let subscriptionFailed = false;
+  let disposed = false;
 
   onUnmounted(() => {
+    disposed = true;
     removeSyncSubscription?.();
   });
 
   function subscribeSyncState(): void {
     try {
       removeSyncSubscription = api.onSyncState((value) => {
-        try {
-          handleSyncState(value);
-        } catch (error) {
-          void reportRendererError(diagnostics, error, "error");
-          options.onFeedback("failure", "同期状態を確認できませんでした。");
-        }
-      });
+        handleSyncState(value);
+      }, handleSubscriptionFailure);
     } catch (error) {
-      void reportRendererError(diagnostics, error, "error");
+      subscriptionFailed = true;
+      syncStateGeneration += 1;
       setSyncState({ kind: "error", error_code: "unexpected_error" });
-      options.onFeedback("failure", "同期状態を購読できませんでした。");
+      void reportRendererError(diagnostics, error, "error").then((errorId) => {
+        if (!disposed) setSyncState({ kind: "error", error_code: "unexpected_error",
+          ...(errorId == null ? {} : { error_id: errorId }) });
+      });
     }
+  }
+
+  function handleSubscriptionFailure(failure: IpcSubscriptionFailure): void {
+    if (disposed) return;
+    if (failure.kind === "started") {
+      syncStateGeneration += 1;
+      pendingFailureId = failure.failure_id;
+      setSyncState({ kind: "error", error_code: "unexpected_error" });
+      return;
+    }
+    if (pendingFailureId !== failure.failure_id) return;
+    pendingFailureId = undefined;
+    setSyncState({ kind: "error", error_code: "unexpected_error",
+      ...(failure.kind === "reported" ? { error_id: failure.error_id } : {}) });
   }
 
   function setConnectionState(kind: TaskConnectionState["kind"], sync: TaskSyncState): void {
@@ -165,13 +184,16 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   }
 
   function handleSyncState(value: SyncStateEvent): void {
-    if (value.last_successful_sync_at != null && options.configured.value) {
-      void read.reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
+    const state = syncStateSchema.parse(value);
+    syncStateGeneration += 1;
+    pendingFailureId = undefined;
+    if (state.last_successful_sync_at != null && options.configured.value) {
+      void read.reloadTaskDataAfterSuccessfulSync(state.last_successful_sync_at);
     }
-    applySyncStateDisplay(value);
-    if (value.kind === "online" && value.normalization_notifications != null && value.normalization_notifications.length > 0) {
-      if (value.last_successful_sync_at == null) throw new Error("状態整合化通知に同期日時がありません。");
-      showNormalizationNotificationToast(value.last_successful_sync_at, value.normalization_notifications);
+    applySyncStateDisplay(state);
+    if (state.kind === "online" && state.normalization_notifications != null && state.normalization_notifications.length > 0) {
+      if (state.last_successful_sync_at == null) throw new Error("状態整合化通知に同期日時がありません。");
+      showNormalizationNotificationToast(state.last_successful_sync_at, state.normalization_notifications);
     }
   }
 
@@ -205,7 +227,10 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   }
 
   async function loadInitialSyncState(): Promise<void> {
+    if (subscriptionFailed) return;
+    const generation = syncStateGeneration;
     const result = tasksContracts.getSyncState.response.parse(await api.getSyncState());
+    if (disposed || subscriptionFailed || generation !== syncStateGeneration) return;
     if (result.kind === "error") {
       options.onFeedback("failure", failureMessage(result));
       return;

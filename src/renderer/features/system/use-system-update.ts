@@ -1,4 +1,5 @@
 import { onBeforeUnmount, onMounted, shallowRef, type ShallowRef } from "vue";
+import type { IpcSubscriptionFailure } from "../../../shared/ipc-contracts/common";
 import {
   systemContracts,
   systemUpdateStateSchema,
@@ -14,6 +15,8 @@ export function useSystemUpdate(): Readonly<ShallowRef<SystemUpdateState>> {
   const state = shallowRef<SystemUpdateState>(systemUpdateStateSchema.parse({ kind: "idle" }));
   let removeSubscription: (() => void) | undefined;
   let mounted = false;
+  let eventGeneration = 0;
+  let pendingFailureId: string | undefined;
 
   onMounted(() => {
     mounted = true;
@@ -25,24 +28,15 @@ export function useSystemUpdate(): Readonly<ShallowRef<SystemUpdateState>> {
   });
 
   async function initialize(): Promise<void> {
-    let eventReceived = false;
+    const initialGeneration = eventGeneration;
     try {
       removeSubscription = system.onUpdateState((value) => {
-        try {
-          state.value = systemUpdateStateSchema.parse(value);
-          eventReceived = true;
-        } catch (error) {
-          state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check" });
-          eventReceived = true;
-          void reportRendererError(diagnostics, error, "error").then((errorId) => {
-            if (mounted && errorId != null) {
-              state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check", error_id: errorId });
-            }
-          });
-        }
-      });
+        state.value = systemUpdateStateSchema.parse(value);
+        eventGeneration += 1;
+        pendingFailureId = undefined;
+      }, handleSubscriptionFailure);
       const result = systemContracts.getUpdateState.response.parse(await system.getUpdateState());
-      if (!mounted || eventReceived) {
+      if (!mounted || initialGeneration !== eventGeneration) {
         return;
       }
       state.value = result.kind === "error"
@@ -50,10 +44,27 @@ export function useSystemUpdate(): Readonly<ShallowRef<SystemUpdateState>> {
         : result.value;
     } catch (error) {
       const errorId = await reportRendererError(diagnostics, error, "error");
-      if (mounted && !eventReceived) {
+      if (mounted && initialGeneration === eventGeneration) {
         state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check", ...(errorId == null ? {} : { error_id: errorId }) });
       }
     }
+  }
+
+  function handleSubscriptionFailure(failure: IpcSubscriptionFailure): void {
+    if (!mounted) return;
+    if (failure.kind === "started") {
+      eventGeneration += 1;
+      pendingFailureId = failure.failure_id;
+      state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check" });
+      return;
+    }
+    if (pendingFailureId !== failure.failure_id) return;
+    pendingFailureId = undefined;
+    state.value = systemUpdateStateSchema.parse({
+      kind: "failed",
+      phase: "check",
+      ...(failure.kind === "reported" ? { error_id: failure.error_id } : {}),
+    });
   }
 
   return state;
