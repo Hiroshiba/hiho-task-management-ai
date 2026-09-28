@@ -1,15 +1,20 @@
 import { computed, onBeforeUnmount, onUnmounted, ref } from "vue";
+import { ipcFailureSchema } from "../../../shared/ipc-contracts/common";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { proposalViewSchema } from "../../../shared/ipc-contracts/proposal-values";
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
-import { useProposalsApi } from "../../shared/api/feature-apis";
+import { useDiagnosticsApi, useProposalsApi } from "../../shared/api/feature-apis";
+import { reportRendererError } from "../../shared/logging/report-renderer-error";
 import { proposalFromState, withProposal, type AiDelta, type AiProposalSession, type AiStatus, type ExternalState, type IpcFailure } from "./proposal-state";
 import { useProposalHistory } from "./use-proposal-history";
+
+type SubscriptionFailureKind = "ai_status" | "ai_delta" | "execution" | "external_state";
 
 /** AI変更案と外部提案の表示状態、要求、購読を所有します。 */
 export function useProposals() {
   const api = useProposalsApi();
+  const diagnostics = useDiagnosticsApi();
   const history = useProposalHistory(api);
   const aiStatus = ref<AiStatus>();
   const aiStatusFailure = ref<IpcFailure>();
@@ -19,6 +24,7 @@ export function useProposals() {
   const executions = ref<Readonly<Record<string, ExecutionDto>>>({});
   const executionListFailure = ref<IpcFailure>();
   const executionFailures = ref<Readonly<Record<string, IpcFailure>>>({});
+  const subscriptionFailure = ref<{ readonly kind: "ai_delta" | "execution"; readonly failure: IpcFailure }>();
   const executionListBusy = ref(false);
   const executionRequestIds = ref<readonly string[]>([]);
   const retryingExecutionIds = ref<readonly string[]>([]);
@@ -33,8 +39,10 @@ export function useProposals() {
   let disposed = false;
   let lifecycleGeneration = 0;
   let aiStatusGeneration = 0;
+  let aiDeltaGeneration = 0;
   let externalStateGeneration = 0;
   let executionGeneration = 0;
+  let executionEventGeneration = 0;
   const receivedExecutionGenerations = new Map<string, number>();
 
   onBeforeUnmount(() => {
@@ -42,11 +50,61 @@ export function useProposals() {
     lifecycleGeneration += 1;
   });
   onUnmounted(() => {
-    removeAiStatus?.();
-    removeAiDelta?.();
-    removeExternalState?.();
-    removeExecution?.();
+    removeSubscriptions();
   });
+
+  function removeSubscriptions(): void {
+    const removeStatus = removeAiStatus;
+    removeAiStatus = undefined;
+    removeStatus?.();
+    const removeDelta = removeAiDelta;
+    removeAiDelta = undefined;
+    removeDelta?.();
+    const removeExternal = removeExternalState;
+    removeExternalState = undefined;
+    removeExternal?.();
+    const removeExecutionSubscription = removeExecution;
+    removeExecution = undefined;
+    removeExecutionSubscription?.();
+  }
+
+  function reportSubscriptionFailure(kind: SubscriptionFailureKind, error: unknown, generation: number): void {
+    void reportRendererError(diagnostics, error, "error").then((errorId) => {
+      if (disposed) return;
+      const message = {
+        ai_status: "AIの状態を確認できませんでした。",
+        ai_delta: "AIの応答を確認できませんでした。",
+        execution: "実行状態を確認できませんでした。",
+        external_state: "外部提案の状態を確認できませんでした。",
+      }[kind];
+      const failure = ipcFailureSchema.parse({
+        kind: "error",
+        code: "operation_failed",
+        message,
+        ...(errorId == null ? {} : { error_id: errorId }),
+      });
+      switch (kind) {
+        case "ai_status":
+          if (generation !== aiStatusGeneration) return;
+          aiStatus.value = undefined;
+          aiStatusFailure.value = failure;
+          return;
+        case "ai_delta":
+          if (generation !== aiDeltaGeneration) return;
+          subscriptionFailure.value = { kind, failure };
+          return;
+        case "execution":
+          if (generation !== executionEventGeneration) return;
+          subscriptionFailure.value = { kind, failure };
+          return;
+        case "external_state":
+          if (generation !== externalStateGeneration) return;
+          externalState.value = undefined;
+          externalStateFailure.value = failure;
+          return;
+      }
+    });
+  }
 
   function sessionFor(sessionId: string): AiProposalSession | undefined {
     return sessions.value.find((session) => session.session_id === sessionId);
@@ -182,17 +240,17 @@ export function useProposals() {
     }
   }
 
-  function handleDelta(value: AiDelta): void {
-    if (disposed) return;
+  function handleDelta(value: AiDelta): boolean {
+    if (disposed) return false;
     const delta = proposalsContracts.aiDelta.event.shape.value.parse(value);
     const session = sessionFor(delta.session_id);
-    if (session == null) return;
+    if (session == null) return false;
     if (session.state.kind === "turning" && session.activity === "turn") {
       replaceSession(delta.session_id, (current) => {
         if (current.state.kind !== "turning") return current;
         return { ...current, state: { ...current.state, buffered_deltas: [...current.state.buffered_deltas, delta] } };
       });
-      return;
+      return true;
     }
     if ((session.state.kind === "proposal" || session.state.kind === "questions")
       && session.state.turn_id === delta.turn_id) {
@@ -200,28 +258,64 @@ export function useProposals() {
         if (current.state.kind !== "proposal" && current.state.kind !== "questions") return current;
         return { ...current, state: { ...current.state, text: current.state.text + delta.delta } };
       });
+      return true;
     }
+    return false;
   }
 
   async function initialize(): Promise<void> {
     if (initialized) throw new Error("変更案の購読は開始済みです。");
     initialized = true;
-    removeAiStatus = api.onAiStatus((value) => {
-      if (disposed) return;
-      aiStatusGeneration += 1;
-      aiStatus.value = proposalsContracts.aiStatus.event.shape.value.parse(value);
-      aiStatusFailure.value = undefined;
-    });
-    removeAiDelta = api.onAiDelta(handleDelta);
-    removeExecution = api.onExecution((value) => receiveExecution(value));
-    removeExternalState = api.onExternalState((value) => {
-      if (disposed) return;
-      externalStateGeneration += 1;
-      applyExternalState(value);
-    });
-    const generation = lifecycleGeneration;
     const statusGeneration = aiStatusGeneration;
     const externalGeneration = externalStateGeneration;
+    try {
+      removeAiStatus = api.onAiStatus((value) => {
+        if (disposed) return;
+        aiStatusGeneration += 1;
+        try {
+          aiStatus.value = proposalsContracts.aiStatus.event.shape.value.parse(value);
+          aiStatusFailure.value = undefined;
+        } catch (error) {
+          reportSubscriptionFailure("ai_status", error, aiStatusGeneration);
+        }
+      });
+      removeAiDelta = api.onAiDelta((value) => {
+        if (disposed) return;
+        try {
+          if (handleDelta(value)) {
+            aiDeltaGeneration += 1;
+            if (subscriptionFailure.value?.kind === "ai_delta") subscriptionFailure.value = undefined;
+          }
+        } catch (error) {
+          aiDeltaGeneration += 1;
+          reportSubscriptionFailure("ai_delta", error, aiDeltaGeneration);
+        }
+      });
+      removeExecution = api.onExecution((value) => {
+        if (disposed) return;
+        executionEventGeneration += 1;
+        try {
+          receiveExecution(value);
+          if (subscriptionFailure.value?.kind === "execution") subscriptionFailure.value = undefined;
+        } catch (error) {
+          reportSubscriptionFailure("execution", error, executionEventGeneration);
+        }
+      });
+      removeExternalState = api.onExternalState((value) => {
+        if (disposed) return;
+        externalStateGeneration += 1;
+        try {
+          applyExternalState(value);
+        } catch (error) {
+          reportSubscriptionFailure("external_state", error, externalStateGeneration);
+        }
+      });
+    } catch (error) {
+      disposed = true;
+      removeSubscriptions();
+      throw error;
+    }
+    const generation = lifecycleGeneration;
     const [statusResult, externalResult] = await Promise.all([
       api.getAiStatus(),
       api.getExternalState(),
@@ -231,11 +325,15 @@ export function useProposals() {
     if (disposed || generation !== lifecycleGeneration) return;
     const status = proposalsContracts.getAiStatus.response.parse(statusResult);
     if (statusGeneration === aiStatusGeneration) {
-      if (status.kind === "ok") aiStatus.value = status.value;
-      else aiStatusFailure.value = status;
+      aiStatusGeneration += 1;
+      if (status.kind === "ok") {
+        aiStatus.value = status.value;
+        aiStatusFailure.value = undefined;
+      } else aiStatusFailure.value = status;
     }
     const external = proposalsContracts.getExternalState.response.parse(externalResult);
     if (externalGeneration === externalStateGeneration) {
+      externalStateGeneration += 1;
       if (external.kind === "ok") applyExternalState(external.value);
       else externalStateFailure.value = external;
     }
@@ -257,6 +355,7 @@ export function useProposals() {
     const generation = aiStatusGeneration;
     const result = proposalsContracts.getAiStatus.response.parse(await api.getAiStatus());
     if (!disposed && generation === aiStatusGeneration) {
+      aiStatusGeneration += 1;
       if (result.kind === "ok") {
         aiStatus.value = result.value;
         aiStatusFailure.value = undefined;
@@ -467,6 +566,7 @@ export function useProposals() {
     executions,
     executionListFailure,
     executionFailures,
+    subscriptionFailure,
     executionListBusy,
     executionRequestIds,
     retryingExecutionIds,

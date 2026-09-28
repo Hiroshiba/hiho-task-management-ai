@@ -107,6 +107,13 @@ export function useProposalWorkspace(options: Options) {
 
   onBeforeUnmount(() => { disposed = true; });
 
+  watch(() => proposals.aiStatusFailure.value, (failure) => {
+    if (!disposed && failure != null) options.onToast("warning", withErrorId(failure.message, failure.error_id));
+  }, { flush: "sync" });
+  watch(() => proposals.subscriptionFailure.value, (event) => {
+    if (!disposed && event != null) options.onToast("warning", withErrorId(event.failure.message, event.failure.error_id));
+  }, { flush: "sync" });
+
   const codexState = computed<ProposalCodexState>(() => {
     const status = proposals.aiStatus.value;
     if (status == null) {
@@ -122,7 +129,8 @@ export function useProposalWorkspace(options: Options) {
   });
   const externalState = computed<ExternalProposalViewState>(() => {
     if (proposals.externalState.value != null) return { kind: "ready", value: proposals.externalState.value };
-    if (proposals.externalStateFailure.value != null) return { kind: "error", message: proposals.externalStateFailure.value.message };
+    if (proposals.externalStateFailure.value != null) return { kind: "error", message: withErrorId(
+      proposals.externalStateFailure.value.message, proposals.externalStateFailure.value.error_id) };
     return { kind: "loading" };
   });
   const externalReviewRequestId = computed(() => externalState.value.kind === "ready"
