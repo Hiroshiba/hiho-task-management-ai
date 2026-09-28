@@ -184,9 +184,6 @@ export function useProposals() {
     if (disposed) return;
     const execution = proposalsContracts.execution.event.shape.value.parse(value);
     if (requestGeneration != null && (receivedExecutionGenerations.get(execution.execution_id) ?? 0) > requestGeneration) return;
-    executionEventGeneration += 1;
-    pendingSubscriptionFailures.delete("execution");
-    if (subscriptionFailure.value?.kind === "execution") subscriptionFailure.value = undefined;
     executionGeneration += 1;
     receivedExecutionGenerations.set(execution.execution_id, executionGeneration);
     executions.value = { ...executions.value, [execution.execution_id]: execution };
@@ -316,6 +313,9 @@ export function useProposals() {
       removeExecution = api.onExecution((value) => {
         if (disposed) return;
         receiveExecution(value);
+        executionEventGeneration += 1;
+        pendingSubscriptionFailures.delete("execution");
+        if (subscriptionFailure.value?.kind === "execution") subscriptionFailure.value = undefined;
       }, (failure) => handleSubscriptionFailure("execution", failure));
       removeExternalState = api.onExternalState((value) => {
         if (disposed) return;
