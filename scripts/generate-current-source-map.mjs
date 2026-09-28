@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   analyzeSource,
-  enumStrings,
   listSourceFiles,
+  objectStringValues,
   ownerForPath,
   proposalOperationKinds,
   readSource,
@@ -45,7 +45,7 @@ const functions = [
   ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
   ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
   ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/infrastructure/persistence/settings-repository.ts, src/main/auth/secret-storage/"],
-  ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc/, src/main/ipc/, src/preload/"],
+  ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc-contracts/, src/main/ipc/, src/preload/"],
   ["タスク画面", "renderer/features/tasks", "src/renderer/src/Task*.vue"],
   ["変更案画面", "renderer/features/proposals", "src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue"],
   ["設定画面", "renderer/features/settings", "src/renderer/src/SettingsDialog.vue, src/renderer/src/SetupWizard.vue"],
@@ -222,16 +222,19 @@ function version(path, name) {
 }
 
 function ownerForChannel(channel) {
-  if (channel.startsWith("app-update:")) return "main/bootstrap";
-  if (channel.startsWith("app:")) return "main/bootstrap";
-  if (channel.startsWith("asana:") || channel.startsWith("setup:")) return "main/application/settings";
-  if (channel.startsWith("read-model:") || channel.startsWith("sync:")) return "main/application/task-read";
-  if (channel.startsWith("gui:")) return "main/application/gui-edit";
-  if (channel === "ai:approve") return "main/application/proposal-apply";
-  if (channel.startsWith("ai:")) return "main/application/proposal-generate";
-  if (channel === "external-agent:approve") return "main/application/proposal-apply";
-  if (channel.startsWith("external-agent:")) return "main/application/proposal-generate";
-  if (channel.startsWith("obsidian:")) return "main/application/obsidian-integration";
+  if (channel.startsWith("system:")) return "main/bootstrap";
+  if (channel.startsWith("settings:")) return "main/application/settings";
+  if (channel.startsWith("tasks:")) {
+    return channel.includes("edit") || channel.includes("execution")
+      ? "main/application/gui-edit" : "main/application/task-read";
+  }
+  if (channel.startsWith("proposals:")) {
+    return channel.includes("approve") || channel.includes("history") || channel.includes("execution")
+      ? "main/application/proposal-apply" : "main/application/proposal-generate";
+  }
+  if (channel.startsWith("obsidian-integration:")) return "main/application/obsidian-integration";
+  if (channel.startsWith("github-integration:")) return "main/application/github-integration";
+  if (channel.startsWith("diagnostics:")) return "main/infrastructure/logging";
   throw new Error(`IPC channelのowner候補がありません: ${channel}`);
 }
 
@@ -252,7 +255,18 @@ function render(revision) {
     .map((symbol) => [path, symbol, stateOwner(path, symbol, owner)]));
   const instanceState = source.flatMap(({ path, owner, analysis }) => analysis.instanceState
     .map((symbol) => [path, symbol, instanceStateOwner(path, symbol, owner)]));
-  const channels = enumStrings("src/shared/ipc/schemas.ts", "ipcChannelSchema");
+  const channels = [
+    ["src/shared/ipc-contracts/system.ts", "systemChannels"],
+    ["src/shared/ipc-contracts/tasks.ts", "tasksChannels"],
+    ["src/shared/ipc-contracts/settings.ts", "settingsChannels"],
+    ["src/shared/ipc-contracts/proposals-channels.ts", "proposalsChannels"],
+    ["src/shared/ipc-contracts/obsidian-integration.ts", "obsidianIntegrationChannels"],
+    ["src/shared/ipc-contracts/github-integration.ts", "githubIntegrationChannels"],
+    ["src/shared/ipc-contracts/diagnostics.ts", "diagnosticsChannels"],
+  ].flatMap(([path, name]) => objectStringValues(path, name));
+  if (channels.length !== new Set(channels).size) {
+    throw new Error("IPC channelが重複しています。");
+  }
   const operations = proposalOperationKinds();
   if (operations.length !== 17) {
     throw new Error(`変更案の操作は17種類のはずです: ${operations.length}`);
@@ -305,7 +319,7 @@ function render(revision) {
     table(["instance source", "class member", "最終owner候補"], instanceState),
     "## IPC channel",
     "",
-    "channel文字列の正本は`src/shared/ipc/schemas.ts`の`ipcChannelSchema`です。配送ownerは全件`main/ipc`と`preload`、契約ownerは`shared/ipc-contracts`です。",
+    "channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義です。配送ownerは全件`main/ipc`と`preload`、契約ownerは`shared/ipc-contracts`です。",
     "",
     table(["channel", "機能owner候補"], channels.map((channel) => [channel, ownerForChannel(channel)])),
     "## 変更案の操作",

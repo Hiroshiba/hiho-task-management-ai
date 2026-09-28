@@ -1440,11 +1440,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/shared/setup/index.ts"
     },
     {
@@ -3573,56 +3568,6 @@
       "symbol": "src/shared/external-agent/schemas.ts"
     },
     {
-      "path": "src/shared/ipc/index.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/schemas.ts"
-    },
-    {
-      "path": "src/shared/ipc/index.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/setup/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/shared/ipc/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/ipc/schemas.ts"
-    },
-    {
       "path": "src/shared/setup/index.ts",
       "rule": "old-import",
       "symbol": "src/shared/setup/schemas.ts"
@@ -3706,36 +3651,6 @@
       "path": "src/shared/taskctl/schemas.ts",
       "rule": "old-path",
       "symbol": "src/shared/taskctl/schemas.ts"
-    },
-    {
-      "path": "src/shared/view-model/index.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/schemas.ts"
-    },
-    {
-      "path": "src/shared/view-model/index.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/schemas.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/schemas.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/view-model/schemas.ts"
     }
   ]
 }

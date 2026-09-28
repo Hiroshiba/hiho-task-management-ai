@@ -57,7 +57,6 @@ const ownerRules = [
   [/^src\/shared\/domain\//, "main/domain"],
   [/^src\/shared\/ai\/(index|proposal)\.ts$/, "main/domain"],
   [/^src\/shared\/storage\/schemas\.ts$/, "main/infrastructure/persistence"],
-  [/^src\/shared\/view-model\/task-filter\.ts$/, "renderer/features/tasks"],
   [/^src\/shared\//, "shared/ipc-contracts"],
 ];
 
@@ -314,34 +313,26 @@ export function readSource(path) {
   return readFileSync(resolve(repositoryRoot, path), "utf8");
 }
 
-/** 名前付きのz.enum文字列をsourceから抽出します。 */
-export function enumStrings(path, variableName) {
+/** 名前付きobjectの文字列値をsourceから抽出します。 */
+export function objectStringValues(path, variableName) {
   const sourceFile = ts.createSourceFile(path, readSource(path), ts.ScriptTarget.Latest, true);
   for (const statement of sourceFile.statements) {
-    if (!ts.isVariableStatement(statement)) {
-      continue;
-    }
+    if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== variableName) {
-        continue;
-      }
+      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== variableName) continue;
       const initializer = declaration.initializer;
-      if (initializer == null || !ts.isCallExpression(initializer)) {
-        break;
-      }
-      const [argument] = initializer.arguments;
-      if (argument == null || !ts.isArrayLiteralExpression(argument)) {
-        break;
-      }
-      return argument.elements.map((element) => {
-        if (!ts.isStringLiteral(element)) {
-          throw new Error(`文字列以外のenum要素があります: ${path}: ${variableName}`);
+      const object = initializer != null && ts.isSatisfiesExpression(initializer)
+        ? initializer.expression : initializer;
+      if (object == null || !ts.isObjectLiteralExpression(object)) break;
+      return object.properties.map((property) => {
+        if (!ts.isPropertyAssignment(property) || !ts.isStringLiteral(property.initializer)) {
+          throw new Error(`文字列以外のobject要素があります: ${path}: ${variableName}`);
         }
-        return element.text;
+        return property.initializer.text;
       });
     }
   }
-  throw new Error(`enumを抽出できません: ${path}: ${variableName}`);
+  throw new Error(`objectを抽出できません: ${path}: ${variableName}`);
 }
 
 /** 変更案schemaの操作識別子を抽出します。 */

@@ -163,7 +163,10 @@ import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import type { ProposalsHandlerWorkflows } from "../ipc/handlers/proposals";
 import { buildDisplayOrderInput } from "./task-write";
 import { applyGuiTaskWriteExecution, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
-import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
+import { proposalsContracts } from "../../shared/ipc-contracts/proposals";
+import { settingsContracts } from "../../shared/ipc-contracts/settings";
+import { detailSchema, overviewSchema } from "../../shared/ipc-contracts/task-view";
+import { applyEditRequestSchema, tasksContracts } from "../../shared/ipc-contracts/tasks";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
 import {
@@ -263,30 +266,6 @@ import {
   setupStateSchema,
 } from "../../shared/setup";
 import {
-  ipcAiDeltaEventSchema,
-  ipcAiStatusEventSchema,
-  ipcAsanaAuthenticationStateSchema,
-  ipcAsanaCompleteReauthenticationInputSchema,
-  ipcAsanaCancelReauthenticationInputSchema,
-  ipcReadModelOverviewResponseSchema,
-  ipcReadModelTaskDetailResponseSchema,
-  ipcSyncInputSchema,
-  ipcProposalHistoryStatusSchema,
-  ipcProposalHistoryConfirmInputSchema,
-  type IpcProposalHistoryStatus,
-  type IpcProposalHistorySynchronization,
-  type IpcAiStatus,
-  type IpcCodexDelta,
-  type IpcGuiEditResult,
-  type IpcAiTurnInput,
-  type IpcAiTurnResult,
-  type IpcAiApprovalInput,
-  type IpcAiApprovalResult,
-  type IpcAsanaAuthenticationState,
-  type IpcAsanaReauthenticationCancelInput,
-  type IpcAsanaReauthenticationCompleteInput,
-} from "../../shared/ipc";
-import {
   deviceSettingsSchema,
   externalToolCredentialReferenceNamesSchema,
   projectMetadataCacheSchema,
@@ -318,6 +297,33 @@ import {
 } from "../infrastructure/persistence";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
 
+type AiStatus = z.output<typeof proposalsContracts.aiStatus.event.shape.value>;
+type AiDelta = z.output<typeof proposalsContracts.aiDelta.event.shape.value>;
+type AiTurnInput = z.output<typeof proposalsContracts.startTurn.request>;
+type AiTurnResult = z.output<typeof aiWorkflowTurnResultSchema>;
+type AiApprovalInput = z.output<typeof proposalsContracts.approve.request>;
+type AiApprovalResult = z.output<typeof aiWorkflowApprovalResultSchema>;
+type AsanaReauthenticationCompleteInput = z.output<typeof settingsContracts.completeAsanaReauthentication.request>;
+type AsanaReauthenticationCancelInput = z.output<typeof settingsContracts.cancelAsanaReauthentication.request>;
+type AsanaAuthenticationState = Extract<
+  z.output<typeof settingsContracts.getAsanaAuthenticationState.response>,
+  { kind: "ok" }
+>["value"];
+type ProposalHistoryStatus = Extract<
+  z.output<typeof proposalsContracts.getHistoryStatus.response>,
+  { kind: "ok" }
+>["value"];
+type ProposalHistorySynchronization = Extract<
+  z.output<typeof proposalsContracts.synchronizeHistory.response>,
+  { kind: "ok" }
+>["value"];
+type GuiRejectedResult = {
+  readonly operation_id: string;
+  readonly task_gid: string;
+  readonly outcome: "rejected";
+  readonly reason_code: "offline" | "baseline_changed" | "task_missing" | "synchronization_failed" | "context_changed";
+};
+
 type OperationalContext = {
   readonly device_id: string;
   readonly client_id: string;
@@ -339,7 +345,7 @@ type GuiEditRelationGraphValidationRequest = Parameters<GuiEditDependencies["val
 type GuiEditRelationGraphValidationResult = Awaited<ReturnType<GuiEditDependencies["validateRelation"]>>;
 type GuiEditWorkflowResult = GuiEditStartResult | {
   readonly kind: "not_started";
-  readonly result: Extract<IpcGuiEditResult, { readonly outcome: "rejected" }>;
+  readonly result: GuiRejectedResult;
 };
 
 type AiSessionBaselineStore = RuntimeAiSessionBaselineStore<BaselineExternalData, TaskctlSnapshot>;
@@ -913,9 +919,9 @@ type ApplicationFileStores = {
 
 type ReauthenticationCompositionOptions = ConstructorParameters<typeof AsanaReauthenticationRuntime<
   DeviceSettings,
-  IpcAsanaReauthenticationCompleteInput,
-  IpcAsanaReauthenticationCancelInput,
-  IpcAsanaAuthenticationState,
+  AsanaReauthenticationCompleteInput,
+  AsanaReauthenticationCancelInput,
+  AsanaAuthenticationState,
   AsanaSyncCoordinatorResult
 >>[0];
 
@@ -969,8 +975,8 @@ type SynchronizationCompositionDependencies = SynchronizationCompositionPort<
 >;
 
 type TaskReadCompositionDependencies = TaskReadCompositionPort<
-  Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
-  Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
+  z.output<typeof overviewSchema>,
+  z.output<typeof detailSchema>,
   AsanaSyncRuntimeInternalResult,
   AsanaSyncCoordinatorResult,
   AsanaSyncRuntimeState,
@@ -1031,9 +1037,9 @@ export class TaskHubApplication {
   >;
   private attachedAsanaReauthentication: AsanaReauthenticationRuntime<
     DeviceSettings,
-    IpcAsanaReauthenticationCompleteInput,
-    IpcAsanaReauthenticationCancelInput,
-    IpcAsanaAuthenticationState,
+    AsanaReauthenticationCompleteInput,
+    AsanaReauthenticationCancelInput,
+    AsanaAuthenticationState,
     AsanaSyncCoordinatorResult
   > | undefined;
   private readonly operationalContext: OperationalContextRuntime<
@@ -1060,18 +1066,18 @@ export class TaskHubApplication {
   >;
   private readonly aiInteraction: AiInteractionRuntime<
     AiSessionRecord,
-    IpcAiTurnInput,
+    AiTurnInput,
     z.infer<typeof aiWorkflowTurnRequestSchema>,
-    IpcAiTurnResult,
-    IpcAiApprovalInput,
+    AiTurnResult,
+    AiApprovalInput,
     z.infer<typeof aiWorkflowApprovalRequestSchema>,
-    IpcAiApprovalResult,
+    AiApprovalResult,
     OperationalContext
   >;
   private aiStartResult: CodexSessionStartResult | undefined;
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
-  private readonly aiEvents: AiEventRuntime<IpcAiStatus, IpcCodexDelta>;
+  private readonly aiEvents: AiEventRuntime<AiStatus, AiDelta>;
   private attachedSynchronizationOperations: SynchronizationRuntime | undefined;
   private taskWriteExecution: {
     readonly proposal: StoredProposalExecutionPort;
@@ -1299,7 +1305,7 @@ export class TaskHubApplication {
       createWorkflow: (session, collector, baselineStore, sessionId) =>
         this.createAiWorkflow(session, collector, baselineStore, sessionId),
       subscribeDelta: (workflow, sessionId) => workflow.onDelta((delta) => {
-        this.aiEvents.publishDelta(ipcAiDeltaEventSchema.parse({
+        this.aiEvents.publishDelta(proposalsContracts.aiDelta.event.shape.value.parse({
           session_id: sessionId,
           thread_id: delta.threadId,
           turn_id: delta.turnId,
@@ -1325,12 +1331,12 @@ export class TaskHubApplication {
     });
     this.aiInteraction = new AiInteractionRuntime<
       AiSessionRecord,
-      IpcAiTurnInput,
+      AiTurnInput,
       z.infer<typeof aiWorkflowTurnRequestSchema>,
-      IpcAiTurnResult,
-      IpcAiApprovalInput,
+      AiTurnResult,
+      AiApprovalInput,
       z.infer<typeof aiWorkflowApprovalRequestSchema>,
-      IpcAiApprovalResult,
+      AiApprovalResult,
       OperationalContext
     >({
       assertOperationalReady: () => this.assertOperationalReady(),
@@ -1697,20 +1703,8 @@ export class TaskHubApplication {
       repository: this.taskReadRepository,
       contracts: {
         ...this.taskReadPersistenceContracts,
-        parseOverview: (value: unknown) => {
-          const response = ipcReadModelOverviewResponseSchema.parse({ kind: "ok", value });
-          if (response.kind !== "ok") {
-            throw new UnreachableError("読取概要の応答形式が不正です。");
-          }
-          return response.value;
-        },
-        parseDetail: (value: unknown) => {
-          const response = ipcReadModelTaskDetailResponseSchema.parse({ kind: "ok", value });
-          if (response.kind !== "ok") {
-            throw new UnreachableError("読取詳細の応答形式が不正です。");
-          }
-          return response.value;
-        },
+        parseOverview: (value: unknown) => overviewSchema.parse(value),
+        parseDetail: (value: unknown) => detailSchema.parse(value),
         hashBaseline: (entry: TaskReadEntry) => hashGuiEditBaseline(
           asanaTaskResponseSchema.parse(entry.asana_response),
         ),
@@ -1757,7 +1751,7 @@ export class TaskHubApplication {
         () => createNowIso(this.options.now_provider),
         this.operationQueue,
       ),
-      parseSyncInput: (value) => ipcSyncInputSchema.parse(value),
+      parseSyncInput: (value) => tasksContracts.runSync.request.parse(value),
       parseSetupInput: (value) => setupFullSyncInputSchema.parse(value),
       validateAbortSignal,
       configureContextFromSetup: () => this.operationalContext.configureFromState(this.setup.getState()),
@@ -1803,9 +1797,9 @@ export class TaskHubApplication {
 
   private get asanaReauthentication(): AsanaReauthenticationRuntime<
     DeviceSettings,
-    IpcAsanaReauthenticationCompleteInput,
-    IpcAsanaReauthenticationCancelInput,
-    IpcAsanaAuthenticationState,
+    AsanaReauthenticationCompleteInput,
+    AsanaReauthenticationCancelInput,
+    AsanaAuthenticationState,
     AsanaSyncCoordinatorResult
   > {
     const reauthentication = this.attachedAsanaReauthentication;
@@ -1818,9 +1812,9 @@ export class TaskHubApplication {
     setup: SetupOrchestrator,
     reauthentication: AsanaReauthenticationRuntime<
       DeviceSettings,
-      IpcAsanaReauthenticationCompleteInput,
-      IpcAsanaReauthenticationCancelInput,
-      IpcAsanaAuthenticationState,
+      AsanaReauthenticationCompleteInput,
+      AsanaReauthenticationCancelInput,
+      AsanaAuthenticationState,
       AsanaSyncCoordinatorResult
     >,
   ): void {
@@ -1925,21 +1919,26 @@ export class TaskHubApplication {
       throwIfAborted,
       requireSettings: () => this.operationalContext.requireConfiguredSettings(),
       parseCompleteInput: (input: unknown) =>
-        ipcAsanaCompleteReauthenticationInputSchema.parse(input),
+        settingsContracts.completeAsanaReauthentication.request.parse(input),
       parseCancelInput: (input: unknown) =>
-        ipcAsanaCancelReauthenticationInputSchema.parse(input),
+        settingsContracts.cancelAsanaReauthentication.request.parse(input),
       readOAuthState: () => oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState()),
       beginOAuth: async (clientId: string, signal: AbortSignal) => oauthOutOfBandBeginResultSchema.parse(
         await this.oauth.beginOutOfBandReauthentication({ client_id: clientId }, signal),
       ),
-      completeOAuth: async (input: IpcAsanaReauthenticationCompleteInput, signal: AbortSignal) =>
+      completeOAuth: async (input: AsanaReauthenticationCompleteInput, signal: AbortSignal) =>
         asanaOAuthCoordinatorResultSchema.parse(
           await this.oauth.completeOutOfBandAuthorization(input, signal),
         ),
       cancelOAuth: (authorizationId: string) =>
         this.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId }),
-      parseAuthenticationState: (state: Parameters<typeof ipcAsanaAuthenticationStateSchema.parse>[0]) =>
-        ipcAsanaAuthenticationStateSchema.parse(state),
+      parseAuthenticationState: (state: unknown) => {
+        const response = settingsContracts.getAsanaAuthenticationState.response.parse({ kind: "ok", value: state });
+        if (response.kind !== "ok") {
+          throw new UnreachableError("Asana認証状態の応答形式が不正です。");
+        }
+        return response.value;
+      },
       createInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
       createAuthorizationIdMismatchError: () =>
         new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
@@ -2113,7 +2112,7 @@ export class TaskHubApplication {
       history: {
         getStatus: () => this.getProposalHistoryStatus(),
         confirm: (input) => {
-          const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
+          const checked = proposalsContracts.confirmHistory.request.parse(input);
           this.proposalApplicationHistoryRepository.confirm(
             checked.proposal_id,
             checked.operation_id,
@@ -2138,12 +2137,12 @@ export class TaskHubApplication {
   }
 
   /** AI状態の変化を購読します。 */
-  public onAiStatus(listener: (status: IpcAiStatus) => void): () => void {
+  public onAiStatus(listener: (status: AiStatus) => void): () => void {
     return this.aiEvents.onStatus(listener);
   }
 
   /** AI差分を購読します。 */
-  public onAiDelta(listener: (delta: IpcCodexDelta) => void): () => void {
+  public onAiDelta(listener: (delta: AiDelta) => void): () => void {
     return this.aiEvents.onDelta(listener);
   }
 
@@ -2775,8 +2774,8 @@ export class TaskHubApplication {
     return execution;
   }
 
-  private getProposalHistoryStatus(): IpcProposalHistoryStatus {
-    const entries: IpcProposalHistoryStatus["entries"] = this.proposalApplicationHistoryRepository.getIncomplete().flatMap<IpcProposalHistoryStatus["entries"][number]>((result) => {
+  private getProposalHistoryStatus(): ProposalHistoryStatus {
+    const entries: ProposalHistoryStatus["entries"] = this.proposalApplicationHistoryRepository.getIncomplete().flatMap<ProposalHistoryStatus["entries"][number]>((result) => {
       if (result.kind === "rejected") {
         return [{
           kind: "history_invalid",
@@ -2785,7 +2784,7 @@ export class TaskHubApplication {
           error_id: result.error_id,
         }];
       }
-      return result.history.steps.flatMap<IpcProposalHistoryStatus["entries"][number]>((step) => {
+      return result.history.steps.flatMap<ProposalHistoryStatus["entries"][number]>((step) => {
         if (step.state === "confirmation_required") {
           if (step.final_result != null && step.final_result !== "unknown") {
             throw new Error("旧適用履歴の未確定結果が元の保存結果と一致しません。");
@@ -2818,10 +2817,14 @@ export class TaskHubApplication {
         return [];
       });
     });
-    return ipcProposalHistoryStatusSchema.parse({ entries });
+    const response = proposalsContracts.getHistoryStatus.response.parse({ kind: "ok", value: { entries } });
+    if (response.kind !== "ok") {
+      throw new UnreachableError("旧適用履歴の応答形式が不正です。");
+    }
+    return response.value;
   }
 
-  private async synchronizeProposalHistory(signal: AbortSignal): Promise<IpcProposalHistorySynchronization> {
+  private async synchronizeProposalHistory(signal: AbortSignal): Promise<ProposalHistorySynchronization> {
     validateAbortSignal(signal);
     this.assertOperationalReady();
     this.asanaReauthentication.assertIdle();
@@ -3167,7 +3170,7 @@ export class TaskHubApplication {
       | "task_missing"
       | "synchronization_failed"
       | "context_changed",
-  ): Extract<IpcGuiEditResult, { readonly outcome: "rejected" }> {
+  ): GuiRejectedResult {
     return {
       operation_id: identifierSchema.parse(this.options.create_id()),
       task_gid: taskGid,
@@ -3176,7 +3179,7 @@ export class TaskHubApplication {
     };
   }
 
-  private currentAiStatus(): IpcAiStatus {
+  private currentAiStatus(): AiStatus {
     return deriveAiStatus({
       stopped: this.lifecycleRuntime.isStopped(),
       getSessionState: () => this.codexSession.getState(),
@@ -3187,7 +3190,7 @@ export class TaskHubApplication {
         || this.aiStartResult?.state === "authentication_required",
       isReadySession: () => isReadyCodexResult(this.aiStartResult),
       getModel: () => this.codexAdapter.getReadyModel(),
-    }, (value) => ipcAiStatusEventSchema.parse(value));
+    }, (value) => proposalsContracts.aiStatus.event.shape.value.parse(value));
   }
 
   private createAiSessionWorkspace(sessionId: string): CodexWorkspaceInitializationResult {
