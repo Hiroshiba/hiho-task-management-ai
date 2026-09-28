@@ -121,6 +121,14 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     selectedTask.value = result.value;
   }
 
+  /** 保存後に確認した詳細を選択中のタスクへ反映します。 */
+  function applySavedTaskDetail(taskGid: string, detail: TaskDetail): void {
+    if (detail.gid !== taskGid) throw new Error("保存後のタスク詳細が実行対象と一致しません。");
+    if (selectedTaskGid.value !== taskGid) return;
+    taskDetailGeneration += 1;
+    selectedTask.value = detail;
+  }
+
   function commitOverview(value: TaskOverview): void {
     const previousOverview = overview.value;
     if (previousOverview != null) {
@@ -265,7 +273,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
 
   return { overview, selectedTask, selectedTaskGid, filter, taskSort, currentAsOf, taskFeedback,
     visibleRows, taskReferences, setTaskFeedback, clearTaskFeedback, captureTaskDetailContext, isCurrentTaskDetailContext,
-    selectTask, deselectTask, reloadTaskData, startInitialTaskDataRefresh,
+    selectTask, deselectTask, applySavedTaskDetail, reloadTaskData, startInitialTaskDataRefresh,
     reloadTaskDataAfterSuccessfulSync };
 }
 

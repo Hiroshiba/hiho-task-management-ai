@@ -670,7 +670,8 @@ function unlinkLink(link: ObsidianLink): void {
         >
           <span>{{ props.executionFeedback?.text }}</span>
           <button
-            v-if="props.execution.state === 'planned' || props.execution.state === 'running'"
+            v-if="props.execution.state === 'planned' || props.execution.state === 'running'
+              || props.execution.state === 'succeeded' && props.executionFeedback?.kind === 'warning'"
             type="button"
             class="secondary-button"
             @click="emit('check-execution', props.execution.execution_id)"
