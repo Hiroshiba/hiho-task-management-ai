@@ -18,6 +18,7 @@ import type {
   ExternalProposalViewState,
   Feedback,
   ProposalEditInput,
+  ProposalEditResult,
   ProposalSelectionInput,
 } from "./proposal-presentation";
 
@@ -29,6 +30,7 @@ type SessionRecord = {
   readonly task_gid?: string;
   readonly task_title?: string;
   readonly conversation_history: readonly AiConversationEntry[];
+  readonly edit_result?: ProposalEditResult | undefined;
   readonly feedback?: Feedback | undefined;
 };
 export type ProposalCodexState =
@@ -321,9 +323,6 @@ export function useProposalWorkspace(options: Options) {
     }
     const message = proposalsContracts.startTurn.request.shape.message.parse(input.message);
     const title = record.conversation_history.length === 0 ? [...message.replace(/\s+/gu, " ").trim()].slice(0, 40).join("") : record.title;
-    updateRecord(sessionId, (value) => ({ ...value, title, feedback: undefined,
-      conversation_history: [...value.conversation_history, { kind: "pending", request: message }] }));
-    if (syncing.value) setSessionFeedback(sessionId, "progress", "同期の完了を待っています。");
     const baseProposal = proposalFromState(currentSession.state);
     const request = proposalsContracts.startTurn.request.parse({
       session_id: sessionId,
@@ -331,6 +330,9 @@ export function useProposalWorkspace(options: Options) {
       ...(record.task_gid == null ? {} : { target_task_gid: record.task_gid }),
       ...(baseProposal == null ? {} : { base_proposal_id: baseProposal.proposal_id }),
     });
+    updateRecord(sessionId, (value) => ({ ...value, title, feedback: undefined,
+      conversation_history: [...value.conversation_history, { kind: "pending", request: message }] }));
+    if (syncing.value) setSessionFeedback(sessionId, "progress", "同期の完了を待っています。");
     try {
       const result = await proposals.startTurn(request);
       if (disposed) return;
@@ -355,7 +357,11 @@ export function useProposalWorkspace(options: Options) {
       if (!disposed && records.value.some((value) => value.session_id === sessionId)) {
         updateRecord(sessionId, (value) => ({ ...value,
           conversation_history: value.conversation_history.at(-1)?.kind === "pending"
-            ? value.conversation_history.slice(0, -1) : value.conversation_history }));
+            ? [...value.conversation_history.slice(0, -1), {
+              kind: "failure", request: message,
+              failure: { kind: "error", code: "operation_failed", message: "AIの応答を確認できませんでした。" },
+            }]
+            : value.conversation_history }));
         setSessionFeedback(sessionId, "failure", "AIの応答を確認できませんでした。");
       }
       throw error;
@@ -390,12 +396,22 @@ export function useProposalWorkspace(options: Options) {
 
   async function edit(sessionId: string, input: ProposalEditInput): Promise<void> {
     clearSessionFeedback(sessionId);
+    const session = proposals.sessions.value.find((candidate) => candidate.session_id === sessionId);
+    if (session == null) throw new Error("AIセッションが見つかりません。");
+    const proposal = proposalFromState(session.state);
+    if (proposal == null || proposal.proposal_id !== input.proposal_id) throw new Error("編集対象の変更案が見つかりません。");
+    const editResult = { proposal_id: input.proposal_id, operation_id: input.operation_id, revision: proposal.revision };
+    updateRecord(sessionId, (value) => ({ ...value, edit_result: undefined }));
     try {
       const result = await proposals.editOperation(proposalsContracts.editOperation.request.parse({ ...input, session_id: sessionId }));
       if (disposed) return;
+      updateRecord(sessionId, (value) => ({ ...value, edit_result: { ...editResult, kind: result.kind === "ok" ? "saved" : "failed" } }));
       if (result.kind === "error") setSessionFeedback(sessionId, "failure", result.message);
     } catch (error) {
-      if (!disposed) setSessionFeedback(sessionId, "failure", "変更案の操作を保存できませんでした。");
+      if (!disposed) {
+        updateRecord(sessionId, (value) => ({ ...value, edit_result: { ...editResult, kind: "failed" } }));
+        setSessionFeedback(sessionId, "failure", "変更案の操作を保存できませんでした。");
+      }
       throw error;
     }
   }
@@ -497,7 +513,7 @@ export function useProposalWorkspace(options: Options) {
     try {
       const result = await proposals.editExternalOperation(input);
       if (disposed) return;
-      externalEditResult.value = { kind: result.kind === "ok" ? "saved" : "failed", proposal_id: input.proposal_id, revision: input.revision };
+      externalEditResult.value = { kind: result.kind === "ok" ? "saved" : "failed", proposal_id: input.proposal_id, operation_id: input.operation_id, revision: input.revision };
       if (result.kind === "error") {
         dialogFeedback.value = { kind: "failure", message: result.message };
         return;
@@ -506,7 +522,7 @@ export function useProposalWorkspace(options: Options) {
       options.onToast("success", "外部提案を更新しました。");
     } catch (error) {
       if (!disposed) {
-        externalEditResult.value = { kind: "failed", proposal_id: input.proposal_id, revision: input.revision };
+        externalEditResult.value = { kind: "failed", proposal_id: input.proposal_id, operation_id: input.operation_id, revision: input.revision };
         dialogFeedback.value = { kind: "failure", message: "外部提案を更新できませんでした。" };
       }
       throw error;

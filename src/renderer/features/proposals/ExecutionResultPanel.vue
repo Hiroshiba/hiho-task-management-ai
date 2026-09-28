@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { IpcFailure } from "./proposal-state";
+import { reasonCodeLabel } from "./proposal-execution-labels";
 
 const props = defineProps<{
   execution: ExecutionDto;
@@ -190,7 +191,7 @@ function stepKindLabel(kind: ExecutionDto["steps"][number]["kind"]): string {
                 v-if="operation.outcome !== 'pending'"
                 class="text-xs"
               >
-                理由コード: {{ operation.reason_code }}
+                理由: {{ reasonCodeLabel(operation.reason_code) }}
               </p>
             </li>
           </ul>

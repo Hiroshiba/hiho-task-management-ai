@@ -3,6 +3,7 @@ import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { ApprovalResult } from "./proposal-presentation";
 import type { IpcFailure } from "./proposal-state";
 import ExecutionResultPanel from "./ExecutionResultPanel.vue";
+import { reasonCodeLabel } from "./proposal-execution-labels";
 
 const props = defineProps<{
   result: ApprovalResult;
@@ -84,7 +85,7 @@ function notStartedResult(): Extract<ApprovalResult, { readonly kind: "not_start
               v-for="operation in notStartedResult().operation_results"
               :key="operation.operation_id"
             >
-              {{ operation.operation_id }}: {{ outcomeLabel(operation.outcome) }}・理由コード {{ operation.reason_code }}
+              {{ operation.operation_id }}: {{ outcomeLabel(operation.outcome) }}・理由 {{ reasonCodeLabel(operation.reason_code) }}
             </li>
           </ul>
         </div>

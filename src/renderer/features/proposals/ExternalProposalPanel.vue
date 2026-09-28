@@ -356,7 +356,6 @@ function finishedOutcomeClass(proposal: ExternalProposal): string {
             :tasks="props.tasks"
             :can-write="requireSelectedProposal().state.kind === 'pending_approval' && !props.busy"
             :review-mode="requireSelectedProposal().state.kind === 'pending_approval' ? 'interactive' : 'read-only'"
-            :defer-edit-close="true"
             :edit-result="props.editResult"
             @select="select"
             @edit="edit"

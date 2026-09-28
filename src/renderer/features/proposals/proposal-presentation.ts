@@ -20,11 +20,13 @@ export type ExternalProposalViewState =
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly value: ExternalState }
   | { readonly kind: "error"; readonly message: string };
-export type ExternalEditResult = {
+export type ProposalEditResult = {
   readonly kind: "saved" | "failed";
   readonly proposal_id: string;
-  readonly revision: number;
+  readonly operation_id: string;
+  readonly revision?: number | undefined;
 };
+export type ExternalEditResult = ProposalEditResult & { readonly revision: number };
 export type Feedback = { readonly kind: "success" | "progress" | "warning" | "failure"; readonly message: string };
 export type AiSessionStatus = "waiting_answer" | "waiting_approval" | "running" | "error" | "completed" | "idle";
 export type AiSessionOperation = "idle" | "turn" | "get" | "select" | "edit" | "approve" | "reject" | "close";
@@ -42,6 +44,7 @@ export type AiSessionView = {
   readonly status: AiSessionStatus;
   readonly operation: AiSessionOperation;
   readonly conversation_history: readonly AiConversationEntry[];
+  readonly edit_result?: ProposalEditResult | undefined;
   readonly feedback?: Feedback | undefined;
   readonly can_write: boolean;
   readonly can_send_ai: boolean;

@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { AiProposalState, IpcFailure } from "./proposal-state";
-import type { AiConversationEntry, ProposalEditInput, ProposalSelectionInput } from "./proposal-presentation";
+import type { AiConversationEntry, ProposalEditInput, ProposalEditResult, ProposalSelectionInput } from "./proposal-presentation";
 import ApprovalResultPanel from "./ApprovalResultPanel.vue";
 import ProposalReviewPanel from "./ProposalReviewPanel.vue";
 
@@ -23,6 +23,7 @@ const props = defineProps<{
   execution?: ExecutionDto | undefined;
   executionBusy: boolean;
   executionFailure?: IpcFailure | undefined;
+  editResult?: ProposalEditResult | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -299,7 +300,7 @@ function sendMessage(): void {
         :tasks="props.tasks"
         :can-write="props.canWrite"
         review-mode="interactive"
-        :defer-edit-close="false"
+        :edit-result="props.editResult"
         @select="emit('select', $event)"
         @edit="emit('edit', $event)"
         @approve="emit('approve', $event)"

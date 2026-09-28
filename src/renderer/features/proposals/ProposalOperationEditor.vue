@@ -4,74 +4,22 @@ import { z } from "zod";
 import { proposalOperationSchema } from "../../../shared/ipc-contracts/proposal-values";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
 import { isoToJstDatetimeLocal, parseJstDatetimeLocal } from "../../shared/format/date-time";
-import type { ProposalEditInput, ProposalOperation, DurationUnit } from "./proposal-presentation";
+import type { ProposalEditInput, ProposalOperation } from "./proposal-presentation";
+import type { CreateTaskOperation, DependencyDraft, FormState, ObsidianDraft, ProposalDependency, ProposalDueValue, ProposalDurationValue, ProposalParentValue, ProposalTarget, TargetOption } from "./proposal-editor-form";
+import CreateTaskFieldsEditor from "./CreateTaskFieldsEditor.vue";
+import ProposalDependenciesEditor from "./ProposalDependenciesEditor.vue";
 import {
   durationMinimum,
   durationUnitOptions,
   parseDurationInput,
 } from "./proposal-presentation";
 
-type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
-type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
-type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" }>["after"];
-type ProposalDueValue = Extract<ProposalOperation, { operation: "set_due" }>["after"];
-type ProposalDurationValue = Extract<ProposalOperation, { operation: "set_duration" }>["after"];
-type ProposalDependency = Extract<ProposalOperation, { operation: "set_dependencies" }>["after"][number];
-
-type TargetOption = {
-  readonly key: string;
-  readonly label: string;
-};
-
-type DependencyDraft = {
-  readonly id: number;
-  targetKey: string;
-  scope: ProposalDependency["scope"];
-  source: string;
-};
-
-type ObsidianDraft = {
-  readonly id: number;
-  vaultId: string;
-  path: string;
-  title: string;
-  confidence: number | string;
-};
-
-type FormState = {
-  title: string;
-  notes: string;
-  notesSpecified: boolean;
-  status: "not_started" | "in_progress";
-  statusSpecified: boolean;
-  importance: number;
-  importanceSpecified: boolean;
-  area: string;
-  areaSpecified: boolean;
-  dueKind: "due_on" | "due_at";
-  dueValue: string;
-  originalDueAt: string | undefined;
-  dueSpecified: boolean;
-  durationUnit: DurationUnit;
-  durationValue: string;
-  durationSpecified: boolean;
-  parentKey: string;
-  parentSpecified: boolean;
-  parentWorkMode: Extract<ProposalOperation, { operation: "set_parent_work_mode" }>["after"];
-  parentWorkModeSpecified: boolean;
-  dependencies: DependencyDraft[];
-  dependenciesSpecified: boolean;
-  obsidianLinks: ObsidianDraft[];
-  obsidianLinksSpecified: boolean;
-  evidenceLocator: string;
-  error: string;
-};
-
 class FormInputError extends Error {}
 
 const props = defineProps<{
   operation: ProposalOperation;
   proposalId: string;
+  proposalRevision?: number | undefined;
   tasks: readonly { readonly gid: string; readonly title: string }[];
   creations: readonly CreateTaskOperation[];
   disabled: boolean;
@@ -357,11 +305,10 @@ function createObsidianDraft(link: Extract<ProposalOperation, { operation: "link
 const form = ref<FormState>(initialState());
 
 watch(
-  () => props.operation,
+  [() => props.proposalId, () => props.proposalRevision, () => props.operation.operation_id],
   () => {
     form.value = initialState();
   },
-  { deep: true },
 );
 
 function operationHasCreateParent(operation: ProposalOperation): boolean {
@@ -625,423 +572,19 @@ function datetimeLocalToIso(value: string): string {
       {{ form.error }}
     </p>
 
-    <div
+    <CreateTaskFieldsEditor
       v-if="operation.operation === 'create_task'"
-      class="grid min-w-0 gap-4 sm:grid-cols-2"
-    >
-      <label class="field-label sm:col-span-2">
-        タイトル
-        <input
-          v-model="form.title"
-          class="text-input"
-          type="text"
-          required
-          :disabled="props.disabled"
-        >
-      </label>
-      <fieldset class="field-group sm:col-span-2">
-        <legend class="field-label">
-          説明
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.notesSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          説明を指定する
-        </label>
-        <textarea
-          v-model="form.notes"
-          class="text-input min-h-28"
-          aria-label="説明"
-          :disabled="props.disabled || !form.notesSpecified"
-        />
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          状態
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.statusSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          状態を指定する
-        </label>
-        <select
-          v-model="form.status"
-          class="text-input"
-          aria-label="状態"
-          :disabled="props.disabled || !form.statusSpecified"
-        >
-          <option value="not_started">
-            未着手
-          </option>
-          <option value="in_progress">
-            進行中
-          </option>
-        </select>
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          重要度
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.importanceSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          重要度を指定する
-        </label>
-        <select
-          v-model.number="form.importance"
-          class="text-input"
-          aria-label="重要度"
-          :disabled="props.disabled || !form.importanceSpecified"
-        >
-          <option :value="1">
-            1
-          </option>
-          <option :value="2">
-            2
-          </option>
-          <option :value="3">
-            3
-          </option>
-          <option :value="4">
-            4
-          </option>
-          <option :value="5">
-            5
-          </option>
-        </select>
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          領域
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.areaSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          領域を指定する
-        </label>
-        <input
-          v-model="form.area"
-          class="text-input"
-          type="text"
-          aria-label="領域"
-          :required="form.areaSpecified"
-          :disabled="props.disabled || !form.areaSpecified"
-        >
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          期限
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.dueSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          期限を指定する
-        </label>
-        <select
-          v-model="form.dueKind"
-          class="text-input"
-          aria-label="期限の種類"
-          :disabled="props.disabled || !form.dueSpecified"
-          @change="changeDueKind"
-        >
-          <option value="due_on">
-            日付
-          </option>
-          <option value="due_at">
-            日時
-          </option>
-        </select>
-        <input
-          v-if="form.dueKind === 'due_on'"
-          v-model="form.dueValue"
-          class="text-input"
-          type="date"
-          aria-label="期限日"
-          :required="form.dueSpecified"
-          :disabled="props.disabled || !form.dueSpecified"
-        >
-        <input
-          v-else-if="form.dueKind === 'due_at'"
-          v-model="form.dueValue"
-          class="text-input"
-          type="datetime-local"
-          aria-label="期限日時 日本時間"
-          :required="form.dueSpecified"
-          :disabled="props.disabled || !form.dueSpecified"
-        >
-        <p
-          v-if="form.dueKind === 'due_at'"
-          class="text-xs text-slate-600 dark:text-slate-400"
-        >
-          日時は日本時間で入力します。
-        </p>
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          所要時間
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.durationSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          所要時間を指定する
-        </label>
-        <div
-          v-if="form.durationSpecified"
-          class="grid min-w-0 gap-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)]"
-        >
-          <select
-            v-model="form.durationUnit"
-            class="text-input min-w-0"
-            aria-label="所要時間の単位"
-            :disabled="props.disabled"
-          >
-            <option
-              v-for="option in durationUnitOptions"
-              :key="option.value"
-              :value="option.value"
-            >
-              {{ option.label }}
-            </option>
-          </select>
-          <input
-            v-model="form.durationValue"
-            class="text-input min-w-0"
-            type="number"
-            inputmode="numeric"
-            aria-label="所要時間の数値"
-            :min="durationMinimum(form.durationUnit)"
-            step="1"
-            required
-            :disabled="props.disabled"
-          >
-        </div>
-      </fieldset>
-      <fieldset
-        v-if="operation.creation.kind === 'split_child'"
-        class="field-group sm:col-span-2"
-      >
-        <legend class="field-label">
-          親タスク
-        </legend>
-        <p class="text-input">
-          {{ targetLabel(operation.creation.parent) }}
-        </p>
-        <p class="text-xs text-slate-600 dark:text-slate-400">
-          分割元の親タスクに固定されています。
-        </p>
-      </fieldset>
-      <fieldset class="field-group">
-        <legend class="field-label">
-          親タスクの作業範囲
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.parentWorkModeSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          作業範囲を指定する
-        </label>
-        <select
-          v-model="form.parentWorkMode"
-          class="text-input"
-          aria-label="親タスクの作業範囲"
-          :disabled="props.disabled || !form.parentWorkModeSpecified"
-        >
-          <option value="children_only">
-            子タスクのみ
-          </option>
-          <option value="has_own_work">
-            親自身の作業あり
-          </option>
-          <option value="unknown">
-            不明
-          </option>
-        </select>
-      </fieldset>
-      <fieldset class="field-group sm:col-span-2">
-        <legend class="field-label">
-          依存するタスク
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.dependenciesSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          依存関係を指定する
-        </label>
-        <div
-          v-if="form.dependenciesSpecified"
-          class="space-y-2"
-        >
-          <div
-            v-for="(dependency, index) in form.dependencies"
-            :key="dependency.id"
-            class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,7rem)_minmax(0,1fr)_auto]"
-          >
-            <select
-              v-model="dependency.targetKey"
-              class="text-input"
-              :aria-label="`依存先${index + 1}`"
-              required
-              :disabled="props.disabled"
-            >
-              <option value="">
-                依存先を選択
-              </option>
-              <option
-                v-for="option in targetOptions"
-                :key="option.key"
-                :value="option.key"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-            <select
-              v-model="dependency.scope"
-              class="text-input"
-              :aria-label="`依存範囲${index + 1}`"
-              :disabled="props.disabled"
-            >
-              <option value="full">
-                完全依存
-              </option>
-              <option value="partial">
-                一部依存
-              </option>
-            </select>
-            <input
-              v-model="dependency.source"
-              class="text-input"
-              type="text"
-              :aria-label="`依存関係の根拠${index + 1}`"
-              placeholder="根拠の識別子"
-              required
-              :disabled="props.disabled"
-            >
-            <button
-              type="button"
-              class="secondary-button"
-              :disabled="props.disabled"
-              @click="removeDependency(dependency.id)"
-            >
-              削除
-            </button>
-          </div>
-          <button
-            type="button"
-            class="secondary-button"
-            :disabled="props.disabled"
-            @click="addDependency"
-          >
-            依存先を追加
-          </button>
-        </div>
-      </fieldset>
-      <fieldset class="field-group sm:col-span-2">
-        <legend class="field-label">
-          Obsidianリンク
-        </legend>
-        <label class="flex items-center gap-2 text-xs font-normal text-slate-600 dark:text-slate-400">
-          <input
-            v-model="form.obsidianLinksSpecified"
-            type="checkbox"
-            :disabled="props.disabled"
-          >
-          Obsidianリンクを指定する
-        </label>
-        <div
-          v-if="form.obsidianLinksSpecified"
-          class="space-y-3"
-        >
-          <div
-            v-for="(link, index) in form.obsidianLinks"
-            :key="link.id"
-            class="grid min-w-0 gap-2 rounded-md border border-slate-200 p-3 dark:border-slate-700 sm:grid-cols-2"
-          >
-            <label class="field-label">
-              Vault ID
-              <input
-                v-model="link.vaultId"
-                class="text-input"
-                type="text"
-                required
-                :disabled="props.disabled"
-              >
-            </label>
-            <label class="field-label">
-              パス
-              <input
-                v-model="link.path"
-                class="text-input"
-                type="text"
-                required
-                :disabled="props.disabled"
-              >
-            </label>
-            <label class="field-label">
-              ノートタイトル
-              <input
-                v-model="link.title"
-                class="text-input"
-                type="text"
-                required
-                :disabled="props.disabled"
-              >
-            </label>
-            <label class="field-label">
-              信頼度
-              <input
-                v-model="link.confidence"
-                class="text-input"
-                type="number"
-                min="0"
-                max="1"
-                step="any"
-                :aria-label="`Obsidianリンクの信頼度${index + 1}`"
-                required
-                :disabled="props.disabled"
-              >
-            </label>
-            <button
-              type="button"
-              class="secondary-button justify-self-start sm:col-span-2"
-              :disabled="props.disabled"
-              @click="removeObsidianLink(link.id)"
-            >
-              リンクを削除
-            </button>
-          </div>
-          <button
-            type="button"
-            class="secondary-button"
-            :disabled="props.disabled"
-            @click="addObsidianLink"
-          >
-            Obsidianリンクを追加
-          </button>
-        </div>
-      </fieldset>
-    </div>
+      v-model:form="form"
+      :operation="operation"
+      :target-options="targetOptions"
+      :disabled="props.disabled"
+      :target-label="targetLabel"
+      :change-due-kind="changeDueKind"
+      :add-dependency="addDependency"
+      :remove-dependency="removeDependency"
+      :add-obsidian-link="addObsidianLink"
+      :remove-obsidian-link="removeObsidianLink"
+    />
 
     <div
       v-else-if="operation.operation === 'update_title'"
@@ -1217,70 +760,13 @@ function datetimeLocalToIso(value: string): string {
       class="field-group"
     >
       <span class="field-label">依存するタスク</span>
-      <div class="space-y-2">
-        <div
-          v-for="(dependency, index) in form.dependencies"
-          :key="dependency.id"
-          class="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,7rem)_minmax(0,1fr)_auto]"
-        >
-          <select
-            v-model="dependency.targetKey"
-            class="text-input"
-            :aria-label="`依存先${index + 1}`"
-            required
-            :disabled="props.disabled"
-          >
-            <option value="">
-              依存先を選択
-            </option>
-            <option
-              v-for="option in targetOptions"
-              :key="option.key"
-              :value="option.key"
-            >
-              {{ option.label }}
-            </option>
-          </select>
-          <select
-            v-model="dependency.scope"
-            class="text-input"
-            :aria-label="`依存範囲${index + 1}`"
-            :disabled="props.disabled"
-          >
-            <option value="full">
-              完全依存
-            </option>
-            <option value="partial">
-              一部依存
-            </option>
-          </select>
-          <input
-            v-model="dependency.source"
-            class="text-input"
-            type="text"
-            :aria-label="`依存関係の根拠${index + 1}`"
-            placeholder="根拠の識別子"
-            required
-            :disabled="props.disabled"
-          >
-          <button
-            type="button"
-            class="secondary-button"
-            :disabled="props.disabled"
-            @click="removeDependency(dependency.id)"
-          >
-            削除
-          </button>
-        </div>
-        <button
-          type="button"
-          class="secondary-button"
-          :disabled="props.disabled"
-          @click="addDependency"
-        >
-          依存先を追加
-        </button>
-      </div>
+      <ProposalDependenciesEditor
+        v-model:dependencies="form.dependencies"
+        :target-options="targetOptions"
+        :disabled="props.disabled"
+        :add-dependency="addDependency"
+        :remove-dependency="removeDependency"
+      />
     </div>
 
     <div

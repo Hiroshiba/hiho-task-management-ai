@@ -561,6 +561,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                   :execution="executionForSession(session)"
                   :execution-busy="executionBusyForSession(session)"
                   :execution-failure="executionFailureForSession(session)"
+                  :edit-result="session.edit_result"
                   @start="(input) => emit('start', session.session_id, input)"
                   @select="(input) => emit('select', session.session_id, input)"
                   @edit="(input) => emit('edit', session.session_id, input)"
