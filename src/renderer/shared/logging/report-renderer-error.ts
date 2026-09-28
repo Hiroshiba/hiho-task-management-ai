@@ -14,7 +14,7 @@ export async function reportRendererError(
     const result = diagnosticsContracts.report.response.parse(await api.report(input));
     if (result.kind === "error") {
       console.error("Rendererの診断をMainに記録できませんでした。", input.error);
-      return result.error_id;
+      return undefined;
     }
     return result.value.error_id;
   } catch (error) {
