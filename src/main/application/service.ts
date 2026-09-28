@@ -101,10 +101,13 @@ import type { ListProposalExecutionsInput } from "./common/ports/proposal-execut
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
-  DiagnosticLogService,
+  parseDiagnosticAppVersion,
+  parseDiagnosticLogEntry,
+  parseDiagnosticRecord,
   type DiagnosticRecord,
   type ApplicationDiagnostic,
 } from "./diagnostics";
+import { DiagnosticLogService } from "./common/diagnostic-log-service";
 import {
   AiWorkflowService,
   AiWorkflowError,
@@ -284,7 +287,6 @@ import {
 } from "../../shared/ipc";
 import {
   deviceSettingsSchema,
-  diagnosticLogEntrySchema,
   externalToolCredentialReferenceNamesSchema,
   projectMetadataCacheSchema,
   rankingCacheSchema,
@@ -295,6 +297,7 @@ import {
   vaultMappingSchema,
   type CleanupItemsCache,
   type DeviceSettings,
+  type DiagnosticLogEntry,
   type ExternalToolCredentialReferenceNames,
   type ProjectMetadataCache,
   type RankingCache,
@@ -303,7 +306,6 @@ import {
   type TaskCacheEntry,
 } from "../../shared/storage";
 import {
-  SqliteDiagnosticLogRepository,
   SqliteExternalToolDefinitionRepository,
   SqliteSettingsRepository,
   SqliteProposalApplicationHistoryRepository,
@@ -383,7 +385,6 @@ type ExternalToolPersistenceResult =
       readonly error: unknown;
     };
 
-const diagnosticLogRetentionLimit = 1_000;
 const serviceErrorDiagnostic = {
   kind: "service",
   severity: "error",
@@ -938,6 +939,14 @@ type SettingsCompositionDependencies = {
   readonly setupPorts: Omit<ConstructorParameters<typeof SetupOrchestrator>[0], "device_id">;
 } & ReauthenticationCompositionOptions & Omit<SetupIpcCompositionOptions, "setup" | "parseState">;
 
+type DiagnosticCompositionDependencies = {
+  readonly appVersion: string;
+  readonly now: () => Date;
+  readonly parseAppVersion: (value: unknown) => string;
+  readonly parseRecord: (value: unknown) => DiagnosticRecord;
+  readonly parseEntry: (value: unknown) => DiagnosticLogEntry;
+};
+
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
@@ -956,7 +965,7 @@ export class TaskHubApplication {
   >;
   private readonly proposalApplicationHistoryRepository: SqliteProposalApplicationHistoryRepository;
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
-  private readonly diagnostics: DiagnosticLogService;
+  private attachedDiagnostics: DiagnosticLogService<DiagnosticRecord, DiagnosticLogEntry> | undefined;
   private readonly secretStorage: SecretStorage;
   private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
@@ -1121,17 +1130,6 @@ export class TaskHubApplication {
         asanaTaskResponseSchema.parse(entry.asana_response),
       ),
     };
-    const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
-      persistence.connection,
-      persistence,
-      (value) => diagnosticLogEntrySchema.parse(value),
-    );
-    this.diagnostics = new DiagnosticLogService(
-      diagnosticLogRepository,
-      options.app_version,
-      options.now_provider,
-      diagnosticLogRetentionLimit,
-    );
     this.secretStorage = new SecretStorage(files.secretStorage);
     this.checkpoint = new SetupCheckpointStore(files.checkpoint);
     this.scheduler = new AsanaRequestScheduler();
@@ -1698,6 +1696,31 @@ export class TaskHubApplication {
     const setup = this.attachedSetup;
     assertNonNullable(setup, "初回設定workflowが接続されていません。");
     return setup;
+  }
+
+  private get diagnostics(): DiagnosticLogService<DiagnosticRecord, DiagnosticLogEntry> {
+    const diagnostics = this.attachedDiagnostics;
+    assertNonNullable(diagnostics, "診断ログサービスが接続されていません。");
+    return diagnostics;
+  }
+
+  /** 構造化診断ログの保存サービスを接続します。 */
+  public attachDiagnosticRuntime(diagnostics: DiagnosticLogService<DiagnosticRecord, DiagnosticLogEntry>): void {
+    if (this.attachedDiagnostics != null) {
+      throw new Error("診断ログサービスを二重に接続できません。");
+    }
+    this.attachedDiagnostics = diagnostics;
+  }
+
+  /** 構造化診断ログの保存契約を組み立て側へ公開します。 */
+  public getDiagnosticCompositionDependencies(): DiagnosticCompositionDependencies {
+    return {
+      appVersion: this.options.app_version,
+      now: this.options.now_provider,
+      parseAppVersion: parseDiagnosticAppVersion,
+      parseRecord: parseDiagnosticRecord,
+      parseEntry: parseDiagnosticLogEntry,
+    };
   }
 
   private get asanaReauthentication(): AsanaReauthenticationRuntime<

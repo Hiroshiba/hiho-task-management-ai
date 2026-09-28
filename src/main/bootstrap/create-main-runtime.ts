@@ -4,6 +4,7 @@ import { setTimeout } from "node:timers/promises";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
+import { DiagnosticLogService } from "../application/common/diagnostic-log-service";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import { getGithubIntegrationStatus } from "../application/github-integration";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
@@ -22,6 +23,7 @@ import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/l
 import {
   ApplicationUpdateAttemptStore,
   PersistenceRuntime,
+  SqliteDiagnosticLogRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
   WindowStateStore,
@@ -178,6 +180,21 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       obsidian: obsidian.workflow,
     });
     obsidian.bindHost(legacy.getObsidianCompositionDependencies());
+    const diagnosticDependencies = legacy.getDiagnosticCompositionDependencies();
+    const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
+      openedPersistence.connection,
+      openedPersistence,
+      diagnosticDependencies.parseEntry,
+    );
+    legacy.attachDiagnosticRuntime(new DiagnosticLogService(
+      diagnosticLogRepository,
+      diagnosticDependencies.appVersion,
+      diagnosticDependencies.now,
+      1_000,
+      diagnosticDependencies.parseAppVersion,
+      diagnosticDependencies.parseRecord,
+      diagnosticDependencies.parseEntry,
+    ));
     const taskWrite = createTaskWriteRuntime({
       bridge: legacy.getTaskWriteAsanaBridge(),
       historyRepository,
