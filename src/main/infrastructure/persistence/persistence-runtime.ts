@@ -76,10 +76,7 @@ export class PersistenceRuntime {
   private readonly textFiles = new Set<PersistentTextFileHandle>();
   private readonly lateTextFiles = new Set<PersistentTextFileHandle>();
 
-  public constructor(
-    dbPath: string,
-    migrateLegacyProposalConflictIdentifiers: (database: SqliteConnection) => void,
-  ) {
+  public constructor(dbPath: string) {
     const normalizedDbPath = normalizeSecurePersistentFilePath(dbPath);
     captureSecurePersistentFile(normalizedDbPath, databaseFileLabel);
     validateSqliteAuxiliaryFiles(normalizedDbPath);
@@ -110,11 +107,7 @@ export class PersistenceRuntime {
       );
       validateSqliteAuxiliaryFiles(normalizedDbPath);
       this.migrationBackupPaths = backupSqliteBeforeMigration(database, normalizedDbPath);
-      initializeSqliteSchema(
-        database,
-        (operation) => this.transaction(operation),
-        migrateLegacyProposalConflictIdentifiers,
-      );
+      initializeSqliteSchema(database, (operation) => this.transaction(operation));
       assertSecurePersistentFileSnapshot(
         normalizedDbPath,
         databaseSnapshot,

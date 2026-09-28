@@ -29,7 +29,6 @@ import {
 } from "../infrastructure/persistence";
 import {
   createLegacyRuntime,
-  migrateLegacyPersistence,
   type LegacyRuntimeOptions,
   type LegacyRuntimePort,
 } from "./legacy-runtime-port";
@@ -150,10 +149,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
   const controller = new AbortController();
   let persistence: PersistenceRuntime | undefined;
   try {
-    persistence = new PersistenceRuntime(
-      join(options.userDataPath, "taskhub.sqlite3"),
-      migrateLegacyPersistence,
-    );
+    persistence = new PersistenceRuntime(join(options.userDataPath, "taskhub.sqlite3"));
     const openedPersistence = persistence;
     const files = {
       secretStorage: openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),

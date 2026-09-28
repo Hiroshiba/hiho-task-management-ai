@@ -289,7 +289,6 @@ import {
 } from "../../shared/storage";
 import {
   StorageDatabase,
-  migrateLegacyProposalConflictIdentifiers,
   type ExternalToolDefinitionRecord,
 } from "../storage";
 import {
@@ -297,7 +296,6 @@ import {
   SqliteProposalApplicationHistoryRepository,
   type PersistenceRuntime,
   type PersistentTextFile,
-  type SqliteConnection,
 } from "../infrastructure/persistence";
 import { AsanaTaskReadAdapter } from "../infrastructure/asana";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
@@ -1098,7 +1096,7 @@ export class TaskHubApplication {
     });
     const taskReadIndex = new TaskReadIndex(this.database.taskRead, taskReadContracts);
     this.cleanupAggregation = new CleanupAggregationService(
-      this.database,
+      this.database.taskRead,
       this.obsidian,
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
@@ -3388,9 +3386,4 @@ export class TaskHubApplication {
   ): Promise<AsanaProposalApplicationResult> {
     return this.applyProposalApplication(input, signal);
   }
-}
-
-/** 旧保存形式の移行処理を一時的な起動portへ渡します。 */
-export function migrateLegacyStorage(database: SqliteConnection): void {
-  migrateLegacyProposalConflictIdentifiers(database);
 }

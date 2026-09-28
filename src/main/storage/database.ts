@@ -1,13 +1,6 @@
 import { z } from "zod";
-import {
-  PersistenceRuntime,
-  storageBusyTimeoutMilliseconds,
-} from "../infrastructure/persistence/persistence-runtime";
+import { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
 import { TaskReadPersistenceRepository } from "../infrastructure/persistence";
-import {
-  assertTableRowCount,
-  readTableRowCount,
-} from "../infrastructure/persistence/sqlite-migration";
 import { DiagnosticLogStore } from "./diagnostic-log";
 import {
   ExternalToolDefinitionStore,
@@ -25,7 +18,6 @@ import type {
   VaultMapping,
 } from "../../shared/storage";
 import {
-  cleanupItemsCacheSchema,
   projectMetadataCacheSchema,
   rankingCacheSchema,
   syncStateSchema,
@@ -36,26 +28,11 @@ import {
 import {
   canonicalizeJson,
   cleanupItemKindSchema,
-  cleanupItemSchema,
   cleanupItemsSchema,
   gidSchema,
   parseCustomExternalData,
   type CleanupItemKind,
 } from "../../shared/domain";
-import type { SqliteDatabase } from "./types";
-import { parseStorageJson, serializeStorageJson } from "./json";
-
-export { storageSchemaVersion } from "../infrastructure/persistence/sqlite-schema";
-
-export { storageBusyTimeoutMilliseconds };
-
-interface CleanupItemsCacheRow {
-  readonly cache_key: number;
-  readonly cleanup_items_json: string;
-}
-
-const legacyProposalConflictMessagePattern =
-  /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
 
 function createTaskReadPersistenceContracts() {
   const cleanupKindsSchema = z.array(cleanupItemKindSchema)
@@ -100,72 +77,6 @@ function createTaskReadPersistenceContracts() {
     parseCleanupKinds: (value: unknown) => cleanupKindsSchema.parse(value),
     canonicalize: canonicalizeJson,
   };
-}
-
-/** 旧形式の要整理項目を現行の識別子へ移行します。 */
-export function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
-  const sourceRowCount = readTableRowCount(database, "cleanup_items_cache");
-  const rows = database
-    .prepare<[], CleanupItemsCacheRow>(
-      "SELECT cache_key, cleanup_items_json FROM cleanup_items_cache ORDER BY cache_key",
-    )
-    .all();
-  if (rows.length !== sourceRowCount) {
-    throw new Error("要整理キャッシュの行数が移行前に一致しません。");
-  }
-
-  const updateStatement = database.prepare<[string, number]>(
-    "UPDATE cleanup_items_cache SET cleanup_items_json = ? WHERE cache_key = ?",
-  );
-  rows.forEach((row) => {
-    if (row.cache_key !== 1) {
-      throw new Error("要整理キャッシュのキーが不正です。");
-    }
-    const items = parseStorageJson(row.cleanup_items_json, cleanupItemsCacheSchema);
-    let hasMigratedItem = false;
-    const migratedItems = items.map((item) => {
-      if (
-        item.kind !== "proposal_conflict"
-        || item.proposal_id != null
-        || item.operation_id != null
-      ) {
-        return item;
-      }
-
-      const matchedMessage = legacyProposalConflictMessagePattern.exec(item.message);
-      if (matchedMessage == null || matchedMessage[0] !== item.message) {
-        return item;
-      }
-      const proposalId = matchedMessage[1];
-      const operationId = matchedMessage[2];
-      if (proposalId == null || operationId == null) {
-        throw new Error("旧形式の要整理項目から識別子を抽出できませんでした。");
-      }
-      const validatedItem = cleanupItemSchema.safeParse({
-        ...item,
-        proposal_id: proposalId,
-        operation_id: operationId,
-      });
-      if (!validatedItem.success) {
-        return item;
-      }
-      hasMigratedItem = true;
-      return validatedItem.data;
-    });
-    if (!hasMigratedItem) {
-      return;
-    }
-
-    const validatedItems = cleanupItemsCacheSchema.parse(migratedItems);
-    const updateResult = updateStatement.run(
-      serializeStorageJson(validatedItems),
-      row.cache_key,
-    );
-    if (updateResult.changes !== 1) {
-      throw new Error("要整理キャッシュの移行対象が見つかりません。");
-    }
-  });
-  assertTableRowCount(database, "cleanup_items_cache", sourceRowCount);
 }
 
 /** SQLite永続化層を開き、対象スキーマを初期化します。 */

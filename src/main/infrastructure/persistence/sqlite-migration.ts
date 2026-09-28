@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { SqliteConnection, SqliteTransaction } from "./sqlite-connection";
 import {
   proposalExecutionColumns,
@@ -24,7 +25,58 @@ import {
 } from "./sqlite-schema";
 
 type SqliteDatabase = SqliteConnection;
-type MigrateLegacyCleanupIdentifiers = (database: SqliteDatabase) => void;
+
+type CleanupItemsCacheRow = {
+  readonly cache_key: number;
+  readonly cleanup_items_json: string;
+};
+
+const legacyProposalConflictMessagePattern =
+  /^AI変更案 (\S+) の操作 (\S+) は(?:適用されませんでした|適用結果を確定できません)。理由コードは \S+ です。$/u;
+
+const legacyIdentifierSchema = z.string().refine(
+  (value) => value.length > 0 && value.trim() === value && !/\s/u.test(value),
+  "空白を含まない空でない識別子を指定してください。",
+);
+const legacyRelatedTaskGidsSchema = z.array(legacyIdentifierSchema).superRefine((gids, context) => {
+  const seen = new Set<string>();
+  gids.forEach((gid, index) => {
+    if (seen.has(gid)) {
+      context.addIssue({
+        code: "custom",
+        path: [index],
+        message: "同じタスクGIDを重複して指定できません。",
+      });
+    }
+    seen.add(gid);
+  });
+});
+const legacyCleanupItemSchema = z.object({
+  kind: z.enum([
+    "importance_tag_conflict",
+    "area_tag_conflict",
+    "unknown_status_section",
+    "missing_required_section",
+    "dependency_cycle",
+    "missing_dependency",
+    "parent_cycle",
+    "parent_relation_conflict",
+    "children_only_completion_confirmation",
+    "missing_task",
+    "custom_external_data_broken",
+    "oauth_app_mismatch",
+    "proposal_conflict",
+    "broken_vault_link",
+  ]),
+  message: z.string().refine((value) => value.trim().length > 0, {
+    message: "要整理項目の説明を空にできません。",
+  }),
+  task_gid: legacyIdentifierSchema.optional(),
+  proposal_id: legacyIdentifierSchema.optional(),
+  operation_id: legacyIdentifierSchema.optional(),
+  related_task_gids: legacyRelatedTaskGidsSchema.optional(),
+}).strict();
+const legacyCleanupItemsSchema = z.array(legacyCleanupItemSchema);
 
 function readTableNames(database: SqliteDatabase): readonly string[] {
   const rows = database
@@ -140,10 +192,79 @@ export function assertTableRowCount(
   }
 }
 
+function migrateLegacyProposalConflictIdentifiers(database: SqliteDatabase): void {
+  const sourceRowCount = readTableRowCount(database, "cleanup_items_cache");
+  const rows = database.prepare<[], CleanupItemsCacheRow>(
+    "SELECT cache_key, cleanup_items_json FROM cleanup_items_cache ORDER BY cache_key",
+  ).all();
+  if (rows.length !== sourceRowCount) {
+    throw new Error("要整理キャッシュの行数が移行前に一致しません。");
+  }
+
+  const updateStatement = database.prepare<[string, number]>(
+    "UPDATE cleanup_items_cache SET cleanup_items_json = ? WHERE cache_key = ?",
+  );
+  rows.forEach((row) => {
+    if (row.cache_key !== 1) {
+      throw new Error("要整理キャッシュのキーが不正です。");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.cleanup_items_json);
+    } catch (error) {
+      throw new Error("SQLiteに保存されたJSONの解析に失敗しました。", { cause: error });
+    }
+    const items = legacyCleanupItemsSchema.parse(parsed);
+    let hasMigratedItem = false;
+    const migratedItems = items.map((item) => {
+      if (
+        item.kind !== "proposal_conflict"
+        || item.proposal_id != null
+        || item.operation_id != null
+      ) {
+        return item;
+      }
+
+      const matchedMessage = legacyProposalConflictMessagePattern.exec(item.message);
+      if (matchedMessage == null || matchedMessage[0] !== item.message) {
+        return item;
+      }
+      const proposalId = matchedMessage[1];
+      const operationId = matchedMessage[2];
+      if (proposalId == null || operationId == null) {
+        throw new Error("旧形式の要整理項目から識別子を抽出できませんでした。");
+      }
+      const validatedItem = legacyCleanupItemSchema.safeParse({
+        ...item,
+        proposal_id: proposalId,
+        operation_id: operationId,
+      });
+      if (!validatedItem.success) {
+        return item;
+      }
+      hasMigratedItem = true;
+      return validatedItem.data;
+    });
+    if (!hasMigratedItem) {
+      return;
+    }
+
+    const validatedItems = legacyCleanupItemsSchema.parse(migratedItems);
+    const serializedItems = JSON.stringify(validatedItems);
+    if (serializedItems === undefined) {
+      throw new Error("SQLite保存用JSONの変換に失敗しました。");
+    }
+    const updateResult = updateStatement.run(serializedItems, row.cache_key);
+    if (updateResult.changes !== 1) {
+      throw new Error("要整理キャッシュの移行対象が見つかりません。");
+    }
+  });
+  assertTableRowCount(database, "cleanup_items_cache", sourceRowCount);
+}
+
 function migrateSchemaFromV3(
   database: SqliteDatabase,
   transaction: SqliteTransaction,
-  migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const migrate = transaction(() => {
     assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
@@ -242,7 +363,6 @@ function migrateSchemaFromV3(
 function migrateSchemaFromV4(
   database: SqliteDatabase,
   transaction: SqliteTransaction,
-  migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const migrate = transaction(() => {
     assertStorageTableNames(readTableNames(database), storageLegacyTableNames);
@@ -427,7 +547,6 @@ function rebuildHistoryTable(database: SqliteDatabase): void {
 export function initializeSqliteSchema(
   database: SqliteDatabase,
   transaction: SqliteTransaction,
-  migrateLegacyProposalConflictIdentifiers: MigrateLegacyCleanupIdentifiers,
 ): void {
   const userVersion = database.pragma("user_version", { simple: true });
   if (typeof userVersion !== "number" || !Number.isInteger(userVersion)) {
@@ -457,12 +576,12 @@ export function initializeSqliteSchema(
   }
 
   if (userVersion === 3) {
-    migrateSchemaFromV3(database, transaction, migrateLegacyProposalConflictIdentifiers);
+    migrateSchemaFromV3(database, transaction);
     return;
   }
 
   if (userVersion === 4) {
-    migrateSchemaFromV4(database, transaction, migrateLegacyProposalConflictIdentifiers);
+    migrateSchemaFromV4(database, transaction);
     return;
   }
 

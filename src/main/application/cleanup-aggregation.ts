@@ -6,6 +6,7 @@ import {
   type Task,
 } from "../../shared/domain";
 import type { CleanupItemsCache } from "../../shared/storage";
+import type { CleanupItemsRepository } from "./common/ports/task-read-repository";
 import {
   asanaProposalApplicationResultSchema,
   asanaProposalRecoveryResultSchema,
@@ -17,7 +18,6 @@ import {
   obsidianResolvedPathResultSchema,
   type ObsidianResolvedPathResult,
 } from "../obsidian";
-import { StorageDatabase } from "../storage";
 
 export type CleanupNoteExistsPort = {
   readonly noteExists: (
@@ -33,6 +33,13 @@ const cleanupNoteExistsPortSchema = z.custom<CleanupNoteExistsPort>(
     && value != null
     && typeof Reflect.get(value, "noteExists") === "function",
   "Vaultリンク存在確認境界が不正です。",
+);
+const cleanupItemsRepositorySchema = z.custom<CleanupItemsRepository<CleanupItemsCache>>(
+  (value) => typeof value === "object"
+    && value != null
+    && typeof Reflect.get(value, "getCleanupItems") === "function"
+    && typeof Reflect.get(value, "replaceCleanupItemsByKinds") === "function",
+  "要整理項目の保存境界が不正です。",
 );
 const brokenVaultLinkErrorCodeSchema = z.enum([
   "vault_not_registered",
@@ -211,14 +218,14 @@ function validateNoteExistsResult(
 
 /** ローカル非同期処理に由来する要整理項目を種類別に集約します。 */
 export class CleanupAggregationService {
-  private readonly database: StorageDatabase;
+  private readonly repository: CleanupItemsRepository<CleanupItemsCache>;
   private readonly noteExistsPort: CleanupNoteExistsPort;
 
   public constructor(
-    database: StorageDatabase,
+    repository: CleanupItemsRepository<CleanupItemsCache>,
     noteExistsPort: CleanupNoteExistsPort,
   ) {
-    this.database = database;
+    this.repository = cleanupItemsRepositorySchema.parse(repository);
     this.noteExistsPort = cleanupNoteExistsPortSchema.parse(noteExistsPort);
   }
 
@@ -235,7 +242,7 @@ export class CleanupAggregationService {
       processedOperationIdsByProposal.set(validatedKey.proposal_id, operationIds);
     }
     const validatedItems = proposalConflictCleanupItemsSchema.parse(items);
-    const existingItems = this.database.getCleanupItems() ?? [];
+    const existingItems = this.repository.getCleanupItems() ?? [];
     const unrelatedItems = existingItems.filter((item) => {
       if (item.kind !== "proposal_conflict") {
         return false;
@@ -249,7 +256,7 @@ export class CleanupAggregationService {
       return processedOperationIds == null
         || !processedOperationIds.has(item.operation_id);
     });
-    return this.database.replaceCleanupItemsByKinds(
+    return this.repository.replaceCleanupItemsByKinds(
       ["proposal_conflict"],
       [...unrelatedItems, ...validatedItems],
     );
@@ -312,7 +319,7 @@ export class CleanupAggregationService {
     items: readonly BrokenVaultLinkCleanupItem[],
   ): CleanupItemsCache {
     const validatedItems = brokenVaultLinkCleanupItemsSchema.parse(items);
-    return this.database.replaceCleanupItemsByKinds(
+    return this.repository.replaceCleanupItemsByKinds(
       ["broken_vault_link"],
       validatedItems,
     );
@@ -373,7 +380,7 @@ export class CleanupAggregationService {
     input: LocalCleanupItemsInput,
   ): CleanupItemsCache {
     const validatedInput = localCleanupItemsInputSchema.parse(input);
-    return this.database.replaceCleanupItemsByKinds(
+    return this.repository.replaceCleanupItemsByKinds(
       ["proposal_conflict", "broken_vault_link"],
       [
         ...validatedInput.proposal_conflicts,

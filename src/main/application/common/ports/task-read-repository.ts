@@ -116,6 +116,15 @@ export interface TaskReadRepository<
   getCleanupItems(): readonly CleanupItem[] | undefined;
 }
 
+/** 要整理項目の読取と種類別置換だけを公開します。 */
+export interface CleanupItemsRepository<CleanupItems extends TaskReadCleanupItem[]> {
+  getCleanupItems(): CleanupItems | undefined;
+  replaceCleanupItemsByKinds(
+    kinds: readonly ("proposal_conflict" | "broken_vault_link")[],
+    replacementItems: CleanupItems,
+  ): CleanupItems;
+}
+
 /** Asana同期スナップショットを同じSQLite接続へ保存するポートです。 */
 export interface TaskSyncRepository<
   Entry extends TaskReadEntry,

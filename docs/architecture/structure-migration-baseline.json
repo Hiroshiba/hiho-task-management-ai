@@ -1205,22 +1205,12 @@
     {
       "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "old-import",
       "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
     },
     {
       "path": "src/main/application/cleanup-aggregation.ts",
@@ -3386,16 +3376,6 @@
       "path": "src/main/storage/database.ts",
       "rule": "old-import",
       "symbol": "src/main/storage/external-tool-definitions.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
     },
     {
       "path": "src/main/storage/database.ts",
