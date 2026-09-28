@@ -1,12 +1,9 @@
-import {
-  durationSchema,
-  type Duration,
-  type DurationUnit,
-} from "../../shared/domain";
+import { durationSchema } from "../../../shared/ipc-contracts/task-values";
+import type { z } from "zod";
 
-export type { DurationUnit };
+type Duration = z.infer<typeof durationSchema>;
+export type DurationUnit = Duration["unit"];
 
-/** 所要時間の入力単位を定義します。 */
 export const durationUnitOptions: readonly { readonly value: DurationUnit; readonly label: string }[] = [
   { value: "minute", label: "分" },
   { value: "hour", label: "時間" },
@@ -18,21 +15,10 @@ export const durationUnitOptions: readonly { readonly value: DurationUnit; reado
 /** 所要時間の単位名を表示します。 */
 export function durationUnitLabel(unit: DurationUnit): string {
   const option = durationUnitOptions.find((candidate) => candidate.value === unit);
-  if (option == null) {
-    throw new Error("所要時間の単位が見つかりません。");
-  }
-  if (unit === "week") {
-    return "週間";
-  }
-  if (unit === "month") {
-    return "ヶ月";
-  }
+  if (option == null) throw new Error("所要時間の単位が見つかりません。");
+  if (unit === "week") return "週間";
+  if (unit === "month") return "ヶ月";
   return option.label;
-}
-
-/** 所要時間を数値付きで表示します。 */
-export function durationLabel(duration: Duration): string {
-  return `${duration.value}${durationUnitLabel(duration.unit)}`;
 }
 
 /** 所要時間の単位ごとの最小値を返します。 */
@@ -40,10 +26,7 @@ export function durationMinimum(unit: DurationUnit): number {
   return unit === "minute" ? 15 : 1;
 }
 
-/** 入力された所要時間を共通スキーマで検証します。 */
+/** 入力された所要時間を検証します。 */
 export function parseDurationInput(unit: DurationUnit, value: string): Duration {
-  return durationSchema.parse({
-    unit,
-    value: Number(value),
-  });
+  return durationSchema.parse({ unit, value: Number(value) });
 }

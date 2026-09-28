@@ -84,6 +84,15 @@ export function durationLabel(duration: NonNullable<TaskRow["duration"]>): strin
   return `${duration.value}${units[duration.unit]}`;
 }
 
+/** 親作業モードを日本語で表示します。 */
+export function parentWorkModeLabel(mode: "children_only" | "has_own_work" | "unknown"): string {
+  switch (mode) {
+    case "children_only": return "子タスクのみ";
+    case "has_own_work": return "親自身の作業あり";
+    case "unknown": return "不明";
+  }
+}
+
 /** 要整理項目の種類を日本語で表示します。 */
 export function cleanupKindLabel(kind: TaskOverview["cleanup_items"][number]["kind"]): string {
   switch (kind) {

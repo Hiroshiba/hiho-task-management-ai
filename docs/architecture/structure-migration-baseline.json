@@ -3689,18 +3689,8 @@
     },
     {
       "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/TaskDetail.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/AppHeader.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/TaskDetail.vue"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3711,11 +3701,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/useToast.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3736,21 +3721,6 @@
       "path": "src/renderer/src/AppHeader.vue",
       "rule": "old-path",
       "symbol": "src/renderer/src/AppHeader.vue"
-    },
-    {
-      "path": "src/renderer/src/duration.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/duration.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/duration.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/duration.ts"
     },
     {
       "path": "src/renderer/src/main.ts",
@@ -3834,11 +3804,6 @@
     },
     {
       "path": "src/renderer/src/state.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/state.ts"
     },
@@ -3866,41 +3831,6 @@
       "path": "src/renderer/src/task-hub.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/duration.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/TaskDetail.vue"
     },
     {
       "path": "src/renderer/src/ToastHost.vue",

@@ -6,11 +6,12 @@ import { useTaskDrafts } from "./use-task-drafts";
 import { useTaskEdit } from "./use-task-edit";
 
 export { default as TaskFilters } from "./TaskFilters.vue";
+export { default as TaskDetail } from "./TaskDetail.vue";
 export { default as TaskList } from "./TaskList.vue";
 export { default as TaskSort } from "./TaskSort.vue";
 export { createMockTasksApi } from "./mock-tasks-api";
 export { cleanupKindLabel, cleanupScopeLabel, cleanupRelatedGids } from "./task-presentation";
-export type { TaskDetail, TaskDataRefreshResult } from "./use-task-read";
+export type { TaskDataRefreshResult } from "./use-task-read";
 export type { TaskDraft, TaskDraftStore, TaskEditMarker } from "./use-task-drafts";
 
 /** タスク閲覧と同期の唯一の画面状態を生成します。 */

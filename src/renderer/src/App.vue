@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { DialogRoot } from "reka-ui";
-import { viewModelTaskDetailSchema } from "../../shared/view-model";
 import { useAppBootstrap } from "../app/use-app-bootstrap";
 import { useSystemUpdate } from "../features/system";
-import { VaultSettings, useObsidianIntegration } from "../features/obsidian-integration";
+import { TaskObsidianLinks, VaultSettings, useObsidianIntegration } from "../features/obsidian-integration";
 import { GithubStatus, useGithubIntegration } from "../features/github-integration";
 import { ProposalHistoryPanel, useProposals, useProposalWorkspace } from "../features/proposals";
 import {
   TaskFilters,
+  TaskDetail,
   TaskList,
   TaskSort,
   cleanupKindLabel,
@@ -18,7 +18,6 @@ import {
 } from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
 import { AsanaReauthenticationPanel, SettingsDialog, SetupWizard, useSettings } from "../features/settings";
-import TaskDetail from "./TaskDetail.vue";
 import ToastHost from "./ToastHost.vue";
 import { useToast } from "./useToast";
 
@@ -447,7 +446,7 @@ const {
                 {{ taskFeedback.message }}
               </p>
               <TaskDetail
-                :task="selectedTask == null ? undefined : viewModelTaskDetailSchema.parse(selectedTask)"
+                :task="selectedTask"
                 :as-of="currentAsOf"
                 :areas="overview.areas"
                 :can-write="canWriteSelectedTask"
@@ -456,17 +455,26 @@ const {
                 :execution-feedback="selectedExecutionFeedback"
                 :draft-store="drafts"
                 :task-edit-markers="taskEditMarkers"
-                :read-available="configured"
-                :obsidian-vault-ids="registeredVaultIds"
-                :obsidian-statuses="obsidianStatuses"
-                :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
                 @edit="applyEdit"
                 @check-execution="refreshExecution"
                 @retry-execution="retryExecution"
-                @check-obsidian="obsidian.checkNote"
-                @open-obsidian="obsidian.openNote"
-                @reanalyze-obsidian-notes="requestTaskNoteAnalysis"
-              />
+              >
+                <template #related-notes="{ task, canWrite, unlink }">
+                  <TaskObsidianLinks
+                    :task-gid="task.gid"
+                    :links="task.obsidian_links"
+                    :vault-ids="registeredVaultIds"
+                    :statuses="obsidianStatuses"
+                    :read-available="configured"
+                    :can-write="canWrite"
+                    :can-reanalyze="canReanalyzeObsidianNotes"
+                    @check="obsidian.checkNote"
+                    @open="obsidian.openNote"
+                    @unlink="unlink"
+                    @reanalyze="requestTaskNoteAnalysis"
+                  />
+                </template>
+              </TaskDetail>
             </div>
           </div>
         </section>
