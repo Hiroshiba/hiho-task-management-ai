@@ -10,7 +10,7 @@ import { sortTaskRows, taskSortSchema, type TaskSort } from "./task-presentation
 
 export type TaskDetail = z.infer<typeof detailSchema>;
 export type TaskDataRefreshResult =
-  | { readonly kind: "applied"; readonly detail?: TaskDetail }
+  | { readonly kind: "applied"; readonly detail?: TaskDetail; readonly detailGeneration: number }
   | { readonly kind: "unchanged" }
   | { readonly kind: "superseded" }
   | { readonly kind: "failed" };
@@ -121,14 +121,6 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     selectedTask.value = result.value;
   }
 
-  /** 保存後に確認した詳細を選択中のタスクへ反映します。 */
-  function applySavedTaskDetail(taskGid: string, detail: TaskDetail): void {
-    if (detail.gid !== taskGid) throw new Error("保存後のタスク詳細が実行対象と一致しません。");
-    if (selectedTaskGid.value !== taskGid) return;
-    taskDetailGeneration += 1;
-    selectedTask.value = detail;
-  }
-
   function commitOverview(value: TaskOverview): void {
     const previousOverview = overview.value;
     if (previousOverview != null) {
@@ -172,7 +164,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value == null) {
         selectedTask.value = undefined;
       }
-      return { kind: "applied" };
+      return { kind: "applied", detailGeneration };
     }
     if (!nextOverview.tasks.some((task) => task.gid === taskGid)) {
       commitOverview(nextOverview);
@@ -181,7 +173,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
         setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
         clearTaskSelection();
       }
-      return { kind: "applied" };
+      return { kind: "applied", detailGeneration };
     }
     const detailResult = apiContractDetail(await api.getDetail(taskGid));
     if (detailResult.kind === "error") {
@@ -193,18 +185,19 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
           setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
           clearTaskSelection();
         }
-        return { kind: "applied" };
+        return { kind: "applied", detailGeneration };
       }
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(failureMessage(detailResult));
       return { kind: "failed" };
     }
+    if (detailResult.value.gid !== taskGid) throw new Error("タスク詳細が選択対象と一致しません。");
     if (generation !== taskDataGeneration) return { kind: "superseded" };
     commitOverview(nextOverview);
     if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
       selectedTask.value = detailResult.value;
-      return { kind: "applied", detail: detailResult.value };
+      return { kind: "applied", detail: detailResult.value, detailGeneration };
     }
-    return { kind: "applied" };
+    return { kind: "applied", detailGeneration };
   }
 
   function startTaskDataRefresh(): { readonly generation: number; readonly completion: Promise<TaskDataRefreshResult> } {
@@ -274,7 +267,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
 
   return { overview, selectedTask, selectedTaskGid, filter, taskSort, currentAsOf, taskFeedback,
     visibleRows, taskReferences, setTaskFeedback, clearTaskFeedback, captureTaskDetailContext, isCurrentTaskDetailContext,
-    selectTask, deselectTask, applySavedTaskDetail, reloadTaskData, startInitialTaskDataRefresh,
+    selectTask, deselectTask, reloadTaskData, startInitialTaskDataRefresh,
     reloadTaskDataAfterSuccessfulSync };
 }
 
