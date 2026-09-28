@@ -3678,24 +3678,9 @@
       "symbol": "src/main/window-state.ts"
     },
     {
-      "path": "src/preload/index.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/preload/index.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/task-hub-api.ts"
-    },
-    {
       "path": "src/renderer/src/main.ts",
       "rule": "old-import",
       "symbol": "src/renderer/src/styles.css"
-    },
-    {
-      "path": "src/renderer/src/main.ts",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/task-hub.ts"
     },
     {
       "path": "src/renderer/src/main.ts",
@@ -3703,74 +3688,9 @@
       "symbol": "src/renderer/src/main.ts"
     },
     {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/task-hub-api.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/renderer/src/mocks/task-hub.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/mocks/task-hub.ts"
-    },
-    {
       "path": "src/renderer/src/styles.css",
       "rule": "old-path",
       "symbol": "src/renderer/src/styles.css"
-    },
-    {
-      "path": "src/renderer/src/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/mocks/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/task-hub.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/task-hub-api.ts"
-    },
-    {
-      "path": "src/renderer/src/task-hub.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/task-hub.ts"
     },
     {
       "path": "src/shared/ai-workflow/index.ts",
@@ -4076,16 +3996,6 @@
       "path": "src/shared/storage/schemas.ts",
       "rule": "old-path",
       "symbol": "src/shared/storage/schemas.ts"
-    },
-    {
-      "path": "src/shared/task-hub-api.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/shared/task-hub-api.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/task-hub-api.ts"
     },
     {
       "path": "src/shared/taskctl/index.ts",

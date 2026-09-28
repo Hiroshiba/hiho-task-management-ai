@@ -7,14 +7,11 @@ import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { parseMockSelection } from "../shared/mock/mock-selection";
 import App from "../app/App.vue";
 import "./styles.css";
-import { createTaskHubApi, taskHubApiInjectionKey } from "./task-hub";
 
-async function mountApp(): Promise<void> {
+function mountApp(): void {
   const mockSelection = parseMockSelection(window.location.search);
-  const taskHubApi = await createTaskHubApi(mockSelection.features, window.taskHub);
   const featureApis = createFeatureApiRegistry(mockSelection.features, window.taskHub);
   const app = createApp(App);
-  app.provide(taskHubApiInjectionKey, taskHubApi);
   app.provide(systemApiInjectionKey, featureApis.system);
   app.provide(diagnosticsApiInjectionKey, featureApis.diagnostics);
   app.provide(tasksApiInjectionKey, featureApis.tasks);
@@ -35,4 +32,4 @@ async function mountApp(): Promise<void> {
   }
 }
 
-await mountApp();
+mountApp();

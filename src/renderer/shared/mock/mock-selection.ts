@@ -1,17 +1,6 @@
 import { z } from "zod";
 
 const mockFeatureNameSchema = z.enum([
-  "app",
-  "appUpdate",
-  "asana",
-  "readModel",
-  "sync",
-  "proposalHistory",
-  "setup",
-  "gui",
-  "externalAgent",
-  "ai",
-  "obsidian",
   "system",
   "diagnostics",
   "tasks",
