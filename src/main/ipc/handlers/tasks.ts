@@ -38,6 +38,16 @@ export interface TasksHandlerWorkflows {
       readonly fallback_reason?: string | undefined;
       readonly critical_errors: readonly unknown[];
       readonly cleanup_items: readonly unknown[];
+      readonly application_result: {
+        readonly affected_gids: readonly string[];
+        readonly operations: readonly { readonly outcome: "applied" | "already_applied" | "conflict" }[];
+      };
+      readonly remaining_plan: {
+        readonly status_write_task_gids: readonly string[];
+        readonly external_write_task_gids: readonly string[];
+        readonly tag_write_task_gids: readonly string[];
+      };
+      readonly normalization_notifications: SyncResultDto["normalization_notifications"];
     }>;
   };
   readonly guiEdit: {
@@ -55,14 +65,21 @@ export interface TasksHandlerWorkflows {
 function toSyncStateDto(state: SyncStateDto): SyncStateDto {
   switch (state.kind) {
     case "online":
+      return { kind: state.kind,
+        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }),
+        ...(state.last_error_code == null ? {} : { last_error_code: state.last_error_code }),
+        ...(state.normalization_notifications == null ? {} : { normalization_notifications: state.normalization_notifications }) };
     case "offline":
       return { kind: state.kind,
-        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }) };
+        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }),
+        ...(state.last_error_code == null ? {} : { last_error_code: state.last_error_code }) };
     case "syncing":
       return { kind: state.kind, requested_mode: state.requested_mode,
-        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }) };
+        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }),
+        ...(state.last_error_code == null ? {} : { last_error_code: state.last_error_code }) };
     case "authentication_required":
-      return { kind: state.kind };
+      return { kind: state.kind, error_code: state.error_code,
+        ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }) };
     case "error":
       return { kind: state.kind, error_code: state.error_code,
         ...(state.last_successful_sync_at == null ? {} : { last_successful_sync_at: state.last_successful_sync_at }) };
@@ -167,13 +184,22 @@ export function createTasksHandlers(workflows: TasksHandlerWorkflows): TasksHand
       toSyncStateDto(await taskRead.getState())),
     runSync: createContractHandler(tasksContracts.runSync, async (request, signal) => {
       const result = await taskRead.run(request, signal);
+      const operations = result.application_result.operations;
       return {
         requested_mode: result.requested_mode,
         performed_mode: result.performed_mode,
         synced_at: result.synced_at,
         ...(result.fallback_reason == null ? {} : { fallback_reason: result.fallback_reason }),
+        affected_count: result.application_result.affected_gids.length,
+        applied_count: operations.filter((operation) => operation.outcome === "applied").length,
+        already_applied_count: operations.filter((operation) => operation.outcome === "already_applied").length,
+        conflict_count: operations.filter((operation) => operation.outcome === "conflict").length,
+        remaining_write_count: result.remaining_plan.status_write_task_gids.length
+          + result.remaining_plan.external_write_task_gids.length
+          + result.remaining_plan.tag_write_task_gids.length,
         critical_error_count: result.critical_errors.length,
         cleanup_count: result.cleanup_items.length,
+        normalization_notifications: result.normalization_notifications,
       };
     }),
     applyEdit: createContractHandler(tasksContracts.applyEdit, async (request, signal) =>

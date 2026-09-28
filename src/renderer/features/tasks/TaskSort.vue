@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { rendererTaskSortSchema, type RendererTaskSort } from "./state";
-import RekaSelect from "./RekaSelect.vue";
+import RekaSelect from "../../shared/components/RekaSelect.vue";
+import { taskSortSchema, type TaskSort } from "./task-presentation";
 
 const props = defineProps<{
-  modelValue: RendererTaskSort;
+  modelValue: TaskSort;
   disabled: boolean;
 }>();
 
 const emit = defineEmits<{
-  (event: "update:modelValue", value: RendererTaskSort): void;
+  (event: "update:modelValue", value: TaskSort): void;
 }>();
 
 const sortOptions = [
@@ -25,13 +25,13 @@ const sortOptions = [
     value: "duration_descending",
     label: "所要時間の単位が大きい順、同じ単位では値が大きい順",
   },
-] satisfies readonly { readonly value: RendererTaskSort; readonly label: string }[];
+] satisfies readonly { readonly value: TaskSort; readonly label: string }[];
 
 function onChange(value: string | number): void {
   if (typeof value !== "string") {
     throw new TypeError("並び順の形式が不正です。");
   }
-  emit("update:modelValue", rendererTaskSortSchema.parse(value));
+  emit("update:modelValue", taskSortSchema.parse(value));
 }
 </script>
 

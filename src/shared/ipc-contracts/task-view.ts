@@ -91,7 +91,7 @@ const taskRowShape = {
   gid: gidSchema,
   title: displayTextSchema,
   status: taskStatusSchema,
-  importance: z.number().int().min(1).max(5),
+  importance: z.literal([1, 2, 3, 4, 5]),
   duration: durationSchema.optional(),
   due: dueSchema,
   area: displayTextSchema,
@@ -195,21 +195,30 @@ const scoreBreakdownSchema = z
 const tieBreakSchema = z
   .object({
     effective_due_at: dateTimeSchema.optional(),
-    importance: z.number().int().min(1).max(5),
+    importance: z.literal([1, 2, 3, 4, 5]),
     release_points: z.number().int().nonnegative(),
     activity_anchor_on: dateSchema,
     gid: gidSchema,
   })
   .strict();
+const rankingDetailTextSchema = z.string().min(1).max(8 * 1_024 * 1_024);
 const rankingShape = {
   calculated_at: dateTimeSchema.optional(),
   activity_elapsed_days: z.number().int().nonnegative().optional(),
-  detail_text: displayTextSchema.optional(),
+  detail_text: rankingDetailTextSchema.optional(),
   score_breakdown: scoreBreakdownSchema.optional(),
   release_target_gids: z.array(gidSchema).optional(),
   reason_chips: z.array(displayTextSchema).optional(),
   tie_break: tieBreakSchema.optional(),
   exclusion_reasons: z.array(exclusionReasonSchema).optional(),
+};
+const requiredRankingShape = {
+  calculated_at: dateTimeSchema,
+  activity_elapsed_days: z.number().int().nonnegative(),
+  detail_text: rankingDetailTextSchema,
+  release_target_gids: z.array(gidSchema),
+  reason_chips: z.array(displayTextSchema),
+  tie_break: tieBreakSchema,
 };
 
 export const detailSchema = z
@@ -220,7 +229,7 @@ export const detailSchema = z
     title: displayTextSchema,
     notes: z.string().max(1_000_000),
     status: taskStatusSchema,
-    importance: z.number().int().min(1).max(5),
+    importance: z.literal([1, 2, 3, 4, 5]),
     duration: durationSchema.optional(),
     due: dueSchema,
     area: displayTextSchema,
@@ -235,9 +244,13 @@ export const detailSchema = z
           kind: z.literal("ranked"),
           rank: z.number().int().positive(),
           ...rankingShape,
+          ...requiredRankingShape,
+          score_breakdown: scoreBreakdownSchema,
+          exclusion_reasons: z.array(z.never()),
         })
         .strict(),
-      z.object({ kind: z.literal("excluded"), ...rankingShape }).strict(),
+      z.object({ kind: z.literal("excluded"), ...rankingShape, ...requiredRankingShape,
+        exclusion_reasons: z.array(exclusionReasonSchema).min(1) }).strict(),
       z
         .object({
           kind: z.literal("unavailable"),

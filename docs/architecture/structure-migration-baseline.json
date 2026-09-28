@@ -3770,21 +3770,6 @@
     {
       "path": "src/renderer/src/App.vue",
       "rule": "import-boundary",
-      "symbol": "src/renderer/src/TaskFilters.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/TaskList.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/TaskSort.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
       "symbol": "src/shared/domain/index.ts"
     },
     {
@@ -3821,21 +3806,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/TaskDetail.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/TaskFilters.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/TaskList.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/TaskSort.vue"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -4093,11 +4063,6 @@
       "symbol": "src/renderer/src/ProposalReviewPanel.vue"
     },
     {
-      "path": "src/renderer/src/RekaSelect.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/RekaSelect.vue"
-    },
-    {
       "path": "src/renderer/src/SettingsDialog.vue",
       "rule": "import-boundary",
       "symbol": "src/renderer/src/state.ts"
@@ -4230,11 +4195,6 @@
     {
       "path": "src/renderer/src/TaskDetail.vue",
       "rule": "old-import",
-      "symbol": "src/renderer/src/RekaSelect.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskDetail.vue",
-      "rule": "old-import",
       "symbol": "src/renderer/src/state.ts"
     },
     {
@@ -4251,81 +4211,6 @@
       "path": "src/renderer/src/TaskDetail.vue",
       "rule": "old-path",
       "symbol": "src/renderer/src/TaskDetail.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskFilters.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskFilters.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/RekaSelect.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskFilters.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskFilters.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/TaskFilters.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/duration.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/index.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskList.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/TaskList.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskSort.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskSort.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/RekaSelect.vue"
-    },
-    {
-      "path": "src/renderer/src/TaskSort.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/TaskSort.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/TaskSort.vue"
     },
     {
       "path": "src/renderer/src/ToastHost.vue",

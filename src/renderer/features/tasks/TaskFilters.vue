@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { rendererFilterSchema, type RendererFilter } from "./state";
-import RekaSelect from "./RekaSelect.vue";
+import RekaSelect from "../../shared/components/RekaSelect.vue";
+import { taskFilterSchema, type TaskFilter } from "./task-filter";
 
 const props = defineProps<{
-  modelValue: RendererFilter;
+  modelValue: TaskFilter;
   areas: readonly string[];
   disabled: boolean;
 }>();
 
 const emit = defineEmits<{
-  (event: "update:modelValue", value: RendererFilter): void;
+  (event: "update:modelValue", value: TaskFilter): void;
 }>();
 
 const filterOptions = computed(() => [
@@ -25,7 +25,7 @@ const filterOptions = computed(() => [
   ...props.areas.map((area) => ({ value: `area:${area}`, label: `領域: ${area}` })),
 ]);
 
-function filterValue(filter: RendererFilter): string {
+function filterValue(filter: TaskFilter): string {
   if (filter.kind === "area") {
     return `area:${filter.area}`;
   }
@@ -39,7 +39,7 @@ function onChange(value: string | number): void {
   const filter = value.startsWith("area:")
     ? { kind: "area", area: value.slice("area:".length) }
     : { kind: value };
-  emit("update:modelValue", rendererFilterSchema.parse(filter));
+  emit("update:modelValue", taskFilterSchema.parse(filter));
 }
 </script>
 

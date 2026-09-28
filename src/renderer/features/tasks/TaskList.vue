@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import { dateSchema, isoDateTimeSchema } from "../../shared/domain";
-import type { ViewModelTaskRow } from "../../shared/view-model";
-import { durationLabel } from "./duration";
+import { dateSchema, dateTimeSchema } from "../../../shared/ipc-contracts/common";
+import type { TaskRow } from "./task-filter";
 import {
   blockLabel,
   deadlineTone,
   deadlineToneClass,
+  durationLabel,
   dueRelativeLabel,
   importanceToneClass,
   statusLabel,
-} from "./state";
+} from "./task-presentation";
 
 const props = defineProps<{
-  rows: readonly ViewModelTaskRow[];
+  rows: readonly TaskRow[];
   selectedTaskGid: string | undefined;
   asOf: string;
 }>();
@@ -22,14 +22,14 @@ const emit = defineEmits<{
   (event: "clear-selection"): void;
 }>();
 
-function rankLabel(row: ViewModelTaskRow): string {
+function rankLabel(row: TaskRow): string {
   if (row.kind !== "ranked") {
     return "—";
   }
   return String(row.rank);
 }
 
-function taskDueLabel(row: ViewModelTaskRow): string {
+function taskDueLabel(row: TaskRow): string {
   switch (row.due.kind) {
     case "none":
       return "期限なし";
@@ -44,7 +44,7 @@ function taskDueLabel(row: ViewModelTaskRow): string {
       }).format(new Date(timestamp));
     }
     case "at": {
-      const value = isoDateTimeSchema.parse(row.due.value);
+      const value = dateTimeSchema.parse(row.due.value);
       const timestamp = Date.parse(value);
       return new Intl.DateTimeFormat("ja-JP", {
         day: "numeric",
@@ -59,7 +59,7 @@ function taskDueLabel(row: ViewModelTaskRow): string {
   }
 }
 
-function taskDurationLabel(row: ViewModelTaskRow): string {
+function taskDurationLabel(row: TaskRow): string {
   const duration = row.duration;
   if (duration == null) {
     throw new Error("所要時間がありません。");
@@ -67,14 +67,14 @@ function taskDurationLabel(row: ViewModelTaskRow): string {
   return durationLabel(duration);
 }
 
-function rowWarnings(row: ViewModelTaskRow): string {
+function rowWarnings(row: TaskRow): string {
   if (row.warning_count === 0) {
     return "";
   }
   return `${row.warning_count}件の警告`;
 }
 
-function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
+function hasSupplementaryInfo(row: TaskRow): boolean {
   return (
     row.child_progress.total_count > 0 ||
     row.has_dependencies ||
@@ -85,7 +85,7 @@ function hasSupplementaryInfo(row: ViewModelTaskRow): boolean {
   );
 }
 
-function rowDeadlineTone(row: ViewModelTaskRow): ReturnType<typeof deadlineTone> {
+function rowDeadlineTone(row: TaskRow): ReturnType<typeof deadlineTone> {
   return deadlineTone(row.due, row.status, props.asOf);
 }
 

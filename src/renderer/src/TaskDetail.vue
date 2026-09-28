@@ -38,7 +38,7 @@ import {
   parseDurationInput,
   type DurationUnit,
 } from "./duration";
-import RekaSelect from "./RekaSelect.vue";
+import RekaSelect from "../shared/components/RekaSelect.vue";
 
 const props = defineProps<{
   task: ViewModelTaskDetail | undefined;

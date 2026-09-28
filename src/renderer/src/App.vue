@@ -4,7 +4,6 @@ import {
   defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
-  onMounted,
   onUnmounted,
   ref,
   shallowRef,
@@ -26,7 +25,6 @@ import {
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
   ipcGuiEditInputSchema,
-  ipcSyncStateEventSchema,
   ipcSyncResultSchema,
   ipcProposalHistoryStatusSchema,
   type IpcAiStatus,
@@ -34,8 +32,6 @@ import {
   type IpcFailure,
   type IpcGuiEditResult,
   type IpcIntegrationStatus,
-  type IpcSyncResult,
-  type IpcSyncStateEvent,
   type IpcProposalHistoryStatus,
   type IpcProposalHistoryConfirmInput,
 } from "../../shared/ipc";
@@ -72,45 +68,44 @@ import {
   type ExternalAgentGuiState,
 } from "../../shared/external-agent";
 import {
-  viewModelOverviewSchema,
   viewModelTaskDetailSchema,
-  type ViewModelOverview,
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import type { VaultMapping } from "../../shared/storage";
 import { useAppScreen } from "../app/use-app-screen";
 import { useAppStartup } from "../app/use-app-startup";
 import { useSystemUpdate } from "../features/system";
+import {
+  TaskFilters,
+  TaskList,
+  TaskSort,
+  cleanupKindLabel,
+  cleanupScopeLabel,
+  cleanupRelatedGids,
+  useTasks,
+  type TaskDataRefreshResult,
+  type TaskDetail as TaskDetailDto,
+} from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
 import type AiSessionDialog from "./AiSessionDialog.vue";
 import SettingsDialog from "./SettingsDialog.vue";
 import TaskDetail from "./TaskDetail.vue";
-import TaskFilters from "./TaskFilters.vue";
-import TaskList from "./TaskList.vue";
-import TaskSort from "./TaskSort.vue";
 import ToastHost from "./ToastHost.vue";
 import {
-  filterTaskRows,
   rendererAiConversationEntrySchema,
   rendererAiStateSchema,
   rendererCodexStateSchema,
-  rendererConnectionStateSchema,
   rendererFailureSchema,
   rendererSyncStateSchema,
-  rendererTaskSortSchema,
-  sortTaskRows,
   type RendererAiState,
   type RendererAiConversationEntry,
   type RendererCodexState,
-  type RendererConnectionState,
   type RendererFailure,
-  type RendererFilter,
   type RendererExternalAgentEditResult,
   type RendererExternalAgentState,
   type RendererGuiEdit,
   type RendererTaskEditMarker,
   type RendererTaskEditMarkerUpdate,
-  type RendererTaskSort,
   type RendererSyncState,
   type AiSessionOperation,
   type AiSessionView,
@@ -153,58 +148,12 @@ type SetupResult =
 
 type ObsidianLinkStatus = "exists" | "missing" | "unavailable";
 
-type TaskDataRefreshResult =
-  | { readonly kind: "applied" }
-  | { readonly kind: "unchanged" }
-  | { readonly kind: "superseded" }
-  | { readonly kind: "failed" };
-
-type ActiveSyncReload =
-  | { readonly kind: "idle" }
-  | {
-      readonly kind: "initial_loading";
-      readonly generation: number;
-      readonly completion: Promise<TaskDataRefreshResult>;
-    }
-  | {
-      readonly kind: "loading";
-      readonly sync_at: string;
-      readonly generation: number;
-      readonly completion: Promise<TaskDataRefreshResult>;
-    };
-
-type TaskDataRefreshRequest = {
-  readonly generation: number;
-  readonly completion: Promise<TaskDataRefreshResult>;
-};
-
-type TaskObsidianLink = ViewModelTaskDetail["obsidian_links"][number];
-
-type TaskDetailContext = {
-  readonly generation: number;
-  readonly taskGid: string;
-};
+type TaskObsidianLink = TaskDetailDto["obsidian_links"][number];
 
 type PendingAiProposal = {
   readonly message: string;
   readonly proposal: AiWorkflowProposalView;
 };
-
-type SyncRuntimeErrorCode = Extract<
-  IpcSyncStateEvent,
-  { readonly kind: "error" }
->["error_code"];
-
-type SyncNormalizationNotification =
-  IpcSyncResult["normalization_notifications"][number];
-
-type NormalizationNotificationDisplayState =
-  | { readonly kind: "idle" }
-  | { readonly kind: "displayed"; readonly synced_at: string };
-
-type SyncStateReadResult =
-  | { readonly kind: "received"; readonly value: IpcSyncStateEvent }
-  | { readonly kind: "unavailable" };
 
 type GuiEditCompletion =
   | {
@@ -265,15 +214,6 @@ const asanaAuthenticationState = ref<IpcAsanaAuthenticationState>(
   ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" }),
 );
 const asanaAuthorizationCodeInput = ref<HTMLInputElement | null>(null);
-const overview = ref<ViewModelOverview | undefined>();
-const selectedTask = ref<ViewModelTaskDetail | undefined>();
-const selectedTaskGid = ref<string | undefined>();
-const filter = ref<RendererFilter>({ kind: "normal" });
-const taskSort = ref<RendererTaskSort>(rendererTaskSortSchema.parse("execution_order"));
-const connectionState = ref<RendererConnectionState>(rendererConnectionStateSchema.parse({
-  kind: "checking",
-  sync: { kind: "waiting" },
-}));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
 const appUpdateState = useSystemUpdate();
 const aiSessions = ref<AiSessionRecord[]>([]);
@@ -298,7 +238,6 @@ const externalAgentState = ref<RendererExternalAgentState>({ kind: "loading" });
 const externalAgentBusy = ref(false);
 const externalAgentEditResult = ref<RendererExternalAgentEditResult | undefined>();
 const { addToast } = useToast();
-const currentAsOf = ref(new Date().toISOString());
 const feedback = ref<Feedback | undefined>();
 const proposalHistoryStatus = ref<IpcProposalHistoryStatus | undefined>();
 const proposalHistoryLoadError = ref<string | undefined>();
@@ -306,47 +245,24 @@ const proposalHistoryBusy = ref(false);
 const proposalHistoryTargetIds = ref<Record<string, string>>({});
 const proposalHistoryResults = ref<Record<string, IpcProposalHistoryConfirmInput["confirmed_result"]>>({});
 const proposalHistoryChecked = ref<Record<string, boolean>>({});
-const taskFeedback = ref<Feedback | undefined>();
-const obsidianStatuses = ref<ReadonlyMap<string, ObsidianLinkStatus>>(new Map());
 const registeredVaultIds = ref<readonly string[]>([]);
-const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
 const guiEditStates = ref(new Map<string, GuiEditRequestState>());
 const taskEditMarkers = ref(new Map<string, RendererTaskEditMarker>());
-let removeSyncSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
-let clockTimer: number | undefined;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
 let asanaAuthenticationStateLoadInProgress = false;
-let taskDataGeneration = 0;
-let taskDetailGeneration = 0;
-let obsidianStatusGeneration = 0;
 let guiEditGeneration = 0;
 let taskEditMarkerGeneration = 0;
 let vaultMappingsLoadGeneration = 0;
-let lastLoadedSuccessfulSyncAt: string | undefined;
-let activeSyncReload: ActiveSyncReload = { kind: "idle" };
-let normalizationNotificationDisplayState: NormalizationNotificationDisplayState = {
-  kind: "idle",
-};
-
-
 function setFeedback(kind: FeedbackKind, message: string): void {
   feedback.value = { kind, message };
 }
 
 function clearFeedback(): void {
   feedback.value = undefined;
-}
-
-function setTaskFeedback(kind: FeedbackKind, message: string): void {
-  taskFeedback.value = { kind, message };
-}
-
-function clearTaskFeedback(): void {
-  taskFeedback.value = undefined;
 }
 
 function feedbackClass(kind: FeedbackKind): string {
@@ -391,37 +307,68 @@ function showTaskResultFeedback(kind: FeedbackKind, message: string): void {
   setTaskFeedback(kind, message);
 }
 
-const syncState = computed(() => connectionState.value.sync);
 const configured = computed(() => setupState.value?.kind === "ready");
 const proposalHistoryClear = computed(() => proposalHistoryStatus.value?.entries.length === 0);
+const {
+  overview,
+  selectedTask,
+  selectedTaskGid,
+  filter,
+  taskSort,
+  currentAsOf,
+  taskFeedback,
+  obsidianStatuses,
+  visibleRows,
+  connectionState,
+  syncState,
+  activeSyncMode,
+  canManualSync,
+  canAcceptWrite,
+  setTaskFeedback,
+  clearTaskFeedback,
+  captureTaskDetailContext,
+  isCurrentTaskDetailContext,
+  selectTask,
+  deselectTask,
+  checkObsidianLinks,
+  captureObsidianStatusContext,
+  isCurrentObsidianStatusContext,
+  setObsidianStatus,
+  reloadTaskData,
+  startInitialTaskDataRefresh,
+  reloadTaskDataAfterSuccessfulSync,
+  setConnectionState,
+  setSyncState,
+  applySyncStateDisplay,
+  readCurrentSyncState,
+  subscribeSyncState,
+  reconcileSyncStateAfterFailure,
+  showNormalizationNotificationToast,
+  normalizationNotificationMessage,
+  loadInitialSyncState,
+  manualSync,
+  fullSync,
+  chromiumConnectionState,
+  getDetail,
+} = useTasks({
+  configured,
+  historyClear: proposalHistoryClear,
+  authenticationBusy: asanaAuthenticationBusy,
+  checkLinks: (links) => collectObsidianStatuses(links, registeredVaultIds.value),
+  onFailure: (message) => setFeedback("failure", message),
+  onTaskFailure: (message) => setTaskFeedback("failure", message),
+  onTaskMissing: (taskGid) => setTaskEditMarker(taskGid, { kind: "missing" }),
+  onFeedback: (kind, message) => showGlobalResultFeedback({ kind, message }),
+  onToast: (kind, message) => addToast(kind, message),
+  onStateChange: (sync) => {
+    updateGuiEditStatesForSync(sync);
+    clearAiSynchronizationWaitingFeedback();
+  },
+});
 const canSynchronizeProposalHistory = computed(() => {
   const entries = proposalHistoryStatus.value?.entries;
   return entries != null && entries.length > 0
     && entries.every((entry) => entry.kind === "synchronization_required");
-});
-const canManualSync = computed(() => configured.value
-  && proposalHistoryClear.value
-  && activeSyncMode.value === "idle"
-  && !asanaAuthenticationBusy.value
-  && connectionState.value.kind === "online"
-  && syncState.value.kind !== "syncing"
-  && syncState.value.kind !== "authentication_required"
-  && syncState.value.kind !== "recovery_pending");
-const canAcceptWrite = computed(() => {
-  if (!proposalHistoryClear.value) return false;
-  const currentOverview = overview.value;
-  const currentSyncState = syncState.value;
-  if (connectionState.value.kind !== "online" || currentOverview == null) {
-    return false;
-  }
-  if (currentSyncState.kind === "syncing") {
-    return currentSyncState.can_accept_write;
-  }
-  if (currentSyncState.kind !== "synced") {
-    return false;
-  }
-  return syncTimestamp(currentOverview.last_successful_sync_at)
-    >= syncTimestamp(currentSyncState.synced_at);
 });
 const selectedGuiEditState = computed(() => {
   const taskGid = selectedTaskGid.value;
@@ -493,15 +440,6 @@ const canReanalyzeObsidianNotes = computed(() => {
     && codexState.value.kind === "ready"
     && registeredVaultIds.value.length > 0;
 });
-const visibleRows = computed(() => {
-  const currentOverview = overview.value;
-  if (currentOverview == null) {
-    return [];
-  }
-  const filteredRows = filterTaskRows(currentOverview, filter.value, currentAsOf.value);
-  return sortTaskRows(filteredRows, taskSort.value);
-});
-
 function aiSessionStatus(
   state: RendererAiState,
   operation: AiSessionOperation,
@@ -894,16 +832,6 @@ async function rejectExternalAgentProposal(input: ExternalAgentGuiRejectInput): 
   }
 }
 
-function syncFailureStateFromIpc(value: IpcFailure): RendererSyncState {
-  if (value.code === "authentication_required") {
-    return rendererSyncStateSchema.parse({ kind: "authentication_required" });
-  }
-  if (value.code === "aborted") {
-    return rendererSyncStateSchema.parse({ kind: "error", error_code: "request_aborted" });
-  }
-  return rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" });
-}
-
 function showFailure(value: IpcFailure): void {
   setFeedback("failure", displayFailure(value).message);
 }
@@ -968,110 +896,6 @@ function unavailableFeedbackKind(): FeedbackKind {
   return "warning";
 }
 
-const normalizationStatusOrder: readonly SyncNormalizationNotification["status"][] = [
-  "not_started",
-  "in_progress",
-  "completed",
-  "withdrawn",
-];
-
-const normalizationStatusLabels: {
-  readonly [status in SyncNormalizationNotification["status"]]: string;
-} = {
-  not_started: "未着手",
-  in_progress: "進行中",
-  completed: "完了",
-  withdrawn: "取り下げ",
-};
-
-function createNormalizationNotificationFeedback(
-  notifications: readonly SyncNormalizationNotification[],
-): string | undefined {
-  if (notifications.length === 0) {
-    return undefined;
-  }
-  if (notifications.length === 1) {
-    const notification = notifications.at(0);
-    if (notification == null) {
-      throw new Error("状態整合化通知を取得できません。");
-    }
-    return notification.message;
-  }
-  const summaries: string[] = [];
-  for (const status of normalizationStatusOrder) {
-    const count = notifications.filter(
-      (notification) => notification.status === status,
-    ).length;
-    if (count > 0) {
-      summaries.push(`${normalizationStatusLabels[status]} ${count}件`);
-    }
-  }
-  if (summaries.length === 0) {
-    throw new Error("状態整合化通知の内訳を作成できません。");
-  }
-  return `タスク状態を整合化しました。対象 ${notifications.length}件。${summaries.join("、")}。`;
-}
-
-function includeNormalizationNotificationFeedback(
-  message: string,
-  notifications: readonly SyncNormalizationNotification[],
-): string {
-  const notificationFeedback = createNormalizationNotificationFeedback(
-    notifications,
-  );
-  if (notificationFeedback == null) {
-    return message;
-  }
-  return `${notificationFeedback} ${message}`;
-}
-
-function syncFeedbackKind(result: IpcSyncResult): FeedbackKind {
-  const hasConflict = result.application_result.operations.some(
-    (operation) => operation.outcome === "conflict",
-  );
-  const remainingWriteCount = result.remaining_plan.status_write_task_gids.length
-    + result.remaining_plan.external_write_task_gids.length
-    + result.remaining_plan.tag_write_task_gids.length;
-  if (hasConflict || remainingWriteCount > 0 || result.critical_errors.length > 0) {
-    return "warning";
-  }
-  return "success";
-}
-
-function createSyncFeedback(result: IpcSyncResult): Feedback {
-  let appliedCount = 0;
-  let alreadyAppliedCount = 0;
-  let conflictCount = 0;
-  for (const operation of result.application_result.operations) {
-    switch (operation.outcome) {
-      case "applied":
-        appliedCount += 1;
-        break;
-      case "already_applied":
-        alreadyAppliedCount += 1;
-        break;
-      case "conflict":
-        conflictCount += 1;
-        break;
-    }
-  }
-  const remainingWriteCount = result.remaining_plan.status_write_task_gids.length
-    + result.remaining_plan.external_write_task_gids.length
-    + result.remaining_plan.tag_write_task_gids.length;
-  const synchronizationSummary = [
-    `同期しました。対象 ${result.application_result.affected_gids.length}件`,
-    `反映 ${appliedCount}件`,
-    `反映済み ${alreadyAppliedCount}件`,
-    `競合 ${conflictCount}件`,
-    `残り書き込み ${remainingWriteCount}件`,
-    `重大エラー ${result.critical_errors.length}件。`,
-  ].join("、");
-  return {
-    kind: syncFeedbackKind(result),
-    message: synchronizationSummary,
-  };
-}
-
 function recoveryRequiredFeedback(
   writeOutcome: Extract<IpcGuiEditResult, { readonly outcome: "recovery_required" }>["write_outcome"],
 ): string {
@@ -1127,54 +951,6 @@ function guiEditFeedbackKind(result: IpcGuiEditResult): FeedbackKind {
   }
 }
 
-function cleanupKindLabel(kind: ViewModelOverview["cleanup_items"][number]["kind"]): string {
-  switch (kind) {
-    case "importance_tag_conflict":
-      return "重要度タグの競合";
-    case "area_tag_conflict":
-      return "領域タグの競合";
-    case "unknown_status_section":
-      return "不明な状態セクション";
-    case "missing_required_section":
-      return "必須セクション不足";
-    case "dependency_cycle":
-      return "依存関係の循環";
-    case "missing_dependency":
-      return "依存先の欠落";
-    case "parent_cycle":
-      return "親子関係の循環";
-    case "parent_relation_conflict":
-      return "親子関係の矛盾";
-    case "children_only_completion_confirmation":
-      return "子タスク完了確認";
-    case "missing_task":
-      return "タスクの欠落";
-    case "custom_external_data_broken":
-      return "外部データ破損";
-    case "oauth_app_mismatch":
-      return "OAuthアプリ不一致";
-    case "proposal_conflict":
-      return "変更案の競合";
-    case "broken_vault_link":
-      return "Vaultリンク破損";
-  }
-}
-
-function cleanupScopeLabel(item: ViewModelOverview["cleanup_items"][number]): string {
-  if (item.scope.scope === "task") {
-    return `タスク ${item.scope.task_gid}`;
-  }
-  return "全体";
-}
-
-function cleanupRelatedGids(item: ViewModelOverview["cleanup_items"][number]): string {
-  const gids = item.scope.related_task_gids;
-  if (gids == null || gids.length === 0) {
-    return "";
-  }
-  return `関連: ${gids.join("、")}`;
-}
-
 function setScreenError(value: IpcFailure): void {
   showError(failureText(value.code));
 }
@@ -1194,182 +970,6 @@ function updateGuiEditStatesForSync(sync: RendererSyncState): void {
   }
   if (changed) {
     guiEditStates.value = nextStates;
-  }
-}
-
-function setConnectionState(kind: RendererConnectionState["kind"], sync: RendererSyncState): void {
-  connectionState.value = rendererConnectionStateSchema.parse({ kind, sync });
-  updateGuiEditStatesForSync(sync);
-  clearAiSynchronizationWaitingFeedback();
-}
-
-function setSyncState(sync: RendererSyncState): void {
-  setConnectionState(connectionState.value.kind, sync);
-}
-
-function chromiumConnectionState(): RendererConnectionState["kind"] {
-  if (window.navigator.onLine) {
-    return "online";
-  }
-  return "offline";
-}
-
-function connectionStateForSyncFailure(
-  errorCode: SyncRuntimeErrorCode,
-): RendererConnectionState["kind"] {
-  const current = chromiumConnectionState();
-  if (errorCode === "transport_error" && current === "online") {
-    return "checking";
-  }
-  return current;
-}
-
-function syncFailureState(errorCode: SyncRuntimeErrorCode): RendererSyncState {
-  if (errorCode === "authentication_required") {
-    return rendererSyncStateSchema.parse({ kind: "authentication_required" });
-  }
-  if (errorCode === "events_reset") {
-    return rendererSyncStateSchema.parse({ kind: "recovery_pending" });
-  }
-  return rendererSyncStateSchema.parse({ kind: "error", error_code: errorCode });
-}
-
-function settledSyncState(
-  value: Extract<IpcSyncStateEvent, { readonly kind: "online" | "offline" }>,
-): RendererSyncState {
-  if (value.last_error_code != null) {
-    return syncFailureState(value.last_error_code);
-  }
-  if (value.last_successful_sync_at != null) {
-    return rendererSyncStateSchema.parse({
-      kind: "synced",
-      synced_at: value.last_successful_sync_at,
-    });
-  }
-  return rendererSyncStateSchema.parse({ kind: "waiting" });
-}
-
-function applySyncStateDisplay(value: IpcSyncStateEvent): void {
-  if (value.kind === "syncing") {
-    setConnectionState(
-      chromiumConnectionState(),
-      rendererSyncStateSchema.parse({
-        kind: "syncing",
-        can_accept_write: value.last_successful_sync_at != null && value.last_error_code == null,
-      }),
-    );
-    return;
-  }
-  if (value.kind === "offline") {
-    const current = chromiumConnectionState();
-    if (value.last_error_code != null) {
-      setConnectionState(
-        connectionStateForSyncFailure(value.last_error_code),
-        settledSyncState(value),
-      );
-      return;
-    }
-    if (current === "online") {
-      setConnectionState("online", rendererSyncStateSchema.parse({ kind: "recovery_pending" }));
-      return;
-    }
-    setConnectionState("offline", settledSyncState(value));
-    return;
-  }
-  if (value.kind === "authentication_required") {
-    setConnectionState(
-      chromiumConnectionState(),
-      rendererSyncStateSchema.parse({ kind: "authentication_required" }),
-    );
-    return;
-  }
-  if (value.kind === "error") {
-    setConnectionState(
-      connectionStateForSyncFailure(value.error_code),
-      syncFailureState(value.error_code),
-    );
-    return;
-  }
-  if (value.last_error_code != null) {
-    setConnectionState(
-      connectionStateForSyncFailure(value.last_error_code),
-      settledSyncState(value),
-    );
-    return;
-  }
-  setConnectionState(chromiumConnectionState(), settledSyncState(value));
-}
-
-function showNormalizationNotificationToast(
-  syncedAt: string,
-  notifications: readonly SyncNormalizationNotification[],
-): void {
-  if (notifications.length === 0) {
-    return;
-  }
-  if (
-    normalizationNotificationDisplayState.kind === "displayed"
-    && normalizationNotificationDisplayState.synced_at === syncedAt
-  ) {
-    return;
-  }
-  const notificationFeedback = createNormalizationNotificationFeedback(
-    notifications,
-  );
-  if (notificationFeedback == null) {
-    throw new Error("状態整合化通知を表示できません。");
-  }
-  addToast("success", notificationFeedback);
-  normalizationNotificationDisplayState = {
-    kind: "displayed",
-    synced_at: syncedAt,
-  };
-}
-
-function showNormalizationNotifications(
-  value: Extract<IpcSyncStateEvent, { readonly kind: "online" }>,
-): void {
-  const notifications = value.normalization_notifications;
-  if (notifications == null || notifications.length === 0) {
-    return;
-  }
-  const syncedAt = value.last_successful_sync_at;
-  if (syncedAt == null) {
-    throw new Error("状態整合化通知に同期日時がありません。");
-  }
-  showNormalizationNotificationToast(syncedAt, notifications);
-}
-
-function handleSyncState(value: IpcSyncStateEvent): void {
-  if (value.last_successful_sync_at != null && configured.value) {
-    void reloadTaskDataAfterSuccessfulSync(value.last_successful_sync_at);
-  }
-  applySyncStateDisplay(value);
-  if (value.kind === "online") {
-    showNormalizationNotifications(value);
-  }
-}
-
-async function readCurrentSyncState(): Promise<SyncStateReadResult> {
-  try {
-    const result = await taskHub.sync.getState();
-    if (isFailure(result)) {
-      return { kind: "unavailable" };
-    }
-    return {
-      kind: "received",
-      value: ipcSyncStateEventSchema.parse(result.value),
-    };
-  } catch {
-    return { kind: "unavailable" };
-  }
-}
-
-async function reconcileSyncStateAfterFailure(fallback: RendererSyncState): Promise<void> {
-  setSyncState(fallback);
-  const result = await readCurrentSyncState();
-  if (result.kind === "received") {
-    handleSyncState(result.value);
   }
 }
 
@@ -1414,51 +1014,8 @@ function handleCodexStatus(value: IpcAiStatus): void {
   });
 }
 
-function clearTaskSelection(): void {
-  taskDetailGeneration += 1;
-  obsidianStatusGeneration += 1;
-  selectedTaskGid.value = undefined;
-  selectedTask.value = undefined;
-  obsidianStatuses.value = new Map();
-}
-
-function deselectTask(): void {
-  clearTaskFeedback();
-  clearTaskSelection();
-}
-
-function captureTaskDetailContext(): TaskDetailContext {
-  const taskGid = selectedTaskGid.value;
-  if (taskGid == null) {
-    throw new Error("タスクが選択されていません。");
-  }
-  return {
-    generation: taskDetailGeneration,
-    taskGid,
-  };
-}
-
-function isCurrentTaskDetailContext(context: TaskDetailContext): boolean {
-  return context.generation === taskDetailGeneration
-    && selectedTaskGid.value === context.taskGid;
-}
-
 function isTaskDataRefreshSuccessful(result: TaskDataRefreshResult): boolean {
   return result.kind === "applied" || result.kind === "unchanged";
-}
-
-function commitOverview(value: ViewModelOverview): void {
-  const previousOverview = overview.value;
-  if (previousOverview != null) {
-    const nextTaskGids = new Set(value.tasks.map((task) => task.gid));
-    for (const previousTask of previousOverview.tasks) {
-      if (!nextTaskGids.has(previousTask.gid)) {
-        setTaskEditMarker(previousTask.gid, { kind: "missing" });
-      }
-    }
-  }
-  overview.value = value;
-  lastLoadedSuccessfulSyncAt = value.last_successful_sync_at;
 }
 
 async function collectObsidianStatuses(
@@ -1488,227 +1045,6 @@ async function collectObsidianStatuses(
     }
   }
   return statuses;
-}
-
-async function executeTaskDataRefresh(
-  generation: number,
-  detailGeneration: number,
-  statusGeneration: number,
-  taskGid: string | undefined,
-): Promise<TaskDataRefreshResult> {
-  try {
-    const result = await taskHub.readModel.getOverview();
-    if (isFailure(result)) {
-      if (generation === taskDataGeneration) {
-        showFailure(result);
-      }
-      return { kind: "failed" };
-    }
-    const nextOverview = viewModelOverviewSchema.parse(result.value);
-    if (taskGid == null) {
-      if (generation !== taskDataGeneration) {
-        return { kind: "superseded" };
-      }
-      commitOverview(nextOverview);
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value == null) {
-        selectedTask.value = undefined;
-        if (statusGeneration === obsidianStatusGeneration) {
-          obsidianStatuses.value = new Map();
-        }
-      }
-      return { kind: "applied" };
-    }
-    if (!nextOverview.tasks.some((task) => task.gid === taskGid)) {
-      if (generation !== taskDataGeneration) {
-        return { kind: "superseded" };
-      }
-      commitOverview(nextOverview);
-      setTaskEditMarker(taskGid, { kind: "missing" });
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        clearTaskFeedback();
-        setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
-        clearTaskSelection();
-      }
-      return { kind: "applied" };
-    }
-    try {
-      const detailResult = await taskHub.readModel.getTaskDetail(taskGid);
-      if (isFailure(detailResult)) {
-        if (detailResult.code === "not_found") {
-          if (generation !== taskDataGeneration) {
-            return { kind: "superseded" };
-          }
-          commitOverview(nextOverview);
-          setTaskEditMarker(taskGid, { kind: "missing" });
-          if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-            clearTaskFeedback();
-            setTaskFeedback("warning", "対象タスクが同期で見つからなくなりました。未保存の入力は再適用しません。");
-            clearTaskSelection();
-          }
-          return { kind: "applied" };
-        }
-        if (generation === taskDataGeneration
-          && detailGeneration === taskDetailGeneration
-          && selectedTaskGid.value === taskGid) {
-          showTaskFailure(detailResult);
-        }
-        return { kind: "failed" };
-      }
-      const nextTask = viewModelTaskDetailSchema.parse(detailResult.value);
-      const nextStatuses = await collectObsidianStatuses(nextTask.obsidian_links, registeredVaultIds.value);
-      if (generation !== taskDataGeneration) {
-        return { kind: "superseded" };
-      }
-      commitOverview(nextOverview);
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        selectedTask.value = nextTask;
-        if (statusGeneration === obsidianStatusGeneration) {
-          obsidianStatuses.value = nextStatuses;
-        }
-      }
-      return { kind: "applied" };
-    } catch {
-      if (generation === taskDataGeneration
-        && detailGeneration === taskDetailGeneration
-        && selectedTaskGid.value === taskGid) {
-        showTaskUnexpectedFailure();
-      }
-      return { kind: "failed" };
-    }
-  } catch {
-    if (generation === taskDataGeneration) {
-      showUnexpectedFailure();
-    }
-    return { kind: "failed" };
-  }
-}
-
-function startTaskDataRefresh(): TaskDataRefreshRequest {
-  taskDataGeneration += 1;
-  taskDetailGeneration += 1;
-  obsidianStatusGeneration += 1;
-  const generation = taskDataGeneration;
-  return {
-    generation,
-    completion: executeTaskDataRefresh(
-      generation,
-      taskDetailGeneration,
-      obsidianStatusGeneration,
-      selectedTaskGid.value,
-    ),
-  };
-}
-
-async function reloadTaskData(): Promise<TaskDataRefreshResult> {
-  activeSyncReload = { kind: "idle" };
-  return startTaskDataRefresh().completion;
-}
-
-function startInitialTaskDataRefresh(): Promise<TaskDataRefreshResult> {
-  const request = startTaskDataRefresh();
-  activeSyncReload = {
-    kind: "initial_loading",
-    generation: request.generation,
-    completion: request.completion,
-  };
-  void finalizeSyncReload(request.generation, request.completion);
-  return request.completion;
-}
-
-function syncTimestamp(value: string): number {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("同期日時を比較できません。");
-  }
-  return timestamp;
-}
-
-function loadedAtOrAfter(syncAt: string): boolean {
-  if (lastLoadedSuccessfulSyncAt == null) {
-    return false;
-  }
-  return syncTimestamp(lastLoadedSuccessfulSyncAt) >= syncTimestamp(syncAt);
-}
-
-async function finalizeSyncReload(generation: number, completion: Promise<TaskDataRefreshResult>): Promise<void> {
-  try {
-    await completion;
-  } catch {
-    if (
-      activeSyncReload.kind !== "idle"
-      && activeSyncReload.generation === generation
-      && activeSyncReload.completion === completion
-    ) {
-      showUnexpectedFailure();
-    }
-  } finally {
-    if (
-      activeSyncReload.kind !== "idle"
-      && activeSyncReload.generation === generation
-      && activeSyncReload.completion === completion
-    ) {
-      activeSyncReload = { kind: "idle" };
-    }
-  }
-}
-
-async function completeInitialSyncReload(
-  syncAt: string,
-  generation: number,
-  completion: Promise<TaskDataRefreshResult>,
-): Promise<TaskDataRefreshResult> {
-  const result = await completion;
-  if (taskDataGeneration !== generation) {
-    return reloadTaskDataAfterSuccessfulSync(syncAt);
-  }
-  if (result.kind !== "applied" || loadedAtOrAfter(syncAt)) {
-    return result;
-  }
-  const request = startTaskDataRefresh();
-  activeSyncReload = {
-    kind: "loading",
-    sync_at: syncAt,
-    generation: request.generation,
-    completion: request.completion,
-  };
-  void finalizeSyncReload(request.generation, request.completion);
-  return request.completion;
-}
-
-function reloadTaskDataAfterSuccessfulSync(syncAt: string): Promise<TaskDataRefreshResult> {
-  if (loadedAtOrAfter(syncAt)) {
-    return Promise.resolve({ kind: "unchanged" });
-  }
-  if (activeSyncReload.kind === "loading"
-    && syncTimestamp(activeSyncReload.sync_at) >= syncTimestamp(syncAt)) {
-    return activeSyncReload.completion;
-  }
-  if (activeSyncReload.kind === "initial_loading" && lastLoadedSuccessfulSyncAt == null) {
-    const initialGeneration = activeSyncReload.generation;
-    const initialCompletion = activeSyncReload.completion;
-    const completion = completeInitialSyncReload(
-      syncAt,
-      initialGeneration,
-      initialCompletion,
-    );
-    activeSyncReload = {
-      kind: "loading",
-      sync_at: syncAt,
-      generation: initialGeneration,
-      completion,
-    };
-    void finalizeSyncReload(initialGeneration, completion);
-    return completion;
-  }
-  const request = startTaskDataRefresh();
-  activeSyncReload = {
-    kind: "loading",
-    sync_at: syncAt,
-    generation: request.generation,
-    completion: request.completion,
-  };
-  void finalizeSyncReload(request.generation, request.completion);
-  return request.completion;
 }
 
 function applySetupState(value: unknown): void {
@@ -2129,10 +1465,10 @@ async function completeAsanaReauthentication(): Promise<void> {
     }));
     const refreshResult = await reloadTaskDataAfterSuccessfulSync(synchronized.synced_at);
     if (refreshResult.kind === "failed") {
-      setFeedback("warning", includeNormalizationNotificationFeedback(
-        "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。",
-        synchronized.normalization_notifications,
-      ));
+      const notificationMessage = normalizationNotificationMessage(synchronized.normalization_notifications);
+      setFeedback("warning", notificationMessage == null
+        ? "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。"
+        : `${notificationMessage} Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。`);
       return;
     }
     showNormalizationNotificationToast(
@@ -2140,7 +1476,11 @@ async function completeAsanaReauthentication(): Promise<void> {
       synchronized.normalization_notifications,
     );
     showGlobalResultFeedback({
-      kind: syncFeedbackKind(synchronized),
+      kind: synchronized.application_result.operations.some((operation) => operation.outcome === "conflict")
+        || synchronized.remaining_plan.status_write_task_gids.length
+          + synchronized.remaining_plan.external_write_task_gids.length
+          + synchronized.remaining_plan.tag_write_task_gids.length > 0
+        || synchronized.critical_errors.length > 0 ? "warning" : "success",
       message: "Asanaを再認証し、タスク表示を更新しました。",
     });
   } catch {
@@ -2270,54 +1610,6 @@ function handleSetupAction(action: SetupAction): void {
   }
 }
 
-async function runSynchronization(mode: "delta" | "full"): Promise<void> {
-  if (!canManualSync.value) {
-    return;
-  }
-  activeSyncMode.value = mode;
-  setSyncState(rendererSyncStateSchema.parse({
-    kind: "syncing",
-    can_accept_write: canAcceptWrite.value,
-  }));
-  try {
-    const result = await taskHub.sync.run({ mode });
-    if (isFailure(result)) {
-      showFailure(result);
-      await reconcileSyncStateAfterFailure(syncFailureStateFromIpc(result));
-      return;
-    }
-    setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
-      kind: "synced",
-      synced_at: result.value.synced_at,
-    }));
-    const syncFeedback = createSyncFeedback(result.value);
-    const refreshResult = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
-    if (refreshResult.kind === "applied" || refreshResult.kind === "unchanged") {
-      showNormalizationNotificationToast(
-        result.value.synced_at,
-        result.value.normalization_notifications,
-      );
-      showGlobalResultFeedback(syncFeedback);
-    }
-  } catch {
-    showUnexpectedFailure();
-    await reconcileSyncStateAfterFailure(rendererSyncStateSchema.parse({
-      kind: "error",
-      error_code: "unexpected_error",
-    }));
-  } finally {
-    activeSyncMode.value = "idle";
-  }
-}
-
-async function manualSync(): Promise<void> {
-  await runSynchronization("delta");
-}
-
-async function fullSync(): Promise<void> {
-  await runSynchronization("full");
-}
-
 function proposalHistoryKey(entry: IpcProposalHistoryStatus["entries"][number]): string {
   return `${entry.proposal_id}\u0000${entry.operation_id}`;
 }
@@ -2410,53 +1702,6 @@ async function synchronizeProposalHistory(): Promise<void> {
     setFeedback("failure", "旧適用履歴の読取同期に失敗しました。確認済みの結果は保存されています。");
   } finally {
     proposalHistoryBusy.value = false;
-  }
-}
-
-async function selectTask(taskGid: string): Promise<void> {
-  clearTaskFeedback();
-  taskDetailGeneration += 1;
-  obsidianStatusGeneration += 1;
-  const detailGeneration = taskDetailGeneration;
-  const statusGeneration = obsidianStatusGeneration;
-  selectedTaskGid.value = taskGid;
-  selectedTask.value = undefined;
-  obsidianStatuses.value = new Map();
-  try {
-    const result = await taskHub.readModel.getTaskDetail(taskGid);
-    if (isFailure(result)) {
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        showTaskFailure(result);
-        if (result.code === "not_found") {
-          setTaskEditMarker(taskGid, { kind: "missing" });
-          setTaskFeedback("warning", "対象タスクが見つかりません。未保存の入力は再適用しません。");
-          clearTaskSelection();
-        }
-      }
-      return;
-    }
-    const nextTask = viewModelTaskDetailSchema.parse(result.value);
-    const nextStatuses = await collectObsidianStatuses(nextTask.obsidian_links, registeredVaultIds.value);
-    if (detailGeneration !== taskDetailGeneration || selectedTaskGid.value !== taskGid) {
-      return;
-    }
-    selectedTask.value = nextTask;
-    if (statusGeneration === obsidianStatusGeneration) {
-      obsidianStatuses.value = nextStatuses;
-    }
-  } catch {
-    if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-      showTaskUnexpectedFailure();
-    }
-  }
-}
-
-async function checkObsidianLinks(links: readonly ViewModelTaskDetail["obsidian_links"][number][]): Promise<void> {
-  obsidianStatusGeneration += 1;
-  const generation = obsidianStatusGeneration;
-  const statuses = await collectObsidianStatuses(links, registeredVaultIds.value);
-  if (generation === obsidianStatusGeneration) {
-    obsidianStatuses.value = statuses;
   }
 }
 
@@ -2582,31 +1827,27 @@ async function loadObsidianVaults(): Promise<void> {
 }
 
 async function checkObsidianLink(link: ViewModelTaskDetail["obsidian_links"][number]): Promise<void> {
-  const generation = obsidianStatusGeneration;
+  const generation = captureObsidianStatusContext();
   if (!registeredVaultIds.value.includes(link.vault_id)) {
-    if (generation !== obsidianStatusGeneration) {
+    if (!isCurrentObsidianStatusContext(generation)) {
       return;
     }
-    const statuses = new Map(obsidianStatuses.value);
-    statuses.set(`${link.vault_id}\0${link.path}`, "unavailable");
-    obsidianStatuses.value = statuses;
+    setObsidianStatus(link, "unavailable");
     return;
   }
   try {
     const input = ipcObsidianPathInputSchema.parse({ vault_id: link.vault_id, relative_path: link.path });
     const result = await taskHub.obsidian.noteExists(input);
-    if (generation !== obsidianStatusGeneration) {
+    if (!isCurrentObsidianStatusContext(generation)) {
       return;
     }
     if (isFailure(result)) {
       showTaskFailure(result);
       return;
     }
-    const statuses = new Map(obsidianStatuses.value);
-    statuses.set(`${link.vault_id}\0${link.path}`, result.value.kind === "resolved" ? "exists" : "missing");
-    obsidianStatuses.value = statuses;
+    setObsidianStatus(link, result.value.kind === "resolved" ? "exists" : "missing");
   } catch {
-    if (generation === obsidianStatusGeneration) {
+    if (isCurrentObsidianStatusContext(generation)) {
       showTaskUnexpectedFailure();
     }
   }
@@ -2641,7 +1882,7 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
 
 async function readGuiEditTaskDetail(taskGid: string): Promise<GuiEditTaskDetailReadResult> {
   try {
-    const result = await taskHub.readModel.getTaskDetail(taskGid);
+    const result = await getDetail(taskGid);
     if (isFailure(result)) {
       return result.code === "not_found" ? { kind: "missing" } : { kind: "failed" };
     }
@@ -3480,19 +2721,6 @@ function selectExternalAgentTask(taskGid: string): void {
   void selectTask(validTaskGid);
 }
 
-async function loadInitialSyncState(): Promise<void> {
-  try {
-    const result = await taskHub.sync.getState();
-    if (isFailure(result)) {
-      showFailure(result);
-      return;
-    }
-    handleSyncState(result.value);
-  } catch {
-    setFeedback("failure", "同期状態を取得できませんでした。");
-  }
-}
-
 async function loadInitialCodexStatus(): Promise<void> {
   try {
     const result = await taskHub.ai.getStatus();
@@ -3513,17 +2741,7 @@ async function loadInitialCodexStatus(): Promise<void> {
 }
 
 async function initialize(): Promise<void> {
-  try {
-    removeSyncSubscription = taskHub.sync.onState((value) => {
-      try {
-        handleSyncState(value);
-      } catch {
-        setFeedback("failure", "同期状態を確認できませんでした。");
-      }
-    });
-  } catch {
-    setSyncState(rendererSyncStateSchema.parse({ kind: "error", error_code: "unexpected_error" }));
-  }
+  subscribeSyncState();
   try {
     removeAiSubscription = taskHub.ai.onDelta((delta) => {
       appendDelta(delta);
@@ -3589,12 +2807,6 @@ useAppStartup(initialize, setScreenError, () => {
   showError(failureText("operation_failed"));
 });
 
-onMounted(() => {
-  clockTimer = window.setInterval(() => {
-    currentAsOf.value = new Date().toISOString();
-  }, 60_000);
-});
-
 onBeforeUnmount(() => {
   clearAsanaAuthorizationCode();
   asanaAuthenticationBusy.value = false;
@@ -3603,12 +2815,6 @@ onBeforeUnmount(() => {
 });
 
 onUnmounted(() => {
-  if (clockTimer != null) {
-    window.clearInterval(clockTimer);
-  }
-  if (removeSyncSubscription != null) {
-    removeSyncSubscription();
-  }
   if (removeAiSubscription != null) {
     removeAiSubscription();
   }
@@ -3983,7 +3189,7 @@ onUnmounted(() => {
                 {{ taskFeedback.message }}
               </p>
               <TaskDetail
-                :task="selectedTask"
+                :task="selectedTask == null ? undefined : viewModelTaskDetailSchema.parse(selectedTask)"
                 :as-of="currentAsOf"
                 :areas="overview.areas"
                 :can-write="canAcceptWrite && !guiEditSaving"

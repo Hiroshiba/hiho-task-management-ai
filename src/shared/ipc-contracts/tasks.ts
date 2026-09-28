@@ -12,7 +12,7 @@ import {
   type IpcSubscription,
 } from "./common";
 import { executionDtoSchema, type ExecutionDto } from "./execution";
-import { guiEditOperationSchema } from "./task-values";
+import { guiEditOperationSchema, taskStatusSchema } from "./task-values";
 import { detailSchema, overviewSchema } from "./task-view";
 
 export const tasksChannels = {
@@ -31,44 +31,75 @@ export const tasksChannels = {
   execution: "tasks:execution",
 } satisfies Record<string, string>;
 
-const syncStateSchema = z.discriminatedUnion("kind", [
+const syncErrorCodeSchema = z.enum([
+  "authentication_required",
+  "payment_required",
+  "rate_limited",
+  "http_error",
+  "transport_error",
+  "response_error",
+  "events_reset",
+  "request_aborted",
+  "sync_in_progress",
+  "unexpected_error",
+]);
+const normalizationNotificationSchema = z.object({
+  kind: z.literal("status_reconciled"),
+  task_gid: gidSchema,
+  status: taskStatusSchema,
+  message: displayTextSchema,
+}).strict();
+const syncStateBaseShape = {
+  last_successful_sync_at: dateTimeSchema.optional(),
+  last_error_code: syncErrorCodeSchema.optional(),
+};
+
+export const syncStateSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("online"),
-      last_successful_sync_at: dateTimeSchema.optional(),
+      normalization_notifications: z.array(normalizationNotificationSchema).max(10_000).optional(),
+      ...syncStateBaseShape,
     })
     .strict(),
   z
     .object({
       kind: z.literal("offline"),
-      last_successful_sync_at: dateTimeSchema.optional(),
+      ...syncStateBaseShape,
     })
     .strict(),
   z
     .object({
       kind: z.literal("syncing"),
       requested_mode: z.enum(["full", "delta"]),
-      last_successful_sync_at: dateTimeSchema.optional(),
+      ...syncStateBaseShape,
     })
     .strict(),
-  z.object({ kind: z.literal("authentication_required") }).strict(),
+  z.object({ kind: z.literal("authentication_required"), error_code: z.literal("authentication_required"),
+    last_successful_sync_at: dateTimeSchema.optional() }).strict(),
   z
     .object({
       kind: z.literal("error"),
-      error_code: displayTextSchema,
+      error_code: syncErrorCodeSchema,
       last_successful_sync_at: dateTimeSchema.optional(),
     })
     .strict(),
 ]);
 
-const syncResultSchema = z
+export const syncResultSchema = z
   .object({
     requested_mode: z.enum(["full", "delta"]),
     performed_mode: z.enum(["full", "delta"]),
     synced_at: dateTimeSchema,
     fallback_reason: displayTextSchema.optional(),
+    affected_count: z.number().int().nonnegative(),
+    applied_count: z.number().int().nonnegative(),
+    already_applied_count: z.number().int().nonnegative(),
+    conflict_count: z.number().int().nonnegative(),
+    remaining_write_count: z.number().int().nonnegative(),
     critical_error_count: z.number().int().nonnegative(),
     cleanup_count: z.number().int().nonnegative(),
+    normalization_notifications: z.array(normalizationNotificationSchema).max(10_000),
   })
   .strict();
 

@@ -2,9 +2,11 @@ import { inject, type InjectionKey } from "vue";
 import type { FinalTaskHubApi } from "../../../shared/ipc-contracts";
 import type { DiagnosticsApi } from "../../../shared/ipc-contracts/diagnostics";
 import type { SystemApi } from "../../../shared/ipc-contracts/system";
+import type { TasksApi } from "../../../shared/ipc-contracts/tasks";
 
 export const systemApiInjectionKey: InjectionKey<SystemApi> = Symbol("systemApi");
 export const diagnosticsApiInjectionKey: InjectionKey<DiagnosticsApi> = Symbol("diagnosticsApi");
+export const tasksApiInjectionKey: InjectionKey<TasksApi> = Symbol("tasksApi");
 
 /** 指定した機能の実APIかmock APIを選びます。 */
 export function selectFeatureApi<Api>(
@@ -38,6 +40,15 @@ export function useDiagnosticsApi(): DiagnosticsApi {
   const api = inject(diagnosticsApiInjectionKey);
   if (api == null) {
     throw new Error("診断APIが提供されていません。");
+  }
+  return api;
+}
+
+/** VueからタスクAPIを取得します。 */
+export function useTasksApi(): TasksApi {
+  const api = inject(tasksApiInjectionKey);
+  if (api == null) {
+    throw new Error("タスクAPIが提供されていません。");
   }
   return api;
 }
