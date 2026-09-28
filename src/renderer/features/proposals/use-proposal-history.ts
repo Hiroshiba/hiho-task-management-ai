@@ -6,6 +6,10 @@ import { reportRendererError } from "../../shared/logging/report-renderer-error"
 type HistoryStatus = Extract<Awaited<ReturnType<ProposalsApi["getHistoryStatus"]>>, { readonly kind: "ok" }>["value"];
 type HistoryConfirmInput = Parameters<ProposalsApi["confirmHistory"]>[0];
 
+function withErrorId(message: string, errorId: string | undefined): string {
+  return `${message}${errorId == null ? "" : ` エラーID ${errorId}`}`;
+}
+
 /** 旧非実行履歴の取得、確認、読取同期の画面状態を管理します。 */
 export function useProposalHistory(api: ProposalsApi) {
   const diagnostics = useDiagnosticsApi();
@@ -34,13 +38,15 @@ export function useProposalHistory(api: ProposalsApi) {
       const result = proposalsContracts.getHistoryStatus.response.parse(await api.getHistoryStatus());
       if (disposed || generation !== requestGeneration) return;
       if (result.kind === "error") {
-        errorMessage.value = result.message;
+        errorMessage.value = withErrorId(result.message, result.error_id);
         return;
       }
       status.value = result.value;
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
-      if (!disposed && generation === requestGeneration) errorMessage.value = "旧適用履歴を読み込めませんでした。";
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      if (!disposed && generation === requestGeneration) {
+        errorMessage.value = withErrorId("旧適用履歴を読み込めませんでした。", errorId);
+      }
     }
   }
 
@@ -60,14 +66,16 @@ export function useProposalHistory(api: ProposalsApi) {
       const result = proposalsContracts.confirmHistory.response.parse(await api.confirmHistory(request));
       if (disposed || generation !== requestGeneration) return false;
       if (result.kind === "error") {
-        errorMessage.value = result.message;
+        errorMessage.value = withErrorId(result.message, result.error_id);
         return false;
       }
       status.value = result.value;
       return true;
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
-      if (!disposed && generation === requestGeneration) errorMessage.value = "旧適用履歴の確認結果を保存できませんでした。";
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      if (!disposed && generation === requestGeneration) {
+        errorMessage.value = withErrorId("旧適用履歴の確認結果を保存できませんでした。", errorId);
+      }
       return false;
     } finally {
       busy.value = false;
@@ -83,15 +91,15 @@ export function useProposalHistory(api: ProposalsApi) {
       const result = proposalsContracts.synchronizeHistory.response.parse(await api.synchronizeHistory());
       if (disposed || generation !== requestGeneration) return undefined;
       if (result.kind === "error") {
-        errorMessage.value = result.message;
+        errorMessage.value = withErrorId(result.message, result.error_id);
         return undefined;
       }
       status.value = result.value.status;
       return result.value.synced_at;
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (!disposed && generation === requestGeneration) {
-        errorMessage.value = "旧適用履歴の読取同期に失敗しました。確認済みの結果は保存されています。";
+        errorMessage.value = withErrorId("旧適用履歴の読取同期に失敗しました。確認済みの結果は保存されています。", errorId);
       }
       return undefined;
     } finally {
