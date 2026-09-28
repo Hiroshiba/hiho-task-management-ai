@@ -12,7 +12,6 @@ import {
 } from "electron";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { z } from "zod";
 import { autoUpdater } from "electron-updater";
 import { applicationDiagnosticSchema, type ApplicationDiagnostic, type DiagnosticRecord } from "./application/diagnostics";
 import type { ErrorReportContext } from "./application/common/errors/error-reporter";
@@ -30,11 +29,10 @@ import {
 import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
 import { getUniqueAsanaHttpStatus } from "./asana/transport";
 import { resolveCodexExecutable } from "./codex/app-server";
-import { IpcHandlerRegistry } from "./ipc";
 import { ensureSecureUserDataDirectory } from "./local-storage-path";
 import { obsidianOpenUriInputSchema } from "./domain/obsidian-uri";
 import { persistentErrorLogFormatter } from "./persistent-error-log";
-import { createStartupGate, type StartupGate } from "./startup-gate";
+import { createStartupGate } from "./startup-gate";
 import { writeErrorReportFailure } from "./infrastructure/logging";
 import {
   assertAllowedAsanaAuthorizationUrl,
@@ -45,7 +43,6 @@ import {
 } from "./security";
 import { WindowStateController } from "./window-state";
 
-const appGetVersionChannel = "app:get-version";
 const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
 type OnlineMonitorState =
@@ -57,7 +54,6 @@ type OnlineMonitorState =
     };
 
 let mainWindow: BrowserWindow | undefined;
-let mainWindowRegistry: IpcHandlerRegistry | undefined;
 let mainWindowStateController: WindowStateController | undefined;
 let applicationUpdateService: ApplicationUpdateService | undefined;
 let windowCreationPromise: Promise<void> | undefined;
@@ -67,7 +63,6 @@ let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
 let foregroundScheduled = false;
 let onlinePollScheduled = false;
 let powerMonitorRegistered = false;
-let versionIpcRegistered = false;
 let uncaughtExceptionMonitorRegistered = false;
 const startupGate = createStartupGate();
 
@@ -254,7 +249,6 @@ function createApplicationRuntime(): MainRuntime {
         await ensureMainWindow(
           getRendererUrl(),
           runtime,
-          startupGate,
         );
         if (!showAndFocusMainWindow()) {
           throw new Error("TaskHubメインウィンドウを表示できません。");
@@ -299,41 +293,12 @@ function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): vo
   });
 }
 
-function registerVersionIpcHandler(rendererUrl: string): void {
-  ipcMain.handle(appGetVersionChannel, (event, payload: unknown): string => {
-    try {
-      z.undefined().parse(payload);
-
-      const window = mainWindow;
-      if (window == null) {
-        throw new Error("メインウィンドウが初期化されていません。");
-      }
-
-      assertTrustedIpcSender(event, window.webContents, rendererUrl);
-      return app.getVersion();
-    } catch (error) {
-      recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
-      throw error;
-    }
-  });
-  versionIpcRegistered = true;
-}
-
-function disposeMainWindowRegistry(registry: IpcHandlerRegistry, runtime: MainRuntime, webContents: WebContents): void {
+function detachMainWindow(runtime: MainRuntime, webContents: WebContents): void {
   try {
     runtime.detachWindow(webContents);
   } catch (error) {
     recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
     recordDiagnostic("ipc.error", "error", undefined, error);
-  }
-  try {
-    registry.dispose();
-  } catch (error) {
-    recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
-    recordDiagnostic("ipc.error", "error", undefined, error);
-  }
-  if (mainWindowRegistry === registry) {
-    mainWindowRegistry = undefined;
   }
 }
 
@@ -520,7 +485,6 @@ function showAndFocusMainWindow(): boolean {
 async function createMainWindow(
   rendererUrl: string,
   runtime: MainRuntime,
-  gate: StartupGate,
 ): Promise<void> {
   const signal = runtime.signal;
   if (!lifecycle.isRunning() || signal.aborted) {
@@ -555,33 +519,12 @@ async function createMainWindow(
     },
     savedWindowState,
   );
-  const updateService = requireApplicationUpdateService();
-  const registry = new IpcHandlerRegistry({
-    rendererWebContents: windowWebContents,
-    rendererUrl,
-    ports: {
-      ...runtime.legacy.getIpcPorts(),
-      readModel: runtime.legacy.taskRead,
-      sync: runtime.legacy.taskRead,
-      appUpdate: updateService,
-    },
-    startupGate: gate,
-    diagnostic: {
-      record: (error) => {
-        recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
-        recordDiagnostic("ipc.error", "error", undefined, error);
-      },
-    },
-  });
-
   mainWindow = window;
   mainWindowStateController = windowStateController;
-  mainWindowRegistry = registry;
   let readyToShow: MainWindowReadyWait | undefined;
   try {
     configureWindowSecurity(window, rendererUrl);
     runtime.attachWindow(ipcMain, windowWebContents, rendererUrl);
-    registry.register(ipcMain);
     windowStateController.attach();
     windowStateController.restore(savedWindowState);
     window.on("focus", scheduleForegroundSync);
@@ -591,10 +534,10 @@ async function createMainWindow(
         window.hide();
         return;
       }
-      disposeMainWindowRegistry(registry, runtime, windowWebContents);
+      detachMainWindow(runtime, windowWebContents);
     });
     window.once("closed", () => {
-      disposeMainWindowRegistry(registry, runtime, windowWebContents);
+      detachMainWindow(runtime, windowWebContents);
       if (mainWindowStateController === windowStateController) {
         mainWindowStateController = undefined;
       }
@@ -612,7 +555,7 @@ async function createMainWindow(
     await Promise.all([loadPromise, readyToShow.promise]);
   } catch (error) {
     readyToShow?.reject(error);
-    disposeMainWindowRegistry(registry, runtime, windowWebContents);
+    detachMainWindow(runtime, windowWebContents);
     if (mainWindowStateController === windowStateController) {
       mainWindowStateController = undefined;
     }
@@ -632,7 +575,6 @@ async function createMainWindow(
 function ensureMainWindow(
   rendererUrl: string,
   runtime: MainRuntime,
-  gate: StartupGate,
 ): Promise<void> {
   const signal = runtime.signal;
   if (!lifecycle.isRunning() || signal.aborted) {
@@ -647,7 +589,6 @@ function ensureMainWindow(
   windowCreationPromise = createMainWindow(
     rendererUrl,
     runtime,
-    gate,
   ).finally(() => {
     windowCreationPromise = undefined;
   });
@@ -703,25 +644,8 @@ async function stopApplication(): Promise<void> {
   runtime?.abort();
   startupGate.markStopped();
   stopOperationalEventMonitoring();
-  const registry = mainWindowRegistry;
-  if (registry != null) {
-    if (runtime == null) {
-      throw new Error("IPC登録中のMainRuntimeがありません。");
-    }
-    const window = mainWindow;
-    if (window == null) {
-      throw new Error("IPC登録中のメインウィンドウがありません。");
-    }
-    disposeMainWindowRegistry(registry, runtime, window.webContents);
-  }
-  if (versionIpcRegistered) {
-    try {
-      ipcMain.removeHandler(appGetVersionChannel);
-    } catch (error) {
-      recordPersistentError("main", "ipc.error", "application_stop", "error", error);
-      recordDiagnostic("ipc.error", "error", undefined, error);
-    }
-    versionIpcRegistered = false;
+  if (runtime != null && mainWindow != null) {
+    detachMainWindow(runtime, mainWindow.webContents);
   }
   const errors: unknown[] = [];
   const startPromise = applicationStartPromise;
@@ -802,13 +726,11 @@ async function bootstrap(): Promise<void> {
     },
   );
   applicationUpdateService = updateService;
-  registerVersionIpcHandler(rendererUrl);
   app.on("activate", () => {
     if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
       void ensureMainWindow(
         rendererUrl,
         runtime,
-        startupGate,
       ).catch((error) => {
         if (runtime.signal.aborted || !lifecycle.isRunning()) {
           return;
@@ -821,7 +743,6 @@ async function bootstrap(): Promise<void> {
   await ensureMainWindow(
     rendererUrl,
     runtime,
-    startupGate,
   );
   await yieldToRenderer();
   if (runtime.signal.aborted || !lifecycle.isRunning()) {

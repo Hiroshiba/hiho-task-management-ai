@@ -117,7 +117,6 @@ import {
   maximumExternalAgentMessageBytes,
   maximumWorkspaceCliResponseBytes,
 } from "../../shared/external-agent";
-import type { IpcExternalAgentPort } from "../ipc";
 import type {
   ExternalAgentBridge,
 } from "./transport";
@@ -318,7 +317,7 @@ function isProposalStatusMutable(status: ExternalAgentProposalStatus): boolean {
 }
 
 /** 外部Codex連携の提案受付とGUI操作を管理します。 */
-export class ExternalAgentService implements IpcExternalAgentPort {
+export class ExternalAgentService {
   private readonly options: ExternalAgentServiceOptions;
   private readonly submission = new ExternalAgentSubmission();
   private readonly preparation = new ExternalAgentPreparation<PreparedExternalContext, ExternalAgentServiceError>({

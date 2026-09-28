@@ -4,10 +4,7 @@ import type { AppUpdater } from "electron-updater";
 import type { AppUpdaterEvents } from "electron-updater/out/AppUpdater.js";
 import { parse } from "yaml";
 import { z } from "zod";
-import {
-  ipcAppUpdateStateSchema,
-  type IpcAppUpdateState,
-} from "../shared/ipc";
+import { systemUpdateStateSchema, type SystemUpdateState } from "../shared/ipc-contracts/system";
 import {
   stableVersionSchema,
   type ApplicationUpdateAttemptStore,
@@ -151,10 +148,10 @@ export function assertWindowsUpdatePublisherName(
 
 /** アプリ本体の更新を監視し、画面に公開する状態を保持します。 */
 export class ApplicationUpdateService {
-  private state: IpcAppUpdateState;
-  private restoredInstallFailure: IpcAppUpdateState | undefined;
+  private state: SystemUpdateState;
+  private restoredInstallFailure: SystemUpdateState | undefined;
   private readonly attemptStore: ApplicationUpdateAttemptStore;
-  private readonly listeners = new Set<(state: IpcAppUpdateState) => void>();
+  private readonly listeners = new Set<(state: SystemUpdateState) => void>();
   private started = false;
   private installing = false;
   private activeOperation: "check" | "download" | undefined;
@@ -176,12 +173,12 @@ export class ApplicationUpdateService {
   }
 
   /** 現在の更新状態を返します。 */
-  public getState(): IpcAppUpdateState {
+  public getState(): SystemUpdateState {
     return this.restoredInstallFailure ?? this.state;
   }
 
   /** 更新状態の変化を購読します。 */
-  public onState(listener: (state: IpcAppUpdateState) => void): () => void {
+  public onState(listener: (state: SystemUpdateState) => void): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -313,8 +310,8 @@ export class ApplicationUpdateService {
     }
   }
 
-  private publish(state: IpcAppUpdateState): void {
-    this.state = ipcAppUpdateStateSchema.parse(state);
+  private publish(state: SystemUpdateState): void {
+    this.state = systemUpdateStateSchema.parse(state);
     if (this.state.kind === "ready") {
       this.restoredInstallFailure = undefined;
     }

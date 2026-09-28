@@ -201,15 +201,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus });
     const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(legacy.getObsidianHandlerWorkflow());
     const diagnosticsHandlers = createDiagnosticsHandlers(engineReporter);
-    const legacyIpcPorts = legacy.getIpcPorts();
-    const aiEvents = legacyIpcPorts.ai;
-    const externalEvents = legacyIpcPorts.externalAgent;
-    if (aiEvents?.onStatus == null || aiEvents.onDelta == null || externalEvents?.onChanged == null) {
-      throw new Error("最終IPCのイベント源を取得できません。");
-    }
-    const onAiStatus = aiEvents.onStatus.bind(aiEvents);
-    const onAiDelta = aiEvents.onDelta.bind(aiEvents);
-    const onExternalChanged = externalEvents.onChanged.bind(externalEvents);
     const featureIpc = new FeatureIpcRegistry({
       signal: controller.signal,
       ...options.ipcSecurity,
@@ -227,9 +218,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         updateState: (listener) => options.system.onUpdateState(listener),
         syncState: (listener) => legacy.taskRead.onState(listener),
         guiExecution: taskWrite.onGuiChanged,
-        aiStatus: (listener) => onAiStatus(listener),
-        aiDelta: (listener) => onAiDelta(listener),
-        externalState: (listener) => onExternalChanged((state) => listener(state)),
+        aiStatus: (listener) => legacy.onAiStatus(listener),
+        aiDelta: (listener) => legacy.onAiDelta(listener),
+        externalState: (listener) => legacy.onExternalAgentChanged(listener),
         proposalExecution: taskWrite.onProposalChanged,
       },
     });

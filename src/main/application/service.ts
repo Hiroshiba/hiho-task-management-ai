@@ -157,11 +157,10 @@ import {
 import { customExternalDataSchema } from "../domain/task-write-values";
 import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
-import { createAiIpcPort } from "../ipc/handlers/ai";
 import type { ProposalsHandlerWorkflows } from "../ipc/handlers/proposals";
 import type { SettingsHandlerWorkflows } from "../ipc/handlers/settings";
 import { buildDisplayOrderInput } from "./task-write";
-import { applyGuiTaskWriteExecution, projectGuiExecutionResult, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
+import { applyGuiTaskWriteExecution, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
 import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
 import { ExternalToolRuntime } from "../bootstrap/external-tool-runtime";
 import { AiEventRuntime, deriveAiStatus } from "../bootstrap/ai-event-runtime";
@@ -234,7 +233,6 @@ import {
   aiWorkflowApprovalRequestSchema,
   aiWorkflowApprovalResultSchema,
   aiWorkflowOperationEditSchema,
-  aiWorkflowProposalViewSchema,
   aiWorkflowSelectionRequestSchema,
   aiWorkflowSnapshotSchema,
   aiWorkflowTurnRequestSchema,
@@ -260,37 +258,23 @@ import {
   setupStateSchema,
 } from "../../shared/setup";
 import {
-  type IpcAiPort,
-  type IpcGuiEditPort,
-  type IpcExternalAgentPort,
-  type IpcServicePorts,
-  type IpcSetupPort,
-  type IpcProposalHistoryPort,
-} from "../ipc";
-import {
   ipcAiDeltaEventSchema,
   ipcAiStatusEventSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
   ipcAsanaCancelReauthenticationInputSchema,
-  ipcGuiEditResultSchema,
-  ipcGuiEditInputSchema,
   ipcReadModelOverviewResponseSchema,
   ipcReadModelTaskDetailResponseSchema,
   ipcSyncInputSchema,
   ipcProposalHistoryStatusSchema,
   ipcProposalHistoryConfirmInputSchema,
   type IpcProposalHistoryStatus,
-  type IpcProposalHistoryConfirmInput,
   type IpcProposalHistorySynchronization,
   type IpcAiStatus,
   type IpcCodexDelta,
-  type IpcGuiEditInput as IpcGuiRequest,
   type IpcGuiEditResult,
   type IpcAiTurnInput,
   type IpcAiTurnResult,
-  type IpcAiSelectionInput,
-  type IpcAiEditInput,
   type IpcAiApprovalInput,
   type IpcAiApprovalResult,
   type IpcAsanaAuthenticationState,
@@ -878,7 +862,7 @@ export class TaskHubApplication {
   private readonly codexConnectionFactory: CodexSessionConnectionFactory;
   private readonly codexAdapter: CodexSetupAdapter;
   private readonly setup: SetupOrchestrator;
-  private readonly setupIpc: IpcSetupPort;
+  private readonly setupIpc: SettingsHandlerWorkflows["setup"];
   public readonly taskRead: TaskReadWorkflow<
     Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
     Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
@@ -1820,19 +1804,6 @@ export class TaskHubApplication {
     this.taskWriteExecution = ports;
   }
 
-  /** IPCへ公開するアプリケーションサービスのポートを取得します。 */
-  public getIpcPorts(): IpcServicePorts {
-    return {
-      asana: this.asanaReauthentication.createPort(),
-      setup: this.setupIpc,
-      gui: this.createGuiPort(),
-      externalAgent: this.createExternalAgentPort(),
-      ai: this.createAiPort(),
-      proposalHistory: this.createProposalHistoryPort(),
-      obsidian: this.obsidian.createIpcPort(),
-    };
-  }
-
   /** 初回設定とAsana再認証の最終IPCへ公開するworkflowを取得します。 */
   public getSettingsHandlerWorkflows(): SettingsHandlerWorkflows {
     return {
@@ -1910,6 +1881,21 @@ export class TaskHubApplication {
         retryExecution: (executionId, signal) => this.retryProposalExecution(executionId, signal),
       },
     };
+  }
+
+  /** AI状態の変化を購読します。 */
+  public onAiStatus(listener: (status: IpcAiStatus) => void): () => void {
+    return this.aiEvents.onStatus(listener);
+  }
+
+  /** AI差分を購読します。 */
+  public onAiDelta(listener: (delta: IpcCodexDelta) => void): () => void {
+    return this.aiEvents.onDelta(listener);
+  }
+
+  /** 外部変更案の状態を購読します。 */
+  public onExternalAgentChanged(listener: Parameters<ExternalAgentService["onChanged"]>[0]): () => void {
+    return this.externalAgent.onChanged(listener);
   }
 
   /** Electronのフォアグラウンド復帰を同期へ渡します。 */
@@ -2816,23 +2802,6 @@ export class TaskHubApplication {
     return ipcProposalHistoryStatusSchema.parse({ entries });
   }
 
-  private createProposalHistoryPort(): IpcProposalHistoryPort {
-    return {
-      getStatus: () => this.getProposalHistoryStatus(),
-      confirm: (input: IpcProposalHistoryConfirmInput) => {
-        const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
-        this.proposalApplicationHistoryRepository.confirm(
-          checked.proposal_id,
-          checked.operation_id,
-          checked.checked_target_id,
-          checked.confirmed_result,
-        );
-        return this.getProposalHistoryStatus();
-      },
-      synchronize: (signal: AbortSignal) => this.synchronizeProposalHistory(signal),
-    };
-  }
-
   private async synchronizeProposalHistory(signal: AbortSignal): Promise<IpcProposalHistorySynchronization> {
     validateAbortSignal(signal);
     this.assertOperationalReady();
@@ -3171,22 +3140,6 @@ export class TaskHubApplication {
     }
   }
 
-  private createGuiPort(): IpcGuiEditPort {
-    return {
-      apply: async (input: IpcGuiRequest, signal): Promise<IpcGuiEditResult> => {
-        const request = ipcGuiEditInputSchema.parse(input);
-        const result = await this.runGuiEdit(request, signal);
-        return ipcGuiEditResultSchema.parse(result.kind === "not_started"
-          ? result.result
-          : projectGuiExecutionResult(result.execution));
-      },
-    };
-  }
-
-  private createExternalAgentPort(): IpcExternalAgentPort {
-    return this.externalAgent;
-  }
-
   private createGuiRejectedResult(
     taskGid: string,
     reasonCode:
@@ -3435,45 +3388,6 @@ export class TaskHubApplication {
   ): Promise<AsanaProposalApplicationResult> {
     return this.applyProposalApplication(input, signal);
   }
-
-  private createAiPort(): IpcAiPort {
-    return createAiIpcPort({
-      assertReady: () => this.assertOperationalReady(),
-      currentStatus: () => this.currentAiStatus(),
-      startNewSession: (signal) => this.aiRuntime.startSession(signal),
-      startTurn: (input: IpcAiTurnInput, signal) => this.aiInteraction.startTurn(input, signal),
-      withProposalRecord: <TInput extends { readonly session_id: string }, TResult>(
-        input: TInput,
-        requireAvailable: boolean,
-        run: (record: AiSessionRecord) => TResult,
-      ) =>
-        this.aiInteraction.withProposalRecord(input, requireAvailable, run),
-      parseProposalId: (value) => identifierSchema.parse(value),
-      parseSelection: (value: { readonly proposal_id: string; readonly selection: IpcAiSelectionInput["selection"] }) =>
-        aiWorkflowSelectionRequestSchema.parse(value),
-      parseEdit: (value: {
-        readonly proposal_id: string;
-        readonly operation_id: string;
-        readonly after: IpcAiEditInput["after"];
-        readonly evidence_locator: string;
-      }) => aiWorkflowOperationEditSchema.parse(value),
-      parseView: (value) => aiWorkflowProposalViewSchema.parse(value),
-      getProposal: (record: AiSessionRecord, proposalId) => record.workflow.getProposal(proposalId),
-      select: (record: AiSessionRecord, input) => record.workflow.select(input),
-      editOperation: (record: AiSessionRecord, input) => record.workflow.editOperation(input),
-      rejectProposal: (record: AiSessionRecord, proposalId) => record.workflow.rejectProposal(proposalId),
-      forgetProposal: (record: AiSessionRecord, proposalId) => this.aiRuntime.forgetProposal(record, proposalId),
-      approve: (input: IpcAiApprovalInput, signal) => this.aiInteraction.approve(input, signal),
-      closeSession: async (sessionId) => {
-        const record = this.aiRuntime.requireSession(sessionId);
-        await this.aiRuntime.closeRecord(record, "explicit");
-      },
-      onDelta: (listener) => this.aiEvents.onDelta(listener),
-      onStatus: (listener) => this.aiEvents.onStatus(listener),
-    });
-  }
-
-
 }
 
 /** 旧保存形式の移行処理を一時的な起動portへ渡します。 */

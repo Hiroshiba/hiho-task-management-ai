@@ -15,7 +15,7 @@ const entryPoints = [
   ["MainRuntime生成", "src/main/bootstrap/create-main-runtime.ts", "main/bootstrap"],
   ["Electron起動と終了", "src/main/bootstrap/register-main-lifecycle.ts", "main/bootstrap"],
   ["Mainの旧統合", "src/main/application/service.ts", "main/bootstrap"],
-  ["IPC登録", "src/main/ipc/registry.ts", "main/ipc"],
+  ["IPC登録", "src/main/ipc/register-ipc.ts", "main/ipc"],
   ["preload bridge", "src/preload/index.ts", "preload"],
   ["Renderer起動", "src/renderer/src/main.ts", "renderer/app"],
   ["Renderer画面", "src/renderer/src/App.vue", "renderer/app"],

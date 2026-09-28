@@ -1179,11 +1179,6 @@
     },
     {
       "path": "src/main/application-update.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/main/application-update.ts",
       "rule": "old-path",
       "symbol": "src/main/application-update.ts"
     },
@@ -1441,11 +1436,6 @@
       "path": "src/main/application/service.ts",
       "rule": "old-import",
       "symbol": "src/main/external-tools/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ipc/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -2814,11 +2804,6 @@
     },
     {
       "path": "src/main/external-agent/index.ts",
-      "rule": "cycle",
-      "symbol": "src/main/external-agent/service.ts"
-    },
-    {
-      "path": "src/main/external-agent/index.ts",
       "rule": "import-boundary",
       "symbol": "src/main/external-agent/service.ts"
     },
@@ -2859,11 +2844,6 @@
     },
     {
       "path": "src/main/external-agent/service.ts",
-      "rule": "cycle",
-      "symbol": "src/main/ipc/index.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
       "rule": "external-import",
       "symbol": "node:crypto"
     },
@@ -2886,11 +2866,6 @@
       "path": "src/main/external-agent/service.ts",
       "rule": "import-boundary",
       "symbol": "src/main/external-agent/transport.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/ipc/index.ts"
     },
     {
       "path": "src/main/external-agent/service.ts",
@@ -2931,11 +2906,6 @@
       "path": "src/main/external-agent/service.ts",
       "rule": "old-import",
       "symbol": "src/main/external-agent/transport.ts"
-    },
-    {
-      "path": "src/main/external-agent/service.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ipc/index.ts"
     },
     {
       "path": "src/main/external-agent/service.ts",
@@ -3195,11 +3165,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "module-mutable",
-      "symbol": "mainWindowRegistry"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
       "symbol": "mainWindowStateController"
     },
     {
@@ -3226,11 +3191,6 @@
       "path": "src/main/index.ts",
       "rule": "module-mutable",
       "symbol": "uncaughtExceptionMonitorRegistered"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "module-mutable",
-      "symbol": "versionIpcRegistered"
     },
     {
       "path": "src/main/index.ts",
@@ -3265,11 +3225,6 @@
     {
       "path": "src/main/index.ts",
       "rule": "old-import",
-      "symbol": "src/main/ipc/index.ts"
-    },
-    {
-      "path": "src/main/index.ts",
-      "rule": "old-import",
       "symbol": "src/main/local-storage-path.ts"
     },
     {
@@ -3326,106 +3281,6 @@
       "path": "src/main/index.ts",
       "rule": "private-entry",
       "symbol": "src/main/window-state.ts"
-    },
-    {
-      "path": "src/main/ipc/index.ts",
-      "rule": "cycle",
-      "symbol": "src/main/ipc/registry.ts"
-    },
-    {
-      "path": "src/main/ipc/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/ipc/registry.ts"
-    },
-    {
-      "path": "src/main/ipc/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ipc/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "cycle",
-      "symbol": "src/main/external-agent/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/asana/runtime/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/external-agent/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/security.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/startup-gate.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/asana/runtime/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/external-agent/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/obsidian/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/security.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/main/startup-gate.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/main/ipc/registry.ts",
-      "rule": "old-path",
-      "symbol": "src/main/ipc/registry.ts"
     },
     {
       "path": "src/main/local-storage-path.ts",
