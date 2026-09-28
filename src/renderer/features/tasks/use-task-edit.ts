@@ -167,6 +167,13 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
         settledExecutionIds.add(execution.execution_id);
       }
       const refresh = await read.reloadTaskData();
+      if (detailFailure != null && refresh.kind === "applied" && refresh.detail?.gid === taskGid
+        && executions.value.get(taskGid)?.execution_id === execution.execution_id) {
+        setMarker(taskGid, { kind: "saved", operation: input.operation, detail: refresh.detail });
+        clearDetailConfirmationFailure(execution.execution_id);
+        settledExecutionIds.add(execution.execution_id);
+        detailFailure = undefined;
+      }
       if (execution.state === "failed" || execution.state === "confirmation_required") {
         const message = executionMessage(execution);
         show(taskGid, message.kind, message.text);
@@ -209,6 +216,8 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   async function receiveExecution(value: ExecutionDto): Promise<void> {
     const execution = executionDtoSchema.parse(value);
     if (execution.origin !== "gui-edit" || execution.task_gid == null) throw new Error("GUI編集以外の実行通知を受け取りました。");
+    const input = executionInputs.get(execution.execution_id);
+    if (input != null && input.task_gid !== execution.task_gid) throw new Error("GUI編集の実行対象が要求と一致しません。");
     if (editStates.value.has(execution.task_gid) && !executionInputs.has(execution.execution_id)) return;
     const previous = executions.value.get(execution.task_gid);
     if (previous != null) {
@@ -225,7 +234,6 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
       show(execution.task_gid, message.kind, message.text);
       return;
     }
-    const input = executionInputs.get(execution.execution_id);
     if (input != null) await settle(execution, input);
     else {
       await read.reloadTaskData();

@@ -10,7 +10,7 @@ import { sortTaskRows, taskSortSchema, type TaskSort } from "./task-presentation
 
 export type TaskDetail = z.infer<typeof detailSchema>;
 export type TaskDataRefreshResult =
-  | { readonly kind: "applied" }
+  | { readonly kind: "applied"; readonly detail?: TaskDetail }
   | { readonly kind: "unchanged" }
   | { readonly kind: "superseded" }
   | { readonly kind: "failed" };
@@ -202,6 +202,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     commitOverview(nextOverview);
     if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
       selectedTask.value = detailResult.value;
+      return { kind: "applied", detail: detailResult.value };
     }
     return { kind: "applied" };
   }

@@ -50,8 +50,11 @@ export async function reportRendererError(
       return result.error_id;
     }
     return result.value.error_id;
-  } catch {
-    console.error("Rendererの診断をMainに記録できませんでした。", input.error);
+  } catch (error) {
+    const reportingFailure = error instanceof Error
+      ? error
+      : new Error("診断IPCでError以外の値が例外として渡されました。");
+    console.error("Rendererの診断をMainに記録できませんでした。", input.error, serializeError(reportingFailure, new WeakSet<Error>()));
     return undefined;
   }
 }
