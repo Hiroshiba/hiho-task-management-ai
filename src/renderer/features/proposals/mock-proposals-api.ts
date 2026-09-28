@@ -11,6 +11,20 @@ type Selection = Parameters<ProposalsApi["select"]>[0]["selection"];
 type ApprovalResult = Extract<Awaited<ReturnType<ProposalsApi["approve"]>>, { readonly kind: "ok" }>["value"];
 type Session = { readonly session_id: string; proposal: ProposalViewDto | undefined; approved_proposal_id?: string };
 type ExternalProposal = ExternalState["proposals"][number];
+type HistoryStatus = Extract<Awaited<ReturnType<ProposalsApi["getHistoryStatus"]>>, { readonly kind: "ok" }>["value"];
+type HistoryConfirmInput = Parameters<ProposalsApi["confirmHistory"]>[0];
+type HistorySource = {
+  readonly proposal_id: string;
+  readonly operation_id: string;
+  readonly target_id: string;
+  readonly target_kind: "task" | "temporary" | "new_task";
+  readonly source_stage: string;
+  readonly source_final_result: "unknown" | null;
+};
+type HistoryRecord =
+  | { readonly kind: "required"; readonly source: HistorySource }
+  | { readonly kind: "confirmed" | "synchronized"; readonly source: HistorySource; readonly confirmed_result: HistoryConfirmInput["confirmed_result"] }
+  | { readonly kind: "invalid"; readonly proposal_id: string; readonly operation_id: string; readonly error_id: string };
 
 function ok<Value>(value: Value): IpcResult<Value> {
   return { kind: "ok", value };
@@ -49,11 +63,33 @@ function compareExecutionOrder(left: ExecutionDto, right: ExecutionDto): number 
   return left.execution_id < right.execution_id ? -1 : 1;
 }
 
-/** 17操作と保存済み実行の進行を同じ状態で扱うmockを作成します。 */
-export function createMockProposalsApi(): ProposalsApi {
+/** 17操作、保存済み実行、旧非実行履歴を独立した状態で扱うmockを作成します。 */
+export function createMockProposalsApi(
+  historyScenario: "confirmable" | "invalid",
+  onHistorySynchronized: (syncedAt: string) => void,
+): ProposalsApi {
   const sessions = new Map<string, Session>();
   const executions = new Map<string, { readonly execution: ExecutionDto; readonly rowid: number }>();
   const approvals = new Map<string, ApprovalResult>();
+  let historyRecords: readonly HistoryRecord[] = [
+    { kind: "required", source: {
+      proposal_id: "mock-legacy-proposal-1", operation_id: "mock-legacy-operation-1",
+      target_id: "mock-task-1", target_kind: "task", source_stage: "applying", source_final_result: "unknown",
+    } },
+    { kind: "required", source: {
+      proposal_id: "mock-legacy-proposal-2", operation_id: "mock-legacy-operation-2",
+      target_id: "mock-temporary-2", target_kind: "temporary", source_stage: "planned", source_final_result: null,
+    } },
+    { kind: "confirmed", source: {
+      proposal_id: "mock-legacy-proposal-3", operation_id: "mock-legacy-operation-3",
+      target_id: "mock-created-3", target_kind: "new_task", source_stage: "finished", source_final_result: "unknown",
+    }, confirmed_result: "manually_adjusted" },
+    ...(historyScenario === "invalid" ? [{
+      kind: "invalid", proposal_id: "mock-legacy-proposal-invalid",
+      operation_id: "mock-legacy-operation-invalid", error_id: "00000000-0000-4000-8000-000000000044",
+    } satisfies HistoryRecord] : []),
+  ];
+  let historySyncedAt: string | undefined;
   const aiStatus = proposalsContracts.getAiStatus.response.parse(ok({ kind: "ready", model: "mock-model" }));
   if (aiStatus.kind !== "ok") throw new Error("mockのAI状態を作成できません。");
   const aiStatusListeners = new Set<Parameters<ProposalsApi["onAiStatus"]>[0]>();
@@ -82,6 +118,28 @@ export function createMockProposalsApi(): ProposalsApi {
     }],
     review_target: { proposal_id: "mock-external-proposal", request_id: "mock-external-request" },
   });
+
+  function historyStatus(): HistoryStatus {
+    const entries: HistoryStatus["entries"] = [];
+    for (const record of historyRecords) {
+      if (record.kind === "synchronized") continue;
+      if (record.kind === "invalid") {
+        entries.push({
+          kind: "history_invalid", proposal_id: record.proposal_id,
+          operation_id: record.operation_id, error_id: record.error_id,
+        });
+      } else if (record.kind === "confirmed") {
+        entries.push({
+          kind: "synchronization_required", proposal_id: record.source.proposal_id,
+          operation_id: record.source.operation_id, target_id: record.source.target_id,
+          target_kind: record.source.target_kind, confirmed_result: record.confirmed_result,
+        });
+      } else {
+        entries.push({ kind: "confirmation_required", ...record.source });
+      }
+    }
+    return { entries };
+  }
 
   function sessionFor(sessionId: string, proposalId?: string): Session | undefined {
     const session = sessions.get(sessionId);
@@ -422,12 +480,42 @@ export function createMockProposalsApi(): ProposalsApi {
       replaceExternal({ ...proposal, state: { kind: "rejected" } });
       return proposalsContracts.rejectExternal.response.parse(ok(externalState));
     }),
-    getHistoryStatus: () => Promise.resolve(proposalsContracts.getHistoryStatus.response.parse(ok({ entries: [] }))),
+    getHistoryStatus: () => Promise.resolve(proposalsContracts.getHistoryStatus.response.parse(ok(historyStatus()))),
     confirmHistory: (input) => Promise.resolve().then(() => {
-      proposalsContracts.confirmHistory.request.parse(input);
-      return failure("not_found", "確認対象の履歴がありません。");
+      const request = proposalsContracts.confirmHistory.request.parse(input);
+      const record = historyRecords.find((candidate) => candidate.kind === "invalid"
+        ? candidate.proposal_id === request.proposal_id && candidate.operation_id === request.operation_id
+        : candidate.source.proposal_id === request.proposal_id && candidate.source.operation_id === request.operation_id);
+      if (record == null) return failure("not_found", "確認対象の履歴がありません。");
+      if (record.kind === "invalid") return failure("conflict", "移行できなかった旧履歴は確認できません。");
+      if (request.checked_target_id !== record.source.target_id) {
+        return failure("invalid_request", "確認対象IDが旧履歴と一致しません。");
+      }
+      if (record.kind !== "required") {
+        return record.confirmed_result === request.confirmed_result
+          ? proposalsContracts.confirmHistory.response.parse(ok(historyStatus()))
+          : failure("conflict", "旧履歴の確認結果がすでに保存されています。");
+      }
+      historyRecords = historyRecords.map((candidate) => candidate === record ? {
+        kind: "confirmed", source: record.source, confirmed_result: request.confirmed_result,
+      } : candidate);
+      return proposalsContracts.confirmHistory.response.parse(ok(historyStatus()));
     }),
-    synchronizeHistory: () => Promise.resolve(proposalsContracts.synchronizeHistory.response.parse(ok({ status: { entries: [] }, synced_at: "2026-09-28T00:00:00.000Z" }))),
+    synchronizeHistory: () => Promise.resolve().then(() => {
+      const pending = historyRecords.filter((record) => record.kind !== "synchronized");
+      if (pending.length === 0 && historySyncedAt != null) {
+        return proposalsContracts.synchronizeHistory.response.parse(ok({ status: historyStatus(), synced_at: historySyncedAt }));
+      }
+      if (pending.length === 0 || pending.some((record) => record.kind !== "confirmed")) {
+        return failure("conflict", "全件を確認し、移行できなかった旧履歴がない状態で読取同期を実行してください。");
+      }
+      const syncedAt = "2026-09-28T02:00:00.000Z";
+      onHistorySynchronized(syncedAt);
+      historySyncedAt = syncedAt;
+      historyRecords = historyRecords.map((record) => record.kind === "confirmed"
+        ? { ...record, kind: "synchronized" } : record);
+      return proposalsContracts.synchronizeHistory.response.parse(ok({ status: historyStatus(), synced_at: historySyncedAt }));
+    }),
     getExecution: (executionId) => Promise.resolve().then(() => {
       const request = proposalsContracts.getExecution.request.parse({ execution_id: executionId });
       const execution = executions.get(request.execution_id)?.execution;

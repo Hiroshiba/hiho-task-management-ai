@@ -16,12 +16,9 @@ import {
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
   ipcSyncResultSchema,
-  ipcProposalHistoryStatusSchema,
   type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcIntegrationStatus,
-  type IpcProposalHistoryStatus,
-  type IpcProposalHistoryConfirmInput,
 } from "../../shared/ipc";
 import {
   setupStateSchema,
@@ -38,7 +35,7 @@ import type { VaultMapping } from "../../shared/storage";
 import { useAppScreen } from "../app/use-app-screen";
 import { useAppStartup } from "../app/use-app-startup";
 import { useSystemUpdate } from "../features/system";
-import { useProposalWorkspace } from "../features/proposals";
+import { ProposalHistoryPanel, useProposals, useProposalWorkspace } from "../features/proposals";
 import {
   TaskFilters,
   TaskList,
@@ -133,12 +130,7 @@ const vaultMappingFeedback = ref<Feedback | undefined>();
 const vaultSaveGeneration = ref(0);
 const { addToast } = useToast();
 const feedback = ref<Feedback | undefined>();
-const proposalHistoryStatus = ref<IpcProposalHistoryStatus | undefined>();
-const proposalHistoryLoadError = ref<string | undefined>();
-const proposalHistoryBusy = ref(false);
-const proposalHistoryTargetIds = ref<Record<string, string>>({});
-const proposalHistoryResults = ref<Record<string, IpcProposalHistoryConfirmInput["confirmed_result"]>>({});
-const proposalHistoryChecked = ref<Record<string, boolean>>({});
+const proposals = useProposals();
 const registeredVaultIds = ref<readonly string[]>([]);
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
@@ -186,7 +178,6 @@ function showGlobalResultFeedback(value: Feedback): void {
 }
 
 const configured = computed(() => setupState.value?.kind === "ready");
-const proposalHistoryClear = computed(() => proposalHistoryStatus.value?.entries.length === 0);
 const {
   overview,
   selectedTask,
@@ -236,7 +227,7 @@ const {
   drafts,
 } = useTasks({
   configured,
-  historyClear: proposalHistoryClear,
+  historyClear: proposals.history.clear,
   authenticationBusy: asanaAuthenticationBusy,
   checkLinks: (links) => collectObsidianStatuses(links, registeredVaultIds.value),
   onFailure: (message) => setFeedback("failure", message),
@@ -246,13 +237,9 @@ const {
   onToast: (kind, message) => addToast(kind, message),
   onStateChange: (state) => proposalWorkspace.handleSyncState(state.kind === "syncing"),
 });
-const canSynchronizeProposalHistory = computed(() => {
-  const entries = proposalHistoryStatus.value?.entries;
-  return entries != null && entries.length > 0
-    && entries.every((entry) => entry.kind === "synchronization_required");
-});
 const proposalTasks = computed(() => overview.value?.tasks.map((task) => ({ gid: task.gid, title: task.title })) ?? []);
 const proposalWorkspace = useProposalWorkspace({
+  proposals,
   canWrite: canAcceptWrite,
   tasks: proposalTasks,
   selectedTaskGid,
@@ -999,98 +986,14 @@ function handleSetupAction(action: SetupAction): void {
   }
 }
 
-function proposalHistoryKey(entry: IpcProposalHistoryStatus["entries"][number]): string {
-  return `${entry.proposal_id}\u0000${entry.operation_id}`;
-}
-
-function proposalHistoryTargetLabel(kind: "task" | "temporary" | "new_task"): string {
-  switch (kind) {
-    case "task": return "タスクGID";
-    case "temporary": return "一時参照ID";
-    case "new_task": return "作成UUID";
-  }
-}
-
-function proposalHistoryResultLabel(result: IpcProposalHistoryConfirmInput["confirmed_result"]): string {
-  switch (result) {
-    case "applied": return "適用済み";
-    case "not_applied": return "未適用";
-    case "manually_adjusted": return "手動で調整済み";
-  }
-}
-
-async function loadProposalHistoryStatus(): Promise<void> {
-  try {
-    const result = await taskHub.proposalHistory.getStatus();
-    if (isFailure(result)) {
-      proposalHistoryStatus.value = undefined;
-      proposalHistoryLoadError.value = displayFailure(result).message;
-      return;
-    }
-    proposalHistoryStatus.value = ipcProposalHistoryStatusSchema.parse(result.value);
-    proposalHistoryLoadError.value = undefined;
-  } catch {
-    proposalHistoryStatus.value = undefined;
-    proposalHistoryLoadError.value = "旧適用履歴を読み込めませんでした。";
-  }
-}
-
-async function confirmProposalHistory(
-  entry: Extract<IpcProposalHistoryStatus["entries"][number], { kind: "confirmation_required" }>,
-): Promise<void> {
-  if (proposalHistoryBusy.value) return;
-  const key = proposalHistoryKey(entry);
-  const targetId = proposalHistoryTargetIds.value[key];
-  const confirmedResult = proposalHistoryResults.value[key];
-  const checked = proposalHistoryChecked.value[key];
-  if (targetId !== entry.target_id || confirmedResult == null || checked !== true) {
-    setFeedback("warning", "Asana上の実状態を確認し、対象IDと確認結果を入力してください。");
-    return;
-  }
-  proposalHistoryBusy.value = true;
-  try {
-    const result = await taskHub.proposalHistory.confirm({
-      proposal_id: entry.proposal_id,
-      operation_id: entry.operation_id,
-      checked_target_id: targetId,
-      confirmed_result: confirmedResult,
-      asana_checked: checked,
-    });
-    if (isFailure(result)) {
-      setFeedback("failure", displayFailure(result).message);
-      return;
-    }
-    proposalHistoryStatus.value = ipcProposalHistoryStatusSchema.parse(result.value);
-    setFeedback("success", "旧適用履歴の確認結果を保存しました。全件確認後に読取同期を実行してください。");
-  } catch {
-    setFeedback("failure", "旧適用履歴の確認結果を保存できませんでした。");
-  } finally {
-    proposalHistoryBusy.value = false;
-  }
-}
-
-async function synchronizeProposalHistory(): Promise<void> {
-  if (!canSynchronizeProposalHistory.value || proposalHistoryBusy.value) return;
-  proposalHistoryBusy.value = true;
-  try {
-    const result = await taskHub.proposalHistory.synchronize();
-    if (isFailure(result)) {
-      setFeedback("failure", displayFailure(result).message);
-      return;
-    }
-    proposalHistoryStatus.value = ipcProposalHistoryStatusSchema.parse(result.value.status);
-    setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
-      kind: "synced",
-      synced_at: result.value.synced_at,
-    }));
-    const refresh = await reloadTaskDataAfterSuccessfulSync(result.value.synced_at);
-    if (refresh.kind === "applied" || refresh.kind === "unchanged") {
-      setFeedback("success", "旧適用履歴の読取同期が完了しました。書き込みを再開できます。");
-    }
-  } catch {
-    setFeedback("failure", "旧適用履歴の読取同期に失敗しました。確認済みの結果は保存されています。");
-  } finally {
-    proposalHistoryBusy.value = false;
+async function handleHistorySynchronized(syncedAt: string): Promise<void> {
+  setConnectionState(chromiumConnectionState(), rendererSyncStateSchema.parse({
+    kind: "synced",
+    synced_at: syncedAt,
+  }));
+  const refresh = await reloadTaskDataAfterSuccessfulSync(syncedAt);
+  if (refresh.kind === "applied" || refresh.kind === "unchanged") {
+    addToast("success", "旧適用履歴の読取同期が完了しました。書き込みを再開できます。");
   }
 }
 
@@ -1313,7 +1216,6 @@ async function initialize(): Promise<void> {
   if (setupState.value?.kind === "ready") {
     await loadObsidianVaults();
   }
-  await loadProposalHistoryStatus();
   await loadInitialSyncState();
   if (setupState.value?.kind === "ready") {
     await loadAsanaAuthenticationState();
@@ -1458,121 +1360,10 @@ onBeforeUnmount(() => {
         </p>
       </div>
       <template v-else>
-        <section
-          v-if="proposalHistoryLoadError != null"
-          class="rounded-xl border border-rose-200 bg-white p-4 text-sm text-rose-900 dark:border-rose-800 dark:bg-slate-900 dark:text-rose-100"
-          role="alert"
-        >
-          <p>{{ proposalHistoryLoadError }}</p>
-          <button
-            type="button"
-            class="mt-2 rounded-md border border-rose-400 px-3 py-2"
-            @click="loadProposalHistoryStatus"
-          >
-            履歴を再読込
-          </button>
-        </section>
-        <section
-          v-if="proposalHistoryStatus != null && proposalHistoryStatus.entries.length > 0"
-          class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
-          aria-labelledby="proposal-history-title"
-        >
-          <h2
-            id="proposal-history-title"
-            class="text-lg font-semibold"
-          >
-            旧適用履歴の確認が必要です
-          </h2>
-          <p class="mt-2 text-sm">
-            Asanaの実状態を確認してください。全件の確認結果を保存して読取同期が成功するまで、書き込みと通常同期を再開できません。
-          </p>
-          <div class="mt-4 space-y-4">
-            <div
-              v-for="entry in proposalHistoryStatus.entries"
-              :key="proposalHistoryKey(entry)"
-              class="rounded-lg border border-amber-300 bg-white p-3 text-sm dark:border-amber-700 dark:bg-slate-900"
-            >
-              <p>変更案ID: {{ entry.proposal_id }}</p>
-              <p>操作ID: {{ entry.operation_id }}</p>
-              <template v-if="entry.kind === 'confirmation_required'">
-                <p>{{ proposalHistoryTargetLabel(entry.target_kind) }}: {{ entry.target_id }}</p>
-                <p>元の保存結果: {{ entry.source_final_result === null ? "結果なし" : "結果不明" }}</p>
-                <p>保存段階: {{ entry.source_stage }}</p>
-                <label class="mt-3 block font-medium">
-                  確認した対象ID
-                  <input
-                    v-model="proposalHistoryTargetIds[proposalHistoryKey(entry)]"
-                    type="text"
-                    autocomplete="off"
-                    class="mt-1 block w-full max-w-xl rounded-md border border-amber-400 bg-white px-3 py-2 text-slate-900 dark:border-amber-700 dark:bg-slate-800 dark:text-slate-100"
-                  >
-                </label>
-                <fieldset class="mt-3">
-                  <legend class="font-medium">
-                    Asanaで確認した結果
-                  </legend>
-                  <div class="mt-1 flex flex-wrap gap-4">
-                    <label><input
-                      v-model="proposalHistoryResults[proposalHistoryKey(entry)]"
-                      type="radio"
-                      :name="proposalHistoryKey(entry)"
-                      value="applied"
-                    > 適用済み</label>
-                    <label><input
-                      v-model="proposalHistoryResults[proposalHistoryKey(entry)]"
-                      type="radio"
-                      :name="proposalHistoryKey(entry)"
-                      value="not_applied"
-                    > 未適用</label>
-                    <label><input
-                      v-model="proposalHistoryResults[proposalHistoryKey(entry)]"
-                      type="radio"
-                      :name="proposalHistoryKey(entry)"
-                      value="manually_adjusted"
-                    > 手動で調整済み</label>
-                  </div>
-                </fieldset>
-                <label class="mt-3 block">
-                  <input
-                    v-model="proposalHistoryChecked[proposalHistoryKey(entry)]"
-                    type="checkbox"
-                  >
-                  Asana上の実状態を確認しました
-                </label>
-                <button
-                  type="button"
-                  class="mt-3 rounded-md bg-amber-700 px-3 py-2 font-medium text-white disabled:opacity-50 dark:bg-amber-600"
-                  :disabled="proposalHistoryBusy"
-                  @click="confirmProposalHistory(entry)"
-                >
-                  確認結果を保存
-                </button>
-              </template>
-              <template v-else-if="entry.kind === 'synchronization_required'">
-                <p>{{ proposalHistoryTargetLabel(entry.target_kind) }}: {{ entry.target_id }}</p>
-                <p>確認結果: {{ proposalHistoryResultLabel(entry.confirmed_result) }}</p>
-                <p class="mt-2 font-medium">
-                  読取同期を待っています。
-                </p>
-              </template>
-              <template v-else>
-                <p class="mt-2">
-                  元の旧行を履歴へ移行できません。確認操作では解除できません。
-                </p>
-                <p>エラーID: {{ entry.error_id }}</p>
-              </template>
-            </div>
-          </div>
-          <button
-            v-if="canSynchronizeProposalHistory"
-            type="button"
-            class="mt-4 rounded-md bg-amber-700 px-3 py-2 font-medium text-white dark:bg-amber-600"
-            :disabled="proposalHistoryBusy"
-            @click="synchronizeProposalHistory"
-          >
-            確認済み履歴を読取同期
-          </button>
-        </section>
+        <ProposalHistoryPanel
+          :history="proposalWorkspace.history"
+          @synchronized="handleHistorySynchronized"
+        />
         <section
           v-if="asanaAuthenticationState.kind === 'opening'
             || asanaAuthenticationState.kind === 'completing'

@@ -5,10 +5,12 @@ import { proposalViewSchema } from "../../../shared/ipc-contracts/proposal-value
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
 import { useProposalsApi } from "../../shared/api/feature-apis";
 import { proposalFromState, withProposal, type AiDelta, type AiProposalSession, type AiStatus, type ExternalState, type IpcFailure } from "./proposal-state";
+import { useProposalHistory } from "./use-proposal-history";
 
 /** AI変更案と外部提案の表示状態、要求、購読を所有します。 */
 export function useProposals() {
   const api = useProposalsApi();
+  const history = useProposalHistory(api);
   const aiStatus = ref<AiStatus>();
   const aiStatusFailure = ref<IpcFailure>();
   const sessions = ref<readonly AiProposalSession[]>([]);
@@ -224,6 +226,7 @@ export function useProposals() {
       api.getAiStatus(),
       api.getExternalState(),
       listExecutions(),
+      history.load(),
     ]);
     if (disposed || generation !== lifecycleGeneration) return;
     const status = proposalsContracts.getAiStatus.response.parse(statusResult);
@@ -455,6 +458,7 @@ export function useProposals() {
   }
 
   return {
+    history,
     aiStatus,
     aiStatusFailure,
     sessions,

@@ -36,6 +36,7 @@ type CodexState =
   | { readonly kind: "authentication_required" }
   | { readonly kind: "unavailable"; readonly reason_code: "not_installed" | "incompatible" | "permission_denied" | "startup_failed" | "disabled" | "stopped" };
 type Options = {
+  readonly proposals: ReturnType<typeof useProposals>;
   readonly canWrite: Readonly<Ref<boolean>>;
   readonly tasks: Readonly<Ref<readonly TaskReference[]>>;
   readonly selectedTaskGid: Readonly<Ref<string | undefined>>;
@@ -77,7 +78,7 @@ function codexUnavailableReason(reason: Extract<CodexState, { kind: "unavailable
 
 /** 提案画面の表示、操作、結果を単一の提案状態へ接続します。 */
 export function useProposalWorkspace(options: Options) {
-  const proposals = useProposals();
+  const proposals = options.proposals;
   const records = ref<readonly SessionRecord[]>([]);
   const selectedSessionId = ref<string>();
   const dialogVisible = ref(false);
@@ -571,6 +572,7 @@ export function useProposalWorkspace(options: Options) {
   }
 
   return {
+    history: proposals.history,
     codexState,
     externalState,
     externalBusy,

@@ -21,8 +21,13 @@ const diagnosticsApi = selectFeatureApi(
   window.taskHub?.diagnostics,
   createMockDiagnosticsApi,
 );
-const tasksApi = selectFeatureApi("tasks", mockSelection.features, window.taskHub?.tasks, createMockTasksApi);
-const proposalsApi = selectFeatureApi("proposals", mockSelection.features, window.taskHub?.proposals, createMockProposalsApi);
+const mockTasksApi = mockSelection.features.has("tasks") ? createMockTasksApi() : undefined;
+const tasksApi = selectFeatureApi("tasks", mockSelection.features, window.taskHub?.tasks, () => {
+  if (mockTasksApi == null) throw new Error("タスクmockが生成されていません。");
+  return mockTasksApi;
+});
+const proposalsApi = selectFeatureApi("proposals", mockSelection.features, window.taskHub?.proposals,
+  () => createMockProposalsApi("confirmable", (syncedAt) => mockTasksApi?.completeReadOnlyHistorySync(syncedAt)));
 const app = createApp(App);
 app.provide(taskHubApiInjectionKey, taskHubApi);
 app.provide(systemApiInjectionKey, systemApi);

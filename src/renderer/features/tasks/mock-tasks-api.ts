@@ -108,7 +108,7 @@ function createOverview(details: readonly TaskDetail[], lastSuccessfulSyncAt: st
 }
 
 /** 新IPCのタスク閲覧と同期に使うmockを作成します。 */
-export function createMockTasksApi(): TasksApi {
+export function createMockTasksApi(): TasksApi & { readonly completeReadOnlyHistorySync: (syncedAt: string) => void } {
   const details = [
     createDetail("mock-task-1", "今日の集中タスク", "in_progress", 5, { kind: "on", value: "2026-09-10" },
       { value: 15, unit: "minute" }, "開発", 1,
@@ -233,7 +233,15 @@ export function createMockTasksApi(): TasksApi {
     for (const listener of listeners) listener(state);
   }
 
+  function completeReadOnlyHistorySync(syncedAt: string): void {
+    if (!Number.isFinite(Date.parse(syncedAt))) throw new Error("旧履歴の読取同期日時を確認できません。");
+    lastSuccessfulSyncAt = syncedAt;
+    overview = createOverview(details, lastSuccessfulSyncAt);
+    publish({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
+  }
+
   return {
+    completeReadOnlyHistorySync,
     getOverview: () => Promise.resolve(tasksContracts.getOverview.response.parse({ kind: "ok", value: overview })),
     getDetail: (taskGid) => Promise.resolve().then(() => {
       const request = tasksContracts.getDetail.request.parse({ task_gid: taskGid });
