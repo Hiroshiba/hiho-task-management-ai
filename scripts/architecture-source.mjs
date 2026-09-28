@@ -24,7 +24,6 @@ const ownerRules = [
   [/^src\/main\/ai\//, "main/application/proposal-generate"],
   [/^src\/main\/asana\//, "main/infrastructure/asana"],
   [/^src\/main\/auth\/asana-oauth\//, "main/infrastructure/asana"],
-  [/^src\/main\/auth\/secret-storage\//, "main/infrastructure/persistence"],
   [/^src\/main\/codex\//, "main/infrastructure/ai"],
   [/^src\/main\/domain\//, "main/domain"],
   [/^src\/main\/external-agent\/service\.ts$/, "main/application/proposal-generate"],

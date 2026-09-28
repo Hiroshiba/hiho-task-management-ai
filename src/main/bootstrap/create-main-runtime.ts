@@ -26,6 +26,7 @@ import {
   SqliteDiagnosticLogRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
+  SecretStorage,
   WindowStateStore,
   type LegacyMigrationSummary,
 } from "../infrastructure/persistence";
@@ -162,8 +163,10 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
   try {
     persistence = new PersistenceRuntime(join(options.userDataPath, "taskhub.sqlite3"));
     const openedPersistence = persistence;
+    const secretStorage = new SecretStorage(
+      openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
+    );
     const files = {
-      secretStorage: openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
       checkpoint: openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
       openExternalAgentConfigFile: (filePath: string) =>
         openedPersistence.openTextFile(filePath, "外部連携設定"),
@@ -185,6 +188,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     }, openedPersistence, files, historyRepository, {
       vaultMappingRepository: obsidian.repository,
       obsidian: obsidian.workflow,
+      secretStorage,
     });
     obsidian.bindHost(legacy.getObsidianCompositionDependencies());
     const diagnosticDependencies = legacy.getDiagnosticCompositionDependencies();

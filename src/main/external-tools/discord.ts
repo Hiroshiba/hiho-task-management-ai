@@ -3,7 +3,7 @@ import {
   createUtf8ByteLimitedStringSchema,
   gidSchema,
 } from "../../shared/domain";
-import type { SecretStorage } from "../auth/secret-storage";
+import type { SecretStoragePort } from "../application/common/ports/secret-storage";
 import { ExternalToolError } from "./errors";
 import {
   discordChannelIdSchema,
@@ -822,7 +822,7 @@ export function createDiscordExternalToolDefinition(
 
 /** SecretStorage内のDiscord資格情報だけをadapterへ提供します。 */
 export class SecretStorageDiscordCredentialProvider implements DiscordCredentialProviderPort {
-  public constructor(private readonly secretStorage: SecretStorage) {}
+  public constructor(private readonly secretStorage: SecretStoragePort) {}
 
   /** Discord Bot Tokenの保存有無だけを返します。 */
   public hasBotToken(): boolean {

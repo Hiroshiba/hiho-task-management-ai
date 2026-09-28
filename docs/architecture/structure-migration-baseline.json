@@ -1390,11 +1390,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/main/codex/app-server/index.ts"
     },
     {
@@ -1521,11 +1516,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/auth/asana-oauth/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/auth/secret-storage/index.ts"
     },
     {
       "path": "src/main/application/service.ts",
@@ -2155,11 +2145,6 @@
     {
       "path": "src/main/auth/asana-oauth/asana-oauth.ts",
       "rule": "import-boundary",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/auth/asana-oauth/asana-oauth.ts",
-      "rule": "import-boundary",
       "symbol": "src/shared/setup/schemas.ts"
     },
     {
@@ -2180,11 +2165,6 @@
     {
       "path": "src/main/auth/asana-oauth/asana-oauth.ts",
       "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/auth/asana-oauth/asana-oauth.ts",
-      "rule": "old-import",
       "symbol": "src/shared/domain/index.ts"
     },
     {
@@ -2196,11 +2176,6 @@
       "path": "src/main/auth/asana-oauth/asana-oauth.ts",
       "rule": "old-path",
       "symbol": "src/main/auth/asana-oauth/asana-oauth.ts"
-    },
-    {
-      "path": "src/main/auth/asana-oauth/coordinator.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/secret-storage/index.ts"
     },
     {
       "path": "src/main/auth/asana-oauth/coordinator.ts",
@@ -2221,11 +2196,6 @@
       "path": "src/main/auth/asana-oauth/coordinator.ts",
       "rule": "old-import",
       "symbol": "src/main/auth/asana-oauth/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/asana-oauth/coordinator.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/index.ts"
     },
     {
       "path": "src/main/auth/asana-oauth/coordinator.ts",
@@ -2286,51 +2256,6 @@
       "path": "src/main/auth/asana-oauth/schemas.ts",
       "rule": "old-path",
       "symbol": "src/main/auth/asana-oauth/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/errors.ts",
-      "rule": "old-path",
-      "symbol": "src/main/auth/secret-storage/errors.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/errors.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/secret-storage.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/schemas.ts",
-      "rule": "old-path",
-      "symbol": "src/main/auth/secret-storage/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/secret-storage.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/errors.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/secret-storage.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/schemas.ts"
-    },
-    {
-      "path": "src/main/auth/secret-storage/secret-storage.ts",
-      "rule": "old-path",
-      "symbol": "src/main/auth/secret-storage/secret-storage.ts"
     },
     {
       "path": "src/main/codex/app-server/connection.ts",
@@ -2974,18 +2899,8 @@
     },
     {
       "path": "src/main/external-tools/discord.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/auth/secret-storage/index.ts"
-    },
-    {
-      "path": "src/main/external-tools/discord.ts",
       "rule": "module-mutable",
       "symbol": "discordThreadTypes"
-    },
-    {
-      "path": "src/main/external-tools/discord.ts",
-      "rule": "old-import",
-      "symbol": "src/main/auth/secret-storage/index.ts"
     },
     {
       "path": "src/main/external-tools/discord.ts",

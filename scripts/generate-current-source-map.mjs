@@ -44,7 +44,7 @@ const functions = [
   ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/external-agent/service.ts"],
   ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
   ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
-  ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/infrastructure/persistence/settings-repository.ts, src/main/auth/secret-storage/"],
+  ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/application/common/ports/secret-storage.ts, src/main/infrastructure/persistence/settings-repository.ts, src/main/infrastructure/persistence/secret-storage.ts"],
   ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc-contracts/, src/main/ipc/, src/preload/"],
   ["タスク画面", "renderer/features/tasks", "src/renderer/features/tasks/"],
   ["変更案画面", "renderer/features/proposals", "src/renderer/features/proposals/"],
@@ -281,7 +281,7 @@ function render(revision) {
   const versions = [
     ["SQLite", "src/main/infrastructure/persistence/sqlite-schema.ts", "storageSchemaVersion"],
     ["初回設定JSON", "src/main/application/checkpoint.ts", "checkpointVersion"],
-    ["暗号化JSON", "src/main/auth/secret-storage/secret-storage.ts", "encryptedFileVersion"],
+    ["暗号化JSON", "src/main/infrastructure/persistence/secret-storage.ts", "encryptedFileVersion"],
     ["ウィンドウJSON", "src/main/infrastructure/persistence/window-state-store.ts", "windowStateVersion"],
     ["Asana Custom external data", "src/shared/domain/external-data.ts", "customExternalDataSchemaVersion"],
   ].map(([name, path, symbol]) => [name, version(path, symbol), path, symbol]);

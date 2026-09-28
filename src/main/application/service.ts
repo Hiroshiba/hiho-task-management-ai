@@ -67,10 +67,10 @@ import {
   oauthOutOfBandBeginResultSchema,
   oauthOutOfBandStateSchema,
 } from "../auth/asana-oauth";
-import {
-  SecretStorage,
-  type SecretStorageData,
-} from "../auth/secret-storage";
+import type {
+  SecretStorageData,
+  SecretStoragePort,
+} from "./common/ports/secret-storage";
 import {
   createCodexSessionWorkspaceUserDataPath,
   initializeCodexWorkspace,
@@ -912,7 +912,6 @@ function getHistoricalProposalOperationStatus(
 }
 
 type ApplicationFileStores = {
-  readonly secretStorage: PersistentTextFile;
   readonly checkpoint: PersistentTextFile;
   readonly openExternalAgentConfigFile: ExternalAgentBridgeOptions["openConfigFile"];
 };
@@ -1005,7 +1004,7 @@ export class TaskHubApplication {
   private readonly proposalApplicationHistoryRepository: SqliteProposalApplicationHistoryRepository;
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private attachedDiagnostics: DiagnosticLogService<DiagnosticRecord, DiagnosticLogEntry> | undefined;
-  private readonly secretStorage: SecretStorage;
+  private readonly secretStorage: SecretStoragePort;
   private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
   private readonly operationQueue: AsanaOperationQueue;
@@ -1105,6 +1104,7 @@ export class TaskHubApplication {
     bindings: {
       readonly vaultMappingRepository: SqliteVaultMappingRepository;
       readonly obsidian: ObsidianIntegrationWorkflow;
+      readonly secretStorage: SecretStoragePort;
     },
   ) {
     applicationOptionsSchemaExport.parse(options);
@@ -1138,7 +1138,7 @@ export class TaskHubApplication {
       persistence.connection,
       (value) => deviceSettingsSchema.parse(value),
     );
-    this.secretStorage = new SecretStorage(files.secretStorage);
+    this.secretStorage = bindings.secretStorage;
     this.checkpoint = new SetupCheckpointStore(files.checkpoint);
     this.scheduler = new AsanaRequestScheduler();
     this.tokenProvider = createMutableTokenProvider();

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { identifierSchema } from "../../../shared/domain";
 import { asanaClientSecretSchema } from "../../../shared/setup/schemas";
-import { type SecretStorage } from "../secret-storage";
+import type { SecretStoragePort } from "../../application/common/ports/secret-storage";
 import { AsanaOAuthClient } from "./asana-oauth";
 import {
   AsanaOAuthAuthorizationUrlOpenError,
@@ -318,7 +318,7 @@ export class AsanaOAuthCoordinator {
   private outOfBandTransaction: OutOfBandTransaction = { kind: "idle" };
 
   public constructor(
-    private readonly secretStorage: SecretStorage,
+    private readonly secretStorage: SecretStoragePort,
     private readonly openAuthorizationUrl: (
       authorizationUrl: string,
       signal: AbortSignal,

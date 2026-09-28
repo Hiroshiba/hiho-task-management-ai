@@ -2,10 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import type { TokenProvider } from "../../asana/transport";
 import { identifierSchema } from "../../../shared/domain";
 import { asanaClientSecretSchema } from "../../../shared/setup/schemas";
-import {
-  SecretStorage,
-  type SecretStorageData,
-} from "../secret-storage";
+import type {
+  SecretStorageData,
+  SecretStoragePort,
+} from "../../application/common/ports/secret-storage";
 import {
   asanaOAuthOutOfBandRedirectUri,
   codeVerifierSchema,
@@ -89,7 +89,7 @@ async function readStructuredTokenErrorCode(
 }
 
 function readRefreshSecrets(
-  secretStorage: SecretStorage,
+  secretStorage: SecretStoragePort,
 ): {
   readonly clientSecret: string;
   readonly refreshToken: string;
@@ -108,7 +108,7 @@ function readRefreshSecrets(
   };
 }
 
-function readLatestSecrets(secretStorage: SecretStorage): SecretStorageData {
+function readLatestSecrets(secretStorage: SecretStoragePort): SecretStorageData {
   const latest = secretStorage.load();
   if (latest == null) {
     throw new AsanaOAuthCredentialStateError();
@@ -134,7 +134,7 @@ function assertRefreshTokenUnchanged(
   }
 }
 
-function readAccessToken(secretStorage: SecretStorage): string {
+function readAccessToken(secretStorage: SecretStoragePort): string {
   const stored = secretStorage.load();
   if (stored == null || stored.access_token == null) {
     throw new AsanaOAuthCredentialError();
@@ -173,7 +173,7 @@ export class AsanaOAuthClient implements TokenProvider {
 
   public constructor(
     clientId: string,
-    private readonly secretStorage: SecretStorage,
+    private readonly secretStorage: SecretStoragePort,
   ) {
     this.clientId = identifierSchema.parse(clientId);
   }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SecretStorageData } from "../../application/common/ports/secret-storage";
 
 function hasControlCharacter(value: string): boolean {
   return value.split("").some((character) => {
@@ -63,7 +64,7 @@ export const secretStorageSchema = z
     discord_bot_token: discordBotTokenSchema.optional(),
     external_credential_references: externalCredentialReferencesSchema.optional(),
   })
-  .strict();
+  .strict() satisfies z.ZodType<SecretStorageData>;
 
 /** 暗号化済み秘密情報ファイルを検証するスキーマです。 */
 export const encryptedSecretStorageSchema = z
@@ -72,5 +73,3 @@ export const encryptedSecretStorageSchema = z
     ciphertext: z.base64(),
   })
   .strict();
-
-export type SecretStorageData = z.infer<typeof secretStorageSchema>;

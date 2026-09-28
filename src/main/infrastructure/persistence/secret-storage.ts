@@ -1,15 +1,15 @@
 import { safeStorage } from "electron";
 import { z } from "zod";
-import type { PersistentTextFile } from "../../infrastructure/persistence";
+import type { SecretStorageData, SecretStoragePort } from "../../application/common/ports/secret-storage";
+import type { PersistentTextFile } from "./persistent-text-file";
 import {
   encryptedSecretStorageSchema,
   secretStorageSchema,
-  type SecretStorageData,
-} from "./schemas";
+} from "./secret-storage-schemas";
 import {
   SecretStorageEncryptionUnavailableError,
   SecretStorageFormatError,
-} from "./errors";
+} from "./secret-storage-errors";
 
 const encryptedFileVersion = 1;
 
@@ -66,7 +66,7 @@ function parseJson<T>(raw: string, schema: z.ZodType<T>): T {
 }
 
 /** ElectronのOS保護ストレージを使って秘密情報を保存します。 */
-export class SecretStorage {
+export class SecretStorage implements SecretStoragePort {
   public constructor(private readonly file: PersistentTextFile) {}
 
   /** 秘密情報を暗号化して原子的に保存します。 */
