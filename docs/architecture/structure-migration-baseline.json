@@ -3709,18 +3709,8 @@
     },
     {
       "path": "src/shared/view-model/index.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/view-model/task-filter.ts"
-    },
-    {
-      "path": "src/shared/view-model/index.ts",
       "rule": "old-import",
       "symbol": "src/shared/view-model/schemas.ts"
-    },
-    {
-      "path": "src/shared/view-model/index.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/task-filter.ts"
     },
     {
       "path": "src/shared/view-model/index.ts",
@@ -3746,26 +3736,6 @@
       "path": "src/shared/view-model/schemas.ts",
       "rule": "old-path",
       "symbol": "src/shared/view-model/schemas.ts"
-    },
-    {
-      "path": "src/shared/view-model/task-filter.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/task-filter.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/shared/view-model/task-filter.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/view-model/schemas.ts"
-    },
-    {
-      "path": "src/shared/view-model/task-filter.ts",
-      "rule": "old-path",
-      "symbol": "src/shared/view-model/task-filter.ts"
     }
   ]
 }

@@ -25,9 +25,3 @@ export {
   type ViewModelTaskRow,
   type ViewModelUnavailableReasonCode,
 } from "./schemas";
-export {
-  filterTaskRows,
-  isTaskDueOverdue,
-  taskFilterSchema,
-  type TaskFilter,
-} from "./task-filter";

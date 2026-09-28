@@ -429,7 +429,6 @@
 | src/shared/taskctl/schemas.ts | shared/ipc-contracts |
 | src/shared/view-model/index.ts | shared/ipc-contracts |
 | src/shared/view-model/schemas.ts | shared/ipc-contracts |
-| src/shared/view-model/task-filter.ts | renderer/features/tasks |
 
 外部エージェントの現行serviceには複数の責務が同居しています。ファイル単位の候補を提案生成とし、移行時は次のownerへ分離します。
 
