@@ -14,7 +14,6 @@ import {
 import {
   asanaSnapshotNormalizationResultSchema,
   ingestAsanaExternalData,
-  normalizeAsanaSnapshot,
   type SnapshotNormalizationResult,
 } from "../../domain";
 import {
@@ -61,6 +60,14 @@ import {
   type NormalizationApplicationOutcome,
 } from "../../infrastructure/asana/sync-normalization";
 import { validateAbortSignal } from "../../infrastructure/asana/synchronization-run";
+import {
+  createProjectMetadataCache,
+  createProjectMetadataSource,
+  createSyncState,
+  createTaskCacheEntries,
+  mergeDeltaTasks,
+  normalizeSnapshot,
+} from "../../infrastructure/asana/sync-snapshot";
 
 const synchronizationModeSchema = z.enum(["full", "delta"]);
 const oauthMismatchManagedTaskThreshold = 10;
@@ -360,58 +367,6 @@ function isMetadataSufficient(
   );
 }
 
-function createProjectMetadataSource(
-  project: ProjectMetadataCache["project"],
-  sections: readonly ProjectMetadataCache["sections"][number][],
-  tags: readonly ProjectMetadataCache["tags"][number][],
-): ProjectMetadataSource {
-  return {
-    project: {
-      gid: project.gid,
-      ...(project.name == null ? {} : { name: project.name }),
-    },
-    sections: [...sections]
-      .map((section) => ({ gid: section.gid, name: section.name }))
-      .sort((left, right) => compareStrings(left.gid, right.gid)),
-    tags: [...tags]
-      .map((tag) => ({ gid: tag.gid, name: tag.name }))
-      .sort((left, right) => compareStrings(left.gid, right.gid)),
-  };
-}
-
-function createProjectMetadataCache(
-  source: ProjectMetadataSource,
-  cachedAt: string,
-  parseMetadata: CacheParsers["parseMetadata"],
-): ProjectMetadataCache {
-  return parseMetadata({
-    ...source,
-    cached_at: cachedAt,
-  });
-}
-
-function mergeDeltaTasks(
-  baseTasks: readonly AsanaTaskResponse[],
-  result: MaterializedDelta,
-): AsanaTaskResponse[] {
-  const tasks = new Map<string, AsanaTaskResponse>();
-  for (const task of baseTasks) {
-    const parsedTask = asanaTaskResponseSchema.parse(task);
-    tasks.set(parsedTask.gid, parsedTask);
-  }
-  for (const gid of result.missing_gids) {
-    tasks.delete(gid);
-  }
-  for (const task of result.upsert) {
-    const parsedTask = asanaTaskResponseSchema.parse(task);
-    if (parsedTask.gid !== task.gid) {
-      throw new Error("差分同期タスクのGIDを確認できません。");
-    }
-    tasks.set(parsedTask.gid, parsedTask);
-  }
-  return sortedTasks([...tasks.values()]);
-}
-
 function mergeDeltaSnapshot(
   snapshot: CollectionSnapshot,
   result: MaterializedDelta,
@@ -427,77 +382,6 @@ function mergeDeltaSnapshot(
       ...result.missing_gids,
     ]),
   };
-}
-
-function buildCustomExternalDataCache(
-  task: AsanaTaskResponse,
-): TaskCacheEntry["custom_external_data"] {
-  if (task.external == null) {
-    return undefined;
-  }
-  const ingestion = ingestAsanaExternalData(task);
-  switch (ingestion.kind) {
-    case "missing":
-      throw new Error("外部データの取込結果がAsana応答と一致しません。");
-    case "valid":
-      return { status: "valid", raw: task.external.data };
-    case "broken":
-      return { status: "broken", raw: task.external.data };
-    case "identity_mismatch":
-      return undefined;
-    case "unknown_version":
-      return {
-        status: "unknown_version",
-        raw: task.external.data,
-        schema: ingestion.schema,
-      };
-  }
-}
-
-function createTaskCacheEntries(
-  rawTasks: readonly AsanaTaskResponse[],
-  normalization: SnapshotNormalizationResult,
-  cachedAt: string,
-  parseEntries: CacheParsers["parseEntries"],
-): readonly TaskCacheEntry[] {
-  const normalizedByGid = new Map(
-    normalization.tasks.map((task) => [task.gid, task]),
-  );
-  const entries = sortedTasks(rawTasks).map((rawTask) => {
-    const task = normalizedByGid.get(rawTask.gid);
-    if (task == null) {
-      throw new Error("正規化済みタスクをキャッシュへ対応付けできません。");
-    }
-    const customExternalData = buildCustomExternalDataCache(rawTask);
-    const entry = {
-      gid: rawTask.gid,
-      asana_response: rawTask,
-      task,
-      cached_at: cachedAt,
-      ...(customExternalData == null
-        ? {}
-        : { custom_external_data: customExternalData }),
-    };
-    return entry;
-  });
-  return parseEntries(entries);
-}
-
-function createSyncState(
-  projectGid: string,
-  eventsToken: string | undefined,
-  lastFullSyncedAt: string | undefined,
-  syncedAt: string,
-  parseSyncState: (value: unknown) => SyncState,
-): SyncState {
-  return parseSyncState({
-    project_gid: projectGid,
-    ...(eventsToken == null ? {} : { events_token: eventsToken }),
-    last_successful_sync_at: syncedAt,
-    ...(lastFullSyncedAt == null
-      ? {}
-      : { last_full_sync_at: lastFullSyncedAt }),
-  });
 }
 
 async function refetchAffectedTasks(
@@ -516,25 +400,6 @@ async function refetchAffectedTasks(
     rawTasks.set(taskGid, fetchedTask);
   }
   return sortedTasks([...rawTasks.values()]);
-}
-
-function normalizeSnapshot(
-  input: AsanaSyncCoordinatorInput,
-  rawTasks: readonly AsanaTaskResponse[],
-  previousTasks: readonly Task[],
-  activityBaselineTasks: readonly Task[],
-  inaccessibleGids: readonly string[],
-  activityDate: string,
-): SnapshotNormalizationResult {
-  return normalizeAsanaSnapshot({
-    project_gid: input.project_gid,
-    section_gids: input.section_gids,
-    activity_date: activityDate,
-    tasks: sortedTasks(rawTasks),
-    previous_tasks: [...previousTasks],
-    activity_baseline_tasks: [...activityBaselineTasks],
-    inaccessible_gids: [...inaccessibleGids],
-  });
 }
 
 function createFullCollectionSnapshot(
@@ -679,7 +544,8 @@ export class AsanaSyncCoordinator {
       );
       const firstNormalization = protectExternalDataWrites(
         normalizeSnapshot(
-          validatedInput,
+          validatedInput.project_gid,
+          validatedInput.section_gids,
           collection.raw_tasks,
           previousTasks,
           previousTasks,
@@ -805,7 +671,8 @@ export class AsanaSyncCoordinator {
       applicationResult,
       rawTasks,
       normalization: normalizeSnapshot(
-        input,
+        input.project_gid,
+        input.section_gids,
         rawTasks,
         normalization.tasks,
         previousTasks,
