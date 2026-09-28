@@ -18,6 +18,7 @@ export const proposalsChannels = {
   confirmHistory: "proposals:confirm-history",
   synchronizeHistory: "proposals:synchronize-history",
   getExecution: "proposals:get-execution",
+  listExecutions: "proposals:list-executions",
   retryExecution: "proposals:retry-execution",
   subscribeAiStatus: "proposals:ai-status:subscribe",
   unsubscribeAiStatus: "proposals:ai-status:unsubscribe",

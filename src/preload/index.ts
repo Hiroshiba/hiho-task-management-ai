@@ -619,6 +619,7 @@ const api: TaskHubApi & FinalTaskHubApi = {
       finalIpcContracts.proposals.getExecution,
       { execution_id: executionId },
     ),
+    listExecutions: (input) => invokeFinal(finalIpcContracts.proposals.listExecutions, input),
     retryExecution: (retryOfExecutionId) => invokeFinal(
       finalIpcContracts.proposals.retryExecution,
       { retry_of_execution_id: retryOfExecutionId },

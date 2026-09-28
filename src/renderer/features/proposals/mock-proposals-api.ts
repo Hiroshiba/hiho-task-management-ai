@@ -42,10 +42,16 @@ function withRevision(view: ProposalViewDto, revision: number): ProposalViewDto 
   return proposalViewSchema.parse({ ...view, revision });
 }
 
+function compareExecutionOrder(left: ExecutionDto, right: ExecutionDto): number {
+  if (left.created_at !== right.created_at) return left.created_at < right.created_at ? -1 : 1;
+  if (left.execution_id === right.execution_id) return 0;
+  return left.execution_id < right.execution_id ? -1 : 1;
+}
+
 /** 17操作の生成、表示、編集、選択、承認を同じ状態で扱うmockを作成します。 */
 export function createMockProposalsApi(): ProposalsApi {
   const sessions = new Map<string, Session>();
-  const executions = new Map<string, ExecutionDto>();
+  const executions = new Map<string, { readonly execution: ExecutionDto; readonly rowid: number }>();
   const aiStatus = proposalsContracts.getAiStatus.response.parse(ok({ kind: "ready", model: "mock-model" }));
   if (aiStatus.kind !== "ok") throw new Error("mockのAI状態を作成できません。");
   const aiStatusListeners = new Set<Parameters<ProposalsApi["onAiStatus"]>[0]>();
@@ -153,7 +159,7 @@ export function createMockProposalsApi(): ProposalsApi {
         outcome: "applied",
       })),
     });
-    executions.set(execution.execution_id, execution);
+    executions.set(execution.execution_id, { execution, rowid: executions.size + 1 });
     for (const listener of executionListeners) listener(execution);
     return execution;
   }
@@ -298,15 +304,44 @@ export function createMockProposalsApi(): ProposalsApi {
     synchronizeHistory: () => Promise.resolve(proposalsContracts.synchronizeHistory.response.parse(ok({ status: { entries: [] }, synced_at: "2026-09-28T00:00:00.000Z" }))),
     getExecution: (executionId) => Promise.resolve().then(() => {
       const request = proposalsContracts.getExecution.request.parse({ execution_id: executionId });
-      const execution = executions.get(request.execution_id);
+      const execution = executions.get(request.execution_id)?.execution;
       return execution == null ? failure("not_found", "実行履歴が見つかりません。") : proposalsContracts.getExecution.response.parse(ok(execution));
+    }),
+    listExecutions: (input) => Promise.resolve().then(() => {
+      const request = proposalsContracts.listExecutions.request.parse(input);
+      const cursor = request.cursor;
+      const snapshotMaxRowid = cursor?.snapshot_max_rowid ?? executions.size;
+      const ordered = [...executions.values()]
+        .filter((entry) => entry.rowid <= snapshotMaxRowid)
+        .sort((left, right) => compareExecutionOrder(left.execution, right.execution));
+      const afterCursor = cursor == null
+        ? ordered
+        : ordered.filter((entry) => entry.execution.created_at > cursor.created_at
+          || entry.execution.created_at === cursor.created_at
+            && entry.execution.execution_id > cursor.execution_id);
+      const rows = afterCursor.slice(0, request.limit + 1);
+      const pageRows = rows.slice(0, request.limit);
+      const last = pageRows[pageRows.length - 1];
+      const pageExecutions = pageRows.map((entry) => entry.execution);
+      if (rows.length <= request.limit) {
+        return proposalsContracts.listExecutions.response.parse(ok({ executions: pageExecutions }));
+      }
+      if (last == null) throw new Error("mockの最終executionがありません。");
+      return proposalsContracts.listExecutions.response.parse(ok({
+        executions: pageExecutions,
+        next_cursor: {
+          snapshot_max_rowid: snapshotMaxRowid,
+          created_at: last.execution.created_at,
+          execution_id: last.execution.execution_id,
+        },
+      }));
     }),
     retryExecution: (retryOfExecutionId) => Promise.resolve().then(() => {
       const request = proposalsContracts.retryExecution.request.parse({ retry_of_execution_id: retryOfExecutionId });
-      const previous = executions.get(request.retry_of_execution_id);
+      const previous = executions.get(request.retry_of_execution_id)?.execution;
       if (previous == null) return failure("not_found", "再試行元の実行履歴が見つかりません。");
       const execution = executionDtoSchema.parse({ ...previous, execution_id: `mock-proposal-execution-${nextExecutionNumber++}`, retry_of_execution_id: request.retry_of_execution_id });
-      executions.set(execution.execution_id, execution);
+      executions.set(execution.execution_id, { execution, rowid: executions.size + 1 });
       for (const listener of executionListeners) listener(execution);
       return proposalsContracts.retryExecution.response.parse(ok(execution));
     }),

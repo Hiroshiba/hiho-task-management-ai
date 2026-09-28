@@ -183,6 +183,19 @@ const historyConfirmRequestSchema = z
 const executionRequestSchema = z.object({ execution_id: identifierSchema }).strict();
 const retryExecutionRequestSchema = z.object({ retry_of_execution_id: identifierSchema }).strict();
 const proposalExecutionSchema = executionDtoSchema.refine((execution) => execution.origin === "proposal");
+const executionListCursorSchema = z.object({
+  snapshot_max_rowid: z.number().int().positive().safe(),
+  created_at: dateTimeSchema,
+  execution_id: identifierSchema,
+}).strict();
+const executionListRequestSchema = z.object({
+  limit: z.number().int().min(1).max(100),
+  cursor: executionListCursorSchema.optional(),
+}).strict();
+const executionListPageSchema = z.object({
+  executions: z.array(proposalExecutionSchema).max(100),
+  next_cursor: executionListCursorSchema.optional(),
+}).strict();
 const approvalResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("execution"), execution: proposalExecutionSchema }).strict(),
   z.object({
@@ -316,6 +329,11 @@ export const proposalsContracts = {
     request: executionRequestSchema,
     response: responseSchema(proposalExecutionSchema),
   },
+  listExecutions: {
+    channel: proposalsChannels.listExecutions,
+    request: executionListRequestSchema,
+    response: responseSchema(executionListPageSchema),
+  },
   retryExecution: {
     channel: proposalsChannels.retryExecution,
     request: retryExecutionRequestSchema,
@@ -374,6 +392,7 @@ export const proposalsContracts = {
 type ProposalViewResult = Promise<IpcResult<ProposalViewDto>>;
 type ExternalStateResult = Promise<IpcResult<z.infer<typeof externalProposalStateSchema>>>;
 type ExecutionResult = Promise<IpcResult<ExecutionDto>>;
+type ExecutionListResult = Promise<IpcResult<z.infer<typeof executionListPageSchema>>>;
 type ApprovalResult = Promise<IpcResult<z.infer<typeof approvalResultSchema>>>;
 
 export type ProposalsApi = {
@@ -407,6 +426,7 @@ export type ProposalsApi = {
     }>
   >;
   readonly getExecution: (executionId: string) => ExecutionResult;
+  readonly listExecutions: (input: z.infer<typeof executionListRequestSchema>) => ExecutionListResult;
   readonly retryExecution: (retryOfExecutionId: string) => ExecutionResult;
   readonly onAiStatus: IpcSubscription<z.infer<typeof aiStatusSchema>>;
   readonly onAiDelta: IpcSubscription<z.infer<typeof aiDeltaSchema>>;

@@ -57,6 +57,22 @@ export type SavedRetryProposalExecution<Result extends object> = {
   readonly created: boolean;
 };
 
+export type ProposalExecutionListCursor = {
+  readonly snapshot_max_rowid: number;
+  readonly created_at: string;
+  readonly execution_id: string;
+};
+
+export type ListProposalExecutionsInput = {
+  readonly limit: number;
+  readonly cursor?: ProposalExecutionListCursor;
+};
+
+export type ProposalExecutionListPage<Result extends object> = {
+  readonly executions: readonly ProposalExecution<Result>[];
+  readonly next_cursor?: ProposalExecutionListCursor;
+};
+
 export type StartProposalExecutionStep = {
   readonly execution_id: string;
   readonly step_id: string;
@@ -89,6 +105,7 @@ export interface ProposalExecutionRepository<Result extends object> {
   get(executionId: string): ProposalExecution<Result> | undefined;
   getByProposal(proposalId: string): readonly ProposalExecution<Result>[];
   getIncomplete(): readonly ProposalExecution<Result>[];
+  listExecutions(input: ListProposalExecutionsInput): ProposalExecutionListPage<Result>;
   startStep(input: StartProposalExecutionStep): boolean;
   settleStep(input: SettleProposalExecutionStep): boolean;
   complete(input: CompleteProposalExecution<Result>): boolean;

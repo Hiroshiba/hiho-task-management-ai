@@ -140,6 +140,10 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
       getByProposal: (proposalId) => repository.getByProposal(proposalId).map(proposalExecution),
       getIncomplete: () => repository.getIncomplete()
         .filter((execution) => execution.plan.origin === "proposal").map(proposalExecution),
+      listExecutions: (input) => {
+        const page = repository.listExecutions(input);
+        return { ...page, executions: page.executions.map(proposalExecution) };
+      },
     },
     historyRepository: options.historyRepository,
     engine: { run: async (executionId, signal) => proposalExecution(await engine.run(executionId, signal)) },

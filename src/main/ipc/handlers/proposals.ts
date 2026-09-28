@@ -21,7 +21,7 @@ type ProposalInvokeName =
   | "getAiStatus" | "startSession" | "startTurn" | "getProposal" | "select" | "editOperation"
   | "reject" | "approve" | "closeSession" | "getExternalState" | "setExternalEnabled"
   | "editExternalOperation" | "selectExternal" | "approveExternal" | "rejectExternal"
-  | "getHistoryStatus" | "confirmHistory" | "synchronizeHistory" | "getExecution" | "retryExecution";
+  | "getHistoryStatus" | "confirmHistory" | "synchronizeHistory" | "getExecution" | "listExecutions" | "retryExecution";
 
 export type ProposalsHandlers = {
   readonly [Name in ProposalInvokeName]: ContractHandler<(typeof proposalsContracts)[Name]>;
@@ -55,6 +55,10 @@ export interface ProposalsHandlerWorkflows {
   };
   readonly execution: {
     getExecution(executionId: string): MaybePromise<StoredProposalExecution>;
+    listExecutions(input: Request<typeof proposalsContracts.listExecutions>): MaybePromise<{
+      readonly executions: readonly StoredProposalExecution[];
+      readonly next_cursor?: Request<typeof proposalsContracts.listExecutions>["cursor"];
+    }>;
     retryExecution(executionId: string, signal: AbortSignal): MaybePromise<StoredProposalExecution>;
   };
 }
@@ -64,6 +68,10 @@ export function createProposalsHandlers(workflows: ProposalsHandlerWorkflows): P
   const { ai, external, history, execution } = workflows;
   const getExecution = createContractHandler(proposalsContracts.getExecution, async (request) =>
     toProposalExecutionDto(await execution.getExecution(request.execution_id)));
+  const listExecutions = createContractHandler(proposalsContracts.listExecutions, async (request) => {
+    const page = await execution.listExecutions(request);
+    return { ...page, executions: page.executions.map(toProposalExecutionDto) };
+  });
   const retryExecution = createContractHandler(proposalsContracts.retryExecution, async (request, signal) =>
     toProposalExecutionDto(await execution.retryExecution(request.retry_of_execution_id, signal)));
   return {
@@ -135,6 +143,7 @@ export function createProposalsHandlers(workflows: ProposalsHandlerWorkflows): P
       return { status: synchronized.status, synced_at: synchronized.synced_at };
     }),
     getExecution,
+    listExecutions,
     retryExecution,
   };
 }

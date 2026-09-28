@@ -252,6 +252,7 @@ export class FeatureIpcRegistry {
       [proposalsContracts.confirmHistory, proposals.confirmHistory],
       [proposalsContracts.synchronizeHistory, proposals.synchronizeHistory],
       [proposalsContracts.getExecution, proposals.getExecution],
+      [proposalsContracts.listExecutions, proposals.listExecutions],
       [proposalsContracts.retryExecution, proposals.retryExecution],
       [githubIntegrationContracts.getStatus, githubIntegration.getStatus],
       [obsidianIntegrationContracts.validateVault, obsidianIntegration.validateVault],

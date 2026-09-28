@@ -97,6 +97,7 @@ import {
 } from "./common/errors/diagnostic-failure";
 import type { TaskWriteAsanaBridge } from "./common/ports/asana-task-write";
 import type { ProposalApplicationHistoryRepository } from "./common/ports/proposal-application-history";
+import type { ListProposalExecutionsInput } from "./common/ports/proposal-execution-repository";
 import { CodexSetupAdapter } from "./codex-adapter";
 import { CleanupAggregationService } from "./cleanup-aggregation";
 import {
@@ -1903,6 +1904,9 @@ export class TaskHubApplication {
       },
       execution: {
         getExecution: (executionId) => this.getProposalExecution(executionId),
+        listExecutions: (input) => this.listProposalExecutions(input.cursor == null
+          ? { limit: input.limit }
+          : { limit: input.limit, cursor: input.cursor }),
         retryExecution: (executionId, signal) => this.retryProposalExecution(executionId, signal),
       },
     };
@@ -3038,6 +3042,11 @@ export class TaskHubApplication {
   /** 指定IDの保存済み変更案executionを取得します。 */
   public getProposalExecution(executionId: string): StoredProposalExecution {
     return this.requireTaskWriteExecution().proposalWorkflow.getExecution(executionId);
+  }
+
+  /** 保存済み変更案executionを作成順にページ単位で取得します。 */
+  public listProposalExecutions(input: ListProposalExecutionsInput): ReturnType<ProposalExecutionWorkflow["listExecutions"]> {
+    return this.requireTaskWriteExecution().proposalWorkflow.listExecutions(input);
   }
 
   /** 変更案の実行条件を確認して明示再試行します。 */

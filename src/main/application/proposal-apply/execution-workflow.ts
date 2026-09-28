@@ -1,4 +1,8 @@
-import type { ProposalExecution } from "../common/ports/proposal-execution-repository";
+import type {
+  ListProposalExecutionsInput,
+  ProposalExecution,
+  ProposalExecutionListPage,
+} from "../common/ports/proposal-execution-repository";
 import { prepareTaskWriteRetry } from "../common/prepare-task-write-retry";
 import { identifierSchema } from "../../domain/task-write-values";
 import type { StoredProposalExecutionPort } from "./apply-stored-proposal";
@@ -26,6 +30,11 @@ export class ProposalExecutionWorkflow {
       throw new ProposalExecutionNotFoundError();
     }
     return execution;
+  }
+
+  /** 保存済み変更案executionを作成順にページ単位で取得します。 */
+  public listExecutions(input: ListProposalExecutionsInput): ProposalExecutionListPage<StoredProposalWriteResult> {
+    return this.port.repository.listExecutions(input);
   }
 
   /** 終了したproposal executionから新しい明示再試行を作成します。 */

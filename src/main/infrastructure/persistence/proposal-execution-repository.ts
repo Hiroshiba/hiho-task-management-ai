@@ -2,7 +2,9 @@ import { z } from "zod";
 import type { ErrorReporter } from "../../application/common/errors/error-reporter";
 import type {
   CompleteProposalExecution,
+  ListProposalExecutionsInput,
   ProposalExecution,
+  ProposalExecutionListPage,
   ProposalExecutionRepository,
   SaveProposalExecution,
   SaveRetryProposalExecution,
@@ -27,8 +29,19 @@ const identifierSchema = z.string().min(1).regex(/^\S+$/u);
 const timestampSchema = z.iso.datetime({ offset: true });
 const attemptSchema = z.number().int().nonnegative().safe();
 const errorIdSchema = z.uuid();
+const listCursorSchema = z.object({
+  snapshot_max_rowid: z.number().int().positive().safe(),
+  created_at: timestampSchema,
+  execution_id: identifierSchema,
+}).strict();
+const listInputSchema = z.object({
+  limit: z.number().int().min(1).max(100),
+  cursor: listCursorSchema.optional(),
+}).strict();
 
 type ExecutionIdRow = { readonly execution_id: string };
+type ExecutionListRow = ExecutionIdRow & { readonly created_at: string };
+type SnapshotMaxRowidRow = { readonly snapshot_max_rowid: number | null };
 type ChangeResult = { readonly changes: number };
 
 function assertSingleChange(result: ChangeResult, operation: string): void {
@@ -299,6 +312,58 @@ implements ProposalExecutionRepository<Result> {
       }
       return execution;
     });
+  }
+
+  /** 初回のjournal範囲を固定し、変更案executionを作成順に読み出します。 */
+  public listExecutions(input: ListProposalExecutionsInput): ProposalExecutionListPage<Result> {
+    const request = listInputSchema.parse(input);
+    let snapshotMaxRowid: number | null | undefined = request.cursor?.snapshot_max_rowid;
+    if (snapshotMaxRowid == null) {
+      const snapshot = this.runtime.connection.prepare<[], SnapshotMaxRowidRow>(
+        "SELECT MAX(rowid) AS snapshot_max_rowid FROM proposal_executions WHERE origin = 'proposal'",
+      ).get();
+      if (snapshot == null) throw new Error("変更案executionの一覧範囲を読み出せません。");
+      snapshotMaxRowid = snapshot.snapshot_max_rowid;
+    }
+    if (snapshotMaxRowid == null) return { executions: [] };
+    const validatedSnapshotMaxRowid = listCursorSchema.shape.snapshot_max_rowid.parse(snapshotMaxRowid);
+    const rows = request.cursor == null
+      ? this.runtime.connection.prepare<[number, number], ExecutionListRow>(
+        `SELECT execution_id, created_at FROM proposal_executions
+         WHERE origin = 'proposal' AND rowid <= ?
+         ORDER BY created_at, execution_id LIMIT ?`,
+      ).all(validatedSnapshotMaxRowid, request.limit + 1)
+      : this.runtime.connection.prepare<[number, string, string, string, number], ExecutionListRow>(
+        `SELECT execution_id, created_at FROM proposal_executions
+         WHERE origin = 'proposal' AND rowid <= ?
+           AND (created_at > ? OR (created_at = ? AND execution_id > ?))
+         ORDER BY created_at, execution_id LIMIT ?`,
+      ).all(
+        validatedSnapshotMaxRowid,
+        request.cursor.created_at,
+        request.cursor.created_at,
+        request.cursor.execution_id,
+        request.limit + 1,
+      );
+    const pageRows = rows.slice(0, request.limit);
+    const executions = pageRows.map((row) => {
+      const execution = this.get(row.execution_id);
+      if (execution == null || execution.plan.origin !== "proposal" || execution.created_at !== row.created_at) {
+        throw new Error("一覧の変更案executionを読み出せません。");
+      }
+      return execution;
+    });
+    if (rows.length <= request.limit) return { executions };
+    const last = pageRows[pageRows.length - 1];
+    if (last == null) throw new Error("一覧の最終executionがありません。");
+    return {
+      executions,
+      next_cursor: {
+        snapshot_max_rowid: validatedSnapshotMaxRowid,
+        created_at: last.created_at,
+        execution_id: last.execution_id,
+      },
+    };
   }
 
   /** 未開始または読み戻しで未適用と確認したstepの試行回数を増やします。 */
