@@ -50,7 +50,11 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
       options.onFeedback({ kind: "failure", message: `${operationFailure} 設定状態を再取得できませんでした。${failureMessage(result)}` });
       return;
     }
+    const previousKind = state.value?.kind;
     applyState(result.value);
+    if (result.value.kind === "ready" && previousKind !== "ready") {
+      await options.onReady();
+    }
   }
 
   function requestFor(action: SetupAction): ReturnType<SettingsApi["getState"]> {
