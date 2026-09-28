@@ -43,9 +43,7 @@ function nonErrorMessage(value: unknown): string {
 
 function errorStack(value: unknown): string | undefined {
   if (value instanceof Error) return value.stack;
-  if (typeof value !== "object" || value == null) return undefined;
-  const stack: unknown = Object.getOwnPropertyDescriptor(value, "stack")?.value;
-  return typeof stack === "string" ? stack : undefined;
+  return undefined;
 }
 
 function errorCause(value: unknown): { value: unknown } | undefined {
