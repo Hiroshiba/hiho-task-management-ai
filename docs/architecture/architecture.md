@@ -32,6 +32,7 @@
 | `src/renderer/features/tasks` | タスク閲覧と直接編集のUI状態 |
 | `src/renderer/features/proposals` | 変更案生成、確認、適用、復旧のUI状態 |
 | `src/renderer/features/settings` | 設定画面のUI状態 |
+| `src/renderer/features/system` | 自動更新の表示状態と購読 |
 | `src/renderer/features/github-integration` | GitHub連携画面のUI状態 |
 | `src/renderer/features/obsidian-integration` | Vaultとノート参照のUI状態 |
 | `src/renderer/shared/api`, `components`, `logging`, `mock` | featureに依存しないtransport、部品、診断、mock選択 |

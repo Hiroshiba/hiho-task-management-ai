@@ -17,7 +17,6 @@ import {
   ipcAiEditInputSchema,
   ipcAiSelectionInputSchema,
   ipcAiTurnInputSchema,
-  ipcAppUpdateStateSchema,
   ipcAsanaAuthenticationStateSchema,
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
@@ -31,7 +30,6 @@ import {
   ipcSyncResultSchema,
   ipcProposalHistoryStatusSchema,
   type IpcAiStatus,
-  type IpcAppUpdateState,
   type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcGuiEditResult,
@@ -80,6 +78,9 @@ import {
   type ViewModelTaskDetail,
 } from "../../shared/view-model";
 import type { VaultMapping } from "../../shared/storage";
+import { useAppScreen } from "../app/use-app-screen";
+import { useAppStartup } from "../app/use-app-startup";
+import { useSystemUpdate } from "../features/system";
 import AppHeader from "./AppHeader.vue";
 import type AiSessionDialog from "./AiSessionDialog.vue";
 import SettingsDialog from "./SettingsDialog.vue";
@@ -89,14 +90,12 @@ import TaskList from "./TaskList.vue";
 import TaskSort from "./TaskSort.vue";
 import ToastHost from "./ToastHost.vue";
 import {
-  createErrorScreenState,
   filterTaskRows,
   rendererAiConversationEntrySchema,
   rendererAiStateSchema,
   rendererCodexStateSchema,
   rendererConnectionStateSchema,
   rendererFailureSchema,
-  rendererScreenStateSchema,
   rendererSyncStateSchema,
   rendererTaskSortSchema,
   sortTaskRows,
@@ -112,7 +111,6 @@ import {
   type RendererTaskEditMarker,
   type RendererTaskEditMarkerUpdate,
   type RendererTaskSort,
-  type RendererScreenState,
   type RendererSyncState,
   type AiSessionOperation,
   type AiSessionView,
@@ -256,7 +254,7 @@ const aiSynchronizationWaitingMessage = "同期の完了を待っています。
 const asanaAuthenticationStatePollIntervalMilliseconds = 500;
 const asanaAuthenticationStateMaximumRetryCount = 3;
 
-const screen = ref<RendererScreenState>(rendererScreenStateSchema.parse({ kind: "loading" }));
+const { screen, showSetup, showDashboard, showError } = useAppScreen();
 const setupState = ref<SetupState | undefined>();
 const setupBusy = ref(false);
 const asanaAuthenticationBusy = ref(false);
@@ -277,7 +275,7 @@ const connectionState = ref<RendererConnectionState>(rendererConnectionStateSche
   sync: { kind: "waiting" },
 }));
 const codexState = ref<RendererCodexState>({ kind: "connecting" });
-const appUpdateState = ref<IpcAppUpdateState>(ipcAppUpdateStateSchema.parse({ kind: "idle" }));
+const appUpdateState = useSystemUpdate();
 const aiSessions = ref<AiSessionRecord[]>([]);
 const aiDialogVisible = ref(false);
 const aiDialogComponent = shallowRef<typeof AiSessionDialog>();
@@ -315,12 +313,10 @@ const activeSyncMode = ref<"idle" | "delta" | "full">("idle");
 const guiEditStates = ref(new Map<string, GuiEditRequestState>());
 const taskEditMarkers = ref(new Map<string, RendererTaskEditMarker>());
 let removeSyncSubscription: (() => void) | undefined;
-let removeAppUpdateSubscription: (() => void) | undefined;
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
 let clockTimer: number | undefined;
-let isMounted = false;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
 let asanaAuthenticationStateLoadInProgress = false;
@@ -1180,7 +1176,7 @@ function cleanupRelatedGids(item: ViewModelOverview["cleanup_items"][number]): s
 }
 
 function setScreenError(value: IpcFailure): void {
-  screen.value = createErrorScreenState(value.code, failureText(value.code));
+  showError(failureText(value.code));
 }
 
 function updateGuiEditStatesForSync(sync: RendererSyncState): void {
@@ -1722,7 +1718,7 @@ function applySetupState(value: unknown): void {
   setupState.value = parsed;
   setCodexFromSetup(parsed);
   if (parsed.kind === "ready") {
-    screen.value = rendererScreenStateSchema.parse({ kind: "dashboard" });
+    showDashboard();
     void startInitialTaskDataRefresh();
     if (!wasConfigured && !wasLoading && !asanaAuthenticationStateLoaded.value) {
       void loadAsanaAuthenticationState();
@@ -1734,7 +1730,7 @@ function applySetupState(value: unknown): void {
     asanaAuthenticationStateNeedsRecheck.value = true;
     advanceAsanaAuthenticationStateGeneration();
   }
-  screen.value = rendererScreenStateSchema.parse({ kind: "setup", setup: parsed });
+  showSetup();
 }
 
 async function resynchronizeSetupState(): Promise<void> {
@@ -3516,27 +3512,6 @@ async function loadInitialCodexStatus(): Promise<void> {
   }
 }
 
-async function initializeAppUpdateState(): Promise<void> {
-  let eventReceived = false;
-  try {
-    removeAppUpdateSubscription = taskHub.appUpdate.onState((state) => {
-      eventReceived = true;
-      appUpdateState.value = ipcAppUpdateStateSchema.parse(state);
-    });
-    const result = await taskHub.appUpdate.getState();
-    if (!isMounted || eventReceived) {
-      return;
-    }
-    appUpdateState.value = isFailure(result)
-      ? ipcAppUpdateStateSchema.parse({ kind: "failed", phase: "check" })
-      : ipcAppUpdateStateSchema.parse(result.value);
-  } catch {
-    if (isMounted && !eventReceived) {
-      appUpdateState.value = ipcAppUpdateStateSchema.parse({ kind: "failed", phase: "check" });
-    }
-  }
-}
-
 async function initialize(): Promise<void> {
   try {
     removeSyncSubscription = taskHub.sync.onState((value) => {
@@ -3596,7 +3571,7 @@ async function initialize(): Promise<void> {
       applySetupState(result.value);
     }
   } catch {
-    screen.value = createErrorScreenState("operation_failed", failureText("operation_failed"));
+    showError(failureText("operation_failed"));
   }
   if (setupState.value?.kind === "ready") {
     await loadObsidianVaults();
@@ -3610,35 +3585,17 @@ async function initialize(): Promise<void> {
   await loadInitialExternalAgentState();
 }
 
-async function waitForStartupAndInitialize(): Promise<void> {
-  try {
-    const result = await taskHub.app.waitForStartup();
-    if (!isMounted) {
-      return;
-    }
-    if (isFailure(result)) {
-      setScreenError(result);
-      return;
-    }
-    await initialize();
-  } catch {
-    if (isMounted) {
-      screen.value = createErrorScreenState("operation_failed", failureText("operation_failed"));
-    }
-  }
-}
+useAppStartup(initialize, setScreenError, () => {
+  showError(failureText("operation_failed"));
+});
 
 onMounted(() => {
-  isMounted = true;
-  void initializeAppUpdateState();
   clockTimer = window.setInterval(() => {
     currentAsOf.value = new Date().toISOString();
   }, 60_000);
-  void waitForStartupAndInitialize();
 });
 
 onBeforeUnmount(() => {
-  isMounted = false;
   clearAsanaAuthorizationCode();
   asanaAuthenticationBusy.value = false;
   asanaAuthenticationStateRequestBusy.value = false;
@@ -3651,9 +3608,6 @@ onUnmounted(() => {
   }
   if (removeSyncSubscription != null) {
     removeSyncSubscription();
-  }
-  if (removeAppUpdateSubscription != null) {
-    removeAppUpdateSubscription();
   }
   if (removeAiSubscription != null) {
     removeAiSubscription();
@@ -3777,7 +3731,7 @@ onUnmounted(() => {
         <h2 class="text-xl font-semibold text-rose-900 dark:text-rose-100">
           画面を読み込めません
         </h2><p class="mt-2 text-sm text-rose-800 dark:text-rose-200">
-          {{ screen.failure.message }}
+          {{ screen.message }}
         </p>
       </div>
       <template v-else>

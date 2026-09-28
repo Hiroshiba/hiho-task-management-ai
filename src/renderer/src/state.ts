@@ -20,10 +20,6 @@ import {
   type TaskStatus,
 } from "../../shared/domain";
 import {
-  setupStateSchema,
-  type SetupState,
-} from "../../shared/setup";
-import {
   aiWorkflowApprovalResultSchema,
   aiWorkflowProposalViewSchema,
   type AiWorkflowApprovalResult,
@@ -189,26 +185,6 @@ export type RendererExternalAgentEditResult = {
   readonly proposal_id: string;
   readonly revision: number;
 };
-
-export const rendererScreenStateSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("loading") }).strict(),
-  z
-    .object({
-      kind: z.literal("setup"),
-      setup: z.union([setupStateSchema, z.undefined()]),
-    })
-    .strict(),
-  z.object({ kind: z.literal("dashboard") }).strict(),
-  z
-    .object({
-      kind: z.literal("error"),
-      failure: rendererFailureSchema,
-    })
-    .strict(),
-]);
-
-/** Renderer全体の画面状態を表す型です。 */
-export type RendererScreenState = z.infer<typeof rendererScreenStateSchema>;
 
 const rendererDueValueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("none") }).strict(),
@@ -724,22 +700,6 @@ export function sortTaskRows(
     return comparison === 0 ? left.index - right.index : comparison;
   });
   return indexedRows.map((entry) => entry.row);
-}
-
-/** 画面状態を初期設定画面へ遷移させます。 */
-export function createSetupScreenState(setup: SetupState | undefined): RendererScreenState {
-  return rendererScreenStateSchema.parse({ kind: "setup", setup });
-}
-
-/** 画面状態を固定エラー画面へ遷移させます。 */
-export function createErrorScreenState(
-  code: RendererFailure["code"],
-  message: string,
-): RendererScreenState {
-  return rendererScreenStateSchema.parse({
-    kind: "error",
-    failure: rendererFailureSchema.parse({ kind: "error", code, message }),
-  });
 }
 
 /** タスク詳細が選択されていない状態を表します。 */

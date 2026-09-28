@@ -52,7 +52,7 @@ const ownerRules = [
   [/^src\/renderer\/src\/mocks\//, "renderer/shared/mock"],
   [/^src\/renderer\/index\.html$|^src\/renderer\/env\.d\.ts$/, "renderer/app"],
   [/^src\/renderer\/app\//, "renderer/app"],
-  [/^src\/renderer\/features\/(tasks|proposals|settings|github-integration|obsidian-integration)\//, null],
+  [/^src\/renderer\/features\/(tasks|proposals|settings|system|github-integration|obsidian-integration)\//, null],
   [/^src\/renderer\/shared\/(api|components|logging|mock)\//, null],
   [/^src\/shared\/domain\//, "main/domain"],
   [/^src\/shared\/ai\/(index|proposal)\.ts$/, "main/domain"],

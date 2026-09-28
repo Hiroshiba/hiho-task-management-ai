@@ -35,7 +35,7 @@ function isFinalPath(path) {
   if (path === "src/main/ipc/register-ipc.ts" || path.startsWith("src/main/ipc/handlers/")) return true;
   if (path === "src/preload/bridge.ts") return true;
   if (path.startsWith("src/renderer/app/")) return true;
-  if (/^src\/renderer\/features\/(tasks|proposals|settings|github-integration|obsidian-integration)\//.test(path)) return true;
+  if (/^src\/renderer\/features\/(tasks|proposals|settings|system|github-integration|obsidian-integration)\//.test(path)) return true;
   if (/^src\/renderer\/shared\/(api|components|logging|mock)\//.test(path)) return true;
   if (path.startsWith("src/shared/ipc-contracts/")) return true;
   return false;

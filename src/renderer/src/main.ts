@@ -1,8 +1,36 @@
 import { createApp } from "vue";
+import { installErrorBoundary } from "../app/install-error-boundary";
+import { useSystemTheme } from "../app/use-system-theme";
+import { createMockSystemApi } from "../features/system";
+import { diagnosticsApiInjectionKey, selectFeatureApi, systemApiInjectionKey } from "../shared/api/feature-apis";
+import { reportRendererError } from "../shared/logging/report-renderer-error";
+import { createMockDiagnosticsApi } from "../shared/mock/diagnostics";
+import { parseMockSelection } from "../shared/mock/mock-selection";
 import App from "./App.vue";
 import "./styles.css";
 import { createTaskHubApi, taskHubApiInjectionKey } from "./task-hub";
 
-const taskHubApi = await createTaskHubApi(window.location.search, window.taskHub);
+const mockSelection = parseMockSelection(window.location.search);
+const taskHubApi = await createTaskHubApi(mockSelection.features, window.taskHub);
+const systemApi = selectFeatureApi("system", mockSelection.features, window.taskHub?.system, createMockSystemApi);
+const diagnosticsApi = selectFeatureApi(
+  "diagnostics",
+  mockSelection.features,
+  window.taskHub?.diagnostics,
+  createMockDiagnosticsApi,
+);
+const app = createApp(App);
+app.provide(taskHubApiInjectionKey, taskHubApi);
+app.provide(systemApiInjectionKey, systemApi);
+app.provide(diagnosticsApiInjectionKey, diagnosticsApi);
+installErrorBoundary(app, diagnosticsApi, window);
+app.onUnmount(useSystemTheme(window.matchMedia("(prefers-color-scheme: dark)"), document.documentElement));
+app.mount("#app");
 
-createApp(App).provide(taskHubApiInjectionKey, taskHubApi).mount("#app");
+if (mockSelection.unknownFeatures.length > 0) {
+  void reportRendererError(
+    diagnosticsApi,
+    new Error("未対応のmock機能名を無視しました。"),
+    "warning",
+  );
+}

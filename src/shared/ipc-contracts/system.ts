@@ -18,7 +18,7 @@ export const systemChannels = {
   updateState: "system:update-state",
 } satisfies Record<string, string>;
 
-const updateStateSchema = z.discriminatedUnion("kind", [
+export const systemUpdateStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unavailable") }).strict(),
   z.object({ kind: z.literal("idle") }).strict(),
   z.object({ kind: z.literal("checking") }).strict(),
@@ -53,7 +53,7 @@ export const systemContracts = {
   getUpdateState: {
     channel: systemChannels.getUpdateState,
     request: emptyRequestSchema,
-    response: responseSchema(updateStateSchema),
+    response: responseSchema(systemUpdateStateSchema),
   },
   subscribeUpdateState: {
     channel: systemChannels.subscribeUpdateState,
@@ -65,13 +65,15 @@ export const systemContracts = {
   },
   updateState: {
     channel: systemChannels.updateState,
-    event: subscriptionEventSchema(updateStateSchema),
+    event: subscriptionEventSchema(systemUpdateStateSchema),
   },
 };
 
 export type SystemApi = {
   readonly getVersion: () => Promise<IpcResult<string>>;
   readonly waitForStartup: () => Promise<IpcResult<z.infer<typeof completedSchema>>>;
-  readonly getUpdateState: () => Promise<IpcResult<z.infer<typeof updateStateSchema>>>;
-  readonly onUpdateState: IpcSubscription<z.infer<typeof updateStateSchema>>;
+  readonly getUpdateState: () => Promise<IpcResult<z.infer<typeof systemUpdateStateSchema>>>;
+  readonly onUpdateState: IpcSubscription<z.infer<typeof systemUpdateStateSchema>>;
 };
+
+export type SystemUpdateState = z.infer<typeof systemUpdateStateSchema>;
