@@ -10,6 +10,7 @@ type ExternalState = z.infer<typeof externalProposalStateSchema>;
 type Selection = Parameters<ProposalsApi["select"]>[0]["selection"];
 type ApprovalResult = Extract<Awaited<ReturnType<ProposalsApi["approve"]>>, { readonly kind: "ok" }>["value"];
 type Session = { readonly session_id: string; proposal: ProposalViewDto | undefined; approved_proposal_id?: string };
+type ProposalOperation = ProposalViewDto["groups"][number]["operations"][number];
 type ExternalProposal = ExternalState["proposals"][number];
 type HistoryStatus = Extract<Awaited<ReturnType<ProposalsApi["getHistoryStatus"]>>, { readonly kind: "ok" }>["value"];
 type HistoryConfirmInput = Parameters<ProposalsApi["confirmHistory"]>[0];
@@ -67,10 +68,12 @@ function compareExecutionOrder(left: ExecutionDto, right: ExecutionDto): number 
 export function createMockProposalsApi(
   historyScenario: "confirmable" | "invalid",
   onHistorySynchronized: (syncedAt: string) => void,
+  onOperationsApplied: (operations: readonly ProposalOperation[], syncedAt: string) => void,
 ): ProposalsApi {
   const sessions = new Map<string, Session>();
   const executions = new Map<string, { readonly execution: ExecutionDto; readonly rowid: number }>();
   const approvals = new Map<string, ApprovalResult>();
+  const approvedViews = new Map<string, ProposalViewDto>();
   let historyRecords: readonly HistoryRecord[] = [
     { kind: "required", source: {
       proposal_id: "mock-legacy-proposal-1", operation_id: "mock-legacy-operation-1",
@@ -201,6 +204,19 @@ export function createMockProposalsApi(
     });
     const groupResults = current.group_results.map((group) => ({ ...group,
       outcome: result === "succeeded" ? "applied" : "unknown" }));
+    const newlyAppliedIds = new Set(operationResults
+      .filter((operation) => operation.outcome === "applied"
+        && !current.operation_results.some((previous) => previous.operation_id === operation.operation_id && previous.outcome === "applied"))
+      .map((operation) => operation.operation_id));
+    if (newlyAppliedIds.size > 0) {
+      if (current.proposal_id == null) throw new Error("mockの変更案IDが見つかりません。");
+      const view = approvedViews.get(current.proposal_id);
+      if (view == null) throw new Error("mockの承認済み変更案が見つかりません。");
+      const operations = view.groups.flatMap((group) => group.operations
+        .filter((operation) => newlyAppliedIds.has(operation.operation_id)));
+      if (operations.length !== newlyAppliedIds.size) throw new Error("mockの適用済み操作が変更案にありません。");
+      onOperationsApplied(operations, updatedAt);
+    }
     publishExecution(executionDtoSchema.parse({ ...current, state: result, updated_at: updatedAt, steps,
       operation_results: operationResults, group_results: groupResults,
       ...(result === "succeeded" ? {} : { error_id: errorId }),
@@ -409,6 +425,7 @@ export function createMockProposalsApi(
       if (ids == null || ids.length === 0) return failure("invalid_request", "適用する操作を選択してください。");
       const result = approvalFor(session.proposal, ids);
       approvals.set(request.proposal_id, result);
+      if (result.kind === "execution") approvedViews.set(request.proposal_id, session.proposal);
       session.approved_proposal_id = request.proposal_id;
       session.proposal = undefined;
       return proposalsContracts.approve.response.parse(ok(result));
@@ -463,6 +480,7 @@ export function createMockProposalsApi(
       if (ids == null || ids.length === 0) return failure("invalid_request", "適用する操作を選択してください。");
       const result = approvalFor(proposal.view, ids);
       approvals.set(request.proposal_id, result);
+      if (result.kind === "execution") approvedViews.set(request.proposal_id, proposal.view);
       if (result.kind === "execution") replaceExternal({ ...proposal, state: { kind: "approving" } });
       else {
         const revision = proposal.revision + 1;

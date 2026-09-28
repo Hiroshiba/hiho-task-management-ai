@@ -83,4 +83,4 @@ T49で`src/main/application/service.ts`、`src/main/bootstrap/legacy-runtime-por
 
 最終形では全sourceが上記の唯一のownerに属し、workflow間の直接import、循環依存、module直下の可変状態候補、旧pathと互換exportがありません。`const`で宣言したmodule直下のオブジェクトも、memberへの代入や更新があれば可変状態候補です。MainとRendererの状態は [state-ownership.md](state-ownership.md)、外部書き込みと復旧は [proposal-execution.md](proposal-execution.md) の契約に従います。構造検査と行数検査をCIで実行し、1000行超をerror、401行から1000行をreview対象として扱います。
 
-Electron、Vite、TypeScript、pnpm、Tailwind CSS、Vue、Reka UIを維持します。mock選択はURLの`mock`を1回だけ解析し、`mock=all`と機能名のカンマ区切りを扱います。OSの配色変更は再起動なしで反映します。GitHub Appの環境変数がない端末でも起動、lint、型検査、構造検査、build、mock表示を実行できます。
+Electron、Vite、TypeScript、pnpm、Tailwind CSS、Vue、Reka UIを維持します。mock選択はURLの`mock`を1回だけ解析し、`mock=all`と機能名のカンマ区切りを扱います。最終feature APIの実transportとmock transportは`renderer/app`の単一registryで選び、指定のない機能は実transportを使います。OSの配色変更は再起動なしで反映します。GitHub Appの環境変数がない端末でも起動、lint、型検査、構造検査、build、mock表示を実行できます。

@@ -1,5 +1,4 @@
 import { inject, type InjectionKey } from "vue";
-import type { FinalTaskHubApi } from "../../../shared/ipc-contracts";
 import type { DiagnosticsApi } from "../../../shared/ipc-contracts/diagnostics";
 import type { GithubIntegrationApi } from "../../../shared/ipc-contracts/github-integration";
 import type { ObsidianIntegrationApi } from "../../../shared/ipc-contracts/obsidian-integration";
@@ -15,24 +14,6 @@ export const proposalsApiInjectionKey: InjectionKey<ProposalsApi> = Symbol("prop
 export const settingsApiInjectionKey: InjectionKey<SettingsApi> = Symbol("settingsApi");
 export const obsidianIntegrationApiInjectionKey: InjectionKey<ObsidianIntegrationApi> = Symbol("obsidianIntegrationApi");
 export const githubIntegrationApiInjectionKey: InjectionKey<GithubIntegrationApi> = Symbol("githubIntegrationApi");
-
-/** 指定した機能の実APIかmock APIを選びます。 */
-export function selectFeatureApi<Api>(
-  name: keyof FinalTaskHubApi,
-  selectedFeatures: ReadonlySet<string>,
-  nativeApi: Api | undefined,
-  createMock: () => Api,
-): Api {
-  if (selectedFeatures.has(name)) {
-    return createMock();
-  }
-  if (nativeApi == null) {
-    throw new Error(
-      `Webフロントでは機能「${name}」のAPIを利用できません。mock=${name}またはmock=allを指定してください。`,
-    );
-  }
-  return nativeApi;
-}
 
 /** Vueからsystem APIを取得します。 */
 export function useSystemApi(): SystemApi {

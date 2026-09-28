@@ -90,7 +90,11 @@ function authenticationFixture(kind: AuthenticationKind): AuthenticationState {
 }
 
 /** 画面確認用の設定APIを単一の状態として作成します。 */
-export function createMockSettingsApi(initialSetupKind: SetupKind, initialAuthenticationKind: MockAuthenticationKind): SettingsApi {
+export function createMockSettingsApi(
+  initialSetupKind: SetupKind,
+  initialAuthenticationKind: MockAuthenticationKind,
+  onSynchronized: (syncedAt: string) => void,
+): SettingsApi {
   let setup: SetupState = setupFixture(initialSetupKind);
   let authentication: AuthenticationState = authenticationFixture(
     initialAuthenticationKind === "failure" || initialAuthenticationKind === "failure_once"
@@ -205,10 +209,12 @@ export function createMockSettingsApi(initialSetupKind: SetupKind, initialAuthen
       if (authentication.kind !== "authorization_pending" || input.authorization_id !== authorizationId) {
         return Promise.resolve(settingsContracts.completeAsanaReauthentication.response.parse(authenticationConflict()));
       }
+      const syncedAt = new Date().toISOString();
+      onSynchronized(syncedAt);
       authentication = authenticationFixture("idle");
       return Promise.resolve(settingsContracts.completeAsanaReauthentication.response.parse({
         kind: "ok", value: {
-          synced_at: "2026-09-28T00:00:00.000Z", performed_mode: "full",
+          synced_at: syncedAt, performed_mode: "full",
           normalization_notifications: [{
             kind: "status_reconciled", task_gid: "mock-task", status: "in_progress",
             message: "画面確認用タスクの状態を整合しました。",

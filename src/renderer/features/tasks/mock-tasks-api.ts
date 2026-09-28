@@ -2,14 +2,54 @@ import { z } from "zod";
 import { detailSchema, overviewSchema } from "../../../shared/ipc-contracts/task-view";
 import { syncResultSchema, syncStateSchema, tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tasks";
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
+import { proposalOperationSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
 import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
 
 type TaskDetail = z.infer<typeof detailSchema>;
 type TaskOverview = z.infer<typeof overviewSchema>;
 type SyncState = z.infer<typeof syncStateSchema>;
+type ProposalOperation = ProposalViewDto["groups"][number]["operations"][number];
+type MockTasksApi = TasksApi & {
+  readonly completeExternalSync: (syncedAt: string) => void;
+  readonly applyProposalOperations: (operations: readonly ProposalOperation[], syncedAt: string) => void;
+};
 const projectGid = "mock-project";
 const syncAt = "2026-09-05T00:00:00.000Z";
 const baselineHash = "0".repeat(64);
+
+function proposalTaskGid(target: { readonly kind: "existing"; readonly gid: string } | { readonly kind: "temporary"; readonly ref: string }): string {
+  return target.kind === "existing" ? target.gid : `mock-created-${target.ref}`;
+}
+
+function proposalDue(value: Extract<ProposalOperation, { readonly operation: "set_due" }>["after"]): TaskDetail["due"] {
+  return value.kind === "due_on"
+    ? { kind: "on", value: value.due_on }
+    : { kind: "at", value: value.due_at };
+}
+
+function proposalGuiEdit(operation: Exclude<ProposalOperation, { readonly operation: "create_task" }>): GuiEditOperation {
+  switch (operation.operation) {
+    case "update_title": return { kind: "update_title", value: operation.after };
+    case "update_notes": return { kind: "update_notes", value: operation.after };
+    case "set_status": return { kind: "set_status", value: operation.after };
+    case "set_importance": return { kind: "set_importance", value: operation.after };
+    case "set_due": return { kind: "set_due", value: proposalDue(operation.after) };
+    case "clear_due": return { kind: "clear_due" };
+    case "set_duration": return { kind: "set_duration", value: operation.after };
+    case "clear_duration": return { kind: "clear_duration" };
+    case "set_area": return { kind: "set_area", value: operation.after };
+    case "set_dependencies": return { kind: "set_dependencies", value: operation.after.map((dependency) => ({
+      task_gid: proposalTaskGid(dependency.target), scope: dependency.scope, source: dependency.source,
+    })) };
+    case "set_parent": return { kind: "set_parent", value: operation.after.kind === "absent"
+      ? { kind: "absent" } : { kind: "existing", gid: proposalTaskGid(operation.after) } };
+    case "set_parent_work_mode": return { kind: "set_parent_work_mode", value: operation.after };
+    case "link_obsidian": return { kind: "link_obsidian", value: operation.after };
+    case "unlink_obsidian": return { kind: "unlink_obsidian", value: operation.before };
+    case "complete": return { kind: "complete" };
+    case "withdraw": return { kind: "withdraw" };
+  }
+}
 
 function createDetail(
   gid: string,
@@ -108,7 +148,7 @@ function createOverview(details: readonly TaskDetail[], lastSuccessfulSyncAt: st
 }
 
 /** 新IPCのタスク閲覧と同期に使うmockを作成します。 */
-export function createMockTasksApi(): TasksApi & { readonly completeReadOnlyHistorySync: (syncedAt: string) => void } {
+export function createMockTasksApi(): MockTasksApi {
   const details = [
     createDetail("mock-task-1", "今日の集中タスク", "in_progress", 5, { kind: "on", value: "2026-09-10" },
       { value: 15, unit: "minute" }, "開発", 1,
@@ -233,15 +273,46 @@ export function createMockTasksApi(): TasksApi & { readonly completeReadOnlyHist
     for (const listener of listeners) listener(state);
   }
 
-  function completeReadOnlyHistorySync(syncedAt: string): void {
-    if (!Number.isFinite(Date.parse(syncedAt))) throw new Error("旧履歴の読取同期日時を確認できません。");
-    lastSuccessfulSyncAt = syncedAt;
+  function completeExternalSync(syncedAt: string): void {
+    if (!Number.isFinite(Date.parse(syncedAt))) throw new Error("同期日時を確認できません。");
+    if (Date.parse(syncedAt) > Date.parse(lastSuccessfulSyncAt)) lastSuccessfulSyncAt = syncedAt;
     overview = createOverview(details, lastSuccessfulSyncAt);
     publish({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
   }
 
+  function applyProposalOperations(operations: readonly ProposalOperation[], syncedAt: string): void {
+    const validated = operations.map((operation) => proposalOperationSchema.parse(operation));
+    for (const operation of validated) {
+      if (operation.operation === "create_task") {
+        const gid = proposalTaskGid({ kind: "temporary", ref: operation.temporary_ref });
+        if (details.some((detail) => detail.gid === gid)) throw new Error("作成対象のタスクがmockに既にあります。");
+        const after = operation.after;
+        const detail = createDetail(gid, after.title, after.status ?? "not_started", detailSchema.shape.importance.parse(after.importance ?? 3),
+          after.due == null ? { kind: "none" } : proposalDue(after.due), after.duration,
+          after.area ?? "未分類", details.length + 1, after.obsidian_links ?? []);
+        details.push(detailSchema.parse({ ...detail, notes: after.notes ?? "",
+          ...(after.parent == null ? {} : { parent: { kind: "missing", gid: proposalTaskGid(after.parent) } }),
+          dependencies: (after.dependencies ?? []).map((dependency) => ({
+            kind: "missing", gid: proposalTaskGid(dependency.target), scope: dependency.scope, source: dependency.source,
+          })),
+          parent_work_mode: after.parent_work_mode ?? detail.parent_work_mode,
+        }));
+      } else {
+        const gid = proposalTaskGid(operation.target);
+        const index = details.findIndex((detail) => detail.gid === gid);
+        const current = details[index];
+        if (current == null) throw new Error("適用対象のタスクがmockにありません。");
+        editSequence += 1;
+        details[index] = editedDetail(current, proposalGuiEdit(operation));
+      }
+      rebuildRelations();
+    }
+    completeExternalSync(syncedAt);
+  }
+
   return {
-    completeReadOnlyHistorySync,
+    completeExternalSync,
+    applyProposalOperations,
     getOverview: () => Promise.resolve(tasksContracts.getOverview.response.parse({ kind: "ok", value: overview })),
     getDetail: (taskGid) => Promise.resolve().then(() => {
       const request = tasksContracts.getDetail.request.parse({ task_gid: taskGid });

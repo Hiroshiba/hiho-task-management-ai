@@ -5,7 +5,12 @@ import { diagnosticsContracts } from "../../../shared/ipc-contracts/diagnostics"
 export function createMockDiagnosticsApi(): DiagnosticsApi {
   return {
     report: (input) => Promise.resolve().then(() => {
-      diagnosticsContracts.report.request.parse(input);
+      const request = diagnosticsContracts.report.request.parse(input);
+      if (request.level === "warning") {
+        console.warn(request.stack);
+      } else {
+        console.error(request.stack);
+      }
       return diagnosticsContracts.report.response.parse({
         kind: "ok",
         value: { error_id: "00000000-0000-4000-8000-000000000001" },
