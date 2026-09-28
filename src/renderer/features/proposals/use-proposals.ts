@@ -23,7 +23,7 @@ export function useProposals() {
   const executions = ref<Readonly<Record<string, ExecutionDto>>>({});
   const executionListFailure = ref<IpcFailure>();
   const executionFailures = ref<Readonly<Record<string, IpcFailure>>>({});
-  const subscriptionFailure = ref<{ readonly kind: SubscriptionFailureKind; readonly failureId: string; readonly failure: IpcFailure }>();
+  const subscriptionFailures = ref<Readonly<Partial<Record<SubscriptionFailureKind, IpcFailure>>>>({});
   const executionListBusy = ref(false);
   const executionRequestIds = ref<readonly string[]>([]);
   const retryingExecutionIds = ref<readonly string[]>([]);
@@ -88,6 +88,14 @@ export function useProposals() {
       ...(errorId == null ? {} : { error_id: errorId }) });
   }
 
+  function clearSubscriptionFailure(kind: SubscriptionFailureKind): void {
+    pendingSubscriptionFailures.delete(kind);
+    if (subscriptionFailures.value[kind] == null) return;
+    const failures = { ...subscriptionFailures.value };
+    delete failures[kind];
+    subscriptionFailures.value = failures;
+  }
+
   function handleSubscriptionFailure(kind: SubscriptionFailureKind, event: IpcSubscriptionFailure): void {
     if (disposed) return;
     if (event.kind === "started") {
@@ -109,7 +117,7 @@ export function useProposals() {
       }
       pendingSubscriptionFailures.set(kind, { failureId: event.failure_id, generation: subscriptionGeneration(kind) });
       const failure = subscriptionFailureValue(kind, undefined);
-      subscriptionFailure.value = { kind, failureId: event.failure_id, failure };
+      subscriptionFailures.value = { ...subscriptionFailures.value, [kind]: failure };
       if (kind === "ai_status") aiStatusFailure.value = { source: "subscription", failure };
       if (kind === "external_state") externalStateFailure.value = failure;
       return;
@@ -118,9 +126,7 @@ export function useProposals() {
     if (pending?.failureId !== event.failure_id || pending.generation !== subscriptionGeneration(kind)) return;
     pendingSubscriptionFailures.delete(kind);
     const failure = subscriptionFailureValue(kind, event.kind === "reported" ? event.error_id : undefined);
-    if (subscriptionFailure.value?.kind === kind && subscriptionFailure.value.failureId === event.failure_id) {
-      subscriptionFailure.value = { kind, failureId: event.failure_id, failure };
-    }
+    subscriptionFailures.value = { ...subscriptionFailures.value, [kind]: failure };
     switch (kind) {
       case "ai_status":
         aiStatusFailure.value = { source: "subscription", failure };
@@ -175,9 +181,8 @@ export function useProposals() {
   function applyExternalState(value: ExternalState): void {
     externalState.value = externalProposalStateSchema.parse(value);
     externalStateGeneration += 1;
-    pendingSubscriptionFailures.delete("external_state");
+    clearSubscriptionFailure("external_state");
     externalStateFailure.value = undefined;
-    if (subscriptionFailure.value?.kind === "external_state") subscriptionFailure.value = undefined;
     const selectedId = selectedExternalProposalId.value;
     if (selectedId != null && !externalState.value.proposals.some((proposal) => proposal.proposal_id === selectedId)) {
       selectedExternalProposalId.value = undefined;
@@ -304,23 +309,20 @@ export function useProposals() {
         if (disposed) return;
         aiStatus.value = proposalsContracts.aiStatus.event.shape.value.parse(value);
         aiStatusGeneration += 1;
-        pendingSubscriptionFailures.delete("ai_status");
+        clearSubscriptionFailure("ai_status");
         aiStatusFailure.value = undefined;
-        if (subscriptionFailure.value?.kind === "ai_status") subscriptionFailure.value = undefined;
       }, (failure) => handleSubscriptionFailure("ai_status", failure));
       removeAiDelta = api.onAiDelta((value) => {
         if (disposed) return;
         handleDelta(value);
         aiDeltaGeneration += 1;
-        pendingSubscriptionFailures.delete("ai_delta");
-        if (subscriptionFailure.value?.kind === "ai_delta") subscriptionFailure.value = undefined;
+        clearSubscriptionFailure("ai_delta");
       }, (failure) => handleSubscriptionFailure("ai_delta", failure));
       removeExecution = api.onExecution((value) => {
         if (disposed) return;
         receiveExecution(value);
         executionEventGeneration += 1;
-        pendingSubscriptionFailures.delete("execution");
-        if (subscriptionFailure.value?.kind === "execution") subscriptionFailure.value = undefined;
+        clearSubscriptionFailure("execution");
       }, (failure) => handleSubscriptionFailure("execution", failure));
       removeExternalState = api.onExternalState((value) => {
         if (disposed) return;
@@ -344,9 +346,8 @@ export function useProposals() {
       aiStatusGeneration += 1;
       if (status.kind === "ok") {
         aiStatus.value = status.value;
-        pendingSubscriptionFailures.delete("ai_status");
+        clearSubscriptionFailure("ai_status");
         aiStatusFailure.value = undefined;
-        if (subscriptionFailure.value?.kind === "ai_status") subscriptionFailure.value = undefined;
       } else aiStatusFailure.value = { source: "request", failure: status };
     }
     const external = proposalsContracts.getExternalState.response.parse(externalResult);
@@ -364,10 +365,9 @@ export function useProposals() {
     const result = proposalsContracts.startSession.response.parse(await api.startSession());
     if (!disposed && generation === lifecycleGeneration && result.kind === "ok" && result.value.kind === "authentication_required") {
       aiStatusGeneration += 1;
-      pendingSubscriptionFailures.delete("ai_status");
+      clearSubscriptionFailure("ai_status");
       aiStatus.value = { kind: "authentication_required" };
       aiStatusFailure.value = undefined;
-      if (subscriptionFailure.value?.kind === "ai_status") subscriptionFailure.value = undefined;
     }
     if (!disposed && generation === lifecycleGeneration && result.kind === "ok" && result.value.kind === "started") {
       sessions.value = [...sessions.value, { session_id: result.value.session_id, state: { kind: "idle" }, activity: "idle", generation: 0 }];
@@ -382,9 +382,8 @@ export function useProposals() {
       aiStatusGeneration += 1;
       if (result.kind === "ok") {
         aiStatus.value = result.value;
-        pendingSubscriptionFailures.delete("ai_status");
+        clearSubscriptionFailure("ai_status");
         aiStatusFailure.value = undefined;
-        if (subscriptionFailure.value?.kind === "ai_status") subscriptionFailure.value = undefined;
       } else {
         aiStatus.value = undefined;
         aiStatusFailure.value = { source: "request", failure: result };
@@ -592,7 +591,7 @@ export function useProposals() {
     executions,
     executionListFailure,
     executionFailures,
-    subscriptionFailure,
+    subscriptionFailures,
     executionListBusy,
     executionRequestIds,
     retryingExecutionIds,

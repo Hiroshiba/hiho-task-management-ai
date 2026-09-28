@@ -116,19 +116,18 @@ export function useProposalWorkspace(options: Options) {
   watch(() => proposals.aiStatusFailure.value, (event) => {
     if (!disposed && event?.source === "request") options.onToast("warning", withErrorId(event.failure.message, event.failure.error_id));
   }, { flush: "sync" });
-  watch(() => proposals.subscriptionFailure.value, (event, previous) => {
+  watch(() => proposals.subscriptionFailures.value, (failures) => {
     if (disposed) return;
-    if (event == null) {
+    const message = Object.values(failures).map((failure) => withErrorId(failure.message, failure.error_id)).join(" ");
+    if (message.length === 0) {
       subscriptionFailureToast?.dismiss();
       subscriptionFailureToast = undefined;
       return;
     }
-    const message = withErrorId(event.failure.message, event.failure.error_id);
-    if (previous?.failureId === event.failureId && subscriptionFailureToast != null) {
+    if (subscriptionFailureToast != null) {
       subscriptionFailureToast.update(message);
       return;
     }
-    subscriptionFailureToast?.dismiss();
     subscriptionFailureToast = options.onSubscriptionFailureToast(message);
   }, { flush: "sync" });
 
