@@ -42,14 +42,14 @@ const functions = [
   ["外部Codex接続とツール", "main/infrastructure/ai", "src/main/codex/, src/main/external-agent/transport.ts, src/main/external-tools/"],
   ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/external-agent/service.ts"],
   ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/external-agent/service.ts"],
-  ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/storage/vault-mappings.ts"],
+  ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
   ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
-  ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/storage/device-settings.ts, src/main/auth/secret-storage/"],
+  ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/infrastructure/persistence/settings-repository.ts, src/main/auth/secret-storage/"],
   ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc/, src/main/ipc/, src/preload/"],
   ["タスク画面", "renderer/features/tasks", "src/renderer/src/Task*.vue"],
   ["変更案画面", "renderer/features/proposals", "src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue"],
   ["設定画面", "renderer/features/settings", "src/renderer/src/SettingsDialog.vue, src/renderer/src/SetupWizard.vue"],
-  ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/storage/diagnostic-log.ts"],
+  ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/infrastructure/persistence/diagnostic-log-repository.ts"],
   ["mock transport", "renderer/shared/mock", "src/renderer/src/task-hub.ts, src/renderer/src/mocks/"],
 ];
 
@@ -65,8 +65,8 @@ const fileFormats = [
   ["SQLite", "taskhub.sqlite3", "src/main/bootstrap/create-main-runtime.ts", '"taskhub.sqlite3"', "main/infrastructure/persistence"],
   ["暗号化JSON", "secret-storage.json", "src/main/index.ts", '"secret-storage.json"', "main/infrastructure/persistence"],
   ["初回設定JSON", "setup-checkpoint.json", "src/main/index.ts", '"setup-checkpoint.json"', "main/application/settings"],
-  ["ウィンドウJSON", "window-state.json", "src/main/index.ts", '"window-state.json"', "main/bootstrap"],
-  ["更新試行JSON", "application-update-attempt.json", "src/main/application-update.ts", '"application-update-attempt.json"', "main/bootstrap"],
+  ["ウィンドウJSON", "window-state.json", "src/main/bootstrap/create-main-runtime.ts", '"window-state.json"', "main/bootstrap"],
+  ["更新試行JSON", "application-update-attempt.json", "src/main/bootstrap/create-main-runtime.ts", '"application-update-attempt.json"', "main/bootstrap"],
   ["エラーJSONL", "taskhub-error.log", "src/main/infrastructure/logging/jsonl-error-reporter.ts", '"taskhub-error.log"', "main/infrastructure/logging"],
   ["外部Codex設定JSON", "external-agent/config.json", "src/main/external-agent/resources.ts", '"config.json"', "main/application/settings"],
   ["外部Codex接続JSON", "external-agent/connection.json", "src/main/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
@@ -78,6 +78,7 @@ const fileFormats = [
 
 const sqliteOwners = new Map([
   ["application_journal", "main/application/proposal-apply"],
+  ["legacy_application_history", "main/application/proposal-apply"],
   ["task_cache", "main/application/task-read"],
   ["project_metadata_cache", "main/application/task-read"],
   ["ranking_cache", "main/application/task-read"],
@@ -88,44 +89,6 @@ const sqliteOwners = new Map([
   ["diagnostic_log", "main/infrastructure/logging"],
   ["external_tool_definitions", "main/application/settings"],
 ]);
-
-const storageDatabaseMethodDestinations = [
-  ["close", "PersistenceRuntime", "T07"],
-  ["replaceTaskCache", "TaskReadPersistenceRepository", "T09"],
-  ["applyTaskCacheDiff", "TaskReadPersistenceRepository", "T09"],
-  ["getTaskCache", "TaskReadPersistenceRepository", "T09"],
-  ["saveSyncSnapshot", "TaskReadPersistenceRepository", "T09"],
-  ["getTaskCacheEntry", "TaskReadPersistenceRepository", "T09"],
-  ["saveProjectMetadataCache", "TaskReadPersistenceRepository", "T09"],
-  ["getProjectMetadataCache", "TaskReadPersistenceRepository", "T09"],
-  ["getProjectMetadataCaches", "TaskReadPersistenceRepository", "T09"],
-  ["saveRankingCache", "TaskReadPersistenceRepository", "T09"],
-  ["getRankingCache", "TaskReadPersistenceRepository", "T09"],
-  ["getCleanupItems", "TaskReadPersistenceRepository", "T09"],
-  ["replaceCleanupItemsByKinds", "TaskReadPersistenceRepository", "T09"],
-  ["mergeCleanupItemsByKinds", "TaskReadPersistenceRepository", "T09"],
-  ["saveSyncState", "TaskReadPersistenceRepository", "T09"],
-  ["getSyncState", "TaskReadPersistenceRepository", "T09"],
-  ["getSyncStates", "TaskReadPersistenceRepository", "T09"],
-  ["saveVaultMapping", "VaultMappingRepository", "T15"],
-  ["deleteVaultMapping", "VaultMappingRepository", "T15"],
-  ["getVaultMappings", "VaultMappingRepository", "T15"],
-  ["prepareApplicationJournals", "ApplicationJournalRepository", "T21"],
-  ["recordApplicationJournalTaskCreated", "ApplicationJournalRepository", "T21"],
-  ["updateApplicationJournalStage", "ApplicationJournalRepository", "T21"],
-  ["completeApplicationJournal", "ApplicationJournalRepository", "T21"],
-  ["clearApplicationJournalRecoveryCause", "ApplicationJournalRepository", "T21"],
-  ["getApplicationJournal", "ApplicationJournalRepository", "T21"],
-  ["getApplicationJournalsByProposal", "ApplicationJournalRepository", "T21"],
-  ["getIncompleteApplicationJournals", "ApplicationJournalRepository", "T21"],
-  ["appendDiagnosticLog", "DiagnosticLogRepository", "T06"],
-  ["getDiagnosticLogs", "DiagnosticLogRepository", "T06"],
-  ["saveExternalToolDefinition", "ExternalToolDefinitionRepository", "T17"],
-  ["replaceExternalToolDefinitions", "ExternalToolDefinitionRepository", "T17"],
-  ["deleteExternalToolDefinition", "ExternalToolDefinitionRepository", "T17"],
-  ["getExternalToolDefinitions", "ExternalToolDefinitionRepository", "T17"],
-  ["clearCaches", "TaskReadPersistenceRepository", "T09"],
-];
 
 const appStateOwners = new Map([
   ["renderer/app", ["screen", "appUpdateState", "removeAppUpdateSubscription", "isMounted"]],
@@ -193,15 +156,19 @@ const applicationStateOwners = new Map([
   ]],
   ["main/application/gui-edit", ["guiEdit"]],
   ["main/application/obsidian-integration", ["obsidian"]],
+  ["main/infrastructure/persistence", [
+    "externalToolDefinitionRepository", "proposalApplicationHistoryRepository",
+    "taskReadRepository", "vaultMappingRepository",
+  ]],
   ["main/infrastructure/logging", ["diagnostics"]],
   ["main/bootstrap", [
     "aiEvents", "aiInteraction", "aiRuntime", "asanaReauthentication", "codexAdapter",
     "codexConnectionFactory", "codexSession", "codexWorkspace", "configuredCodexRuntime",
-    "database", "deltaSource", "externalTools", "fullSource", "interactiveReadClient",
+    "deltaSource", "externalTools", "fullSource", "highPriorityTransport", "interactiveReadClient",
     "interactiveWriteClient", "journalRecovery", "lifecycleRuntime", "operationalContext",
     "operationalServices", "options", "readClient", "readyActivated",
     "removeRuntimeSubscription", "secretStorage", "setupClient", "stopped",
-    "syncStateRuntime", "synchronizationOperations", "tokenProvider", "transport",
+    "syncStateRuntime", "synchronizationOperations", "taskWriteExecution", "tokenProvider", "transport",
     "writeClient",
   ]],
 ]);
@@ -304,23 +271,9 @@ function render(revision) {
     ["SQLite", "src/main/infrastructure/persistence/sqlite-schema.ts", "storageSchemaVersion"],
     ["初回設定JSON", "src/main/application/checkpoint.ts", "checkpointVersion"],
     ["暗号化JSON", "src/main/auth/secret-storage/secret-storage.ts", "encryptedFileVersion"],
-    ["ウィンドウJSON", "src/main/window-state.ts", "windowStateVersion"],
+    ["ウィンドウJSON", "src/main/infrastructure/persistence/window-state-store.ts", "windowStateVersion"],
     ["Asana Custom external data", "src/shared/domain/external-data.ts", "customExternalDataSchemaVersion"],
   ].map(([name, path, symbol]) => [name, version(path, symbol), path, symbol]);
-  const facadeMethods = [...readSource("src/main/storage/database.ts")
-    .matchAll(/^ {2}public (\w+)\(/gm)]
-    .map((match) => match[1])
-    .filter((method) => method !== "constructor");
-  const destinations = new Map(storageDatabaseMethodDestinations.map(
-    ([method, repository, task]) => [method, { repository, task }],
-  ));
-  if (
-    destinations.size !== storageDatabaseMethodDestinations.length
-    || facadeMethods.length !== destinations.size
-    || facadeMethods.some((method) => !destinations.has(method))
-  ) {
-    throw new Error("StorageDatabase methodの移行先が一意に決まっていません。");
-  }
   for (const [, path] of entryPoints) {
     if (!paths.includes(path)) {
       throw new Error(`主要entry pointがありません: ${path}`);
@@ -366,15 +319,6 @@ function render(revision) {
     table(["形式", "現行version", "現行source", "version symbol"], versions),
     "SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaの現行versionは上記の値です。",
     "",
-    "## StorageDatabaseの移行先",
-    "",
-    "現行facadeの公開methodを列挙し、用途別repositoryと移行taskを一意に割り当てます。`PersistenceRuntime`は接続とtransactionのownerです。",
-    "",
-    table(["現行method", "移行先", "task"], facadeMethods.map((method) => [
-      method,
-      destinations.get(method).repository,
-      destinations.get(method).task,
-    ])),
     table(["SQLite table", "利用上のowner候補"], tables.map((name) => [name, sqliteOwners.get(name)])),
     "## T49で削除する移行経路",
     "",
@@ -383,7 +327,6 @@ function render(revision) {
     table(["対象", "削除条件"], [
       ["src/main/application/service.ts", "未移行機能のworkflow移管完了"],
       ["src/main/bootstrap/legacy-runtime-port.ts", "旧serviceへの唯一の接続が不要"],
-      ["src/main/storage/database.tsとsrc/main/storage/index.ts", "用途別repositoryへのfacade移管と旧保存形式の移行完了"],
       ["src/main/bootstrap/main-lifecycle-runtime.ts", "旧serviceの起動・停止処理を新runtimeへ移管"],
     ]),
   ].join("\n");

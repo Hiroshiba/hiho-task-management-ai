@@ -1,9 +1,9 @@
 import {
   vaultMappingSchema,
   type VaultMapping,
-} from "../../shared/storage";
-import { assertChanged } from "./json";
-import type { SqliteDatabase } from "./types";
+} from "../../domain/obsidian-contracts";
+import type { ObsidianVaultRepository } from "../../application/common/ports/obsidian-vault-repository";
+import type { SqliteConnection } from "./sqlite-connection";
 
 interface VaultMappingRow {
   readonly vault_id: string;
@@ -22,15 +22,11 @@ function rowToVaultMapping(row: VaultMappingRow): VaultMapping {
 }
 
 /** VaultマッピングのSQLite操作を提供します。 */
-export class VaultMappingStore {
-  private readonly deleteStatement;
+export class SqliteVaultMappingRepository implements ObsidianVaultRepository {
   private readonly saveStatement;
   private readonly selectAllStatement;
 
-  public constructor(private readonly database: SqliteDatabase) {
-    this.deleteStatement = database.prepare<[string], unknown>(
-      "DELETE FROM vault_mappings WHERE vault_id = ?",
-    );
+  public constructor(database: SqliteConnection) {
     this.saveStatement = database.prepare<[string, string], unknown>(
       `INSERT INTO vault_mappings (vault_id, absolute_path)
        VALUES (?, ?)
@@ -42,20 +38,13 @@ export class VaultMappingStore {
   }
 
   /** Vaultマッピングを保存します。 */
-  public save(mapping: VaultMapping): void {
+  public saveVaultMapping(mapping: VaultMapping): void {
     const validatedMapping = validateVaultMapping(mapping);
     this.saveStatement.run(validatedMapping.vault_id, validatedMapping.absolute_path);
   }
 
-  /** Vaultマッピングを削除します。 */
-  public delete(vaultId: string): void {
-    const validatedVaultId = vaultMappingSchema.shape.vault_id.parse(vaultId);
-    const result = this.deleteStatement.run(validatedVaultId);
-    assertChanged(result.changes, "Vaultマッピング削除");
-  }
-
   /** Vaultマッピングを全件読み出します。 */
-  public getAll(): readonly VaultMapping[] {
+  public getVaultMappings(): readonly VaultMapping[] {
     return this.selectAllStatement.all().map(rowToVaultMapping);
   }
 }

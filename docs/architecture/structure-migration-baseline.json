@@ -1430,11 +1430,6 @@
     {
       "path": "src/main/application/service.ts",
       "rule": "old-import",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "old-import",
       "symbol": "src/shared/ai-workflow/index.ts"
     },
     {
@@ -1571,11 +1566,6 @@
       "path": "src/main/application/service.ts",
       "rule": "private-entry",
       "symbol": "src/main/external-tools/index.ts"
-    },
-    {
-      "path": "src/main/application/service.ts",
-      "rule": "private-entry",
-      "symbol": "src/main/storage/index.ts"
     },
     {
       "path": "src/main/asana/client/client.ts",
@@ -3361,151 +3351,6 @@
       "path": "src/main/startup-gate.ts",
       "rule": "old-path",
       "symbol": "src/main/startup-gate.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/diagnostic-log.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/external-tool-definitions.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/vault-mappings.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/database.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/database.ts"
-    },
-    {
-      "path": "src/main/storage/diagnostic-log.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/diagnostic-log.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/diagnostic-log.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/diagnostic-log.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/diagnostic-log.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "import-boundary",
-      "symbol": "src/main/external-tools/schemas.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-import",
-      "symbol": "src/main/external-tools/schemas.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/external-tool-definitions.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/external-tool-definitions.ts"
-    },
-    {
-      "path": "src/main/storage/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/database.ts"
-    },
-    {
-      "path": "src/main/storage/index.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/external-tool-definitions.ts"
-    },
-    {
-      "path": "src/main/storage/index.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/json.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/types.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/vault-mappings.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/vault-mappings.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/json.ts"
-    },
-    {
-      "path": "src/main/storage/vault-mappings.ts",
-      "rule": "old-import",
-      "symbol": "src/main/storage/types.ts"
-    },
-    {
-      "path": "src/main/storage/vault-mappings.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/storage/vault-mappings.ts",
-      "rule": "old-path",
-      "symbol": "src/main/storage/vault-mappings.ts"
     },
     {
       "path": "src/main/window-state.ts",

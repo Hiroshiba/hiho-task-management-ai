@@ -197,6 +197,7 @@ import {
   SecretStorageDiscordCredentialProvider,
   createDiscordExternalToolDefinition,
   discordExternalToolCredentialReferenceName,
+  externalToolDefinitionSchema,
   type ExternalToolDefinition,
 } from "../external-tools";
 import {
@@ -220,6 +221,8 @@ import {
 import {
   asanaTaskResponseSchema,
   canonicalizeJson,
+  cleanupItemKindSchema,
+  cleanupItemsSchema,
   dateSchema,
   gidSchema,
   identifierSchema,
@@ -283,19 +286,34 @@ import {
 } from "../../shared/ipc";
 import {
   deviceSettingsSchema,
+  diagnosticLogEntrySchema,
+  externalToolCredentialReferenceNamesSchema,
+  projectMetadataCacheSchema,
+  rankingCacheSchema,
+  syncStateSchema,
+  taskCacheDiffSchema,
+  taskCacheEntriesSchema,
+  taskCacheEntrySchema,
   vaultMappingSchema,
+  type CleanupItemsCache,
   type DeviceSettings,
+  type ExternalToolCredentialReferenceNames,
+  type ProjectMetadataCache,
+  type RankingCache,
+  type SyncState,
+  type TaskCacheDiff,
   type TaskCacheEntry,
 } from "../../shared/storage";
 import {
-  StorageDatabase,
-  type ExternalToolDefinitionRecord,
-} from "../storage";
-import {
+  SqliteDiagnosticLogRepository,
+  SqliteExternalToolDefinitionRepository,
   SqliteSettingsRepository,
   SqliteProposalApplicationHistoryRepository,
+  SqliteVaultMappingRepository,
+  TaskReadPersistenceRepository,
   type PersistenceRuntime,
   type PersistentTextFile,
+  type TaskReadPersistenceContracts,
 } from "../infrastructure/persistence";
 import { AsanaTaskReadAdapter } from "../infrastructure/asana";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
@@ -380,6 +398,68 @@ const serviceWarningDiagnostic = {
   kind: "service",
   severity: "warning",
 } satisfies ApplicationDiagnostic;
+
+type ExternalToolDefinitionRecord = ExternalToolDefinition & {
+  readonly credential_reference_names: ExternalToolCredentialReferenceNames;
+};
+
+function createExternalToolDefinitionRecordSchema(): z.ZodType<ExternalToolDefinitionRecord> {
+  return externalToolDefinitionSchema.extend({
+    credential_reference_names: externalToolCredentialReferenceNamesSchema,
+  }).strict();
+}
+
+function createTaskReadPersistenceContracts(): TaskReadPersistenceContracts<
+  TaskCacheEntry,
+  ProjectMetadataCache,
+  RankingCache,
+  SyncState,
+  CleanupItemsCache,
+  TaskCacheDiff
+> {
+  const cleanupKindsSchema = z.array(cleanupItemKindSchema)
+    .min(1, "置換対象の要整理種別を一つ以上指定してください。")
+    .superRefine((kinds, context) => {
+      const seen = new Set<string>();
+      kinds.forEach((kind, index) => {
+        if (seen.has(kind)) {
+          context.addIssue({
+            code: "custom",
+            path: [index],
+            message: "同じ要整理種別を重複して指定できません。",
+          });
+        }
+        seen.add(kind);
+      });
+    });
+  const parseEntry = (value: unknown): TaskCacheEntry => {
+    const entry = taskCacheEntrySchema.parse(value);
+    const externalData = entry.custom_external_data;
+    if (externalData != null) {
+      const parsed = parseCustomExternalData(externalData.raw);
+      if (parsed.status !== externalData.status) {
+        throw new Error("Custom external dataのキャッシュ状態がrawの解析結果と一致しません。");
+      }
+      if (externalData.status === "unknown_version"
+        && (parsed.kind !== "unknown_version" || parsed.schema !== externalData.schema)) {
+        throw new Error("Custom external dataのschema versionがrawの解析結果と一致しません。");
+      }
+    }
+    return entry;
+  };
+  return {
+    parseGid: (value: string) => gidSchema.parse(value),
+    parseEntry,
+    parseEntries: (value: unknown) => taskCacheEntriesSchema.parse(value),
+    parseDiff: (value: unknown) => taskCacheDiffSchema.parse(value),
+    parseMetadata: (value: unknown) => projectMetadataCacheSchema.parse(value),
+    parseRanking: (value: unknown) => rankingCacheSchema.parse(value),
+    parseSyncState: (value: unknown) => syncStateSchema.parse(value),
+    parseCleanupItems: (value: unknown) => cleanupItemsSchema.parse(value),
+    parseCleanupKinds: (value: unknown) => cleanupKindsSchema.parse(value),
+    canonicalize: canonicalizeJson,
+  };
+}
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -839,7 +919,19 @@ type ApplicationFileStores = {
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
-  private readonly database: StorageDatabase;
+  private readonly taskReadRepository: TaskReadPersistenceRepository<
+    TaskCacheEntry,
+    ProjectMetadataCache,
+    RankingCache,
+    SyncState,
+    CleanupItemsCache,
+    TaskCacheDiff
+  >;
+  private readonly vaultMappingRepository: SqliteVaultMappingRepository;
+  private readonly externalToolDefinitionRepository: SqliteExternalToolDefinitionRepository<
+    ExternalToolDefinition,
+    ExternalToolDefinitionRecord
+  >;
   private readonly proposalApplicationHistoryRepository: SqliteProposalApplicationHistoryRepository;
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
@@ -961,14 +1053,34 @@ export class TaskHubApplication {
     });
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
-    this.database = new StorageDatabase(persistence);
+    const taskReadPersistenceContracts = createTaskReadPersistenceContracts();
+    this.taskReadRepository = new TaskReadPersistenceRepository(
+      persistence,
+      taskReadPersistenceContracts,
+    );
+    this.vaultMappingRepository = new SqliteVaultMappingRepository(persistence.connection);
+    const externalToolDefinitionRecordSchema = createExternalToolDefinitionRecordSchema();
+    this.externalToolDefinitionRepository = new SqliteExternalToolDefinitionRepository(
+      persistence.connection,
+      {
+        parseDefinition: (value) => externalToolDefinitionSchema.parse(value),
+        parseRecord: (value) => externalToolDefinitionRecordSchema.parse(value),
+        parseCredentialReferenceNames: (value) =>
+          externalToolCredentialReferenceNamesSchema.parse(value),
+      },
+    );
+    const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
+      persistence.connection,
+      persistence,
+      (value) => diagnosticLogEntrySchema.parse(value),
+    );
     this.proposalApplicationHistoryRepository = historyRepository;
     this.settingsRepository = new SqliteSettingsRepository(
       persistence.connection,
       (value) => deviceSettingsSchema.parse(value),
     );
     const taskReadContracts = {
-      ...this.database.taskReadContracts,
+      ...taskReadPersistenceContracts,
       parseOverview: (value: unknown) => {
         const response = ipcReadModelOverviewResponseSchema.parse({ kind: "ok", value });
         if (response.kind !== "ok") {
@@ -988,7 +1100,7 @@ export class TaskHubApplication {
       ),
     };
     this.diagnostics = new DiagnosticLogService(
-      this.database,
+      diagnosticLogRepository,
       options.app_version,
       options.now_provider,
       diagnosticLogRetentionLimit,
@@ -1029,7 +1141,7 @@ export class TaskHubApplication {
       fullSource,
       deltaSource,
       planApplier,
-      this.database.taskRead,
+      this.taskReadRepository,
       () => createNowIso(this.options.now_provider),
     );
     this.codexWorkspace = initializeCodexWorkspace({
@@ -1058,8 +1170,8 @@ export class TaskHubApplication {
     }, onCodexError);
     this.codexConnectionFactory = connectionFactory;
     this.obsidian = new ObsidianIntegrationWorkflow({
-      repository: this.database,
-      reader: new ObsidianReadService(this.database),
+      repository: this.vaultMappingRepository,
+      reader: new ObsidianReadService(this.vaultMappingRepository),
       discoverTasksVault,
       assertOperationalReady: () => this.assertOperationalReady(),
       isStopped: () => this.lifecycleRuntime.isStopped(),
@@ -1094,9 +1206,9 @@ export class TaskHubApplication {
       environment: codexEnvironment,
       openAuthorizationUrl: options.open_codex_authorization_url,
     });
-    const taskReadIndex = new TaskReadIndex(this.database.taskRead, taskReadContracts);
+    const taskReadIndex = new TaskReadIndex(this.taskReadRepository, taskReadContracts);
     this.cleanupAggregation = new CleanupAggregationService(
-      this.database.taskRead,
+      this.taskReadRepository,
       this.obsidian,
     );
     this.externalStatusEvidenceCollector = new ExternalToolStatusEvidenceCollector();
@@ -1129,7 +1241,7 @@ export class TaskHubApplication {
       createDefinition: createDiscordExternalToolDefinition,
       createRegistry: createExternalToolRegistry,
       assertPersistedDefinition: (expectedDefinition) => {
-        const records = this.database.getExternalToolDefinitions();
+        const records = this.externalToolDefinitionRepository.getAll();
         const storedRecord = findPersistedDiscordExternalToolRecord(records);
         if (storedRecord == null) {
           throw new Error("保存済み固定Discord定義がありません。");
@@ -1343,8 +1455,8 @@ export class TaskHubApplication {
       database: {
         saveDeviceSettings: (value) => this.settingsRepository.save(value),
         getDeviceSettings: () => this.settingsRepository.get(),
-        saveVaultMapping: (value) => this.database.saveVaultMapping(value),
-        getVaultMappings: () => this.database.getVaultMappings(),
+        saveVaultMapping: (value) => this.vaultMappingRepository.saveVaultMapping(value),
+        getVaultMappings: () => this.vaultMappingRepository.getVaultMappings(),
       },
       checkpoint: {
         load: () => checkpoint.load(),
@@ -1606,7 +1718,7 @@ export class TaskHubApplication {
       onlineProvider: () => this.options.online_provider(),
       createRuntime: (context, online) => new AsanaSyncRuntime(
         this.syncCoordinator,
-        this.database.taskRead,
+        this.taskReadRepository,
         {
           project_gid: context.project_gid,
           section_gids: context.section_gids,
@@ -2308,7 +2420,7 @@ export class TaskHubApplication {
       return { kind: "credential_storage_unavailable", error };
     }
     try {
-      this.database.saveExternalToolDefinition(
+      this.externalToolDefinitionRepository.save(
         createExternalToolDefinitionRecord(definition),
       );
     } catch (databaseError: unknown) {
@@ -2446,7 +2558,7 @@ export class TaskHubApplication {
   }
 
   private async refreshLocalTaskState(signal: AbortSignal): Promise<void> {
-    const tasks = parseTaskCache(this.database.getTaskCache())
+    const tasks = parseTaskCache(this.taskReadRepository.getTaskCache())
       .map((entry) => taskSchema.parse(entry.task));
     await this.cleanupAggregation.replaceBrokenVaultLinksFromTasks(
       tasks,
@@ -2486,7 +2598,7 @@ export class TaskHubApplication {
   ): Promise<AsanaDisplayOrderInput> {
     const context = this.requireContext();
     const tasks = await this.readClient.listProjectTasks(context.project_gid, signal);
-    const ranking = this.database.getRankingCache()?.ranked_tasks
+    const ranking = this.taskReadRepository.getRankingCache()?.ranked_tasks
       .map((task) => task.gid) ?? [];
     return asanaDisplayOrderInputSchema.parse(
       buildDisplayOrderInput(context, tasks, ranking),
@@ -2495,14 +2607,14 @@ export class TaskHubApplication {
 
   private createTaskctlSnapshot(): TaskctlSnapshot {
     const context = this.operationalContext.getContext();
-    const entries = parseTaskCache(this.database.getTaskCache());
+    const entries = parseTaskCache(this.taskReadRepository.getTaskCache());
     const tasks = entries
       .map((entry) => taskSchema.parse(entry.task))
       .sort((left, right) => compareStrings(left.gid, right.gid));
     const syncState = context == null
       ? undefined
-      : this.database.getSyncState(context.project_gid);
-    const ranking = this.database.getRankingCache();
+      : this.taskReadRepository.getSyncState(context.project_gid);
+    const ranking = this.taskReadRepository.getRankingCache();
     return taskctlSnapshotSchema.parse({
       sync: syncState?.last_successful_sync_at == null
         ? { kind: "unavailable" }
@@ -2605,7 +2717,7 @@ export class TaskHubApplication {
     validateAbortSignal(signal);
     throwIfAborted(signal);
     const context = this.requireContext();
-    const syncState = this.database.getSyncState(context.project_gid);
+    const syncState = this.taskReadRepository.getSyncState(context.project_gid);
     if (syncState?.last_successful_sync_at == null) {
       throw new Error(
         purpose === "ai"
@@ -2613,7 +2725,7 @@ export class TaskHubApplication {
           : "外部提案に必要な同期済み時刻がありません。",
       );
     }
-    const metadata = this.database.getProjectMetadataCache(context.project_gid);
+    const metadata = this.taskReadRepository.getProjectMetadataCache(context.project_gid);
     if (metadata == null) {
       throw new Error(
         purpose === "ai"
@@ -2621,7 +2733,7 @@ export class TaskHubApplication {
           : "外部提案に必要なAsanaメタデータがありません。",
       );
     }
-    const entries = parseTaskCache(this.database.getTaskCache());
+    const entries = parseTaskCache(this.taskReadRepository.getTaskCache());
     const tasks = entries
       .map((entry) => taskSchema.parse(entry.task))
       .sort((left, right) => compareStrings(left.gid, right.gid));
@@ -2741,7 +2853,7 @@ export class TaskHubApplication {
   ): Promise<GuiEditRelationGraphValidationResult> {
     validateAbortSignal(signal);
     throwIfAborted(signal);
-    const tasks = parseTaskCache(this.database.getTaskCache())
+    const tasks = parseTaskCache(this.taskReadRepository.getTaskCache())
       .map((entry) => taskSchema.parse(entry.task));
     const result = validateRelationGraph(request, tasks, (projected) =>
       normalizeTaskGraph({ tasks: projected, inaccessible_gids: [] }));
@@ -2875,7 +2987,7 @@ export class TaskHubApplication {
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで書き込みを開始できません。");
     }
-    const blocked = this.database.getCleanupItems()?.some(
+    const blocked = this.taskReadRepository.getCleanupItems()?.some(
       (item) => item.kind === "oauth_app_mismatch" && item.task_gid == null,
     ) ?? false;
     if (blocked) {
@@ -2918,7 +3030,7 @@ export class TaskHubApplication {
     ) {
       throw new Error("未完了のAI適用ジャーナルを復旧するまで変更操作を受け付けられません。");
     }
-    const blocked = this.database.getCleanupItems()?.some(
+    const blocked = this.taskReadRepository.getCleanupItems()?.some(
       (item) => item.kind === "oauth_app_mismatch" && item.task_gid == null,
     ) ?? false;
     if (blocked) {
@@ -3092,7 +3204,7 @@ export class TaskHubApplication {
           this.assertContextUnchanged(context);
         },
         run: (operationContext) => {
-          const baseline = this.database.getTaskCacheEntry(request.task_gid);
+          const baseline = this.taskReadRepository.getTaskCacheEntry(request.task_gid);
           if (baseline == null) {
             return { kind: "not_started", result: this.createGuiRejectedResult(
               request.task_gid,

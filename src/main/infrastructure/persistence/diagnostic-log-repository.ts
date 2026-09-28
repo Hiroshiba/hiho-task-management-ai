@@ -1,9 +1,17 @@
-import {
-  diagnosticLogEntrySchema,
-  type DiagnosticLogEntry,
-} from "../../shared/storage";
-import type { SqliteDatabase } from "./types";
-import type { PersistenceRuntime } from "../infrastructure/persistence/persistence-runtime";
+import type { SqliteConnection } from "./sqlite-connection";
+import type { PersistenceRuntime } from "./persistence-runtime";
+
+type DiagnosticLogRecord = {
+  readonly occurred_at: string;
+  readonly severity: string;
+  readonly code: string;
+  readonly http_status?: number | undefined;
+  readonly asana_gid?: string | undefined;
+  readonly proposal_id?: string | undefined;
+  readonly operation_id?: string | undefined;
+  readonly app_version?: string | undefined;
+  readonly codex_version?: string | undefined;
+};
 
 interface DiagnosticLogRow {
   readonly id: number;
@@ -24,7 +32,10 @@ function validateRetentionLimit(retentionLimit: number): void {
   }
 }
 
-function rowToDiagnosticLogEntry(row: DiagnosticLogRow): DiagnosticLogEntry {
+function rowToDiagnosticLogEntry<Entry extends DiagnosticLogRecord>(
+  row: DiagnosticLogRow,
+  parseEntry: (value: unknown) => Entry,
+): Entry {
   const entry = {
     occurred_at: row.occurred_at,
     severity: row.severity,
@@ -36,18 +47,19 @@ function rowToDiagnosticLogEntry(row: DiagnosticLogRow): DiagnosticLogEntry {
     ...(row.app_version == null ? {} : { app_version: row.app_version }),
     ...(row.codex_version == null ? {} : { codex_version: row.codex_version }),
   };
-  return diagnosticLogEntrySchema.parse(entry);
+  return parseEntry(entry);
 }
 
 /** 構造化診断ログのSQLite操作を提供します。 */
-export class DiagnosticLogStore {
+export class SqliteDiagnosticLogRepository<Entry extends DiagnosticLogRecord> {
   private readonly deleteOlderStatement;
   private readonly insertStatement;
   private readonly selectAllStatement;
 
   public constructor(
-    private readonly database: SqliteDatabase,
+    database: SqliteConnection,
     private readonly runtime: PersistenceRuntime,
+    private readonly parseEntry: (value: unknown) => Entry,
   ) {
     this.insertStatement = database.prepare<
       [string, string, string, number | null, string | null, string | null, string | null, string | null, string | null],
@@ -64,8 +76,8 @@ export class DiagnosticLogStore {
   }
 
   /** 構造化診断ログを追加し、保持上限を超えた古い行を削除します。 */
-  public append(entry: DiagnosticLogEntry, retentionLimit: number): void {
-    const validatedEntry = diagnosticLogEntrySchema.parse(entry);
+  public appendDiagnosticLog(entry: Entry, retentionLimit: number): void {
+    const validatedEntry = this.parseEntry(entry);
     validateRetentionLimit(retentionLimit);
     const append = this.runtime.transaction(() => {
       this.insertStatement.run(
@@ -85,7 +97,8 @@ export class DiagnosticLogStore {
   }
 
   /** 構造化診断ログを全件読み出します。 */
-  public getAll(): readonly DiagnosticLogEntry[] {
-    return this.selectAllStatement.all().map(rowToDiagnosticLogEntry);
+  public getDiagnosticLogs(): readonly Entry[] {
+    return this.selectAllStatement.all().map((row) =>
+      rowToDiagnosticLogEntry(row, this.parseEntry));
   }
 }

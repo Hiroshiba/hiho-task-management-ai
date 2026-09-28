@@ -12,6 +12,9 @@ export {
   stableVersionSchema,
 } from "./application-update-attempt-store";
 export { TaskReadPersistenceRepository, type TaskReadPersistenceContracts } from "./task-read-repository";
+export { SqliteVaultMappingRepository } from "./vault-mapping-repository";
+export { SqliteDiagnosticLogRepository } from "./diagnostic-log-repository";
+export { SqliteExternalToolDefinitionRepository } from "./external-tool-definition-repository";
 export { SqliteSettingsRepository } from "./settings-repository";
 export { SqliteProposalExecutionRepository } from "./proposal-execution-repository";
 export { SqliteProposalApplicationHistoryRepository } from "./proposal-application-history-repository";
