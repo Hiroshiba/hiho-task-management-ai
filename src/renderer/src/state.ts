@@ -1,18 +1,11 @@
 import { z } from "zod";
 import {
-  areaSchema,
   createUtf8ByteLimitedStringSchema,
   dateSchema,
   dependenciesSchema,
   dependencyScopeSchema,
-  durationSchema,
-  gidSchema,
-  importanceSchema,
   isoDateTimeSchema,
   obsidianLinkSchema,
-  parentWorkModeSchema,
-  snapshotHashSchema,
-  taskStatusSchema,
   type Dependency,
   type Importance,
   type ObsidianLink,
@@ -185,100 +178,6 @@ export type RendererExternalAgentEditResult = {
   readonly proposal_id: string;
   readonly revision: number;
 };
-
-const rendererDueValueSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("none") }).strict(),
-  z.object({ kind: z.literal("due_on"), due_on: dateSchema }).strict(),
-  z.object({ kind: z.literal("due_at"), due_at: isoDateTimeSchema }).strict(),
-]);
-
-const rendererParentValueSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("absent") }).strict(),
-  z.object({ kind: z.literal("existing"), gid: gidSchema }).strict(),
-]);
-
-const rendererGuiOperationSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("update_title"),
-      value: createUtf8ByteLimitedStringSchema(1_024).refine(
-        (value) => value.trim().length > 0,
-        "タスク名を空にできません。",
-      ),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("update_notes"),
-      value: createUtf8ByteLimitedStringSchema(64 * 1024),
-    })
-    .strict(),
-  z.object({ kind: z.literal("set_status"), value: taskStatusSchema }).strict(),
-  z.object({ kind: z.literal("complete") }).strict(),
-  z.object({ kind: z.literal("withdraw") }).strict(),
-  z
-    .object({
-      kind: z.literal("restore"),
-      value: z.enum(["not_started", "in_progress"]),
-    })
-    .strict(),
-  z.object({ kind: z.literal("mark_activity") }).strict(),
-  z.object({ kind: z.literal("set_importance"), value: importanceSchema }).strict(),
-  z.object({ kind: z.literal("set_due"), value: rendererDueValueSchema }).strict(),
-  z.object({ kind: z.literal("clear_due") }).strict(),
-  z.object({ kind: z.literal("set_duration"), value: durationSchema }).strict(),
-  z.object({ kind: z.literal("clear_duration") }).strict(),
-  z.object({ kind: z.literal("set_area"), value: areaSchema }).strict(),
-  z.object({ kind: z.literal("set_dependencies"), value: dependenciesSchema }).strict(),
-  z.object({ kind: z.literal("set_parent"), value: rendererParentValueSchema }).strict(),
-  z
-    .object({
-      kind: z.literal("set_parent_work_mode"),
-      value: parentWorkModeSchema,
-    })
-    .strict(),
-  z.object({ kind: z.literal("link_obsidian"), value: obsidianLinkSchema }).strict(),
-  z.object({ kind: z.literal("unlink_obsidian"), value: obsidianLinkSchema }).strict(),
-]);
-
-/** Rendererから発行するGUI編集要求を検証するスキーマです。 */
-export const rendererGuiEditSchema = z
-  .object({
-    task_gid: gidSchema,
-    edit_baseline_hash: snapshotHashSchema,
-    operation: rendererGuiOperationSchema,
-  })
-  .strict();
-
-/** Rendererから発行するGUI編集要求の型です。 */
-export type RendererGuiEdit = z.infer<typeof rendererGuiEditSchema>;
-
-/** RendererでGUI編集の完了結果をタスク単位に保持する型です。 */
-export type RendererTaskEditMarker =
-  | {
-      readonly kind: "saved";
-      readonly generation: number;
-      readonly operation: RendererGuiEdit["operation"];
-      readonly detail: ViewModelTaskDetail | undefined;
-    }
-  | {
-      readonly kind: "conflict";
-      readonly generation: number;
-    }
-  | {
-      readonly kind: "missing";
-      readonly generation: number;
-    };
-
-/** RendererでGUI編集の完了結果を登録する型です。 */
-export type RendererTaskEditMarkerUpdate =
-  | {
-      readonly kind: "saved";
-      readonly operation: RendererGuiEdit["operation"];
-      readonly detail: ViewModelTaskDetail | undefined;
-    }
-  | { readonly kind: "conflict" }
-  | { readonly kind: "missing" };
 
 const rendererQuestionSchema = z
   .object({

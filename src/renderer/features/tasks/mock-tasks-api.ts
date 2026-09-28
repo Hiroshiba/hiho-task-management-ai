@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { detailSchema, overviewSchema } from "../../../shared/ipc-contracts/task-view";
 import { syncResultSchema, syncStateSchema, tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tasks";
+import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
+import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
 
 type TaskDetail = z.infer<typeof detailSchema>;
 type TaskOverview = z.infer<typeof overviewSchema>;
@@ -132,6 +134,99 @@ export function createMockTasksApi(): TasksApi {
   let overview = createOverview(details, lastSuccessfulSyncAt);
   let state: SyncState = syncStateSchema.parse({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
   const listeners = new Set<(value: SyncState) => void>();
+  const executionListeners = new Set<(value: ExecutionDto) => void>();
+  const executions = new Map<string, ExecutionDto>();
+  let editSequence = 0;
+
+  function editedDetail(detail: TaskDetail, operation: GuiEditOperation): TaskDetail {
+    const nextHash = editSequence.toString(16).padStart(64, "0");
+    switch (operation.kind) {
+      case "update_title":
+        return detailSchema.parse({ ...detail, title: operation.value, edit_baseline_hash: nextHash });
+      case "update_notes":
+        return detailSchema.parse({ ...detail, notes: operation.value, edit_baseline_hash: nextHash });
+      case "set_status":
+        return detailSchema.parse({ ...detail, status: operation.value, edit_baseline_hash: nextHash });
+      case "complete":
+        return detailSchema.parse({ ...detail, status: "completed", edit_baseline_hash: nextHash });
+      case "withdraw":
+        return detailSchema.parse({ ...detail, status: "withdrawn", edit_baseline_hash: nextHash });
+      case "restore":
+        return detailSchema.parse({ ...detail, status: operation.value, edit_baseline_hash: nextHash });
+      case "mark_activity":
+        return detailSchema.parse({ ...detail, activity_anchor_on: new Date().toISOString().slice(0, 10), edit_baseline_hash: nextHash });
+      case "set_importance":
+        return detailSchema.parse({ ...detail, importance: operation.value, edit_baseline_hash: nextHash });
+      case "set_due":
+        return detailSchema.parse({ ...detail, due: operation.value, edit_baseline_hash: nextHash });
+      case "clear_due":
+        return detailSchema.parse({ ...detail, due: { kind: "none" }, edit_baseline_hash: nextHash });
+      case "set_duration":
+        return detailSchema.parse({ ...detail, duration: operation.value, edit_baseline_hash: nextHash });
+      case "clear_duration": {
+        const { duration: unusedDuration, ...remaining } = detail;
+        void unusedDuration;
+        return detailSchema.parse({ ...remaining, edit_baseline_hash: nextHash });
+      }
+      case "set_area":
+        return detailSchema.parse({ ...detail, area: operation.value, edit_baseline_hash: nextHash });
+      case "set_dependencies":
+        return detailSchema.parse({ ...detail, edit_baseline_hash: nextHash,
+          has_dependencies: operation.value.length > 0,
+          dependencies: operation.value.map((dependency) => {
+            const target = details.find((candidate) => candidate.gid === dependency.task_gid);
+            return target == null
+              ? { kind: "missing", gid: dependency.task_gid, scope: dependency.scope, source: dependency.source }
+              : { kind: "found", gid: target.gid, title: target.title, status: target.status,
+                scope: dependency.scope, source: dependency.source };
+          }) });
+      case "set_parent": {
+        const parentValue = operation.value;
+        const parent = parentValue.kind === "absent" ? undefined : details.find((candidate) => candidate.gid === parentValue.gid);
+        return detailSchema.parse({ ...detail, edit_baseline_hash: nextHash,
+          ...(parentValue.kind === "absent" ? { parent: undefined } : {
+            parent: parent == null
+              ? { kind: "missing", gid: parentValue.gid }
+              : { kind: "found", gid: parent.gid, title: parent.title, status: parent.status },
+          }) });
+      }
+      case "set_parent_work_mode":
+        return detailSchema.parse({ ...detail, parent_work_mode: operation.value, edit_baseline_hash: nextHash });
+      case "link_obsidian":
+        return detailSchema.parse({ ...detail, obsidian_links: [...detail.obsidian_links, operation.value], edit_baseline_hash: nextHash });
+      case "unlink_obsidian":
+        return detailSchema.parse({ ...detail, obsidian_links: detail.obsidian_links.filter((link) =>
+          link.vault_id !== operation.value.vault_id || link.path !== operation.value.path), edit_baseline_hash: nextHash });
+    }
+  }
+
+  function rebuildRelations(): void {
+    const rebuilt = details.map((detail) => {
+      const dependencies = detail.dependencies.map((dependency) => {
+        const target = details.find((candidate) => candidate.gid === dependency.gid);
+        return target == null
+          ? { kind: "missing", gid: dependency.gid, scope: dependency.scope, source: dependency.source }
+          : { kind: "found", gid: target.gid, title: target.title, status: target.status,
+            scope: dependency.scope, source: dependency.source };
+      });
+      const dependents = details.flatMap((candidate) => candidate.dependencies
+        .filter((dependency) => dependency.gid === detail.gid)
+        .map((dependency) => ({ kind: "found", gid: candidate.gid, title: candidate.title,
+          status: candidate.status, scope: dependency.scope, source: dependency.source })));
+      const children = details.filter((candidate) => candidate.parent?.gid === detail.gid)
+        .map((candidate) => ({ kind: "found", gid: candidate.gid, title: candidate.title, status: candidate.status }));
+      const parent = detail.parent == null ? undefined : details.find((candidate) => candidate.gid === detail.parent?.gid);
+      return detailSchema.parse({ ...detail, dependencies, dependents, children,
+        has_dependencies: dependencies.length > 0, has_children: children.length > 0,
+        child_progress: { completed_count: children.filter((child) => child.status === "completed").length,
+          total_count: children.length },
+        ...(detail.parent == null ? {} : { parent: parent == null
+          ? { kind: "missing", gid: detail.parent.gid }
+          : { kind: "found", gid: parent.gid, title: parent.title, status: parent.status } }),
+      });
+    });
+    details.splice(0, details.length, ...rebuilt);
+  }
 
   function publish(value: SyncState): void {
     state = syncStateSchema.parse(value);
@@ -171,13 +266,53 @@ export function createMockTasksApi(): TasksApi {
         normalization_notifications: notifications,
       }) });
     }),
-    applyEdit: () => Promise.reject(new Error("GUI直接編集のmockはタスク編集機能で実装します。")),
-    getExecution: () => Promise.reject(new Error("GUI編集実行のmockはタスク編集機能で実装します。")),
-    retryExecution: () => Promise.reject(new Error("GUI編集再試行のmockはタスク編集機能で実装します。")),
+    applyEdit: (input) => Promise.resolve().then(() => {
+      const request = tasksContracts.applyEdit.request.parse(input);
+      const index = details.findIndex((candidate) => candidate.gid === request.task_gid);
+      const current = details[index];
+      editSequence += 1;
+      const operationId = `mock-operation-${editSequence}`;
+      if (current == null) return tasksContracts.applyEdit.response.parse({ kind: "ok", value: {
+        kind: "not_started", operation_id: operationId, task_gid: request.task_gid,
+        outcome: "rejected", reason_code: "task_missing",
+      } });
+      if (current.edit_baseline_hash !== request.expected_task_hash) return tasksContracts.applyEdit.response.parse({ kind: "ok", value: {
+        kind: "not_started", operation_id: operationId, task_gid: request.task_gid,
+        outcome: "conflict", reason_code: "baseline_changed",
+      } });
+      details[index] = editedDetail(current, request.operation);
+      rebuildRelations();
+      lastSuccessfulSyncAt = new Date(Date.parse(lastSuccessfulSyncAt) + 1).toISOString();
+      overview = createOverview(details, lastSuccessfulSyncAt);
+      publish({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
+      const execution = executionDtoSchema.parse({
+        origin: "gui-edit", execution_id: `mock-execution-${editSequence}`, task_gid: request.task_gid,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), state: "succeeded",
+        operation_results: [{ operation_id: operationId, task_gid: request.task_gid,
+          outcome: "applied", reason_code: "applied" }], group_results: [],
+      });
+      executions.set(execution.execution_id, execution);
+      for (const listener of executionListeners) listener(execution);
+      return tasksContracts.applyEdit.response.parse({ kind: "ok", value: { kind: "execution", execution } });
+    }),
+    getExecution: (executionId) => Promise.resolve().then(() => {
+      const request = tasksContracts.getExecution.request.parse({ execution_id: executionId });
+      const execution = executions.get(request.execution_id);
+      return tasksContracts.getExecution.response.parse(execution == null
+        ? { kind: "error", code: "not_found", message: "GUI編集の実行が見つかりません。" }
+        : { kind: "ok", value: execution });
+    }),
+    retryExecution: (executionId) => Promise.resolve().then(() => {
+      tasksContracts.retryExecution.request.parse({ retry_of_execution_id: executionId });
+      return tasksContracts.retryExecution.response.parse({ kind: "error", code: "conflict", message: "この実行は再試行できません。" });
+    }),
     onSyncState: (listener) => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    onExecution: () => { throw new Error("GUI編集実行のmockはタスク編集機能で実装します。"); },
+    onExecution: (listener) => {
+      executionListeners.add(listener);
+      return () => { executionListeners.delete(listener); };
+    },
   };
 }

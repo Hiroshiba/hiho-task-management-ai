@@ -20,17 +20,14 @@ import {
   ipcAsanaCancelReauthenticationInputSchema,
   ipcAsanaCompleteReauthenticationInputSchema,
   ipcFailureSchema,
-  ipcGuiEditResultSchema,
   ipcIntegrationStatusResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
-  ipcGuiEditInputSchema,
   ipcSyncResultSchema,
   ipcProposalHistoryStatusSchema,
   type IpcAiStatus,
   type IpcAsanaAuthenticationState,
   type IpcFailure,
-  type IpcGuiEditResult,
   type IpcIntegrationStatus,
   type IpcProposalHistoryStatus,
   type IpcProposalHistoryConfirmInput,
@@ -83,7 +80,6 @@ import {
   cleanupScopeLabel,
   cleanupRelatedGids,
   useTasks,
-  type TaskDataRefreshResult,
   type TaskDetail as TaskDetailDto,
 } from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
@@ -103,9 +99,6 @@ import {
   type RendererFailure,
   type RendererExternalAgentEditResult,
   type RendererExternalAgentState,
-  type RendererGuiEdit,
-  type RendererTaskEditMarker,
-  type RendererTaskEditMarkerUpdate,
   type RendererSyncState,
   type AiSessionOperation,
   type AiSessionView,
@@ -153,31 +146,6 @@ type TaskObsidianLink = TaskDetailDto["obsidian_links"][number];
 type PendingAiProposal = {
   readonly message: string;
   readonly proposal: AiWorkflowProposalView;
-};
-
-type GuiEditCompletion =
-  | {
-      readonly kind: "settled";
-      readonly feedbackKind: FeedbackKind;
-      readonly message: string;
-      readonly save: "succeeded" | "failed";
-    }
-  | {
-      readonly kind: "recovery_required";
-      readonly feedbackKind: FeedbackKind;
-      readonly message: string;
-      readonly save: "succeeded" | "unknown";
-    };
-
-type GuiEditTaskDetailReadResult =
-  | { readonly kind: "available"; readonly detail: ViewModelTaskDetail }
-  | { readonly kind: "missing" }
-  | { readonly kind: "failed" };
-
-type GuiEditRequestState = {
-  readonly taskGid: string;
-  readonly generation: number;
-  readonly kind: "waiting_sync" | "saving";
 };
 
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
@@ -246,16 +214,12 @@ const proposalHistoryTargetIds = ref<Record<string, string>>({});
 const proposalHistoryResults = ref<Record<string, IpcProposalHistoryConfirmInput["confirmed_result"]>>({});
 const proposalHistoryChecked = ref<Record<string, boolean>>({});
 const registeredVaultIds = ref<readonly string[]>([]);
-const guiEditStates = ref(new Map<string, GuiEditRequestState>());
-const taskEditMarkers = ref(new Map<string, RendererTaskEditMarker>());
 let removeAiSubscription: (() => void) | undefined;
 let removeAiStatusSubscription: (() => void) | undefined;
 let removeExternalAgentSubscription: (() => void) | undefined;
 let asanaAuthenticationStateTimer: number | undefined;
 let asanaAuthenticationStateGeneration = 0;
 let asanaAuthenticationStateLoadInProgress = false;
-let guiEditGeneration = 0;
-let taskEditMarkerGeneration = 0;
 let vaultMappingsLoadGeneration = 0;
 function setFeedback(kind: FeedbackKind, message: string): void {
   feedback.value = { kind, message };
@@ -298,15 +262,6 @@ function showGlobalResultFeedback(value: Feedback): void {
   setFeedback(value.kind, value.message);
 }
 
-function showTaskResultFeedback(kind: FeedbackKind, message: string): void {
-  if (kind === "success") {
-    clearTaskFeedback();
-    addToast("success", message);
-    return;
-  }
-  setTaskFeedback(kind, message);
-}
-
 const configured = computed(() => setupState.value?.kind === "ready");
 const proposalHistoryClear = computed(() => proposalHistoryStatus.value?.entries.length === 0);
 const {
@@ -334,13 +289,10 @@ const {
   captureObsidianStatusContext,
   isCurrentObsidianStatusContext,
   setObsidianStatus,
-  reloadTaskData,
   startInitialTaskDataRefresh,
   reloadTaskDataAfterSuccessfulSync,
   setConnectionState,
   setSyncState,
-  applySyncStateDisplay,
-  readCurrentSyncState,
   subscribeSyncState,
   reconcileSyncStateAfterFailure,
   showNormalizationNotificationToast,
@@ -349,7 +301,16 @@ const {
   manualSync,
   fullSync,
   chromiumConnectionState,
-  getDetail,
+  applyEdit,
+  refreshExecution,
+  retryExecution,
+  canSubmitSelectedEdit,
+  selectedEditState,
+  selectedExecution,
+  selectedExecutionFeedback,
+  taskEditMarkers,
+  markTaskMissing,
+  drafts,
 } = useTasks({
   configured,
   historyClear: proposalHistoryClear,
@@ -357,11 +318,10 @@ const {
   checkLinks: (links) => collectObsidianStatuses(links, registeredVaultIds.value),
   onFailure: (message) => setFeedback("failure", message),
   onTaskFailure: (message) => setTaskFeedback("failure", message),
-  onTaskMissing: (taskGid) => setTaskEditMarker(taskGid, { kind: "missing" }),
+  onTaskMissing: (taskGid) => markTaskMissing(taskGid),
   onFeedback: (kind, message) => showGlobalResultFeedback({ kind, message }),
   onToast: (kind, message) => addToast(kind, message),
-  onStateChange: (sync) => {
-    updateGuiEditStatesForSync(sync);
+  onStateChange: () => {
     clearAiSynchronizationWaitingFeedback();
   },
 });
@@ -370,11 +330,6 @@ const canSynchronizeProposalHistory = computed(() => {
   return entries != null && entries.length > 0
     && entries.every((entry) => entry.kind === "synchronization_required");
 });
-const selectedGuiEditState = computed(() => {
-  const taskGid = selectedTaskGid.value;
-  return taskGid == null ? undefined : guiEditStates.value.get(taskGid);
-});
-const guiEditSaving = computed(() => selectedGuiEditState.value != null);
 const aiTaskReferences = computed(() => overview.value?.tasks.map((task) => ({
   gid: task.gid,
   title: task.title,
@@ -896,81 +851,8 @@ function unavailableFeedbackKind(): FeedbackKind {
   return "warning";
 }
 
-function recoveryRequiredFeedback(
-  writeOutcome: Extract<IpcGuiEditResult, { readonly outcome: "recovery_required" }>["write_outcome"],
-): string {
-  switch (writeOutcome) {
-    case "applied":
-      return "Asanaへの書き込みは反映されました。ローカル状態の再同期が必要です。";
-    case "already_applied":
-      return "Asanaへの書き込みはすでに反映済みです。ローカル状態の再同期が必要です。";
-    case "unknown":
-      return "Asanaへの書き込み結果を確認できません。ローカル状態の再同期が必要です。";
-  }
-}
-
-function guiEditResultFeedback(result: IpcGuiEditResult): string {
-  switch (result.outcome) {
-    case "applied":
-      return "変更を反映しました。";
-    case "already_applied":
-      return "変更はすでに反映済みです。";
-    case "conflict":
-      if (result.side_effect === "possible") {
-        return "最新状態と競合しました。Asana側へ変更された可能性があります。";
-      }
-      return "最新状態と競合したため変更しませんでした。";
-    case "rejected":
-      switch (result.reason_code) {
-        case "offline":
-          return "オフラインのため変更できませんでした。";
-        case "baseline_changed":
-          return "最新状態と競合しました。最新内容を確認して編集し直してください。";
-        case "task_missing":
-          return "対象タスクが見つからないため変更しませんでした。未保存の入力は再適用しません。";
-        case "synchronization_failed":
-          return "同期が完了しなかったため変更を送信しませんでした。未保存の入力を保持しています。";
-        case "context_changed":
-          return "接続先が変わったため変更を送信しませんでした。未保存の入力を保持しています。";
-      }
-      throw new Error("GUI編集拒否理由が不正です。");
-    case "recovery_required":
-      return recoveryRequiredFeedback(result.write_outcome);
-  }
-}
-
-function guiEditFeedbackKind(result: IpcGuiEditResult): FeedbackKind {
-  switch (result.outcome) {
-    case "applied":
-    case "already_applied":
-      return "success";
-    case "conflict":
-    case "rejected":
-    case "recovery_required":
-      return "warning";
-  }
-}
-
 function setScreenError(value: IpcFailure): void {
   showError(failureText(value.code));
-}
-
-function updateGuiEditStatesForSync(sync: RendererSyncState): void {
-  if (sync.kind === "syncing" || guiEditStates.value.size === 0) {
-    return;
-  }
-  const nextStates = new Map(guiEditStates.value);
-  let changed = false;
-  for (const [taskGid, state] of nextStates) {
-    if (state.kind !== "waiting_sync") {
-      continue;
-    }
-    nextStates.set(taskGid, { ...state, kind: "saving" });
-    changed = true;
-  }
-  if (changed) {
-    guiEditStates.value = nextStates;
-  }
 }
 
 function setCodexFromSetup(state: SetupState): void {
@@ -1012,10 +894,6 @@ function handleCodexStatus(value: IpcAiStatus): void {
     kind: "unavailable",
     reason_code: value.reason_code,
   });
-}
-
-function isTaskDataRefreshSuccessful(result: TaskDataRefreshResult): boolean {
-  return result.kind === "applied" || result.kind === "unchanged";
 }
 
 async function collectObsidianStatuses(
@@ -1877,238 +1755,6 @@ async function openObsidianLink(link: ViewModelTaskDetail["obsidian_links"][numb
     if (isCurrentTaskDetailContext(context)) {
       showTaskUnexpectedFailure();
     }
-  }
-}
-
-async function readGuiEditTaskDetail(taskGid: string): Promise<GuiEditTaskDetailReadResult> {
-  try {
-    const result = await getDetail(taskGid);
-    if (isFailure(result)) {
-      return result.code === "not_found" ? { kind: "missing" } : { kind: "failed" };
-    }
-    return {
-      kind: "available",
-      detail: viewModelTaskDetailSchema.parse(result.value),
-    };
-  } catch {
-    return { kind: "failed" };
-  }
-}
-
-async function reloadTaskDataAfterGuiEdit(
-  message: string,
-  feedbackKind: FeedbackKind,
-  taskGid: string,
-  generation: number,
-  saveSucceeded: boolean,
-  operation: RendererGuiEdit["operation"],
-): Promise<TaskDataRefreshResult> {
-  const reloadPromise = reloadTaskData();
-  let savedDetailResult: GuiEditTaskDetailReadResult | undefined;
-  let readbackConfirmed = !saveSucceeded;
-  if (saveSucceeded) {
-    savedDetailResult = await readGuiEditTaskDetail(taskGid);
-    if (isCurrentGuiEdit(taskGid, generation)) {
-      if (savedDetailResult.kind === "available") {
-        setTaskEditMarker(taskGid, {
-          kind: "saved",
-          operation,
-          detail: savedDetailResult.detail,
-        });
-        readbackConfirmed = true;
-      } else if (savedDetailResult.kind === "missing") {
-        setTaskEditMarker(taskGid, { kind: "missing" });
-      } else {
-        setTaskEditMarker(taskGid, {
-          kind: "saved",
-          operation,
-          detail: undefined,
-        });
-      }
-    }
-  }
-  const result = await reloadPromise;
-  if (!isCurrentGuiEdit(taskGid, generation)) {
-    return result;
-  }
-  if (saveSucceeded && savedDetailResult?.kind === "failed") {
-    const retryResult = await readGuiEditTaskDetail(taskGid);
-    if (retryResult.kind === "available") {
-      setTaskEditMarker(taskGid, {
-        kind: "saved",
-        operation,
-        detail: retryResult.detail,
-      });
-      readbackConfirmed = true;
-    } else if (retryResult.kind === "missing") {
-      setTaskEditMarker(taskGid, { kind: "missing" });
-    }
-  }
-  if (saveSucceeded && !readbackConfirmed) {
-    showGuiEditResultFeedback(
-      taskGid,
-      "warning",
-      savedDetailResult?.kind === "missing"
-        ? "変更後の対象タスクを確認できません。未保存の入力は再適用しません。"
-        : "変更は反映されましたが最新状態を確認できません。未保存の入力を保持しています。",
-    );
-  } else {
-    showGuiEditResultFeedback(taskGid, feedbackKind, message);
-  }
-  return result;
-}
-
-async function reconcileSyncStateAfterGuiRecovery(
-  taskGid: string,
-  generation: number,
-): Promise<void> {
-  const result = await readCurrentSyncState();
-  if (result.kind === "received" && isCurrentGuiEdit(taskGid, generation)) {
-    applySyncStateDisplay(result.value);
-  }
-}
-
-function isCurrentGuiEdit(taskGid: string, generation: number): boolean {
-  return guiEditStates.value.get(taskGid)?.generation === generation;
-}
-
-function showGuiEditResultFeedback(
-  taskGid: string,
-  kind: FeedbackKind,
-  message: string,
-): void {
-  if (selectedTaskGid.value === taskGid) {
-    showTaskResultFeedback(kind, message);
-    return;
-  }
-  addToast(kind === "success" ? "success" : "warning", message);
-}
-
-function setTaskEditMarker(
-  taskGid: string,
-  update: RendererTaskEditMarkerUpdate,
-): void {
-  taskEditMarkerGeneration += 1;
-  const markers = new Map(taskEditMarkers.value);
-  const marker: RendererTaskEditMarker = {
-    generation: taskEditMarkerGeneration,
-    ...update,
-  };
-  markers.set(taskGid, marker);
-  taskEditMarkers.value = markers;
-}
-
-function finishGuiEdit(taskGid: string, generation: number): void {
-  if (!isCurrentGuiEdit(taskGid, generation)) {
-    return;
-  }
-  const nextStates = new Map(guiEditStates.value);
-  nextStates.delete(taskGid);
-  guiEditStates.value = nextStates;
-}
-
-async function applyGuiEdit(input: RendererGuiEdit): Promise<void> {
-  if (guiEditStates.value.has(input.task_gid)) {
-    if (selectedTaskGid.value === input.task_gid) {
-      setTaskFeedback("progress", "このタスクの保存が完了するまで追加の編集を待っています。");
-    }
-    return;
-  }
-  if (!canAcceptWrite.value) {
-    setTaskFeedback(unavailableFeedbackKind(), writeUnavailableText("編集"));
-    return;
-  }
-  const currentOverview = overview.value;
-  if (currentOverview == null) {
-    setTaskFeedback("warning", "タスク状態を読み込むまで編集できません。");
-    return;
-  }
-  guiEditGeneration += 1;
-  const generation = guiEditGeneration;
-  guiEditStates.value = new Map(guiEditStates.value).set(input.task_gid, {
-    taskGid: input.task_gid,
-    generation,
-    kind: syncState.value.kind === "syncing" ? "waiting_sync" : "saving",
-  });
-  try {
-    let completion: GuiEditCompletion;
-    let validatedResult: IpcGuiEditResult | undefined;
-    try {
-      const validatedInput = ipcGuiEditInputSchema.parse({
-        task_gid: input.task_gid,
-        expected_task_hash: input.edit_baseline_hash,
-        operation: input.operation,
-      });
-      const result = await taskHub.gui.apply(validatedInput);
-      if (isFailure(result)) {
-        completion = {
-          kind: "settled",
-          feedbackKind: "failure",
-          message: displayFailure(result).message,
-          save: "failed",
-        };
-      } else {
-        validatedResult = ipcGuiEditResultSchema.parse(result.value);
-        if (validatedResult.outcome === "recovery_required") {
-          completion = {
-            kind: "recovery_required",
-            feedbackKind: guiEditFeedbackKind(validatedResult),
-            message: guiEditResultFeedback(validatedResult),
-            save: validatedResult.write_outcome === "unknown" ? "unknown" : "succeeded",
-          };
-        } else {
-          completion = {
-            kind: "settled",
-            feedbackKind: guiEditFeedbackKind(validatedResult),
-            message: guiEditResultFeedback(validatedResult),
-            save: validatedResult.outcome === "applied" || validatedResult.outcome === "already_applied"
-              ? "succeeded"
-              : "failed",
-          };
-        }
-      }
-    } catch {
-      completion = {
-        kind: "settled",
-        feedbackKind: "failure",
-        message: "予期しないエラーが発生しました。もう一度お試しください。",
-        save: "failed",
-      };
-    }
-    if (validatedResult?.outcome === "conflict") {
-      setTaskEditMarker(input.task_gid, { kind: "conflict" });
-    }
-    if (validatedResult?.outcome === "rejected") {
-      if (validatedResult.reason_code === "baseline_changed") {
-        setTaskEditMarker(input.task_gid, { kind: "conflict" });
-      } else if (validatedResult.reason_code === "task_missing") {
-        setTaskEditMarker(input.task_gid, { kind: "missing" });
-      }
-    }
-    if (completion.kind === "recovery_required") {
-      const reloadResult = await reloadTaskDataAfterGuiEdit(
-        completion.message,
-        completion.feedbackKind,
-        input.task_gid,
-        generation,
-        false,
-        input.operation,
-      );
-      if (isTaskDataRefreshSuccessful(reloadResult)) {
-        await reconcileSyncStateAfterGuiRecovery(input.task_gid, generation);
-      }
-      return;
-    }
-    await reloadTaskDataAfterGuiEdit(
-      completion.message,
-      completion.feedbackKind,
-      input.task_gid,
-      generation,
-      completion.save === "succeeded",
-      input.operation,
-    );
-  } finally {
-    finishGuiEdit(input.task_gid, generation);
   }
 }
 
@@ -3192,14 +2838,19 @@ onUnmounted(() => {
                 :task="selectedTask == null ? undefined : viewModelTaskDetailSchema.parse(selectedTask)"
                 :as-of="currentAsOf"
                 :areas="overview.areas"
-                :can-write="canAcceptWrite && !guiEditSaving"
-                :saving-state="selectedGuiEditState?.kind ?? 'idle'"
+                :can-write="canAcceptWrite && canSubmitSelectedEdit"
+                :saving-state="selectedEditState"
+                :execution="selectedExecution"
+                :execution-feedback="selectedExecutionFeedback"
+                :draft-store="drafts"
                 :task-edit-markers="taskEditMarkers"
                 :read-available="canReadLocal"
                 :obsidian-vault-ids="registeredVaultIds"
                 :obsidian-statuses="obsidianStatuses"
                 :can-reanalyze-obsidian-notes="canReanalyzeObsidianNotes"
-                @edit="applyGuiEdit"
+                @edit="applyEdit"
+                @check-execution="refreshExecution"
+                @retry-execution="retryExecution"
                 @check-obsidian="checkObsidianLink"
                 @open-obsidian="openObsidianLink"
                 @reanalyze-obsidian-notes="reanalyzeObsidianNotes"

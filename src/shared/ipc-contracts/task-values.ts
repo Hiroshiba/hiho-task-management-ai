@@ -34,9 +34,19 @@ export const obsidianLinkSchema = z
   })
   .strict();
 
+const titleInputSchema = displayTextSchema
+  .refine((value) => value.trim().length > 0, "タスク名を空にできません。")
+  .refine((value) => new TextEncoder().encode(value).byteLength <= 1_024, "タスク名はUTF-8で1024バイト以下にしてください。");
+const notesInputSchema = z.string().max(65_536)
+  .refine((value) => new TextEncoder().encode(value).byteLength <= 65_536, "説明はUTF-8で65536バイト以下にしてください。");
+const areaInputSchema = displayTextSchema.refine((value) => value.trim().length > 0, "領域を空にできません。");
+const dependenciesInputSchema = z.array(dependencySchema).max(64)
+  .refine((value) => new Set(value.map((dependency) => dependency.task_gid)).size === value.length,
+    "同じ依存先を重複して指定できません。");
+
 export const guiEditOperationSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("update_title"), value: displayTextSchema }).strict(),
-  z.object({ kind: z.literal("update_notes"), value: z.string().max(65_536) }).strict(),
+  z.object({ kind: z.literal("update_title"), value: titleInputSchema }).strict(),
+  z.object({ kind: z.literal("update_notes"), value: notesInputSchema }).strict(),
   z.object({ kind: z.literal("set_status"), value: taskStatusSchema }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
   z.object({ kind: z.literal("withdraw") }).strict(),
@@ -57,11 +67,11 @@ export const guiEditOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("clear_due") }).strict(),
   z.object({ kind: z.literal("set_duration"), value: durationSchema }).strict(),
   z.object({ kind: z.literal("clear_duration") }).strict(),
-  z.object({ kind: z.literal("set_area"), value: displayTextSchema }).strict(),
+  z.object({ kind: z.literal("set_area"), value: areaInputSchema }).strict(),
   z
     .object({
       kind: z.literal("set_dependencies"),
-      value: z.array(dependencySchema).max(64),
+      value: dependenciesInputSchema,
     })
     .strict(),
   z.object({ kind: z.literal("set_parent"), value: parentSchema }).strict(),

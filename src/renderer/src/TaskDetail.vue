@@ -17,6 +17,11 @@ import type {
   ViewModelTaskReference,
   ViewModelUnavailableReasonCode,
 } from "../../shared/view-model";
+import { viewModelTaskDetailSchema } from "../../shared/view-model";
+import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
+import type { ExecutionDto } from "../../shared/ipc-contracts/execution";
+import type { GuiEditOperation } from "../../shared/ipc-contracts/task-values";
+import type { TaskDraft, TaskDraftStore, TaskEditMarker } from "../features/tasks";
 import {
   parentWorkModeLabel,
   parseDependencyInput,
@@ -26,10 +31,7 @@ import {
   deadlineToneClass,
   dueRelativeLabel,
   importanceToneClass,
-  rendererGuiEditSchema,
   statusLabel,
-  type RendererGuiEdit,
-  type RendererTaskEditMarker,
 } from "./state";
 import {
   durationMinimum,
@@ -46,7 +48,10 @@ const props = defineProps<{
   areas: readonly string[];
   canWrite: boolean;
   savingState: "idle" | "waiting_sync" | "saving";
-  taskEditMarkers: ReadonlyMap<string, RendererTaskEditMarker>;
+  execution: ExecutionDto | undefined;
+  executionFeedback: { readonly kind: "success" | "progress" | "warning" | "failure"; readonly text: string } | undefined;
+  draftStore: TaskDraftStore;
+  taskEditMarkers: ReadonlyMap<string, TaskEditMarker>;
   readAvailable: boolean;
   obsidianVaultIds: readonly string[];
   obsidianStatuses: ReadonlyMap<string, "exists" | "missing" | "unavailable">;
@@ -54,7 +59,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "edit", input: RendererGuiEdit): void;
+  (event: "edit", input: ReturnType<typeof applyEditRequestSchema.parse>): void;
+  (event: "check-execution", executionId: string): void;
+  (event: "retry-execution", executionId: string): void;
   (event: "check-obsidian", link: ObsidianLink): void;
   (event: "open-obsidian", link: ObsidianLink): void;
   (event: "reanalyze-obsidian-notes", taskGid: string): void;
@@ -106,27 +113,12 @@ const detailDeadlinePreview = computed(() => {
   };
 });
 
-type FormDraft = {
-  readonly editBaselineHash: string;
-  readonly title: string;
-  readonly notes: string;
-  readonly status: "not_started" | "in_progress" | "completed" | "withdrawn";
-  readonly importance: 1 | 2 | 3 | 4 | 5;
-  readonly dueKind: "none" | "due_on" | "due_at";
-  readonly dueValue: string;
-  readonly durationUnit: "none" | DurationUnit;
-  readonly durationValue: string;
-  readonly area: string;
-  readonly dependencyText: string;
-  readonly parentGid: string;
-  readonly parentWorkMode: "children_only" | "has_own_work" | "unknown";
-};
+type FormDraft = TaskDraft;
 
-const formDrafts = new Map<string, FormDraft>();
-const staleFormDrafts = ref(new Map<string, FormDraft>());
+const staleFormDrafts = props.draftStore.staleDrafts;
 const activeTaskGid = ref<string | undefined>();
 const draftDirty = ref(false);
-const conflictAcknowledgedGenerations = ref(new Map<string, number>());
+const conflictAcknowledgedGenerations = props.draftStore.acknowledgedConflicts;
 const staleDraftForCurrentTask = computed(() => {
   const taskGid = props.task?.gid;
   return taskGid == null ? undefined : staleFormDrafts.value.get(taskGid);
@@ -157,7 +149,6 @@ const sharedStaleDraftEntries = computed(() => {
       || taskGid !== currentTaskGid;
   });
 });
-const processedMarkerGenerations = new Map<string, number>();
 let restoringForm = false;
 
 const statusOptions = [
@@ -220,13 +211,13 @@ function storeActiveDraft(): void {
   if (taskGid == null || !draftDirty.value) {
     return;
   }
-  const existingDraft = formDrafts.get(taskGid);
+  const existingDraft = props.draftStore.get(taskGid);
   const editBaselineHash = existingDraft?.editBaselineHash
     ?? (props.task?.gid === taskGid ? props.task.edit_baseline_hash : undefined);
   if (editBaselineHash == null) {
     throw new Error("編集基準ハッシュがありません。");
   }
-  formDrafts.set(taskGid, captureFormDraft(editBaselineHash));
+  props.draftStore.set(taskGid, captureFormDraft(editBaselineHash));
 }
 
 function applyTaskValues(task: ViewModelTaskDetail): void {
@@ -323,10 +314,10 @@ function draftDiffersFromTask(draft: FormDraft, task: ViewModelTaskDetail): bool
 function applySavedOperation(
   draft: FormDraft,
   task: ViewModelTaskDetail,
-  operation: RendererGuiEdit["operation"],
+  operation: GuiEditOperation,
 ): FormDraft {
   const serverDraft = taskFormDraft(task);
-  const nextDraft = { ...draft, editBaselineHash: draft.editBaselineHash };
+  const nextDraft = { ...draft, editBaselineHash: task.edit_baseline_hash };
   switch (operation.kind) {
     case "update_title":
       nextDraft.title = serverDraft.title;
@@ -374,10 +365,9 @@ function applySavedOperation(
 }
 
 function moveDraftToStale(taskGid: string): void {
-  const draft = formDrafts.get(taskGid);
+  const draft = props.draftStore.get(taskGid);
   if (draft != null) {
-    staleFormDrafts.value = new Map(staleFormDrafts.value).set(taskGid, draft);
-    formDrafts.delete(taskGid);
+    props.draftStore.moveToStale(taskGid);
   }
   if (activeTaskGid.value === taskGid) {
     draftDirty.value = false;
@@ -392,14 +382,10 @@ function processTaskEditMarker(
   if (marker == null) {
     return;
   }
-  const processedGeneration = processedMarkerGenerations.get(taskGid);
-  if (processedGeneration != null && processedGeneration >= marker.generation) {
-    return;
-  }
   if (marker.kind === "saved" && marker.detail == null) {
     return;
   }
-  processedMarkerGenerations.set(taskGid, marker.generation);
+  if (!props.draftStore.markProcessed(taskGid, marker.generation)) return;
   if (marker.kind === "conflict" || marker.kind === "missing") {
     moveDraftToStale(taskGid);
     if (activeTaskGid.value === taskGid && task?.gid === taskGid) {
@@ -409,17 +395,17 @@ function processTaskEditMarker(
     }
     return;
   }
-  const draft = formDrafts.get(taskGid);
+  const draft = props.draftStore.get(taskGid);
   if (draft == null) {
     return;
   }
-  const savedTask = marker.detail;
-  if (savedTask == null) {
+  if (marker.detail == null) {
     return;
   }
+  const savedTask = viewModelTaskDetailSchema.parse(marker.detail);
   const nextDraft = applySavedOperation(draft, savedTask, marker.operation);
   if (draftDiffersFromTask(nextDraft, savedTask)) {
-    formDrafts.set(taskGid, nextDraft);
+    props.draftStore.set(taskGid, nextDraft);
     if (activeTaskGid.value === taskGid) {
       restoringForm = true;
       applyDraft(nextDraft);
@@ -427,7 +413,7 @@ function processTaskEditMarker(
     }
     return;
   }
-  formDrafts.delete(taskGid);
+  props.draftStore.remove(taskGid);
   if (activeTaskGid.value === taskGid) {
     restoringForm = true;
     applyTaskValues(savedTask);
@@ -458,7 +444,7 @@ function resetForm(task: ViewModelTaskDetail | undefined): void {
     return;
   }
   activeTaskGid.value = task.gid;
-  const draft = formDrafts.get(task.gid);
+  const draft = props.draftStore.get(task.gid);
   if (draft == null) {
     applyTaskValues(task);
     draftDirty.value = false;
@@ -495,22 +481,21 @@ function acknowledgeConflict(): void {
   if (taskGid == null || marker == null) {
     throw new Error("確認対象の競合がありません。");
   }
-  conflictAcknowledgedGenerations.value = new Map(conflictAcknowledgedGenerations.value)
-    .set(taskGid, marker.generation);
+  props.draftStore.acknowledgeConflict(taskGid, marker.generation);
   localError.value = "";
 }
 
-function submitOperation(operation: RendererGuiEdit["operation"]): void {
+function submitOperation(operation: GuiEditOperation): void {
   const task = props.task;
   if (task == null) {
     return;
   }
   localError.value = "";
   try {
-    const draft = formDrafts.get(task.gid);
-    emit("edit", rendererGuiEditSchema.parse({
+    const draft = props.draftStore.get(task.gid);
+    emit("edit", applyEditRequestSchema.parse({
       task_gid: task.gid,
-      edit_baseline_hash: draft?.editBaselineHash ?? task.edit_baseline_hash,
+      expected_task_hash: draft?.editBaselineHash ?? task.edit_baseline_hash,
       operation,
     }));
   } catch {
@@ -555,10 +540,10 @@ function submitDue(): void {
       return;
     }
     if (dueKind.value === "due_on") {
-      submitOperation({ kind: "set_due", value: { kind: "due_on", due_on: dateSchema.parse(dueValue.value) } });
+      submitOperation({ kind: "set_due", value: { kind: "on", value: dateSchema.parse(dueValue.value) } });
       return;
     }
-    submitOperation({ kind: "set_due", value: { kind: "due_at", due_at: datetimeLocalToIso(dueValue.value) } });
+    submitOperation({ kind: "set_due", value: { kind: "at", value: datetimeLocalToIso(dueValue.value) } });
   } catch {
     localError.value = "期限を確認してください。";
   }
@@ -1112,6 +1097,30 @@ function staleDraftDetails(draft: FormDraft): readonly StaleDraftEntry[] {
           <span v-else-if="props.savingState === 'saving'">保存しています…</span>
           <span v-else>現在は編集できません。</span>
         </p>
+        <div
+          v-if="props.execution != null"
+          class="flex flex-wrap items-center gap-3 text-sm text-slate-600 dark:text-slate-300"
+          role="status"
+        >
+          <span>{{ props.executionFeedback?.text }}</span>
+          <button
+            v-if="props.execution.state === 'planned' || props.execution.state === 'running'"
+            type="button"
+            class="secondary-button"
+            @click="emit('check-execution', props.execution.execution_id)"
+          >
+            実行状態を再確認
+          </button>
+          <button
+            v-if="props.execution.state === 'failed' || props.execution.state === 'confirmation_required'"
+            type="button"
+            class="secondary-button"
+            :disabled="props.savingState !== 'idle'"
+            @click="emit('retry-execution', props.execution.execution_id)"
+          >
+            明示的に再試行
+          </button>
+        </div>
         <div
           class="grid gap-4"
           :aria-busy="props.savingState !== 'idle'"
