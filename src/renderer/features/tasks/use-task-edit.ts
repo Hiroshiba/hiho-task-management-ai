@@ -12,9 +12,10 @@ type ExecutionInput = { readonly request: TaskEditInput; readonly sequence: numb
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
 type ExecutionSettlement =
   | { readonly kind: "settling"; readonly completion: Promise<void> }
+  | { readonly kind: "reconfirming"; readonly completion: Promise<void>; readonly message: string }
   | { readonly kind: "settled" }
   | { readonly kind: "detail_unconfirmed"; readonly message: string };
-type ExecutionSettlementResult = Exclude<ExecutionSettlement, { readonly kind: "settling" }>;
+type ExecutionSettlementResult = Exclude<ExecutionSettlement, { readonly kind: "settling" | "reconfirming" }>;
 type TaskEditOptions = {
   readonly onToast: (kind: "success" | "warning", message: string) => void;
 };
@@ -79,12 +80,17 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     const execution = selectedExecution.value;
     if (execution == null) return undefined;
     const settlement = settlements.value.get(execution.execution_id);
-    return settlement?.kind === "detail_unconfirmed" ? { kind: "warning", text: settlement.message } : executionMessage(execution);
+    return settlement?.kind === "detail_unconfirmed" || settlement?.kind === "reconfirming"
+      ? { kind: "warning", text: settlement.message }
+      : executionMessage(execution);
   });
   const canSubmitSelectedEdit = computed(() => {
     if (selectedEditState.value !== "idle") return false;
     const execution = selectedExecution.value;
-    if (execution != null && settlements.value.get(execution.execution_id)?.kind === "detail_unconfirmed") return false;
+    if (execution != null) {
+      const settlement = settlements.value.get(execution.execution_id);
+      if (settlement?.kind === "detail_unconfirmed" || settlement?.kind === "reconfirming") return false;
+    }
     if (execution?.state === "confirmation_required") return false;
     if (execution?.state === "failed" && execution.operation_results[0]?.outcome === "unknown") return false;
     return true;
@@ -221,11 +227,15 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   async function settle(execution: ExecutionDto, input: TaskEditInput, reconfirm: boolean): Promise<void> {
     const previous = settlements.value.get(execution.execution_id);
     if (previous?.kind === "settled" || previous?.kind === "detail_unconfirmed" && !reconfirm) return;
-    if (previous?.kind === "settling") return previous.completion;
+    if (previous?.kind === "settling" || previous?.kind === "reconfirming") return previous.completion;
     const completion = settleExecution(execution, input).then((result) => {
       setSettlement(execution.execution_id, result);
     });
-    setSettlement(execution.execution_id, { kind: "settling", completion });
+    if (previous?.kind === "detail_unconfirmed") {
+      setSettlement(execution.execution_id, { kind: "reconfirming", completion, message: previous.message });
+    } else {
+      setSettlement(execution.execution_id, { kind: "settling", completion });
+    }
     await completion;
   }
 
@@ -284,9 +294,12 @@ export function useTaskEdit(api: TasksApi, read: ReturnType<typeof useTaskRead>,
       return;
     }
     const previous = executions.value.get(request.task_gid);
-    if (previous != null && settlements.value.get(previous.execution_id)?.kind === "detail_unconfirmed") {
-      show(request.task_gid, "warning", "前回の変更後の最新状態を再確認してから編集してください。");
-      return;
+    if (previous != null) {
+      const settlement = settlements.value.get(previous.execution_id);
+      if (settlement?.kind === "detail_unconfirmed" || settlement?.kind === "reconfirming") {
+        show(request.task_gid, "warning", settlement.message);
+        return;
+      }
     }
     if (previous?.state === "confirmation_required"
       || previous?.state === "failed" && previous.operation_results[0]?.outcome === "unknown") {
