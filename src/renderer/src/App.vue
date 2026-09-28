@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, provide, ref } from "vue";
 import { DialogRoot } from "reka-ui";
 import { useAppBootstrap } from "../app/use-app-bootstrap";
 import { useSystemUpdate } from "../features/system";
@@ -18,8 +18,8 @@ import {
 } from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
 import { AsanaReauthenticationPanel, SettingsDialog, SetupWizard, useSettings } from "../features/settings";
-import ToastHost from "./ToastHost.vue";
-import { useToast } from "./useToast";
+import ToastHost from "../shared/components/ToastHost.vue";
+import { createToastStore, toastStoreInjectionKey } from "../shared/components/useToast";
 
 type FeedbackKind = "success" | "progress" | "warning" | "failure";
 type Feedback = {
@@ -38,7 +38,10 @@ const { screen, handleSetupState } = useAppBootstrap({
 });
 const appUpdateState = useSystemUpdate();
 const github = useGithubIntegration();
-const { addToast } = useToast();
+const toastStore = createToastStore();
+provide(toastStoreInjectionKey, toastStore);
+onBeforeUnmount(toastStore.clearToasts);
+const { addToast } = toastStore;
 const feedback = ref<Feedback | undefined>();
 const proposals = useProposals();
 function setFeedback(kind: FeedbackKind, message: string): void {

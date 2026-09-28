@@ -29,7 +29,7 @@
 | Obsidian Vaultフォームとリンク状態 | `renderer/features/obsidian-integration` | feature mount | 要求世代をunmountで無効化 |
 | GitHub連携機能の表示 | `renderer/features/github-integration` | feature mount | 要求世代をunmountで無効化。GitHub App clientがない間はgithub-integrationが利用不可状態を返す |
 | mock選択 | `renderer/shared/mock/mock-selection.ts` | URLを1回解析 | reloadまでimmutable |
-| toastとfeature非依存UI部品 | `renderer/shared/components` | app mount | unmount時にtimerとlistenerを解除 |
+| toast通知とfeature非依存UI部品 | `renderer/shared/components`のstoreを`App.vue`が所有 | app mountごとに生成し子部品へ注入 | unmount時に通知を破棄。表示部品のtimerとlistenerも解除 |
 
 `App.vue`にある現行状態はsource mapの状態名ごとのownerへ移します。特にタスクの同期・編集状態、変更案の承認状態、設定の入力値とAsana認証確認timerをapp shellへ残しません。認証確認timerは他のAsana認証状態と同じsettingsが生成し、unmount時に破棄します。保存済み値をUI側で別の正本として保持せず、Mainから取得した値と未保存入力を区別します。
 

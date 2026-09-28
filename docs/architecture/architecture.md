@@ -35,7 +35,7 @@
 | `src/renderer/features/system` | 自動更新の表示状態と購読 |
 | `src/renderer/features/github-integration` | GitHub連携画面のUI状態 |
 | `src/renderer/features/obsidian-integration` | Vaultとノート参照のUI状態 |
-| `src/renderer/shared/api`, `components`, `logging`, `mock` | featureに依存しないtransport、部品、診断、mock選択 |
+| `src/renderer/shared/api`, `components`, `format`, `logging`, `mock` | featureに依存しないtransport、部品、日時変換、診断、mock選択 |
 
 `src/main/index.ts`と`src/renderer/index.html`は既存のビルド入口として残し、業務ロジックと可変状態を持たせません。自動更新とウィンドウのライフサイクルはbootstrapが管理します。外部Codexとtaskctlの接続および外部エージェントのtransportはAI infrastructureが担います。`external-agent/service.ts`に同居する提案基準と生成、提出後の確認と承認・適用は、それぞれproposal-generateとproposal-applyへ分けます。`shared/storage/schemas.ts`の保存形式はpersistenceへ、`shared/view-model/task-filter.ts`の画面フィルターはrendererのtasksへ移します。境界を越えて渡す値だけをIPC契約に置きます。
 
@@ -60,6 +60,8 @@ AI変更案の保持、会話根拠、取り下げ確認、生成世代は`Propo
 | `shared/ipc-contracts` | 同一契約内 | Main、preload、Renderer実装 |
 
 各workflow、infrastructure adapter群、renderer featureの公開入口は、そのownerディレクトリ直下の`index.ts`です。bootstrapからworkflowとinfrastructure、IPCからworkflow、renderer/appからfeatureを読むときは、この入口だけを使います。内部階層の`index.ts`は公開入口になりません。workflow間の契約は`application/common`だけに置きます。変更案とGUI編集は`application/common/task-write-plan.ts`を共有し、相互の内部型を参照しません。re-exportで境界違反を隠しません。
+
+`renderer/shared/format`はfeatureに依存しない日時の検証と日本時間への変換を担います。入力エラーの利用者向け文面は各featureが決めます。toastはアプリのmountごとに`renderer/shared/components`のstoreを生成し、子部品へ注入してunmount時に破棄します。
 
 `create-main-runtime.ts`だけがconcrete adapter、repository、logger、clock、ID生成器、外部clientを生成してportへ注入します。module import時に外部clientを作らず、実行時の設定値をmoduleの可変変数へ保持しません。診断記録状態は`application/common/errors/diagnostic-failure.ts`を共通契約として、workflow、infrastructure、IPC、bootstrapが参照します。IPCは入力をZodで検証してuse caseを呼び、返り値をDTOへ変換します。preloadはtransportのみ、Rendererは表示とUI状態のみを担当します。
 

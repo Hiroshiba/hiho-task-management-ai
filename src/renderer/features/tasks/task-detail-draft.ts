@@ -1,7 +1,7 @@
 import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
+import { isoToJstDatetimeLocal } from "../../shared/format/date-time";
 import type { TaskDraft } from "./use-task-drafts";
 import type { TaskDetail } from "./use-task-read";
-import { isoToDatetimeLocal } from "./task-detail-date";
 import { durationUnitLabel } from "./task-duration";
 import { parentWorkModeLabel, statusLabel } from "./task-presentation";
 
@@ -17,7 +17,7 @@ export function taskFormDraft(task: TaskDetail): TaskDraft {
     dueValue = task.due.value;
   } else {
     dueKind = "due_at";
-    dueValue = isoToDatetimeLocal(task.due.value);
+    dueValue = isoToJstDatetimeLocal(task.due.value);
   }
   const durationUnit = task.duration?.unit ?? "none";
   const durationValue = task.duration == null ? "" : String(task.duration.value);

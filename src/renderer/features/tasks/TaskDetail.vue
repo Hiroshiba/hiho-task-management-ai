@@ -7,10 +7,10 @@ import { taskStatusSchema } from "../../../shared/ipc-contracts/task-values";
 import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
 import RekaSelect from "../../shared/components/RekaSelect.vue";
+import { isoToJstDatetimeLocal, jstDatetimeLocalToIso, parseJstDatetimeLocal } from "../../shared/format/date-time";
 import { deadlineTone, deadlineToneClass, dueRelativeLabel, importanceToneClass } from "./task-presentation";
 import { parseDependencyInput } from "./task-input";
 import { durationMinimum, durationUnitOptions, parseDurationInput, type DurationUnit } from "./task-duration";
-import { datetimeLocalToIso, isoToDatetimeLocal, parseDatetimeLocal } from "./task-detail-date";
 import { applySavedOperation, draftDiffersFromTask, staleDraftDetails } from "./task-detail-draft";
 import type { TaskDetail } from "./use-task-read";
 import type { TaskDraft, TaskDraftStore, TaskEditMarker } from "./use-task-drafts";
@@ -72,7 +72,7 @@ function previewDue(): TaskDetail["due"] | undefined {
       return parsed.success ? { kind: "on", value: parsed.data } : undefined;
     }
     case "due_at": {
-      const parsed = parseDatetimeLocal(dueValue.value);
+      const parsed = parseJstDatetimeLocal(dueValue.value);
       return parsed.kind === "valid" ? { kind: "at", value: parsed.value } : undefined;
     }
   }
@@ -214,7 +214,7 @@ function applyTaskValues(task: TaskDetail): void {
     dueValue.value = task.due.value;
   } else {
     dueKind.value = "due_at";
-    dueValue.value = isoToDatetimeLocal(task.due.value);
+    dueValue.value = isoToJstDatetimeLocal(task.due.value);
   }
 }
 
@@ -413,7 +413,7 @@ function submitDue(): void {
       submitOperation({ kind: "set_due", value: { kind: "on", value: dateSchema.parse(dueValue.value) } });
       return;
     }
-    submitOperation({ kind: "set_due", value: { kind: "at", value: datetimeLocalToIso(dueValue.value) } });
+    submitOperation({ kind: "set_due", value: { kind: "at", value: jstDatetimeLocalToIso(dueValue.value) } });
   } catch {
     localError.value = "期限を確認してください。";
   }

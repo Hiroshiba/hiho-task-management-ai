@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { z } from "zod";
-import { dateSchema, dateTimeSchema } from "../../../shared/ipc-contracts/common";
 import { proposalOperationSchema } from "../../../shared/ipc-contracts/proposal-values";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
+import { isoToJstDatetimeLocal, parseJstDatetimeLocal } from "../../shared/format/date-time";
 import type { ProposalEditInput, ProposalOperation, DurationUnit } from "./proposal-presentation";
 import {
   durationMinimum,
@@ -326,7 +326,7 @@ function applyDue(state: FormState, due: ProposalDueValue): void {
     state.originalDueAt = undefined;
     return;
   }
-  state.dueValue = isoToDatetimeLocal(due.due_at);
+  state.dueValue = isoToJstDatetimeLocal(due.due_at);
   state.originalDueAt = due.due_at;
 }
 
@@ -373,7 +373,7 @@ function dueAfter(): ProposalDueValue {
     return { kind: "due_on", due_on: form.value.dueValue };
   }
   const dueAt = form.value.originalDueAt != null
-    && form.value.dueValue === isoToDatetimeLocal(form.value.originalDueAt)
+    && form.value.dueValue === isoToJstDatetimeLocal(form.value.originalDueAt)
     ? form.value.originalDueAt
     : datetimeLocalToIso(form.value.dueValue);
   return { kind: "due_at", due_at: dueAt };
@@ -575,12 +575,12 @@ function changeDueKind(): void {
       return;
     }
     if (form.value.originalDueAt != null) {
-      form.value.dueValue = isoToDatetimeLocal(form.value.originalDueAt).slice(0, 10);
+      form.value.dueValue = isoToJstDatetimeLocal(form.value.originalDueAt).slice(0, 10);
     }
     return;
   }
   if (form.value.originalDueAt != null) {
-    const originalLocal = isoToDatetimeLocal(form.value.originalDueAt);
+    const originalLocal = isoToJstDatetimeLocal(form.value.originalDueAt);
     if (form.value.dueValue === originalLocal.slice(0, 10)) {
       form.value.dueValue = originalLocal;
       return;
@@ -594,59 +594,20 @@ function changeDueKind(): void {
 }
 
 function datetimeLocalToIso(value: string): string {
-  const matched = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/u.exec(value);
-  if (matched == null) {
-    throw new FormInputError("期限日時を入力してください。");
+  const parsed = parseJstDatetimeLocal(value);
+  if (parsed.kind === "valid") {
+    return parsed.value;
   }
-  const datePart = matched[1];
-  const hourPart = matched[2];
-  const minutePart = matched[3];
-  if (datePart == null || hourPart == null || minutePart == null) {
-    throw new Error("期限日時入力の形式を取得できません。");
+  switch (parsed.reason) {
+    case "format":
+      throw new FormInputError("期限日時を入力してください。");
+    case "date":
+      throw new FormInputError("期限日時の日付を確認してください。");
+    case "time":
+      throw new FormInputError("期限日時の時刻を確認してください。");
+    case "timestamp":
+      throw new FormInputError("期限日時を確認してください。");
   }
-  if (!dateSchema.safeParse(datePart).success) {
-    throw new FormInputError("期限日時の日付を確認してください。");
-  }
-  const hour = Number(hourPart);
-  const minute = Number(minutePart);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    throw new FormInputError("期限日時の時刻を確認してください。");
-  }
-  const timestamp = Date.parse(`${datePart}T${hourPart}:${minutePart}:00+09:00`);
-  if (!Number.isFinite(timestamp)) {
-    throw new FormInputError("期限日時を確認してください。");
-  }
-  return dateTimeSchema.parse(new Date(timestamp).toISOString());
-}
-
-function isoToDatetimeLocal(value: string): string {
-  const validated = dateTimeSchema.parse(value);
-  const timestamp = Date.parse(validated);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("日時を表示用へ変換できません。");
-  }
-  const parts = new Map(
-    new Intl.DateTimeFormat("en-US", {
-      day: "2-digit",
-      hour: "2-digit",
-      hourCycle: "h23",
-      minute: "2-digit",
-      month: "2-digit",
-      timeZone: "Asia/Tokyo",
-      year: "numeric",
-    })
-      .formatToParts(new Date(timestamp))
-      .map((part) => [part.type, part.value]),
-  );
-  const year = parts.get("year");
-  const month = parts.get("month");
-  const day = parts.get("day");
-  const hour = parts.get("hour");
-  const minute = parts.get("minute");
-  if (year == null || month == null || day == null || hour == null || minute == null) {
-    throw new Error("日時の表示値を取得できません。");
-  }
-  return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
 </script>

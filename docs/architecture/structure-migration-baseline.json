@@ -3694,16 +3694,6 @@
     },
     {
       "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/ToastHost.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/useToast.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
       "rule": "old-path",
       "symbol": "src/renderer/src/App.vue"
     },
@@ -3814,11 +3804,6 @@
     },
     {
       "path": "src/renderer/src/task-hub.ts",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/mocks/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/task-hub.ts",
       "rule": "old-import",
       "symbol": "src/renderer/src/mocks/task-hub.ts"
     },
@@ -3831,31 +3816,6 @@
       "path": "src/renderer/src/task-hub.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/ToastHost.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/useToast.ts"
-    },
-    {
-      "path": "src/renderer/src/ToastHost.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/ToastHost.vue"
-    },
-    {
-      "path": "src/renderer/src/useToast.ts",
-      "rule": "module-mutable",
-      "symbol": "messages"
-    },
-    {
-      "path": "src/renderer/src/useToast.ts",
-      "rule": "module-mutable",
-      "symbol": "nextMessageId"
-    },
-    {
-      "path": "src/renderer/src/useToast.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/useToast.ts"
     },
     {
       "path": "src/shared/ai-workflow/index.ts",

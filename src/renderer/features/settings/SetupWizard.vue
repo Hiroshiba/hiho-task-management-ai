@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { dateTimeSchema } from "../../../shared/ipc-contracts/common";
 import { settingsContracts } from "../../../shared/ipc-contracts/settings";
 import type {
   SetupExternalToolChoiceInput,
@@ -8,6 +7,7 @@ import type {
   SetupState,
 } from "../../../shared/ipc-contracts/setup-schemas";
 import { vaultMappingSchema } from "../../../shared/ipc-contracts/vault-values";
+import { jstDateTimeLabel } from "../../shared/format/date-time";
 import type { SetupAction } from "./setup-action";
 
 type SetupProgressStageNumber = 1 | 2 | 3 | 4;
@@ -207,19 +207,6 @@ function stateDescription(state: SetupState | undefined): string {
     return `${externalToolUnavailableReasonLabel(state.reason_code)} 外部情報取得を無効にしたまま初回設定を続けられます。`;
   }
   return "現在の手順を完了して次へ進んでください。";
-}
-
-function jstDateTimeLabel(value: string): string {
-  const validated = dateTimeSchema.parse(value);
-  const timestamp = Date.parse(validated);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("Asana認証期限を表示できません。");
-  }
-  return new Intl.DateTimeFormat("ja-JP", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Tokyo",
-  }).format(new Date(timestamp));
 }
 
 function codexReasonLabel(reason: "not_installed" | "incompatible" | "permission_denied" | "startup_failed" | "disabled"): string {

@@ -36,7 +36,7 @@ function isFinalPath(path) {
   if (path === "src/preload/bridge.ts") return true;
   if (path.startsWith("src/renderer/app/")) return true;
   if (/^src\/renderer\/features\/(tasks|proposals|settings|system|github-integration|obsidian-integration)\//.test(path)) return true;
-  if (/^src\/renderer\/shared\/(api|components|logging|mock)\//.test(path)) return true;
+  if (/^src\/renderer\/shared\/(api|components|format|logging|mock)\//.test(path)) return true;
   if (path.startsWith("src/shared/ipc-contracts/")) return true;
   return false;
 }
@@ -149,7 +149,9 @@ function isAllowedInternalImport(fromOwner, targetOwner, targetPath) {
       || targetOwner === "shared/ipc-contracts"
       || target === "renderer-feature" && isPublicEntry(targetOwner, targetPath);
   }
-  if (from === "renderer-shared") return targetOwner === "shared/ipc-contracts";
+  if (from === "renderer-shared") {
+    return target === "renderer-shared" || targetOwner === "shared/ipc-contracts";
+  }
   if (from === "shared/ipc-contracts") return targetOwner === "shared/ipc-contracts";
   throw new Error(`import規則のないownerです: ${fromOwner}`);
 }

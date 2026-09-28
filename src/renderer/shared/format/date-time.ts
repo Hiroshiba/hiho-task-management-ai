@@ -1,20 +1,20 @@
 import { dateSchema, dateTimeSchema } from "../../../shared/ipc-contracts/common";
 
+type DatetimeLocalParseResult =
+  | { readonly kind: "valid"; readonly value: string }
+  | { readonly kind: "invalid"; readonly reason: "format" | "date" | "time" | "timestamp" };
+
 function assertNonNullable<T>(value: T | undefined, message: string): asserts value is T {
   if (value == null) {
     throw new Error(message);
   }
 }
 
-type DatetimeLocalParseResult =
-  | { readonly kind: "valid"; readonly value: string }
-  | { readonly kind: "invalid" };
-
-/** 日時入力を検証します。 */
-export function parseDatetimeLocal(value: string): DatetimeLocalParseResult {
+/** 日本時間の日時入力をISO形式へ検証します。 */
+export function parseJstDatetimeLocal(value: string): DatetimeLocalParseResult {
   const matched = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/u.exec(value);
   if (matched == null) {
-    return { kind: "invalid" };
+    return { kind: "invalid", reason: "format" };
   }
   const datePart = matched[1];
   const hourPart = matched[2];
@@ -22,38 +22,33 @@ export function parseDatetimeLocal(value: string): DatetimeLocalParseResult {
   assertNonNullable(datePart, "日時入力の正規表現結果に日付がありません。");
   assertNonNullable(hourPart, "日時入力の正規表現結果に時刻がありません。");
   assertNonNullable(minutePart, "日時入力の正規表現結果に分がありません。");
+  if (!dateSchema.safeParse(datePart).success) {
+    return { kind: "invalid", reason: "date" };
+  }
   const hour = Number(hourPart);
   const minute = Number(minutePart);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return { kind: "invalid" };
-  }
-  if (!dateSchema.safeParse(datePart).success) {
-    return { kind: "invalid" };
+    return { kind: "invalid", reason: "time" };
   }
   const timestamp = Date.parse(`${datePart}T${hourPart}:${minutePart}:00+09:00`);
   if (!Number.isFinite(timestamp)) {
-    return { kind: "invalid" };
+    return { kind: "invalid", reason: "timestamp" };
   }
-  const parsed = dateTimeSchema.safeParse(new Date(timestamp).toISOString());
-  if (!parsed.success) {
-    return { kind: "invalid" };
-  }
-  return { kind: "valid", value: parsed.data };
+  return { kind: "valid", value: dateTimeSchema.parse(new Date(timestamp).toISOString()) };
 }
 
-/** 日時入力をISO形式へ変換します。 */
-export function datetimeLocalToIso(value: string): string {
-  const parsed = parseDatetimeLocal(value);
+/** 日本時間の日時入力をISO形式へ変換します。 */
+export function jstDatetimeLocalToIso(value: string): string {
+  const parsed = parseJstDatetimeLocal(value);
   if (parsed.kind === "invalid") {
     throw new Error("日時入力を変換できません。");
   }
   return parsed.value;
 }
 
-/** 日時をJSTの入力形式へ変換します。 */
-export function isoToDatetimeLocal(value: string): string {
-  const validated = dateTimeSchema.parse(value);
-  const timestamp = Date.parse(validated);
+/** ISO形式の日時を日本時間の入力形式へ変換します。 */
+export function isoToJstDatetimeLocal(value: string): string {
+  const timestamp = Date.parse(dateTimeSchema.parse(value));
   if (!Number.isFinite(timestamp)) {
     throw new Error("日時を表示用へ変換できません。");
   }
@@ -75,18 +70,19 @@ export function isoToDatetimeLocal(value: string): string {
   const day = parts.get("day");
   const hour = parts.get("hour");
   const minute = parts.get("minute");
-  if (year == null || month == null || day == null || hour == null || minute == null) {
-    throw new Error("JSTの表示日時を取得できません。");
-  }
+  assertNonNullable(year, "日本時間の表示日時に年がありません。");
+  assertNonNullable(month, "日本時間の表示日時に月がありません。");
+  assertNonNullable(day, "日本時間の表示日時に日がありません。");
+  assertNonNullable(hour, "日本時間の表示日時に時がありません。");
+  assertNonNullable(minute, "日本時間の表示日時に分がありません。");
   return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
-/** 日時をJSTで表示します。 */
+/** ISO形式の日時を日本時間で表示します。 */
 export function jstDateTimeLabel(value: string): string {
-  const validated = dateTimeSchema.parse(value);
-  const timestamp = Date.parse(validated);
+  const timestamp = Date.parse(dateTimeSchema.parse(value));
   if (!Number.isFinite(timestamp)) {
-    throw new Error("順位計算日時を表示できません。");
+    throw new Error("日時を表示できません。");
   }
   return new Intl.DateTimeFormat("ja-JP", {
     dateStyle: "medium",

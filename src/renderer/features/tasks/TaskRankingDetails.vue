@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TaskDetail } from "./use-task-read";
 import { blockLabel } from "./task-presentation";
-import { jstDateTimeLabel } from "./task-detail-date";
+import { jstDateTimeLabel } from "../../shared/format/date-time";
 
 const props = defineProps<{ task: TaskDetail }>();
 type UnavailableReasonCode = Extract<TaskDetail["ranking"], { kind: "unavailable" }>["reason_codes"][number];

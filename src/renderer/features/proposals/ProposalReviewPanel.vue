@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { proposalSelectionSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
+import { jstDateTimeLabel } from "../../shared/format/date-time";
 import type { ProposalEditInput, ProposalOperation, ProposalSelectionInput, ExternalEditResult } from "./proposal-presentation";
 import {
   CheckboxIndicator,
@@ -329,16 +330,7 @@ function notesValueLabel(value: string): string {
 }
 
 function dueAtLabel(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("期限日時を表示できません。");
-  }
-  const formatted = new Intl.DateTimeFormat("ja-JP", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Tokyo",
-  }).format(new Date(timestamp));
-  return `日時 ${formatted} JST`;
+  return `日時 ${jstDateTimeLabel(value)} JST`;
 }
 
 function dueValueLabel(value: ProposalDueValue): string {
