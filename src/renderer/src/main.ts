@@ -11,7 +11,7 @@ import { diagnosticsApiInjectionKey, githubIntegrationApiInjectionKey, obsidianI
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { createMockDiagnosticsApi } from "../shared/mock/diagnostics";
 import { parseMockSelection } from "../shared/mock/mock-selection";
-import App from "./App.vue";
+import App from "../app/App.vue";
 import "./styles.css";
 import { createTaskHubApi, taskHubApiInjectionKey } from "./task-hub";
 

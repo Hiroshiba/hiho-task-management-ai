@@ -31,7 +31,7 @@ type SessionRecord = {
   readonly conversation_history: readonly AiConversationEntry[];
   readonly feedback?: Feedback | undefined;
 };
-type CodexState =
+export type ProposalCodexState =
   | { readonly kind: "connecting" }
   | { readonly kind: "ready" }
   | { readonly kind: "authentication_required" }
@@ -67,7 +67,7 @@ function sessionStatus(session: ReturnType<typeof useProposals>["sessions"]["val
   }
 }
 
-function codexUnavailableReason(reason: Extract<CodexState, { kind: "unavailable" }>["reason_code"]): string {
+function codexUnavailableReason(reason: Extract<ProposalCodexState, { kind: "unavailable" }>["reason_code"]): string {
   switch (reason) {
     case "not_installed": return "Codex CLIが見つかりません。";
     case "incompatible": return "対応していないCodex CLIです。";
@@ -92,13 +92,13 @@ export function useProposalWorkspace(options: Options) {
   const externalBusy = ref(false);
   const externalEditResult = ref<ExternalEditResult>();
   const externalApprovalResults = ref<Readonly<Record<string, ExternalApprovalResult>>>({});
-  const codexHint = ref<CodexState>({ kind: "connecting" });
+  const codexHint = ref<ProposalCodexState>({ kind: "connecting" });
   const syncing = ref(false);
   let disposed = false;
 
   onBeforeUnmount(() => { disposed = true; });
 
-  const codexState = computed<CodexState>(() => {
+  const codexState = computed<ProposalCodexState>(() => {
     const status = proposals.aiStatus.value;
     if (status == null) {
       if (proposals.aiStatusFailure.value != null) return { kind: "unavailable", reason_code: "startup_failed" };
@@ -215,7 +215,7 @@ export function useProposalWorkspace(options: Options) {
     document.querySelector<HTMLElement>("[data-ai-assistant-trigger]")?.focus();
   }
 
-  function setCodexHint(value: CodexState): void {
+  function setCodexHint(value: ProposalCodexState): void {
     codexHint.value = value;
   }
 

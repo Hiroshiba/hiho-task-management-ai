@@ -3688,36 +3688,6 @@
       "symbol": "src/shared/task-hub-api.ts"
     },
     {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/AppHeader.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/App.vue"
-    },
-    {
-      "path": "src/renderer/src/AppHeader.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/AppHeader.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/renderer/src/AppHeader.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/AppHeader.vue"
-    },
-    {
-      "path": "src/renderer/src/main.ts",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/App.vue"
-    },
-    {
       "path": "src/renderer/src/main.ts",
       "rule": "old-import",
       "symbol": "src/renderer/src/styles.css"
@@ -3781,21 +3751,6 @@
       "path": "src/renderer/src/mocks/task-hub.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/mocks/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/state.ts"
     },
     {
       "path": "src/renderer/src/styles.css",
