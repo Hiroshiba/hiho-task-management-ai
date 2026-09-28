@@ -15,6 +15,7 @@ export { ipcFailureSchema, subscriptionRequestSchema } from "./common";
 export { executionDtoSchema, type ExecutionDto } from "./execution";
 export { githubIntegrationStatusSchema } from "./github-integration";
 export { proposalOperationKindSchema } from "./proposal-values";
+export { setupStateSchema } from "./settings";
 
 export const finalIpcChannels = {
   system: systemChannels,

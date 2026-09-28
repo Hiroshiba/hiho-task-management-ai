@@ -1,6 +1,7 @@
 export { PersistenceRuntime } from "./persistence-runtime";
 export type { PersistentTextFile } from "./persistent-text-file";
 export { SecretStorage } from "./secret-storage";
+export { SetupCheckpointStore } from "./setup-checkpoint-store";
 export {
   WindowStateStore,
   windowStateSchema,

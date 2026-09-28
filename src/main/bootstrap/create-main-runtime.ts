@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
+import { setupStateSchema } from "../../shared/ipc-contracts";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
 import { DiagnosticLogService } from "../application/common/diagnostic-log-service";
@@ -27,6 +28,7 @@ import {
   SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
   SecretStorage,
+  SetupCheckpointStore,
   WindowStateStore,
   type LegacyMigrationSummary,
 } from "../infrastructure/persistence";
@@ -167,10 +169,13 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
     );
     const files = {
-      checkpoint: openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
       openExternalAgentConfigFile: (filePath: string) =>
         openedPersistence.openTextFile(filePath, "外部連携設定"),
     };
+    const checkpoint = new SetupCheckpointStore(
+      openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
+      (value) => setupStateSchema.parse(value),
+    );
     const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
     const historyRepository = new SqliteProposalApplicationHistoryRepository(openedPersistence, engineReporter);
     recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPaths);
@@ -189,6 +194,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       vaultMappingRepository: obsidian.repository,
       obsidian: obsidian.workflow,
       secretStorage,
+      checkpoint,
     });
     obsidian.bindHost(legacy.getObsidianCompositionDependencies());
     const diagnosticDependencies = legacy.getDiagnosticCompositionDependencies();

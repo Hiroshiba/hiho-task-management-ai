@@ -215,9 +215,6 @@ import {
   type ExternalAgentBridgeOptions,
 } from "../external-agent/transport";
 import {
-  SetupCheckpointStore,
-} from "./checkpoint";
-import {
   applicationOptionsSchemaExport,
   applicationStateSchemaExport,
   type ApplicationOptions,
@@ -290,9 +287,9 @@ import {
   SqliteSettingsRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteVaultMappingRepository,
+  SetupCheckpointStore,
   TaskReadPersistenceRepository,
   type PersistenceRuntime,
-  type PersistentTextFile,
   type TaskReadPersistenceContracts,
 } from "../infrastructure/persistence";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
@@ -912,7 +909,6 @@ function getHistoricalProposalOperationStatus(
 }
 
 type ApplicationFileStores = {
-  readonly checkpoint: PersistentTextFile;
   readonly openExternalAgentConfigFile: ExternalAgentBridgeOptions["openConfigFile"];
 };
 
@@ -1105,6 +1101,7 @@ export class TaskHubApplication {
       readonly vaultMappingRepository: SqliteVaultMappingRepository;
       readonly obsidian: ObsidianIntegrationWorkflow;
       readonly secretStorage: SecretStoragePort;
+      readonly checkpoint: SetupCheckpointStore;
     },
   ) {
     applicationOptionsSchemaExport.parse(options);
@@ -1139,7 +1136,7 @@ export class TaskHubApplication {
       (value) => deviceSettingsSchema.parse(value),
     );
     this.secretStorage = bindings.secretStorage;
-    this.checkpoint = new SetupCheckpointStore(files.checkpoint);
+    this.checkpoint = bindings.checkpoint;
     this.scheduler = new AsanaRequestScheduler();
     this.tokenProvider = createMutableTokenProvider();
     this.transport = new AsanaTransport(this.scheduler, this.tokenProvider);

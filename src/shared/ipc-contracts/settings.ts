@@ -64,6 +64,8 @@ const {
   vaultMappingSchema,
 });
 
+export { setupStateSchema };
+
 const authIdSchema = authorizationCompleteSchema.shape.authorization_id;
 
 const asanaAuthenticationStateSchema = z.discriminatedUnion("kind", [

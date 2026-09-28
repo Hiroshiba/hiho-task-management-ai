@@ -1,18 +1,13 @@
 import { z } from "zod";
-import { setupStateSchema, type SetupState } from "../../shared/setup";
-import type { PersistentTextFile } from "../infrastructure/persistence";
+import type { SetupState } from "../../domain/setup-state";
+import type { PersistentTextFile } from "./persistent-text-file";
 
 const checkpointVersion = 2;
 const legacyCheckpointVersion = 1;
-const checkpointStateSchema = setupStateSchema.refine(
-  (state) => state.kind !== "asana_authorization_pending",
-  "OAuth認可待機中の初回設定状態は保存できません。",
-);
-
 const checkpointSchema = z
   .object({
     version: z.literal(checkpointVersion),
-    state: checkpointStateSchema,
+    state: z.unknown(),
   })
   .strict();
 
@@ -133,7 +128,10 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
-function migrateLegacyState(state: LegacySetupState): SetupState {
+function migrateLegacyState(
+  state: LegacySetupState,
+  parseState: (value: unknown) => SetupState,
+): SetupState {
   if (state.kind === "asana_authorization_pending") {
     throw new Error("OAuth認可待機中の旧初回設定状態は移行できません。");
   }
@@ -144,18 +142,30 @@ function migrateLegacyState(state: LegacySetupState): SetupState {
     delete contextWithoutRedirectUri.redirect_uri;
     stateWithoutRedirectUri.context = contextWithoutRedirectUri;
   }
-  return checkpointStateSchema.parse(stateWithoutRedirectUri);
-}
-
-function serializeCheckpoint(state: SetupState): string {
-  return JSON.stringify(
-    checkpointSchema.parse({ version: checkpointVersion, state }),
-  );
+  return parseState(stateWithoutRedirectUri);
 }
 
 /** 初回設定状態を秘密なしのJSONとして原子的に保存します。 */
 export class SetupCheckpointStore {
-  public constructor(private readonly file: PersistentTextFile) {}
+  public constructor(
+    private readonly file: PersistentTextFile,
+    private readonly parseState: (value: unknown) => SetupState,
+  ) {}
+
+  private parsePersistableState(value: unknown): SetupState {
+    const state = this.parseState(value);
+    if (state.kind === "asana_authorization_pending") {
+      throw new Error("OAuth認可待機中の初回設定状態は保存できません。");
+    }
+    return state;
+  }
+
+  private serializeCheckpoint(state: SetupState): string {
+    return JSON.stringify(checkpointSchema.parse({
+      version: checkpointVersion,
+      state: this.parsePersistableState(state),
+    }));
+  }
 
   /** 保存済み初回設定状態を検証して読み出します。 */
   public load(): SetupState | undefined {
@@ -177,7 +187,7 @@ export class SetupCheckpointStore {
     }
     if (versionEnvelope.version === checkpointVersion) {
       try {
-        return checkpointSchema.parse(parsed).state;
+        return this.parsePersistableState(checkpointSchema.parse(parsed).state);
       } catch (error: unknown) {
         throw new Error("初回設定チェックポイントの内容が不正です。", { cause: error });
       }
@@ -193,13 +203,13 @@ export class SetupCheckpointStore {
     }
     let migratedState: SetupState;
     try {
-      migratedState = migrateLegacyState(legacyState);
+      migratedState = this.parsePersistableState(migrateLegacyState(legacyState, this.parseState));
     } catch (error: unknown) {
       throw new Error("旧初回設定チェックポイントを移行できません。", { cause: error });
     }
     try {
       this.file.replaceAtomically(
-        serializeCheckpoint(migratedState),
+        this.serializeCheckpoint(migratedState),
         "初回設定チェックポイントの移行",
       );
     } catch (error: unknown) {
@@ -212,7 +222,6 @@ export class SetupCheckpointStore {
 
   /** 初回設定状態を一時ファイルから原子的に保存します。 */
   public save(state: SetupState): void {
-    const validatedState = checkpointStateSchema.parse(state);
-    this.file.replaceAtomically(serializeCheckpoint(validatedState), "初回設定チェックポイント");
+    this.file.replaceAtomically(this.serializeCheckpoint(state), "初回設定チェックポイント");
   }
 }
