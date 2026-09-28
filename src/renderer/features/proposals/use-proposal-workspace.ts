@@ -1,6 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch, type Ref } from "vue";
 import { gidSchema } from "../../../shared/ipc-contracts/common";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { proposalFromState } from "./proposal-state";
 import { useProposals } from "./use-proposals";
 import type AiSessionDialog from "./AiSessionDialog.vue";
@@ -46,14 +47,19 @@ type Options = {
 type DialogApi = { readonly focusSessionInput: (sessionId: string) => "focused" | "unavailable" };
 type TurnInput = Pick<Parameters<ProposalsApi["startTurn"]>[0], "message">;
 
-function sessionStatus(session: ReturnType<typeof useProposals>["sessions"]["value"][number]): AiSessionStatus {
+function sessionStatus(session: ReturnType<typeof useProposals>["sessions"]["value"][number], execution: ExecutionDto | undefined): AiSessionStatus {
   if (session.activity !== "idle" || session.state.kind === "turning") return "running";
   switch (session.state.kind) {
     case "proposal": return "waiting_approval";
     case "questions": return session.state.questions.length > 0 ? "waiting_answer"
       : session.state.pending_proposal == null ? "completed" : "waiting_approval";
     case "failed": return "error";
-    case "approved": return "completed";
+    case "approved": {
+      if (session.state.result.kind === "not_started") return "completed";
+      const state = execution?.state ?? session.state.result.execution.state;
+      if (state === "planned" || state === "running") return "running";
+      return state === "succeeded" ? "completed" : "error";
+    }
     case "idle": return session.state.pending_proposal == null ? "idle" : "waiting_approval";
   }
 }
@@ -107,6 +113,8 @@ export function useProposalWorkspace(options: Options) {
     if (proposals.externalStateFailure.value != null) return { kind: "error", message: proposals.externalStateFailure.value.message };
     return { kind: "loading" };
   });
+  const executions = computed(() => Object.values(proposals.executions.value).sort((left, right) =>
+    right.created_at.localeCompare(left.created_at) || right.execution_id.localeCompare(left.execution_id)));
   const canStartNewSession = computed(() => options.canWrite.value && codexState.value.kind === "ready");
   const sessionViews = computed<readonly AiSessionView[]>(() => proposals.sessions.value.map((session) => {
     const record = records.value.find((candidate) => candidate.session_id === session.session_id);
@@ -114,7 +122,8 @@ export function useProposalWorkspace(options: Options) {
     return {
       ...record,
       state: session.state,
-      status: sessionStatus(session),
+      status: sessionStatus(session, session.state.kind === "approved" && session.state.result.kind === "execution"
+        ? proposals.latestExecutionFor(session.state.result.execution.execution_id) : undefined),
       operation: session.activity,
       can_write: options.canWrite.value,
       can_send_ai: canStartNewSession.value && session.activity === "idle",
@@ -372,6 +381,9 @@ export function useProposalWorkspace(options: Options) {
   }
 
   async function approve(sessionId: string, input: ProposalSelectionInput): Promise<void> {
+    const session = proposals.sessions.value.find((candidate) => candidate.session_id === sessionId);
+    if (session == null) throw new Error("AIセッションが見つかりません。");
+    if (session.activity !== "idle") return;
     clearSessionFeedback(sessionId);
     if (!options.canWrite.value) {
       setSessionFeedback(sessionId, "warning", "同期が完了すると変更案を承認できます。");
@@ -511,7 +523,7 @@ export function useProposalWorkspace(options: Options) {
         return;
       }
       externalApprovalResults.value = { ...externalApprovalResults.value,
-        [input.proposal_id]: { revision: input.revision, result: result.value } };
+        [input.proposal_id]: result.value };
       dialogFeedback.value = undefined;
       options.onToast("success", "外部提案の承認を受け付けました。");
     } catch (error) {
@@ -520,6 +532,21 @@ export function useProposalWorkspace(options: Options) {
     } finally {
       externalBusy.value = false;
     }
+  }
+
+  async function refreshExecution(executionId: string): Promise<void> {
+    if (proposals.executionRequestIds.value.includes(executionId)) return;
+    await proposals.getExecution(executionId);
+  }
+
+  async function refreshExecutions(): Promise<void> {
+    if (proposals.executionListBusy.value) return;
+    await proposals.listExecutions();
+  }
+
+  async function retryExecution(executionId: string): Promise<void> {
+    if (proposals.retryingExecutionIds.value.includes(executionId)) return;
+    await proposals.retryExecution(executionId);
   }
 
   async function rejectExternal(input: ExternalRejectInput): Promise<void> {
@@ -549,6 +576,13 @@ export function useProposalWorkspace(options: Options) {
     externalBusy,
     externalEditResult,
     externalApprovalResults,
+    executions,
+    executionFailures: proposals.executionFailures,
+    executionListBusy: proposals.executionListBusy,
+    executionListFailure: proposals.executionListFailure,
+    executionRequestIds: proposals.executionRequestIds,
+    retryingExecutionIds: proposals.retryingExecutionIds,
+    latestExecutionFor: proposals.latestExecutionFor,
     dialogVisible,
     dialogComponent,
     dialogRef,
@@ -579,6 +613,9 @@ export function useProposalWorkspace(options: Options) {
     editExternal,
     selectExternal,
     approveExternal,
+    refreshExecution,
+    refreshExecutions,
+    retryExecution,
     rejectExternal,
   };
 }

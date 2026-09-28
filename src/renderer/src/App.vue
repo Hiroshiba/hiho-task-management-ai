@@ -267,6 +267,13 @@ const {
   externalBusy: proposalExternalBusy,
   externalEditResult: proposalExternalEditResult,
   externalApprovalResults: proposalExternalApprovalResults,
+  executions: proposalExecutions,
+  executionFailures: proposalExecutionFailures,
+  executionListBusy: proposalExecutionListBusy,
+  executionListFailure: proposalExecutionListFailure,
+  executionRequestIds: proposalExecutionRequestIds,
+  retryingExecutionIds: proposalRetryingExecutionIds,
+  latestExecutionFor: proposalExecutionFor,
   dialogVisible: proposalDialogVisible,
   dialogComponent: proposalDialogComponent,
   dialogRef: proposalDialogRef,
@@ -294,6 +301,9 @@ const {
   selectExternal: selectExternalProposal,
   approveExternal: approveExternalProposal,
   rejectExternal: rejectExternalProposal,
+  refreshExecution: refreshProposalExecution,
+  refreshExecutions: refreshProposalExecutions,
+  retryExecution: retryProposalExecution,
 } = proposalWorkspace;
 const canReadLocal = computed(() => setupState.value?.kind === "ready");
 const canReanalyzeObsidianNotes = computed(() => {
@@ -1384,6 +1394,13 @@ onBeforeUnmount(() => {
       :external-agent-busy="proposalExternalBusy"
       :external-agent-edit-result="proposalExternalEditResult"
       :external-approval-results="proposalExternalApprovalResults"
+      :executions="proposalExecutions"
+      :execution-for="proposalExecutionFor"
+      :execution-failures="proposalExecutionFailures"
+      :execution-list-busy="proposalExecutionListBusy"
+      :execution-list-failure="proposalExecutionListFailure"
+      :execution-request-ids="proposalExecutionRequestIds"
+      :retrying-execution-ids="proposalRetryingExecutionIds"
       :external-review-request-id="proposalExternalState.kind === 'ready'
         ? proposalExternalState.value.review_target?.request_id
         : undefined"
@@ -1401,6 +1418,9 @@ onBeforeUnmount(() => {
       @external-edit="editExternalProposal"
       @external-select="selectExternalProposal"
       @external-approve="approveExternalProposal"
+      @refresh-executions="refreshProposalExecutions"
+      @refresh-execution="refreshProposalExecution"
+      @retry-execution="retryProposalExecution"
       @external-reject="rejectExternalProposal"
       @external-select-task="selectProposalTask"
     />

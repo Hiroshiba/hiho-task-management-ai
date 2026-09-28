@@ -15,7 +15,7 @@ export type ExternalState = Extract<Awaited<ReturnType<ProposalsApi["getExternal
 export type ExternalProposal = ExternalState["proposals"][number];
 export type ExternalProposalStatus = ExternalProposal["state"];
 export type ApprovalResult = Extract<Awaited<ReturnType<ProposalsApi["approve"]>>, { readonly kind: "ok" }>["value"];
-export type ExternalApprovalResult = { readonly revision: number; readonly result: ApprovalResult };
+export type ExternalApprovalResult = ApprovalResult;
 export type ExternalProposalViewState =
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly value: ExternalState }

@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, onUnmounted, ref } from "vue";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { proposalViewSchema } from "../../../shared/ipc-contracts/proposal-values";
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
 import { useProposalsApi } from "../../shared/api/feature-apis";
@@ -13,17 +14,26 @@ export function useProposals() {
   const sessions = ref<readonly AiProposalSession[]>([]);
   const externalState = ref<ExternalState>();
   const externalStateFailure = ref<IpcFailure>();
+  const executions = ref<Readonly<Record<string, ExecutionDto>>>({});
+  const executionListFailure = ref<IpcFailure>();
+  const executionFailures = ref<Readonly<Record<string, IpcFailure>>>({});
+  const executionListBusy = ref(false);
+  const executionRequestIds = ref<readonly string[]>([]);
+  const retryingExecutionIds = ref<readonly string[]>([]);
   const selectedExternalProposalId = ref<string>();
   const selectedExternalProposal = computed(() => externalState.value?.proposals.find((proposal) =>
     proposal.proposal_id === selectedExternalProposalId.value));
   let removeAiStatus: (() => void) | undefined;
   let removeAiDelta: (() => void) | undefined;
   let removeExternalState: (() => void) | undefined;
+  let removeExecution: (() => void) | undefined;
   let initialized = false;
   let disposed = false;
   let lifecycleGeneration = 0;
   let aiStatusGeneration = 0;
   let externalStateGeneration = 0;
+  let executionGeneration = 0;
+  const receivedExecutionGenerations = new Map<string, number>();
 
   onBeforeUnmount(() => {
     disposed = true;
@@ -33,6 +43,7 @@ export function useProposals() {
     removeAiStatus?.();
     removeAiDelta?.();
     removeExternalState?.();
+    removeExecution?.();
   });
 
   function sessionFor(sessionId: string): AiProposalSession | undefined {
@@ -82,6 +93,93 @@ export function useProposals() {
     }
   }
 
+  function receiveExecution(value: ExecutionDto, requestGeneration?: number): void {
+    if (disposed) return;
+    const execution = proposalsContracts.execution.event.shape.value.parse(value);
+    if (requestGeneration != null && (receivedExecutionGenerations.get(execution.execution_id) ?? 0) > requestGeneration) return;
+    executionGeneration += 1;
+    receivedExecutionGenerations.set(execution.execution_id, executionGeneration);
+    executions.value = { ...executions.value, [execution.execution_id]: execution };
+    const failures = { ...executionFailures.value };
+    delete failures[execution.execution_id];
+    executionFailures.value = failures;
+  }
+
+  function latestExecutionFor(executionId: string): ExecutionDto | undefined {
+    let execution = executions.value[executionId];
+    const visited = new Set<string>();
+    while (execution != null) {
+      const currentExecutionId = execution.execution_id;
+      if (visited.has(currentExecutionId)) throw new Error("実行履歴の再試行関係が循環しています。");
+      visited.add(currentExecutionId);
+      const successors = Object.values(executions.value).filter((candidate) =>
+        candidate.retry_of_execution_id === currentExecutionId);
+      if (successors.length > 1) throw new Error("実行履歴の再試行先が重複しています。");
+      const successor = successors[0];
+      if (successor == null) return execution;
+      execution = successor;
+    }
+    return undefined;
+  }
+
+  async function listExecutions(): ReturnType<ProposalsApi["listExecutions"]> {
+    if (executionListBusy.value) throw new Error("実行履歴の一覧を読み込み中です。");
+    executionListBusy.value = true;
+    executionListFailure.value = undefined;
+    const generation = executionGeneration;
+    let cursor: Parameters<ProposalsApi["listExecutions"]>[0]["cursor"];
+    try {
+      while (true) {
+        const request = proposalsContracts.listExecutions.request.parse({ limit: 100, ...(cursor == null ? {} : { cursor }) });
+        const result = proposalsContracts.listExecutions.response.parse(await api.listExecutions(request));
+        if (result.kind === "error") {
+          if (!disposed) executionListFailure.value = result;
+          return result;
+        }
+        if (disposed) return result;
+        for (const execution of result.value.executions) receiveExecution(execution, generation);
+        cursor = result.value.next_cursor;
+        if (cursor == null) return result;
+      }
+    } finally {
+      executionListBusy.value = false;
+    }
+  }
+
+  async function getExecution(executionId: string): ReturnType<ProposalsApi["getExecution"]> {
+    const request = proposalsContracts.getExecution.request.parse({ execution_id: executionId });
+    if (executionRequestIds.value.includes(request.execution_id)) throw new Error("実行結果を読み込み中です。");
+    executionRequestIds.value = [...executionRequestIds.value, request.execution_id];
+    const generation = executionGeneration;
+    try {
+      const result = proposalsContracts.getExecution.response.parse(await api.getExecution(request.execution_id));
+      if (disposed) return result;
+      if (result.kind === "ok") receiveExecution(result.value, generation);
+      else if ((receivedExecutionGenerations.get(request.execution_id) ?? 0) <= generation) {
+        executionFailures.value = { ...executionFailures.value, [request.execution_id]: result };
+      }
+      return result;
+    } finally {
+      executionRequestIds.value = executionRequestIds.value.filter((id) => id !== request.execution_id);
+    }
+  }
+
+  async function retryExecution(executionId: string): ReturnType<ProposalsApi["retryExecution"]> {
+    const request = proposalsContracts.retryExecution.request.parse({ retry_of_execution_id: executionId });
+    if (retryingExecutionIds.value.includes(request.retry_of_execution_id)) throw new Error("実行結果を再試行中です。");
+    retryingExecutionIds.value = [...retryingExecutionIds.value, request.retry_of_execution_id];
+    const generation = executionGeneration;
+    try {
+      const result = proposalsContracts.retryExecution.response.parse(await api.retryExecution(request.retry_of_execution_id));
+      if (disposed) return result;
+      if (result.kind === "ok") receiveExecution(result.value, generation);
+      else executionFailures.value = { ...executionFailures.value, [request.retry_of_execution_id]: result };
+      return result;
+    } finally {
+      retryingExecutionIds.value = retryingExecutionIds.value.filter((id) => id !== request.retry_of_execution_id);
+    }
+  }
+
   function handleDelta(value: AiDelta): void {
     if (disposed) return;
     const delta = proposalsContracts.aiDelta.event.shape.value.parse(value);
@@ -113,6 +211,7 @@ export function useProposals() {
       aiStatusFailure.value = undefined;
     });
     removeAiDelta = api.onAiDelta(handleDelta);
+    removeExecution = api.onExecution((value) => receiveExecution(value));
     removeExternalState = api.onExternalState((value) => {
       if (disposed) return;
       externalStateGeneration += 1;
@@ -124,6 +223,7 @@ export function useProposals() {
     const [statusResult, externalResult] = await Promise.all([
       api.getAiStatus(),
       api.getExternalState(),
+      listExecutions(),
     ]);
     if (disposed || generation !== lifecycleGeneration) return;
     const status = proposalsContracts.getAiStatus.response.parse(statusResult);
@@ -280,9 +380,11 @@ export function useProposals() {
   async function approve(input: Parameters<ProposalsApi["approve"]>[0]): ReturnType<ProposalsApi["approve"]> {
     const request = proposalsContracts.approve.request.parse(input);
     const generation = beginSessionRequest(request.session_id, "approve");
+    const executionRequestGeneration = executionGeneration;
     try {
       const result = proposalsContracts.approve.response.parse(await api.approve(request));
       if (isCurrentSessionRequest(request.session_id, generation) && result.kind === "ok") {
+        if (result.value.kind === "execution") receiveExecution(result.value.execution, executionRequestGeneration);
         replaceSession(request.session_id, (session) => ({ ...session, state: { kind: "approved", result: result.value } }));
       }
       return result;
@@ -338,7 +440,10 @@ export function useProposals() {
 
   async function approveExternal(input: Parameters<ProposalsApi["approveExternal"]>[0]): ReturnType<ProposalsApi["approveExternal"]> {
     const request = proposalsContracts.approveExternal.request.parse(input);
-    return proposalsContracts.approveExternal.response.parse(await api.approveExternal(request));
+    const generation = executionGeneration;
+    const result = proposalsContracts.approveExternal.response.parse(await api.approveExternal(request));
+    if (!disposed && result.kind === "ok" && result.value.kind === "execution") receiveExecution(result.value.execution, generation);
+    return result;
   }
 
   async function rejectExternal(input: Parameters<ProposalsApi["rejectExternal"]>[0]): ReturnType<ProposalsApi["rejectExternal"]> {
@@ -355,6 +460,12 @@ export function useProposals() {
     sessions,
     externalState,
     externalStateFailure,
+    executions,
+    executionListFailure,
+    executionFailures,
+    executionListBusy,
+    executionRequestIds,
+    retryingExecutionIds,
     selectedExternalProposalId,
     selectedExternalProposal,
     initialize,
@@ -372,6 +483,10 @@ export function useProposals() {
     editExternalOperation,
     selectExternal,
     approveExternal,
+    listExecutions,
+    getExecution,
+    retryExecution,
+    latestExecutionFor,
     rejectExternal,
   };
 }

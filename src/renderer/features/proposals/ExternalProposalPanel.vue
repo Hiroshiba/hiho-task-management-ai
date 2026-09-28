@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type {
   ExternalApprovalResult,
   ExternalEditInput,
@@ -14,7 +15,9 @@ import type {
   ProposalSelectionInput,
 } from "./proposal-presentation";
 import ApprovalResultPanel from "./ApprovalResultPanel.vue";
+import ExecutionResultPanel from "./ExecutionResultPanel.vue";
 import ProposalReviewPanel from "./ProposalReviewPanel.vue";
+import type { IpcFailure } from "./proposal-state";
 
 type TaskTitleReference = {
   readonly gid: string;
@@ -27,6 +30,10 @@ const props = defineProps<{
   tasks: readonly TaskTitleReference[];
   editResult?: ExternalEditResult | undefined;
   approvalResults: Readonly<Record<string, ExternalApprovalResult>>;
+  executionFor: (executionId: string) => ExecutionDto | undefined;
+  executionFailures: Readonly<Record<string, IpcFailure>>;
+  executionRequestIds: readonly string[];
+  retryingExecutionIds: readonly string[];
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +42,8 @@ const emit = defineEmits<{
   (event: "approve", input: ExternalSelectionInput): void;
   (event: "reject", input: ExternalRejectInput): void;
   (event: "select-task", taskGid: string): void;
+  (event: "refresh-execution", executionId: string): void;
+  (event: "retry-execution", executionId: string): void;
 }>();
 
 const selectedProposalId = ref<string | undefined>();
@@ -52,8 +61,32 @@ const selectedProposal = computed(() => {
 const selectedApprovalResult = computed(() => {
   const selected = selectedProposal.value;
   if (selected == null) return undefined;
-  const approval = props.approvalResults[selected.proposal_id];
-  return approval?.revision === selected.revision ? approval.result : undefined;
+  return props.approvalResults[selected.proposal_id];
+});
+const selectedExecution = computed(() => {
+  const selected = selectedProposal.value;
+  if (selected == null) return undefined;
+  if (selected.state.kind === "finished" && selected.state.execution_id != null) {
+    const response = selectedApprovalResult.value;
+    return props.executionFor(selected.state.execution_id)
+      ?? (response?.kind === "execution" && response.execution.execution_id === selected.state.execution_id ? response.execution : undefined);
+  }
+  const response = selectedApprovalResult.value;
+  if (response?.kind !== "execution") return undefined;
+  return props.executionFor(response.execution.execution_id) ?? response.execution;
+});
+const selectedExecutionBusy = computed(() => {
+  const execution = selectedExecution.value;
+  return execution != null && (props.executionRequestIds.includes(execution.execution_id)
+    || props.retryingExecutionIds.includes(execution.execution_id));
+});
+const selectedFinishedWithoutExecutionId = computed(() => {
+  const status = selectedProposal.value?.state;
+  return status?.kind === "finished" && status.execution_id == null;
+});
+const selectedExecutionId = computed(() => {
+  const status = selectedProposal.value?.state;
+  return status?.kind === "finished" ? status.execution_id : undefined;
 });
 
 watch(
@@ -332,19 +365,45 @@ function finishedOutcomeClass(proposal: ExternalProposal): string {
             @select-task="selectTask"
           />
 
+          <ExecutionResultPanel
+            v-if="selectedExecution != null"
+            class="mt-4"
+            :execution="selectedExecution"
+            :busy="selectedExecutionBusy"
+            :failure="props.executionFailures[selectedExecution.execution_id]"
+            @refresh="emit('refresh-execution', $event)"
+            @retry="emit('retry-execution', $event)"
+          />
           <ApprovalResultPanel
-            v-if="selectedApprovalResult != null"
+            v-else-if="selectedApprovalResult?.kind === 'not_started' && selectedFinishedWithoutExecutionId"
             class="mt-4"
             :result="selectedApprovalResult"
+            :busy="false"
           />
 
           <div
-            v-if="requireSelectedProposal().state.kind === 'finished'"
+            v-else-if="selectedExecutionId != null"
+            class="mt-4 space-y-2 rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700"
+          >
+            <p class="break-all">
+              実行ID: {{ selectedExecutionId }}
+            </p>
+            <button
+              type="button"
+              class="secondary-button"
+              @click="emit('refresh-execution', selectedExecutionId)"
+            >
+              実行状態を読み込む
+            </button>
+          </div>
+
+          <div
+            v-if="requireSelectedProposal().state.kind === 'finished' && selectedExecution == null && selectedApprovalResult == null"
             class="mt-4 rounded-md p-3 text-sm"
             :class="finishedOutcomeClass(requireSelectedProposal())"
             role="status"
           >
-            反映結果: {{ finishedOutcomeLabel(requireSelectedProposal()) }}
+            反映結果: {{ selectedFinishedWithoutExecutionId ? '実行なし・' : '' }}{{ finishedOutcomeLabel(requireSelectedProposal()) }}
           </div>
           <div
             v-else-if="requireSelectedProposal().state.kind === 'expired' || requireSelectedProposal().state.kind === 'failed' || requireSelectedProposal().state.kind === 'unknown'"

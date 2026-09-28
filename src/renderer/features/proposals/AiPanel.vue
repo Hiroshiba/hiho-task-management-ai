@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
-import type { AiProposalState } from "./proposal-state";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
+import type { AiProposalState, IpcFailure } from "./proposal-state";
 import type { AiConversationEntry, ProposalEditInput, ProposalSelectionInput } from "./proposal-presentation";
 import ApprovalResultPanel from "./ApprovalResultPanel.vue";
 import ProposalReviewPanel from "./ProposalReviewPanel.vue";
@@ -19,6 +20,9 @@ const props = defineProps<{
   canWrite: boolean;
   canSendAi: boolean;
   aiSendDisabledReason: string;
+  execution?: ExecutionDto | undefined;
+  executionBusy: boolean;
+  executionFailure?: IpcFailure | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -28,6 +32,8 @@ const emit = defineEmits<{
   (event: "approve", input: ProposalSelectionInput): void;
   (event: "reject", proposalId: string): void;
   (event: "select-task", taskGid: string): void;
+  (event: "refresh-execution", executionId: string): void;
+  (event: "retry-execution", executionId: string): void;
 }>();
 
 const message = ref("");
@@ -304,6 +310,11 @@ function sendMessage(): void {
       <ApprovalResultPanel
         v-if="props.state.kind === 'approved'"
         :result="props.state.result"
+        :execution="props.execution"
+        :busy="props.executionBusy"
+        :failure="props.executionFailure"
+        @refresh="emit('refresh-execution', $event)"
+        @retry="emit('retry-execution', $event)"
       />
       <div
         v-if="props.state.kind === 'failed'"

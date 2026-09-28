@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import type { ApprovalResult } from "./proposal-presentation";
+import type { IpcFailure } from "./proposal-state";
+import ExecutionResultPanel from "./ExecutionResultPanel.vue";
 
-const props = defineProps<{ result: ApprovalResult }>();
-const groupResults = computed(() => props.result.kind === "execution"
-  ? props.result.execution.group_results : props.result.group_results);
-const operationResults = computed(() => props.result.kind === "execution"
-  ? props.result.execution.operation_results : props.result.operation_results);
+const props = defineProps<{
+  result: ApprovalResult;
+  execution?: ExecutionDto | undefined;
+  busy: boolean;
+  failure?: IpcFailure | undefined;
+}>();
+
+const emit = defineEmits<{
+  (event: "refresh", executionId: string): void;
+  (event: "retry", executionId: string): void;
+}>();
 
 function outcomeLabel(outcome: "pending" | "applied" | "already_applied" | "not_applied" | "partially_applied" | "unknown"): string {
   switch (outcome) {
@@ -19,39 +27,37 @@ function outcomeLabel(outcome: "pending" | "applied" | "already_applied" | "not_
   }
 }
 
-function stateLabel(state: "planned" | "running" | "succeeded" | "failed" | "confirmation_required"): string {
-  switch (state) {
-    case "planned": return "実行待ち";
-    case "running": return "実行中";
-    case "succeeded": return "実行完了";
-    case "failed": return "実行失敗";
-    case "confirmation_required": return "確認が必要";
-  }
+function executionForResult(): ExecutionDto {
+  if (props.result.kind !== "execution") throw new Error("実行のない承認結果に実行状態はありません。");
+  return props.execution ?? props.result.execution;
+}
+
+function notStartedResult(): Extract<ApprovalResult, { readonly kind: "not_started" }> {
+  if (props.result.kind !== "not_started") throw new Error("実行のある承認結果に実行なしの結果はありません。");
+  return props.result;
 }
 </script>
 
 <template>
+  <ExecutionResultPanel
+    v-if="props.result.kind === 'execution'"
+    :execution="executionForResult()"
+    :busy="props.busy"
+    :failure="props.failure"
+    @refresh="emit('refresh', $event)"
+    @retry="emit('retry', $event)"
+  />
   <section
+    v-else
     class="space-y-2 rounded-md border border-slate-200 p-4 text-sm dark:border-slate-700"
     aria-label="承認結果"
     role="status"
   >
-    <template v-if="result.kind === 'execution'">
-      <p class="font-medium">
-        承認結果: {{ stateLabel(result.execution.state) }}
-      </p>
-      <p>実行ID: {{ result.execution.execution_id }}</p>
-      <p v-if="result.execution.state === 'failed' || result.execution.state === 'confirmation_required'">
-        エラーID: {{ result.execution.error_id }}
-      </p>
-    </template>
-    <template v-else>
-      <p class="font-medium">
-        承認結果: 実行なし・{{ outcomeLabel(result.outcome) }}
-      </p>
-    </template>
-    <p>グループ {{ groupResults.length }}件・操作 {{ operationResults.length }}件</p>
-    <details :open="result.kind === 'not_started' || result.execution.state === 'failed' || result.execution.state === 'confirmation_required'">
+    <p class="font-medium">
+      承認結果: 実行なし・{{ outcomeLabel(notStartedResult().outcome) }}
+    </p>
+    <p>グループ {{ notStartedResult().group_results.length }}件・操作 {{ notStartedResult().operation_results.length }}件</p>
+    <details open>
       <summary class="cursor-pointer">
         反映結果の詳細
       </summary>
@@ -62,7 +68,7 @@ function stateLabel(state: "planned" | "running" | "succeeded" | "failed" | "con
           </h3>
           <ul class="mt-1 space-y-1">
             <li
-              v-for="group in groupResults"
+              v-for="group in notStartedResult().group_results"
               :key="group.group_id"
             >
               {{ group.group_id }}: {{ outcomeLabel(group.outcome) }}・{{ group.operation_ids.length }}操作
@@ -75,10 +81,10 @@ function stateLabel(state: "planned" | "running" | "succeeded" | "failed" | "con
           </h3>
           <ul class="mt-1 space-y-1">
             <li
-              v-for="operation in operationResults"
+              v-for="operation in notStartedResult().operation_results"
               :key="operation.operation_id"
             >
-              {{ operation.operation_id }}: {{ outcomeLabel(operation.outcome) }}<span v-if="operation.outcome !== 'pending'">・理由コード {{ operation.reason_code }}</span>
+              {{ operation.operation_id }}: {{ outcomeLabel(operation.outcome) }}・理由コード {{ operation.reason_code }}
             </li>
           </ul>
         </div>

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import type { ProposalsApi } from "../../../shared/ipc-contracts/proposals";
+import type { ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import AiPanel from "./AiPanel.vue";
 import ExternalProposalPanel from "./ExternalProposalPanel.vue";
+import ExecutionResultPanel from "./ExecutionResultPanel.vue";
+import type { IpcFailure } from "./proposal-state";
 import type {
   AiSessionView,
   AiSessionStatus,
@@ -41,6 +44,13 @@ const props = defineProps<{
   externalAgentEditResult?: ExternalEditResult | undefined;
   externalReviewRequestId?: string | undefined;
   externalApprovalResults: Readonly<Record<string, ExternalApprovalResult>>;
+  executions: readonly ExecutionDto[];
+  executionFor: (executionId: string) => ExecutionDto | undefined;
+  executionFailures: Readonly<Record<string, IpcFailure>>;
+  executionListBusy: boolean;
+  executionListFailure?: IpcFailure | undefined;
+  executionRequestIds: readonly string[];
+  retryingExecutionIds: readonly string[];
 }>();
 
 const emit = defineEmits<{
@@ -60,13 +70,17 @@ const emit = defineEmits<{
   (event: "external-reject", input: ExternalRejectInput): void;
   (event: "external-select", input: ExternalSelectionInput): void;
   (event: "external-select-task", taskGid: string): void;
+  (event: "refresh-executions"): void;
+  (event: "refresh-execution", executionId: string): void;
+  (event: "retry-execution", executionId: string): void;
 }>();
 
 const dialogElement = ref<HTMLElement | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 const mobileDetailVisible = ref(false);
 const panelRefs = new Map<string, AiPanelApi>();
-const activeTab = ref<"internal" | "external">("internal");
+const activeTab = ref<"internal" | "external" | "executions">("internal");
+const selectedHistoryExecutionId = ref<string>();
 const pendingExternalReviewRequestId = ref<string | undefined>();
 
 const selectedSession = computed(() => {
@@ -75,6 +89,43 @@ const selectedSession = computed(() => {
   }
   return props.sessions.find((session) => session.session_id === props.selectedSessionId);
 });
+const selectedHistoryExecution = computed(() => props.executions.find((execution) =>
+  execution.execution_id === selectedHistoryExecutionId.value) ?? props.executions[0]);
+
+function executionForSession(session: AiSessionView): ExecutionDto | undefined {
+  if (session.state.kind !== "approved" || session.state.result.kind !== "execution") return undefined;
+  return props.executionFor(session.state.result.execution.execution_id) ?? session.state.result.execution;
+}
+
+function executionBusy(executionId: string): boolean {
+  return props.executionRequestIds.includes(executionId) || props.retryingExecutionIds.includes(executionId);
+}
+
+function executionBusyForSession(session: AiSessionView): boolean {
+  const execution = executionForSession(session);
+  return execution != null && executionBusy(execution.execution_id);
+}
+
+function executionFailureForSession(session: AiSessionView): IpcFailure | undefined {
+  const execution = executionForSession(session);
+  return execution == null ? undefined : props.executionFailures[execution.execution_id];
+}
+
+function executionStateLabel(state: ExecutionDto["state"]): string {
+  switch (state) {
+    case "planned": return "実行待ち";
+    case "running": return "実行中";
+    case "succeeded": return "実行完了";
+    case "failed": return "実行失敗";
+    case "confirmation_required": return "実状態の確認が必要";
+  }
+}
+
+function successorExecutionId(executionId: string): string | undefined {
+  const successors = props.executions.filter((execution) => execution.retry_of_execution_id === executionId);
+  if (successors.length > 1) throw new Error("実行履歴の再試行先が重複しています。");
+  return successors[0]?.execution_id;
+}
 
 function isAiPanelApi(value: unknown): value is AiPanelApi {
   if (typeof value !== "object" || value == null || !("focusMessageInput" in value)) {
@@ -188,6 +239,7 @@ function cancelSession(): void {
   const session = selectedSession.value;
   if (session == null
     || session.status === "completed"
+    || session.state.kind === "approved"
     || session.operation === "approve"
     || session.operation === "close") {
     return;
@@ -346,6 +398,18 @@ watch(() => props.selectedSessionId, (sessionId) => {
         >
           外部からの提案
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="ml-5 border-b-2 px-1 py-3 text-sm font-medium"
+          :class="activeTab === 'executions'
+            ? 'border-sky-600 text-sky-700 dark:border-sky-400 dark:text-sky-300'
+            : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'"
+          :aria-selected="activeTab === 'executions'"
+          @click="activeTab = 'executions'"
+        >
+          実行履歴
+        </button>
       </nav>
       <div
         v-show="activeTab === 'internal'"
@@ -494,12 +558,17 @@ watch(() => props.selectedSessionId, (sessionId) => {
                   :can-write="session.can_write && session.operation === 'idle'"
                   :can-send-ai="session.can_send_ai"
                   :ai-send-disabled-reason="session.ai_send_disabled_reason"
+                  :execution="executionForSession(session)"
+                  :execution-busy="executionBusyForSession(session)"
+                  :execution-failure="executionFailureForSession(session)"
                   @start="(input) => emit('start', session.session_id, input)"
                   @select="(input) => emit('select', session.session_id, input)"
                   @edit="(input) => emit('edit', session.session_id, input)"
                   @approve="(input) => emit('approve', session.session_id, input)"
                   @reject="(proposalId) => emit('reject', session.session_id, proposalId)"
                   @select-task="(taskGid) => emit('select-task', session.session_id, taskGid)"
+                  @refresh-execution="emit('refresh-execution', $event)"
+                  @retry-execution="emit('retry-execution', $event)"
                 />
               </div>
               <div class="flex flex-wrap gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
@@ -513,7 +582,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                   確認して閉じる
                 </button>
                 <button
-                  v-else
+                  v-else-if="selectedSession.state.kind !== 'approved'"
                   type="button"
                   class="secondary-button"
                   :disabled="selectedSession.operation === 'approve' || selectedSession.operation === 'close'"
@@ -539,11 +608,17 @@ watch(() => props.selectedSessionId, (sessionId) => {
             :tasks="props.tasks"
             :edit-result="props.externalAgentEditResult"
             :approval-results="props.externalApprovalResults"
+            :execution-for="props.executionFor"
+            :execution-failures="props.executionFailures"
+            :execution-request-ids="props.executionRequestIds"
+            :retrying-execution-ids="props.retryingExecutionIds"
             @edit="(input) => emit('external-edit', input)"
             @approve="(input) => emit('external-approve', input)"
             @reject="(input) => emit('external-reject', input)"
             @select="(input) => emit('external-select', input)"
             @select-task="(taskGid) => emit('external-select-task', taskGid)"
+            @refresh-execution="emit('refresh-execution', $event)"
+            @retry-execution="emit('retry-execution', $event)"
           />
         </template>
         <p
@@ -560,6 +635,69 @@ watch(() => props.selectedSessionId, (sessionId) => {
         >
           {{ props.externalAgentState.message }}
         </p>
+      </div>
+      <div
+        v-show="activeTab === 'executions'"
+        class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
+        role="tabpanel"
+        aria-label="保存済み実行履歴"
+      >
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            保存済み実行履歴
+          </h3>
+          <button
+            type="button"
+            class="secondary-button"
+            :disabled="props.executionListBusy"
+            @click="emit('refresh-executions')"
+          >
+            {{ props.executionListBusy ? '読み込み中' : '一覧を更新' }}
+          </button>
+        </div>
+        <p
+          v-if="props.executionListFailure != null"
+          class="mb-4 text-sm text-rose-800 dark:text-rose-100"
+          role="alert"
+        >
+          {{ props.executionListFailure.message }}<span v-if="props.executionListFailure.error_id != null"> エラーID: {{ props.executionListFailure.error_id }}</span>
+        </p>
+        <p
+          v-if="props.executions.length === 0"
+          class="text-sm text-slate-600 dark:text-slate-400"
+        >
+          {{ props.executionListBusy ? '実行履歴を読み込んでいます。' : '保存済みの実行はありません。' }}
+        </p>
+        <div
+          v-else
+          class="grid min-w-0 gap-4 lg:grid-cols-[minmax(13rem,18rem)_minmax(0,1fr)]"
+        >
+          <ul class="max-h-96 space-y-2 overflow-y-auto rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+            <li
+              v-for="execution in props.executions"
+              :key="execution.execution_id"
+            >
+              <button
+                type="button"
+                class="w-full rounded-md border border-slate-200 px-3 py-2 text-left text-sm dark:border-slate-700"
+                :aria-current="selectedHistoryExecution?.execution_id === execution.execution_id ? 'true' : undefined"
+                @click="selectedHistoryExecutionId = execution.execution_id"
+              >
+                <span class="block break-all font-medium">{{ execution.execution_id }}</span>
+                <span class="mt-1 block">{{ executionStateLabel(execution.state) }}</span>
+              </button>
+            </li>
+          </ul>
+          <ExecutionResultPanel
+            v-if="selectedHistoryExecution != null"
+            :execution="selectedHistoryExecution"
+            :busy="executionBusy(selectedHistoryExecution.execution_id)"
+            :failure="props.executionFailures[selectedHistoryExecution.execution_id]"
+            :successor-execution-id="successorExecutionId(selectedHistoryExecution.execution_id)"
+            @refresh="emit('refresh-execution', $event)"
+            @retry="emit('retry-execution', $event)"
+          />
+        </div>
       </div>
     </section>
   </div>

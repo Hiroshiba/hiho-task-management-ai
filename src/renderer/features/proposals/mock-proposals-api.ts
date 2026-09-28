@@ -8,7 +8,8 @@ import { createMockProposalView, editMockProposalView } from "./mock-proposal-da
 
 type ExternalState = z.infer<typeof externalProposalStateSchema>;
 type Selection = Parameters<ProposalsApi["select"]>[0]["selection"];
-type Session = { readonly session_id: string; proposal: ProposalViewDto | undefined };
+type ApprovalResult = Extract<Awaited<ReturnType<ProposalsApi["approve"]>>, { readonly kind: "ok" }>["value"];
+type Session = { readonly session_id: string; proposal: ProposalViewDto | undefined; approved_proposal_id?: string };
 type ExternalProposal = ExternalState["proposals"][number];
 
 function ok<Value>(value: Value): IpcResult<Value> {
@@ -48,10 +49,11 @@ function compareExecutionOrder(left: ExecutionDto, right: ExecutionDto): number 
   return left.execution_id < right.execution_id ? -1 : 1;
 }
 
-/** 17操作の生成、表示、編集、選択、承認を同じ状態で扱うmockを作成します。 */
+/** 17操作と保存済み実行の進行を同じ状態で扱うmockを作成します。 */
 export function createMockProposalsApi(): ProposalsApi {
   const sessions = new Map<string, Session>();
   const executions = new Map<string, { readonly execution: ExecutionDto; readonly rowid: number }>();
+  const approvals = new Map<string, ApprovalResult>();
   const aiStatus = proposalsContracts.getAiStatus.response.parse(ok({ kind: "ready", model: "mock-model" }));
   if (aiStatus.kind !== "ok") throw new Error("mockのAI状態を作成できません。");
   const aiStatusListeners = new Set<Parameters<ProposalsApi["onAiStatus"]>[0]>();
@@ -61,6 +63,8 @@ export function createMockProposalsApi(): ProposalsApi {
   let nextSessionNumber = 1;
   let nextTurnNumber = 1;
   let nextExecutionNumber = 1;
+  let nextEventNumber = 1;
+  let nextErrorNumber = 1;
   let externalState = externalProposalStateSchema.parse({
     enabled: true,
     bridge: { kind: "running" },
@@ -102,7 +106,82 @@ export function createMockProposalsApi(): ProposalsApi {
       candidate.proposal_id === proposal.proposal_id ? proposal : candidate) });
   }
 
-  function createExecution(view: ProposalViewDto, operationIds: readonly string[], retryOfExecutionId?: string): ExecutionDto {
+  function timestamp(): string {
+    return new Date(Date.UTC(2026, 8, 28, 0, 0, nextEventNumber++)).toISOString();
+  }
+
+  function publishExecution(execution: ExecutionDto): void {
+    const existing = executions.get(execution.execution_id);
+    executions.set(execution.execution_id, { execution, rowid: existing?.rowid ?? executions.size + 1 });
+    for (const listener of executionListeners) listener(execution);
+  }
+
+  function finishExecution(executionId: string, result: "succeeded" | "failed" | "confirmation_required"): void {
+    const current = executions.get(executionId)?.execution;
+    if (current == null) throw new Error("mockの実行履歴が見つかりません。");
+    const updatedAt = timestamp();
+    const errorId = `00000000-0000-4000-8000-${String(nextErrorNumber++).padStart(12, "0")}`;
+    const stoppedIndex = current.steps.findIndex((step) => step.state !== "succeeded");
+    const stoppedStep = current.steps[stoppedIndex];
+    if (stoppedStep == null) throw new Error("mockの停止対象工程が見つかりません。");
+    const steps = current.steps.map((step, index) => {
+      if (step.state === "succeeded") return step;
+      if (result !== "succeeded" && index === stoppedIndex) {
+        return { ...step, state: result, attempt: 1, updated_at: updatedAt, error_id: errorId };
+      }
+      if (result !== "succeeded") return step;
+      return { ...step, state: "succeeded", attempt: 1, updated_at: updatedAt };
+    });
+    const operationResults = current.operation_results.map((operation) => {
+      const step = steps.find((candidate) => candidate.scope.kind === "operation" && candidate.scope.operation_id === operation.operation_id);
+      if (step?.state === "succeeded" && result !== "succeeded") {
+        return { ...operation, outcome: "applied", reason_code: "mock_applied" };
+      }
+      if (result === "succeeded") return { ...operation, outcome: "applied", reason_code: "mock_applied" };
+      if (step?.state === result) return { ...operation, outcome: "unknown", reason_code: "mock_result_unknown" };
+      return operation;
+    });
+    const groupResults = current.group_results.map((group) => ({ ...group,
+      outcome: result === "succeeded" ? "applied" : "unknown" }));
+    publishExecution(executionDtoSchema.parse({ ...current, state: result, updated_at: updatedAt, steps,
+      operation_results: operationResults, group_results: groupResults,
+      ...(result === "succeeded" ? {} : { error_id: errorId }),
+    }));
+    const externalProposal = externalState.proposals.find((proposal) =>
+      proposal.proposal_id === current.proposal_id && proposal.state.kind === "approving");
+    if (externalProposal != null) {
+      const revision = externalProposal.revision + 1;
+      replaceExternal({ ...externalProposal, revision, view: withRevision(externalProposal.view, revision),
+        state: { kind: "finished", outcome: result === "succeeded" ? "applied" : "unknown", execution_id: executionId } });
+    }
+  }
+
+  function progressExecution(executionId: string, result: "succeeded" | "failed" | "confirmation_required"): void {
+    const current = executions.get(executionId)?.execution;
+    if (current == null) throw new Error("mockの実行履歴が見つかりません。");
+    const updatedAt = timestamp();
+    let running = false;
+    const steps = current.steps.map((step) => {
+      if (running || step.state === "succeeded") return step;
+      running = true;
+      return { ...step, state: "running", attempt: 1, updated_at: updatedAt };
+    });
+    publishExecution(executionDtoSchema.parse({ ...current, state: "running", updated_at: updatedAt, steps }));
+    setTimeout(() => finishExecution(executionId, result), 150);
+  }
+
+  function scheduleExecution(execution: ExecutionDto, result: "succeeded" | "failed" | "confirmation_required"): void {
+    publishExecution(execution);
+    setTimeout(() => progressExecution(execution.execution_id, result), 30);
+  }
+
+  function executionResult(operationIds: readonly string[]): "succeeded" | "failed" | "confirmation_required" {
+    if (operationIds.some((id) => id.endsWith("-set_dependencies"))) return "confirmation_required";
+    if (operationIds.some((id) => id.endsWith("-set_duration"))) return "failed";
+    return "succeeded";
+  }
+
+  function createExecution(view: ProposalViewDto, operationIds: readonly string[]): ExecutionDto {
     const selected = new Set(operationIds);
     const groups = view.groups.map((group) => ({ ...group, operations: group.operations.filter((operation) => selected.has(operation.operation_id)) }))
       .filter((group) => group.operations.length > 0);
@@ -125,43 +204,76 @@ export function createMockProposalsApi(): ProposalsApi {
       complete: "asana_update_task",
       withdraw: "asana_update_task",
     } satisfies Record<ProposalViewDto["groups"][number]["operations"][number]["operation"], ExecutionDto["steps"][number]["kind"]>;
-    const updatedAt = "2026-09-28T00:00:00.000Z";
+    const updatedAt = timestamp();
     const execution = executionDtoSchema.parse({
       origin: "proposal",
       execution_id: `mock-proposal-execution-${nextExecutionNumber++}`,
-      ...(retryOfExecutionId == null ? {} : { retry_of_execution_id: retryOfExecutionId }),
       proposal_id: view.proposal_id,
       created_at: updatedAt,
       updated_at: updatedAt,
-      state: "succeeded",
+      state: "planned",
       steps: [
         ...groups.flatMap((group) => group.operations.map((operation) => ({
           step_id: `mock-step-${operation.operation_id}`,
           scope: { kind: "operation", operation_id: operation.operation_id },
           kind: stepKinds[operation.operation],
-          state: "succeeded",
-          attempt: 1,
+          state: "planned",
+          attempt: 0,
           updated_at: updatedAt,
         }))),
         { step_id: "mock-step-synchronize", scope: { kind: "execution" }, kind: "local_synchronize",
-          state: "succeeded", attempt: 1, updated_at: updatedAt },
+          state: "planned", attempt: 0, updated_at: updatedAt },
       ],
       operation_results: groups.flatMap((group) => group.operations.map((operation) => ({
         operation_id: operation.operation_id,
         group_id: group.group_id,
-        outcome: "applied",
-        reason_code: "mock_applied",
+        outcome: "pending",
       }))),
       group_results: groups.map((group) => ({
         group_id: group.group_id,
         atomic: group.atomic,
         operation_ids: group.operations.map((operation) => operation.operation_id),
-        outcome: "applied",
+        outcome: "pending",
       })),
     });
-    executions.set(execution.execution_id, { execution, rowid: executions.size + 1 });
-    for (const listener of executionListeners) listener(execution);
+    scheduleExecution(execution, executionResult(operationIds));
     return execution;
+  }
+
+  function approvalFor(view: ProposalViewDto, operationIds: readonly string[]): ApprovalResult {
+    if (operationIds.every((id) => id.endsWith("-clear_due"))) {
+      const selected = new Set(operationIds);
+      const groups = view.groups.map((group) => ({ ...group,
+        operations: group.operations.filter((operation) => selected.has(operation.operation_id)) }))
+        .filter((group) => group.operations.length > 0);
+      const result = proposalsContracts.approve.response.parse(ok({
+        kind: "not_started",
+        proposal_id: view.proposal_id,
+        outcome: "already_applied",
+        operation_results: groups.flatMap((group) => group.operations.map((operation) => ({
+          group_id: group.group_id,
+          operation_id: operation.operation_id,
+          outcome: "already_applied",
+          reason_code: "mock_already_applied",
+        }))),
+        group_results: groups.map((group) => ({
+          group_id: group.group_id,
+          atomic: group.atomic,
+          operation_ids: group.operations.map((operation) => operation.operation_id),
+          outcome: "already_applied",
+        })),
+      }));
+      if (result.kind !== "ok") throw new Error("mockの承認結果を作成できません。");
+      return result.value;
+    }
+    return { kind: "execution", execution: createExecution(view, operationIds) };
+  }
+
+  function currentApprovalResult(result: ApprovalResult): ApprovalResult {
+    if (result.kind === "not_started") return result;
+    const execution = executions.get(result.execution.execution_id)?.execution;
+    if (execution == null) throw new Error("mockの承認済み実行が見つかりません。");
+    return { kind: "execution", execution };
   }
 
   return {
@@ -229,13 +341,19 @@ export function createMockProposalsApi(): ProposalsApi {
     }),
     approve: (input) => Promise.resolve().then(() => {
       const request = proposalsContracts.approve.request.parse(input);
-      const session = sessionFor(request.session_id, request.proposal_id);
-      if (session?.proposal == null) return failure("not_found", "AI変更案が見つかりません。");
+      const session = sessions.get(request.session_id);
+      const previous = approvals.get(request.proposal_id);
+      if (previous != null && session?.approved_proposal_id === request.proposal_id) {
+        return proposalsContracts.approve.response.parse(ok(currentApprovalResult(previous)));
+      }
+      if (session?.proposal?.proposal_id !== request.proposal_id) return failure("not_found", "AI変更案が見つかりません。");
       const ids = selectedIds(session.proposal, request.selection);
       if (ids == null || ids.length === 0) return failure("invalid_request", "適用する操作を選択してください。");
-      const execution = createExecution(session.proposal, ids);
+      const result = approvalFor(session.proposal, ids);
+      approvals.set(request.proposal_id, result);
+      session.approved_proposal_id = request.proposal_id;
       session.proposal = undefined;
-      return proposalsContracts.approve.response.parse(ok({ kind: "execution", execution }));
+      return proposalsContracts.approve.response.parse(ok(result));
     }),
     closeSession: (sessionId) => Promise.resolve().then(() => {
       const request = proposalsContracts.closeSession.request.parse({ session_id: sessionId });
@@ -277,15 +395,23 @@ export function createMockProposalsApi(): ProposalsApi {
     }),
     approveExternal: (input) => Promise.resolve().then(() => {
       const request = proposalsContracts.approveExternal.request.parse(input);
+      const previous = approvals.get(request.proposal_id);
+      if (previous != null) return proposalsContracts.approveExternal.response.parse(ok(currentApprovalResult(previous)));
       const proposal = externalProposalFor(request.proposal_id, request.revision);
       if (proposal == null) return failure("not_found", "外部変更案が見つかりません。");
       if (proposal === "conflict") return failure("conflict", "外部変更案の表示版が変わりました。");
       if (proposal.state.kind !== "pending_approval") return failure("conflict", "外部変更案を承認できません。");
       const ids = selectedIds(proposal.view, request.selection);
       if (ids == null || ids.length === 0) return failure("invalid_request", "適用する操作を選択してください。");
-      const execution = createExecution(proposal.view, ids);
-      replaceExternal({ ...proposal, state: { kind: "finished", outcome: "applied", execution_id: execution.execution_id } });
-      return proposalsContracts.approveExternal.response.parse(ok({ kind: "execution", execution }));
+      const result = approvalFor(proposal.view, ids);
+      approvals.set(request.proposal_id, result);
+      if (result.kind === "execution") replaceExternal({ ...proposal, state: { kind: "approving" } });
+      else {
+        const revision = proposal.revision + 1;
+        replaceExternal({ ...proposal, revision, view: withRevision(proposal.view, revision),
+          state: { kind: "finished", outcome: result.outcome } });
+      }
+      return proposalsContracts.approveExternal.response.parse(ok(result));
     }),
     rejectExternal: (input) => Promise.resolve().then(() => {
       const request = proposalsContracts.rejectExternal.request.parse(input);
@@ -340,9 +466,31 @@ export function createMockProposalsApi(): ProposalsApi {
       const request = proposalsContracts.retryExecution.request.parse({ retry_of_execution_id: retryOfExecutionId });
       const previous = executions.get(request.retry_of_execution_id)?.execution;
       if (previous == null) return failure("not_found", "再試行元の実行履歴が見つかりません。");
-      const execution = executionDtoSchema.parse({ ...previous, execution_id: `mock-proposal-execution-${nextExecutionNumber++}`, retry_of_execution_id: request.retry_of_execution_id });
-      executions.set(execution.execution_id, { execution, rowid: executions.size + 1 });
-      for (const listener of executionListeners) listener(execution);
+      const successor = [...executions.values()].find((entry) =>
+        entry.execution.retry_of_execution_id === request.retry_of_execution_id)?.execution;
+      if (successor != null) return proposalsContracts.retryExecution.response.parse(ok(successor));
+      if (previous.state !== "failed" && previous.state !== "confirmation_required") {
+        return failure("conflict", "停止していない実行は再試行できません。");
+      }
+      if (previous.proposal_id == null) throw new Error("mockの変更案IDが見つかりません。");
+      const updatedAt = timestamp();
+      const execution = executionDtoSchema.parse({
+        origin: "proposal",
+        execution_id: `mock-proposal-execution-${nextExecutionNumber++}`,
+        retry_of_execution_id: request.retry_of_execution_id,
+        proposal_id: previous.proposal_id,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        state: "planned",
+        steps: previous.steps.map((step) => step.state === "succeeded" ? step : {
+          step_id: step.step_id, scope: step.scope, kind: step.kind,
+          state: "planned", attempt: 0, updated_at: updatedAt,
+        }),
+        operation_results: previous.operation_results.map((operation) => operation.outcome === "applied"
+          ? operation : { operation_id: operation.operation_id, group_id: operation.group_id, outcome: "pending" }),
+        group_results: previous.group_results.map((group) => ({ ...group, outcome: "pending" })),
+      });
+      scheduleExecution(execution, previous.state === "failed" ? "succeeded" : "confirmation_required");
       return proposalsContracts.retryExecution.response.parse(ok(execution));
     }),
     onAiStatus: (listener) => {
