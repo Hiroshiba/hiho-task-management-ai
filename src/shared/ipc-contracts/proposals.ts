@@ -148,6 +148,7 @@ const historyEntrySchema = z.discriminatedUnion("kind", [
       target_id: identifierSchema,
       target_kind: z.enum(["task", "temporary", "new_task"]),
       source_stage: identifierSchema,
+      source_final_result: z.enum(["unknown"]).nullable(),
     })
     .strict(),
   z

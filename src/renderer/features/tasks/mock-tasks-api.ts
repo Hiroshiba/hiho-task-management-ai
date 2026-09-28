@@ -285,9 +285,36 @@ export function createMockTasksApi(): TasksApi {
       lastSuccessfulSyncAt = new Date(Date.parse(lastSuccessfulSyncAt) + 1).toISOString();
       overview = createOverview(details, lastSuccessfulSyncAt);
       publish({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
+      const stepKinds = {
+        update_title: "asana_update_task",
+        update_notes: "asana_update_task",
+        set_status: "asana_add_to_section",
+        complete: "asana_update_task",
+        withdraw: "asana_update_task",
+        restore: "asana_add_to_section",
+        mark_activity: "asana_merge_external_data",
+        set_importance: "asana_add_tag",
+        set_due: "asana_update_task",
+        clear_due: "asana_update_task",
+        set_duration: "asana_merge_external_data",
+        clear_duration: "asana_merge_external_data",
+        set_area: "asana_add_tag",
+        set_dependencies: "asana_merge_external_data",
+        set_parent: "asana_set_parent",
+        set_parent_work_mode: "asana_merge_external_data",
+        link_obsidian: "asana_merge_external_data",
+        unlink_obsidian: "asana_merge_external_data",
+      } satisfies Record<GuiEditOperation["kind"], ExecutionDto["steps"][number]["kind"]>;
+      const updatedAt = new Date().toISOString();
       const execution = executionDtoSchema.parse({
         origin: "gui-edit", execution_id: `mock-execution-${editSequence}`, task_gid: request.task_gid,
-        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), state: "succeeded",
+        created_at: updatedAt, updated_at: updatedAt, state: "succeeded",
+        steps: [
+          { step_id: `mock-step-${operationId}`, scope: { kind: "operation", operation_id: operationId },
+            kind: stepKinds[request.operation.kind], state: "succeeded", attempt: 1, updated_at: updatedAt },
+          { step_id: `mock-step-${operationId}-synchronize`, scope: { kind: "execution" },
+            kind: "local_synchronize", state: "succeeded", attempt: 1, updated_at: updatedAt },
+        ],
         operation_results: [{ operation_id: operationId, task_gid: request.task_gid,
           outcome: "applied", reason_code: "applied" }], group_results: [],
       });

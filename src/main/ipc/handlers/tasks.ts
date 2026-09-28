@@ -4,6 +4,7 @@ import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contr
 import { detailSchema, overviewSchema } from "../../../shared/ipc-contracts/task-view";
 import { tasksContracts } from "../../../shared/ipc-contracts/tasks";
 import { createContractHandler, type ContractHandler, type IpcSuccessValue } from "./contract-handler";
+import { toExecutionStepsDto } from "./execution-dto";
 
 type MaybePromise<Value> = Value | PromiseLike<Value>;
 type Request<Contract extends { readonly request: z.ZodType }> = z.output<Contract["request"]>;
@@ -163,6 +164,7 @@ export function toGuiExecutionDto(execution: GuiEditExecution): ExecutionDto {
     ...(execution.error_id == null ? {} : { error_id: execution.error_id }),
     created_at: execution.created_at,
     updated_at: execution.updated_at,
+    steps: toExecutionStepsDto(execution.steps),
     operation_results: [toGuiOperationResult(execution)],
     group_results: [],
   });

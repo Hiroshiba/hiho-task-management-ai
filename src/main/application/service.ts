@@ -1885,7 +1885,7 @@ export class TaskHubApplication {
         reject: (input, signal) => this.externalAgent.reject(input, signal),
       },
       history: {
-        getStatus: () => this.getProposalHistoryDto(),
+        getStatus: () => this.getProposalHistoryStatus(),
         confirm: (input) => {
           const checked = ipcProposalHistoryConfirmInputSchema.parse(input);
           this.proposalApplicationHistoryRepository.confirm(
@@ -1894,11 +1894,11 @@ export class TaskHubApplication {
             checked.checked_target_id,
             checked.confirmed_result,
           );
-          return this.getProposalHistoryDto();
+          return this.getProposalHistoryStatus();
         },
         synchronize: async (signal) => {
           const result = await this.synchronizeProposalHistory(signal);
-          return { status: this.getProposalHistoryDto(), synced_at: result.synced_at };
+          return { status: this.getProposalHistoryStatus(), synced_at: result.synced_at };
         },
       },
       execution: {
@@ -2810,20 +2810,6 @@ export class TaskHubApplication {
       });
     });
     return ipcProposalHistoryStatusSchema.parse({ entries });
-  }
-
-  private getProposalHistoryDto(): Awaited<ReturnType<ProposalsHandlerWorkflows["history"]["getStatus"]>> {
-    return { entries: this.getProposalHistoryStatus().entries.map((entry) => {
-      if (entry.kind !== "confirmation_required") return entry;
-      return {
-        kind: entry.kind,
-        proposal_id: entry.proposal_id,
-        operation_id: entry.operation_id,
-        target_id: entry.target_id,
-        target_kind: entry.target_kind,
-        source_stage: entry.source_stage,
-      };
-    }) };
   }
 
   private createProposalHistoryPort(): IpcProposalHistoryPort {

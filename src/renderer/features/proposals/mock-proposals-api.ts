@@ -100,14 +100,46 @@ export function createMockProposalsApi(): ProposalsApi {
     const selected = new Set(operationIds);
     const groups = view.groups.map((group) => ({ ...group, operations: group.operations.filter((operation) => selected.has(operation.operation_id)) }))
       .filter((group) => group.operations.length > 0);
+    const stepKinds = {
+      create_task: "asana_create_task",
+      update_title: "asana_update_task",
+      update_notes: "asana_update_task",
+      set_status: "asana_add_to_section",
+      set_importance: "asana_add_tag",
+      set_due: "asana_update_task",
+      clear_due: "asana_update_task",
+      set_duration: "asana_merge_external_data",
+      clear_duration: "asana_merge_external_data",
+      set_area: "asana_add_tag",
+      set_dependencies: "asana_merge_external_data",
+      set_parent: "asana_set_parent",
+      set_parent_work_mode: "asana_merge_external_data",
+      link_obsidian: "asana_merge_external_data",
+      unlink_obsidian: "asana_merge_external_data",
+      complete: "asana_update_task",
+      withdraw: "asana_update_task",
+    } satisfies Record<ProposalViewDto["groups"][number]["operations"][number]["operation"], ExecutionDto["steps"][number]["kind"]>;
+    const updatedAt = "2026-09-28T00:00:00.000Z";
     const execution = executionDtoSchema.parse({
       origin: "proposal",
       execution_id: `mock-proposal-execution-${nextExecutionNumber++}`,
       ...(retryOfExecutionId == null ? {} : { retry_of_execution_id: retryOfExecutionId }),
       proposal_id: view.proposal_id,
-      created_at: "2026-09-28T00:00:00.000Z",
-      updated_at: "2026-09-28T00:00:00.000Z",
+      created_at: updatedAt,
+      updated_at: updatedAt,
       state: "succeeded",
+      steps: [
+        ...groups.flatMap((group) => group.operations.map((operation) => ({
+          step_id: `mock-step-${operation.operation_id}`,
+          scope: { kind: "operation", operation_id: operation.operation_id },
+          kind: stepKinds[operation.operation],
+          state: "succeeded",
+          attempt: 1,
+          updated_at: updatedAt,
+        }))),
+        { step_id: "mock-step-synchronize", scope: { kind: "execution" }, kind: "local_synchronize",
+          state: "succeeded", attempt: 1, updated_at: updatedAt },
+      ],
       operation_results: groups.flatMap((group) => group.operations.map((operation) => ({
         operation_id: operation.operation_id,
         group_id: group.group_id,

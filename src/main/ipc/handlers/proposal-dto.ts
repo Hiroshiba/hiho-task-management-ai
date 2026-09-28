@@ -15,6 +15,7 @@ import {
 } from "../../../shared/ipc-contracts/proposal-values";
 import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
 import type { IpcSuccessValue } from "./contract-handler";
+import { toExecutionStepsDto } from "./execution-dto";
 
 type ApprovalDto = IpcSuccessValue<typeof proposalsContracts.approve.response>;
 type ExternalStateDto = z.output<typeof externalProposalStateSchema>;
@@ -179,6 +180,7 @@ export function toProposalExecutionDto(execution: StoredProposalExecution): Exec
     ...(execution.error_id == null ? {} : { error_id: execution.error_id }),
     created_at: execution.created_at,
     updated_at: execution.updated_at,
+    steps: toExecutionStepsDto(execution.steps),
     operation_results: projected.operation_results,
     group_results: projected.group_results,
   });

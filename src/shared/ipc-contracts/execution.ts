@@ -30,6 +30,38 @@ const groupResultSchema = z
   })
   .strict();
 
+const executionStepShape = {
+  step_id: identifierSchema,
+  scope: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("operation"), operation_id: identifierSchema }).strict(),
+    z.object({ kind: z.literal("execution") }).strict(),
+  ]),
+  kind: z.enum([
+    "proposal_operation_check",
+    "asana_create_task",
+    "asana_update_task",
+    "asana_add_to_project",
+    "asana_add_to_section",
+    "asana_add_tag",
+    "asana_remove_tag",
+    "asana_set_parent",
+    "asana_clear_parent",
+    "asana_merge_external_data",
+    "local_synchronize",
+  ]),
+  attempt: z.number().int().nonnegative().safe(),
+  updated_at: dateTimeSchema,
+};
+
+const executionStepSchema = z.discriminatedUnion("state", [
+  z.object({ ...executionStepShape, state: z.enum(["planned", "running", "succeeded"]) }).strict(),
+  z.object({ ...executionStepShape, state: z.enum(["failed", "confirmation_required"]), error_id: errorIdSchema }).strict(),
+]).superRefine((step, context) => {
+  if (step.state === "planned" ? step.attempt !== 0 : step.attempt === 0) {
+    context.addIssue({ code: "custom", path: ["attempt"], message: "stepの試行回数と状態が一致しません。" });
+  }
+});
+
 const executionShape = {
   origin: z.enum(["proposal", "gui-edit"]),
   execution_id: identifierSchema,
@@ -38,6 +70,7 @@ const executionShape = {
   task_gid: gidSchema.optional(),
   created_at: dateTimeSchema,
   updated_at: dateTimeSchema,
+  steps: z.array(executionStepSchema).min(1),
   operation_results: z.array(operationResultSchema).max(10_000),
   group_results: z.array(groupResultSchema).max(10_000),
 };
@@ -98,6 +131,14 @@ export const executionDtoSchema = z
       });
     }
     const operationIds = execution.operation_results.map((operation) => operation.operation_id);
+    const stepIds = execution.steps.map((step) => step.step_id);
+    if (new Set(stepIds).size !== stepIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["steps"],
+        message: "step IDが重複しています。",
+      });
+    }
     if (new Set(operationIds).size !== operationIds.length) {
       context.addIssue({
         code: "custom",
