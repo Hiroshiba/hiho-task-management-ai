@@ -149,7 +149,7 @@ import {
   rejectExternalAgentProposal,
   selectExternalAgentProposal,
 } from "../application/proposal-generate/external-agent-gui-edit";
-import { externalAgentTaskctlQuery } from "../application/proposal-generate/external-agent-task-query";
+import { executeExternalAgentTaskQuery } from "../application/proposal-generate/external-agent-task-query";
 import {
   assertExternalAgentRequestContext,
   requireExternalAgentWorkspace,
@@ -634,22 +634,16 @@ export class ExternalAgentService {
       | ExternalAgentTaskAreasInput
       | ExternalAgentTaskSearchLocalInput,
   ): ExternalAgentTaskQueryResponse {
-    const contextId = input.proposal_context_id;
-    let snapshot: TaskctlSnapshot;
-    if (contextId == null) {
-      this.assertReadReady();
-      snapshot = this.options.taskctl_schemas.taskctlSnapshotSchema.parse(this.options.get_taskctl_snapshot());
-    } else {
-      snapshot = this.preparation.requireContext(contextId).taskctl_snapshot;
-    }
-    const query = externalAgentTaskctlQuery(input);
-    const result = executeTaskctlQuery(query, snapshot, this.options.taskctl_schemas);
-    return createExternalAgentResponseSchemas(
-      this.options.taskctl_schemas.taskctlResponseSchema,
-    ).externalAgentTaskQueryResponseSchema.parse({
-      operation: input.operation,
-      ...(contextId == null ? {} : { proposal_context_id: contextId }),
-      result,
+    return executeExternalAgentTaskQuery(input, {
+      assertReadReady: () => this.assertReadReady(),
+      getCurrentSnapshot: () => this.options.taskctl_schemas.taskctlSnapshotSchema.parse(
+        this.options.get_taskctl_snapshot(),
+      ),
+      getPreparedSnapshot: (contextId) => this.preparation.requireContext(contextId).taskctl_snapshot,
+      execute: (query, snapshot) => executeTaskctlQuery(query, snapshot, this.options.taskctl_schemas),
+      parseResponse: (value) => createExternalAgentResponseSchemas(
+        this.options.taskctl_schemas.taskctlResponseSchema,
+      ).externalAgentTaskQueryResponseSchema.parse(value),
     });
   }
 
