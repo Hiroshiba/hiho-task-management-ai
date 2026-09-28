@@ -33,6 +33,8 @@ import {
   type LegacyRuntimePort,
 } from "./legacy-runtime-port";
 import { createTaskWriteRuntime } from "./create-task-write-runtime";
+import { createObsidianRuntime } from "./create-obsidian-runtime";
+import { createSettingsRuntime } from "./create-settings-runtime";
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
@@ -161,12 +163,21 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const historyRepository = new SqliteProposalApplicationHistoryRepository(openedPersistence, engineReporter);
     recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPaths);
     historyRepository.assertNoUnmigratedJournals();
+    const obsidian = createObsidianRuntime(openedPersistence, {
+      openObsidianUrl: options.legacy.open_obsidian_url,
+      readOnlyVaultPaths: options.legacy.read_only_vault_paths,
+      diagnostic: options.legacy.diagnostic,
+    });
     const legacy = createLegacyRuntime({
       ...options.legacy,
       lifecycle_signal: controller.signal,
       now_provider: nowProvider,
       create_id: createId,
-    }, openedPersistence, files, historyRepository);
+    }, openedPersistence, files, historyRepository, {
+      vaultMappingRepository: obsidian.repository,
+      obsidian: obsidian.workflow,
+    });
+    obsidian.bindHost(legacy.getObsidianCompositionDependencies());
     const taskWrite = createTaskWriteRuntime({
       bridge: legacy.getTaskWriteAsanaBridge(),
       historyRepository,
@@ -184,7 +195,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     });
     legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
     const systemHandlers = createSystemHandlers(options.system);
-    const settingsHandlers = createSettingsHandlers(legacy.getSettingsHandlerWorkflows());
+    const settingsHandlers = createSettingsHandlers(createSettingsRuntime(legacy, createId));
     const tasksHandlers = createTasksHandlers({
       taskRead: legacy.taskRead,
       guiEdit: legacy,
@@ -195,7 +206,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     });
     const proposalsHandlers = createProposalsHandlers(legacy.getProposalsHandlerWorkflows());
     const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus });
-    const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(legacy.getObsidianHandlerWorkflow());
+    const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(
+      obsidian.workflow.createIpcPort(),
+    );
     const diagnosticsHandlers = createDiagnosticsHandlers(engineReporter);
     const featureIpc = new FeatureIpcRegistry({
       signal: controller.signal,

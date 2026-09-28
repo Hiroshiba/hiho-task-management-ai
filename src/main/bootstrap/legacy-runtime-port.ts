@@ -13,8 +13,9 @@ export type LegacyRuntimePort = Pick<
   | "onAiStatus"
   | "onAiDelta"
   | "onExternalAgentChanged"
-  | "getSettingsHandlerWorkflows"
-  | "getObsidianHandlerWorkflow"
+  | "getSettingsCompositionDependencies"
+  | "getObsidianCompositionDependencies"
+  | "attachSettingsRuntime"
   | "getProposalsHandlerWorkflows"
   | "getState"
   | "getTaskWriteAsanaBridge"
@@ -33,6 +34,7 @@ export function createLegacyRuntime(
   persistence: PersistenceRuntime,
   files: ConstructorParameters<typeof TaskHubApplication>[2],
   historyRepository: SqliteProposalApplicationHistoryRepository,
+  bindings: ConstructorParameters<typeof TaskHubApplication>[4],
 ): LegacyRuntimePort {
-  return new TaskHubApplication(options, persistence, files, historyRepository);
+  return new TaskHubApplication(options, persistence, files, historyRepository, bindings);
 }

@@ -158,7 +158,6 @@ import { customExternalDataSchema } from "../domain/task-write-values";
 import { hashGuiEditBaseline } from "../domain/snapshot-hash";
 import type { TaskWriteExternalBaseline } from "./common/task-write-step";
 import type { ProposalsHandlerWorkflows } from "../ipc/handlers/proposals";
-import type { SettingsHandlerWorkflows } from "../ipc/handlers/settings";
 import { buildDisplayOrderInput } from "./task-write";
 import { applyGuiTaskWriteExecution, recoverGuiTaskWrites, validateRelationGraph, type GuiEditDependencies, type GuiEditExecution, type GuiEditExecutionPort, type GuiEditExecutionWorkflow, type GuiEditInput, type GuiEditStartResult } from "./gui-edit";
 import { applyEditRequestSchema } from "../../shared/ipc-contracts/tasks";
@@ -174,11 +173,11 @@ import { SynchronizationOperations } from "../bootstrap/synchronization-operatio
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import {
   AsanaReauthenticationRuntime,
+  CodexHealthWorkflow,
   SetupIpcWorkflow,
   SetupOrchestrator,
   contextMatchesSettings,
   readSettingsState,
-  resolveDeviceId,
   type SetupExternalToolConfigurationResult,
   type SetupFullSyncInput,
 } from "./settings";
@@ -187,7 +186,6 @@ import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
 import { OperationalServicesRuntime } from "../bootstrap/operational-services-runtime";
 import { SyncStateRuntime, TaskReadIndex, TaskReadWorkflow } from "./task-read";
-import { ObsidianReadError, ObsidianReadService, discoverTasksVault } from "../infrastructure/obsidian";
 import { ObsidianIntegrationWorkflow } from "./obsidian-integration";
 import {
   ExternalToolBroker,
@@ -369,10 +367,6 @@ const codexAuthenticationStateSchema = z.union([
 ]);
 
 type CodexAuthenticationState = z.infer<typeof codexAuthenticationStateSchema>;
-
-type CodexKnownFailureCapture =
-  | { readonly kind: "none" }
-  | { readonly kind: "captured"; readonly error: unknown };
 
 type ExternalToolPersistenceResult =
   | { readonly kind: "saved" }
@@ -916,6 +910,34 @@ type ApplicationFileStores = {
   readonly openExternalAgentConfigFile: ExternalAgentBridgeOptions["openConfigFile"];
 };
 
+type ReauthenticationCompositionOptions = ConstructorParameters<typeof AsanaReauthenticationRuntime<
+  DeviceSettings,
+  IpcAsanaReauthenticationCompleteInput,
+  IpcAsanaReauthenticationCancelInput,
+  IpcAsanaAuthenticationState,
+  AsanaSyncCoordinatorResult
+>>[0];
+
+type SetupIpcCompositionOptions = ConstructorParameters<typeof SetupIpcWorkflow<
+  SetupState,
+  Parameters<SetupOrchestrator["beginAsanaAuthorization"]>[0],
+  Parameters<SetupOrchestrator["completeAsanaAuthorization"]>[0],
+  Parameters<SetupOrchestrator["cancelAsanaAuthorization"]>[0],
+  Parameters<SetupOrchestrator["selectWorkspace"]>[0],
+  Parameters<SetupOrchestrator["selectProject"]>[0],
+  Parameters<SetupOrchestrator["chooseVault"]>[0],
+  Parameters<SetupOrchestrator["chooseExternalTool"]>[0]
+>>[0];
+
+type SettingsCompositionDependencies = {
+  readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
+  readonly checkpoint: SetupCheckpointStore;
+  readonly parseState: (value: unknown) => SetupState;
+  readonly contextFromState: typeof contextFromState;
+  readonly parseId: (value: unknown) => string;
+  readonly setupPorts: Omit<ConstructorParameters<typeof SetupOrchestrator>[0], "device_id">;
+} & ReauthenticationCompositionOptions & Omit<SetupIpcCompositionOptions, "setup" | "parseState">;
+
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
@@ -936,6 +958,7 @@ export class TaskHubApplication {
   private readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   private readonly diagnostics: DiagnosticLogService;
   private readonly secretStorage: SecretStorage;
+  private readonly checkpoint: SetupCheckpointStore;
   private readonly scheduler: AsanaRequestScheduler;
   private readonly operationQueue: AsanaOperationQueue;
   private readonly tokenProvider: MutableTokenProviderPort;
@@ -951,8 +974,8 @@ export class TaskHubApplication {
   private readonly codexSession: CodexSessionService;
   private readonly codexConnectionFactory: CodexSessionConnectionFactory;
   private readonly codexAdapter: CodexSetupAdapter;
-  private readonly setup: SetupOrchestrator;
-  private readonly setupIpc: SettingsHandlerWorkflows["setup"];
+  private readonly codexHealth: CodexHealthWorkflow<SetupCodexAvailability, CodexAuthenticationState>;
+  private attachedSetup: SetupOrchestrator | undefined;
   public readonly taskRead: TaskReadWorkflow<
     Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
     Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
@@ -973,13 +996,13 @@ export class TaskHubApplication {
     ExternalToolRegistry,
     ExternalToolDefinition
   >;
-  private readonly asanaReauthentication: AsanaReauthenticationRuntime<
+  private attachedAsanaReauthentication: AsanaReauthenticationRuntime<
     DeviceSettings,
     IpcAsanaReauthenticationCompleteInput,
     IpcAsanaReauthenticationCancelInput,
     IpcAsanaAuthenticationState,
     AsanaSyncCoordinatorResult
-  >;
+  > | undefined;
   private readonly operationalContext: OperationalContextRuntime<
     SetupState,
     OperationalContext,
@@ -1043,6 +1066,10 @@ export class TaskHubApplication {
     persistence: PersistenceRuntime,
     files: ApplicationFileStores,
     historyRepository: SqliteProposalApplicationHistoryRepository,
+    bindings: {
+      readonly vaultMappingRepository: SqliteVaultMappingRepository;
+      readonly obsidian: ObsidianIntegrationWorkflow;
+    },
   ) {
     applicationOptionsSchemaExport.parse(options);
     this.options = options;
@@ -1058,7 +1085,7 @@ export class TaskHubApplication {
       persistence,
       taskReadPersistenceContracts,
     );
-    this.vaultMappingRepository = new SqliteVaultMappingRepository(persistence.connection);
+    this.vaultMappingRepository = bindings.vaultMappingRepository;
     const externalToolDefinitionRecordSchema = createExternalToolDefinitionRecordSchema();
     this.externalToolDefinitionRepository = new SqliteExternalToolDefinitionRepository(
       persistence.connection,
@@ -1068,11 +1095,6 @@ export class TaskHubApplication {
         parseCredentialReferenceNames: (value) =>
           externalToolCredentialReferenceNamesSchema.parse(value),
       },
-    );
-    const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
-      persistence.connection,
-      persistence,
-      (value) => diagnosticLogEntrySchema.parse(value),
     );
     this.proposalApplicationHistoryRepository = historyRepository;
     this.settingsRepository = new SqliteSettingsRepository(
@@ -1099,6 +1121,11 @@ export class TaskHubApplication {
         asanaTaskResponseSchema.parse(entry.asana_response),
       ),
     };
+    const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
+      persistence.connection,
+      persistence,
+      (value) => diagnosticLogEntrySchema.parse(value),
+    );
     this.diagnostics = new DiagnosticLogService(
       diagnosticLogRepository,
       options.app_version,
@@ -1106,7 +1133,7 @@ export class TaskHubApplication {
       diagnosticLogRetentionLimit,
     );
     this.secretStorage = new SecretStorage(files.secretStorage);
-    const checkpoint = new SetupCheckpointStore(files.checkpoint);
+    this.checkpoint = new SetupCheckpointStore(files.checkpoint);
     this.scheduler = new AsanaRequestScheduler();
     this.tokenProvider = createMutableTokenProvider();
     this.transport = new AsanaTransport(this.scheduler, this.tokenProvider);
@@ -1114,20 +1141,10 @@ export class TaskHubApplication {
     this.highPriorityTransport = this.transport.withPriority("high");
     this.readClient = new AsanaReadClient(normalTransport);
     this.interactiveReadClient = new AsanaReadClient(this.highPriorityTransport);
-    const setupClient = new AsanaSetupClient(normalTransport);
     this.writeClient = new AsanaTaskWriteClient(normalTransport);
     this.oauth = new AsanaOAuthCoordinator(
       this.secretStorage,
       options.open_authorization_url,
-    );
-    const resources = new AsanaSetupResourceCoordinator(
-      setupClient,
-      this.readClient,
-    );
-    const capability = new AsanaCapabilityCheckService(
-      this.readClient,
-      this.writeClient,
-      options.now_provider,
     );
     const fullSource = new AsanaFullSyncSource(this.readClient, this.writeClient);
     const deltaSource = new AsanaDeltaSyncSource(this.readClient);
@@ -1169,24 +1186,7 @@ export class TaskHubApplication {
       configOverrides: [],
     }, onCodexError);
     this.codexConnectionFactory = connectionFactory;
-    this.obsidian = new ObsidianIntegrationWorkflow({
-      repository: this.vaultMappingRepository,
-      reader: new ObsidianReadService(this.vaultMappingRepository),
-      discoverTasksVault,
-      assertOperationalReady: () => this.assertOperationalReady(),
-      isStopped: () => this.lifecycleRuntime.isStopped(),
-      isExternalToolConfigurationRunning: () => this.externalTools.isConfigurationRunning(),
-      hasActiveAiSessions: () => this.aiRuntime.hasActiveSessions(),
-      codexSessionState: () => this.codexSession.getState(),
-      configuredReadOnlyVaultPaths: options.read_only_vault_paths,
-      setCodexReadOnlyVaultPaths: (paths) => this.codexSession.setReadOnlyVaultPaths(paths),
-      openObsidianUrl: (uri, signal) => this.options.open_obsidian_url(uri, signal),
-      reportFailure: (error) => {
-        if (error instanceof ObsidianReadError) {
-          this.options.diagnostic(error, "obsidian", serviceErrorDiagnostic);
-        }
-      },
-    });
+    this.obsidian = bindings.obsidian;
     this.codexSession = new CodexSessionService({
       codexExecutablePath: options.codex_executable,
       workspacePath: this.codexWorkspace.workspacePath,
@@ -1205,6 +1205,18 @@ export class TaskHubApplication {
       executable: options.codex_executable,
       environment: codexEnvironment,
       openAuthorizationUrl: options.open_codex_authorization_url,
+    });
+    this.codexHealth = new CodexHealthWorkflow({
+      isDisabled: () => this.externalTools.codexDisabledBySafety(),
+      detectCli: (signal, capture) => this.codexAdapter.detectCli(signal, capture),
+      getAuthenticationState: (signal, capture) => this.codexAdapter.getAuthenticationState(signal, capture),
+      completeAuthentication: (signal, capture) => this.codexAdapter.completeAuthentication(signal, capture),
+      checkCapabilities: (signal) => this.codexAdapter.checkCapabilities(signal),
+      parseAvailability: (value) => setupCodexAvailabilitySchema.parse(value),
+      parseAuthentication: (value) => codexAuthenticationStateSchema.parse(value),
+      rethrowAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
+      recordFailure: (error, message) => this.recordFeatureFailure(error, "codex", message),
+      recordKnownFailure: (error, message) => this.recordCodexKnownFailure(error, message),
     });
     const taskReadIndex = new TaskReadIndex(this.taskReadRepository, taskReadContracts);
     this.cleanupAggregation = new CleanupAggregationService(
@@ -1412,79 +1424,6 @@ export class TaskHubApplication {
       bridge: externalAgentBridge,
     });
     this.externalAgent = externalAgent;
-    this.setup = new SetupOrchestrator({
-      device_id: resolveDeviceId({
-        settings: this.settingsRepository,
-        loadCheckpoint: () => checkpoint.load(),
-        parseState: (value) => setupStateSchema.parse(value),
-        contextFromState,
-        createId: this.options.create_id,
-        parseId: (value) => identifierSchema.parse(value),
-      }),
-      codex: {
-        detectCli: (signal) => this.detectCodexSafely(signal),
-        getAuthenticationState: (signal) =>
-          this.getCodexAuthenticationStateSafely(signal),
-        completeAuthentication: (signal) =>
-          this.completeCodexAuthenticationSafely(signal),
-        checkCapabilities: (signal) =>
-          this.checkCodexCapabilitiesSafely(signal),
-      },
-      oauth: {
-        beginInitialOutOfBandAuthorization: (input, signal) =>
-          this.oauth.beginInitialOutOfBandAuthorization(input, signal),
-        completeOutOfBandAuthorization: async (input, signal) => {
-          const result = await this.oauth.completeOutOfBandAuthorization(input, signal);
-          this.tokenProvider.setProvider(
-            new AsanaOAuthClient(
-              result.client_id,
-              this.secretStorage,
-            ),
-          );
-          return result;
-        },
-        cancelOutOfBandAuthorization: (input) =>
-          this.oauth.cancelOutOfBandAuthorization(input),
-        getOutOfBandState: () => this.oauth.getOutOfBandState(),
-      },
-      asana: setupClient,
-      resources: resources,
-      capability: capability,
-      reportCapabilityFailure: (error) =>
-        this.options.diagnostic(error, "setup", serviceErrorDiagnostic),
-      database: {
-        saveDeviceSettings: (value) => this.settingsRepository.save(value),
-        getDeviceSettings: () => this.settingsRepository.get(),
-        saveVaultMapping: (value) => this.vaultMappingRepository.saveVaultMapping(value),
-        getVaultMappings: () => this.vaultMappingRepository.getVaultMappings(),
-      },
-      checkpoint: {
-        load: () => checkpoint.load(),
-        save: (value) => checkpoint.save(value),
-      },
-      externalTool: {
-        configureDiscord: (input, signal) =>
-          this.configureDiscordExternalTool(input, signal),
-        deactivateDiscord: (signal) =>
-          this.externalTools.deactivate(signal),
-      },
-      fullSync: (input, signal) => this.runSetupFullSync(input, signal),
-      contracts: {
-        validation: setupSchemas.validation,
-        parseDeviceSettings: (value) => deviceSettingsSchema.parse(value),
-        parseVaultMapping: (value) => vaultMappingSchema.parse(value),
-        parseOAuthBeginResult: (value) => oauthOutOfBandBeginResultSchema.parse(value),
-        parseOAuthCompleteResult: (value) => asanaOAuthCoordinatorResultSchema.parse(value),
-        parseOAuthState: (value) => oauthOutOfBandStateSchema.parse(value),
-        createOAuthInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
-        createOAuthIdMismatchError: () => new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
-        parseResourceResult: (value) => asanaSetupResourceCoordinatorResultSchema.parse(value),
-        parseCapabilityResult: (value) => capabilityCheckResultSchema.parse(value),
-        isCapabilityError: (error): error is AsanaCapabilityCheckError => error instanceof AsanaCapabilityCheckError,
-        hasRestAsanaHttpError,
-        validateVaultPath: (mapping, signal) => this.obsidian.validateMapping(mapping, signal),
-      },
-    });
     this.operationalContext = new OperationalContextRuntime<
       SetupState,
       OperationalContext,
@@ -1659,52 +1598,6 @@ export class TaskHubApplication {
       },
       verifyCapabilities: (signal) => this.verifyConfiguredCodexCapabilities(signal),
     });
-    this.asanaReauthentication = new AsanaReauthenticationRuntime<
-      DeviceSettings,
-      IpcAsanaReauthenticationCompleteInput,
-      IpcAsanaReauthenticationCancelInput,
-      IpcAsanaAuthenticationState,
-      AsanaSyncCoordinatorResult
-    >({
-      requireSettings: () => this.operationalContext.requireConfiguredSettings(),
-      validateAbortSignal,
-      throwIfAborted,
-      parseCompleteInput: (input) => ipcAsanaCompleteReauthenticationInputSchema.parse(input),
-      parseCancelInput: (input) => ipcAsanaCancelReauthenticationInputSchema.parse(input),
-      readOAuthState: () => oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState()),
-      beginOAuth: async (clientId, signal) => oauthOutOfBandBeginResultSchema.parse(
-        await this.oauth.beginOutOfBandReauthentication({ client_id: clientId }, signal),
-      ),
-      completeOAuth: async (input, signal) => asanaOAuthCoordinatorResultSchema.parse(
-        await this.oauth.completeOutOfBandAuthorization(input, signal),
-      ),
-      cancelOAuth: (authorizationId) =>
-        this.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId }),
-      parseAuthenticationState: (state) => ipcAsanaAuthenticationStateSchema.parse(state),
-      createInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
-      createAuthorizationIdMismatchError: () =>
-        new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
-      createNotPendingError: () => new AsanaOAuthOutOfBandNotPendingError(),
-      invalidatePendingMutations: () => this.operationQueue.invalidatePendingMutations(
-        "context_changed",
-      ),
-      expireExternalAgent: () => this.externalAgent.expireForContextChange(),
-      enqueueContextChange: (signal, run) => this.operationQueue.enqueue({
-        priority: "user",
-        kind: "context_change",
-        signal,
-        run: (context) => run(context.signal),
-      }),
-      configureAsana: (settings) => this.operationalContext.configureAsanaFromSettings(settings),
-      synchronize: async (signal) => {
-        const synchronized = await this.synchronizationOperations.requireSynchronizedResult(
-          this.requireRuntime().onOnline(signal),
-        );
-        await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
-        return synchronized.result;
-      },
-      restoreContext: () => this.operationalContext.configureFromState(this.setup.getState()),
-    });
     this.operationalServices = new OperationalServicesRuntime<
       OperationalContext,
       DeviceSettings,
@@ -1799,10 +1692,176 @@ export class TaskHubApplication {
       markExternalStopped: () => this.externalTools.markStopped(),
       combineFailures: (errors) => combineDiagnosticFailures(errors),
     });
-    this.setupIpc = new SetupIpcWorkflow({
-      setup: this.setup,
-      parseState: (value) => setupStateSchema.parse(value),
-      afterTransition: (state) => {
+  }
+
+  private get setup(): SetupOrchestrator {
+    const setup = this.attachedSetup;
+    assertNonNullable(setup, "初回設定workflowが接続されていません。");
+    return setup;
+  }
+
+  private get asanaReauthentication(): AsanaReauthenticationRuntime<
+    DeviceSettings,
+    IpcAsanaReauthenticationCompleteInput,
+    IpcAsanaReauthenticationCancelInput,
+    IpcAsanaAuthenticationState,
+    AsanaSyncCoordinatorResult
+  > {
+    const reauthentication = this.attachedAsanaReauthentication;
+    assertNonNullable(reauthentication, "Asana再認証workflowが接続されていません。");
+    return reauthentication;
+  }
+
+  /** 初回設定と再認証のworkflowを接続して保存済み状態を復元します。 */
+  public attachSettingsRuntime(
+    setup: SetupOrchestrator,
+    reauthentication: AsanaReauthenticationRuntime<
+      DeviceSettings,
+      IpcAsanaReauthenticationCompleteInput,
+      IpcAsanaReauthenticationCancelInput,
+      IpcAsanaAuthenticationState,
+      AsanaSyncCoordinatorResult
+    >,
+  ): void {
+    if (this.attachedSetup != null || this.attachedAsanaReauthentication != null) {
+      throw new Error("設定workflowを二重に接続できません。");
+    }
+    this.attachedSetup = setup;
+    this.attachedAsanaReauthentication = reauthentication;
+    this.codexAvailability = contextFromState(setup.getState())?.codex;
+    this.operationalContext.configureAsanaFromSettings(this.operationalContext.getSettings());
+    this.operationalContext.configureFromState(setup.getState());
+  }
+
+  /** Obsidian連携が必要とする運用状態だけを公開します。 */
+  public getObsidianCompositionDependencies(): {
+    readonly assertOperationalReady: () => void;
+    readonly isStopped: () => boolean;
+    readonly isExternalToolConfigurationRunning: () => boolean;
+    readonly hasActiveAiSessions: () => boolean;
+    readonly codexSessionState: () => ReturnType<CodexSessionService["getState"]>;
+    readonly setCodexReadOnlyVaultPaths: (paths: readonly string[]) => void;
+  } {
+    return {
+      assertOperationalReady: () => this.assertOperationalReady(),
+      isStopped: () => this.lifecycleRuntime.isStopped(),
+      isExternalToolConfigurationRunning: () => this.externalTools.isConfigurationRunning(),
+      hasActiveAiSessions: () => this.aiRuntime.hasActiveSessions(),
+      codexSessionState: () => this.codexSession.getState(),
+      setCodexReadOnlyVaultPaths: (paths) => this.codexSession.setReadOnlyVaultPaths(paths),
+    };
+  }
+
+  /** 設定workflowの生成に必要な既存運用操作を公開します。 */
+  public getSettingsCompositionDependencies(): SettingsCompositionDependencies {
+    const setupClient = new AsanaSetupClient(this.transport.withPriority("normal"));
+    return {
+      settingsRepository: this.settingsRepository,
+      checkpoint: this.checkpoint,
+      parseState: (value: unknown) => setupStateSchema.parse(value),
+      contextFromState,
+      parseId: (value: unknown) => identifierSchema.parse(value),
+      setupPorts: {
+        codex: {
+          detectCli: (signal: AbortSignal) => this.codexHealth.detectCli(signal),
+          getAuthenticationState: (signal: AbortSignal) => this.codexHealth.getAuthenticationState(signal),
+          completeAuthentication: (signal: AbortSignal) => this.codexHealth.completeAuthentication(signal),
+          checkCapabilities: (signal: AbortSignal) => this.codexHealth.checkCapabilities(signal),
+        },
+        oauth: {
+          beginInitialOutOfBandAuthorization: (input: Parameters<AsanaOAuthCoordinator["beginInitialOutOfBandAuthorization"]>[0], signal: AbortSignal) =>
+            this.oauth.beginInitialOutOfBandAuthorization(input, signal),
+          completeOutOfBandAuthorization: async (input: Parameters<AsanaOAuthCoordinator["completeOutOfBandAuthorization"]>[0], signal: AbortSignal) => {
+            const result = await this.oauth.completeOutOfBandAuthorization(input, signal);
+            this.tokenProvider.setProvider(new AsanaOAuthClient(result.client_id, this.secretStorage));
+            return result;
+          },
+          cancelOutOfBandAuthorization: (input: Parameters<AsanaOAuthCoordinator["cancelOutOfBandAuthorization"]>[0]) =>
+            this.oauth.cancelOutOfBandAuthorization(input),
+          getOutOfBandState: () => this.oauth.getOutOfBandState(),
+        },
+        asana: setupClient,
+        resources: new AsanaSetupResourceCoordinator(setupClient, this.readClient),
+        capability: new AsanaCapabilityCheckService(
+          this.readClient,
+          this.writeClient,
+          this.options.now_provider,
+        ),
+        reportCapabilityFailure: (error: unknown) =>
+          this.options.diagnostic(error, "setup", serviceErrorDiagnostic),
+        database: {
+          saveDeviceSettings: (value: DeviceSettings) => this.settingsRepository.save(value),
+          getDeviceSettings: () => this.settingsRepository.get(),
+          saveVaultMapping: (value: Parameters<SqliteVaultMappingRepository["saveVaultMapping"]>[0]) =>
+            this.vaultMappingRepository.saveVaultMapping(value),
+          getVaultMappings: () => this.vaultMappingRepository.getVaultMappings(),
+        },
+        checkpoint: this.checkpoint,
+        externalTool: {
+          configureDiscord: (input: SetupDiscordExternalToolConfigurationInput, signal: AbortSignal) =>
+            this.configureDiscordExternalTool(input, signal),
+          deactivateDiscord: (signal: AbortSignal) => this.externalTools.deactivate(signal),
+        },
+        fullSync: (input: SetupFullSyncInput, signal: AbortSignal) => this.runSetupFullSync(input, signal),
+        contracts: {
+          validation: setupSchemas.validation,
+          parseDeviceSettings: (value: unknown) => deviceSettingsSchema.parse(value),
+          parseVaultMapping: (value: unknown) => vaultMappingSchema.parse(value),
+          parseOAuthBeginResult: (value: unknown) => oauthOutOfBandBeginResultSchema.parse(value),
+          parseOAuthCompleteResult: (value: unknown) => asanaOAuthCoordinatorResultSchema.parse(value),
+          parseOAuthState: (value: unknown) => oauthOutOfBandStateSchema.parse(value),
+          createOAuthInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
+          createOAuthIdMismatchError: () => new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
+          parseResourceResult: (value: unknown) => asanaSetupResourceCoordinatorResultSchema.parse(value),
+          parseCapabilityResult: (value: unknown) => capabilityCheckResultSchema.parse(value),
+          isCapabilityError: (error: unknown): error is AsanaCapabilityCheckError => error instanceof AsanaCapabilityCheckError,
+          hasRestAsanaHttpError,
+          validateVaultPath: (mapping: Parameters<ObsidianIntegrationWorkflow["validateMapping"]>[0], signal: AbortSignal) =>
+            this.obsidian.validateMapping(mapping, signal),
+        },
+      },
+      validateAbortSignal,
+      throwIfAborted,
+      requireSettings: () => this.operationalContext.requireConfiguredSettings(),
+      parseCompleteInput: (input: unknown) =>
+        ipcAsanaCompleteReauthenticationInputSchema.parse(input),
+      parseCancelInput: (input: unknown) =>
+        ipcAsanaCancelReauthenticationInputSchema.parse(input),
+      readOAuthState: () => oauthOutOfBandStateSchema.parse(this.oauth.getOutOfBandState()),
+      beginOAuth: async (clientId: string, signal: AbortSignal) => oauthOutOfBandBeginResultSchema.parse(
+        await this.oauth.beginOutOfBandReauthentication({ client_id: clientId }, signal),
+      ),
+      completeOAuth: async (input: IpcAsanaReauthenticationCompleteInput, signal: AbortSignal) =>
+        asanaOAuthCoordinatorResultSchema.parse(
+          await this.oauth.completeOutOfBandAuthorization(input, signal),
+        ),
+      cancelOAuth: (authorizationId: string) =>
+        this.oauth.cancelOutOfBandAuthorization({ authorization_id: authorizationId }),
+      parseAuthenticationState: (state: Parameters<typeof ipcAsanaAuthenticationStateSchema.parse>[0]) =>
+        ipcAsanaAuthenticationStateSchema.parse(state),
+      createInProgressError: () => new AsanaOAuthOutOfBandAuthenticationInProgressError(),
+      createAuthorizationIdMismatchError: () =>
+        new AsanaOAuthOutOfBandAuthorizationIdMismatchError(),
+      createNotPendingError: () => new AsanaOAuthOutOfBandNotPendingError(),
+      invalidatePendingMutations: () => this.operationQueue.invalidatePendingMutations("context_changed"),
+      expireExternalAgent: () => this.externalAgent.expireForContextChange(),
+      enqueueContextChange: (signal: AbortSignal, run: (operationSignal: AbortSignal) => Promise<void>) =>
+        this.operationQueue.enqueue({
+          priority: "user",
+          kind: "context_change",
+          signal,
+          run: (context) => run(context.signal),
+        }),
+      configureAsana: (settings: DeviceSettings) => this.operationalContext.configureAsanaFromSettings(settings),
+      synchronize: async (signal: AbortSignal) => {
+        const synchronized = await this.synchronizationOperations.requireSynchronizedResult(
+          this.requireRuntime().onOnline(signal),
+        );
+        await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
+        return synchronized.result;
+      },
+      restoreContext: () => this.operationalContext.configureFromState(this.setup.getState()),
+      afterTransition: (state: SetupState): SetupState => {
         const validatedState = setupStateSchema.parse(state);
         this.operationalContext.configureAsanaFromSettings(this.settingsRepository.get());
         this.operationalContext.configureFromState(validatedState);
@@ -1812,17 +1871,23 @@ export class TaskHubApplication {
         this.aiEvents.publishStatus();
         return validatedState;
       },
-      afterCodexAuthentication: async (signal) => {
+      afterCodexAuthentication: async (signal: AbortSignal): Promise<void> => {
         if (!this.lifecycleRuntime.isReadyActivated()) {
           await this.lifecycleRuntime.activateReady(signal);
         } else {
           await this.verifyConfiguredCodexCapabilities(signal);
         }
       },
-      afterVaultChoice: (signal) => this.refreshCodexThreadIfReady(signal),
-      runExternalToolConfiguration: (signal, run) =>
-        this.externalTools.runConfigurationOperation(signal, run),
-      afterExternalToolChoice: async (state, signal, commit) => {
+      afterVaultChoice: (signal: AbortSignal) => this.refreshCodexThreadIfReady(signal),
+      runExternalToolConfiguration: (
+        signal: AbortSignal,
+        run: (operationSignal: AbortSignal) => Promise<SetupState>,
+      ) => this.externalTools.runConfigurationOperation(signal, run),
+      afterExternalToolChoice: async (
+        state: SetupState,
+        signal: AbortSignal,
+        commit: (state: SetupState) => SetupState,
+      ): Promise<SetupState> => {
         if (state.kind === "external_tool_configured") {
           const selection = setupExternalToolSelectionSchema.parse({
             kind: "configured",
@@ -1844,11 +1909,8 @@ export class TaskHubApplication {
         }
         return state;
       },
-      afterCodexCapability: (signal) => this.lifecycleRuntime.activateReady(signal),
-    }).createPort();
-    this.codexAvailability = contextFromState(this.setup.getState())?.codex;
-    this.operationalContext.configureAsanaFromSettings(this.operationalContext.getSettings());
-    this.operationalContext.configureFromState(this.setup.getState());
+      afterCodexCapability: (signal: AbortSignal) => this.lifecycleRuntime.activateReady(signal),
+    };
   }
 
   /** 現在の設定済みまたは未設定状態を取得します。 */
@@ -1912,19 +1974,6 @@ export class TaskHubApplication {
       throw new Error("保存済みplan実行入口を二重に設定できません。");
     }
     this.taskWriteExecution = ports;
-  }
-
-  /** 初回設定とAsana再認証の最終IPCへ公開するworkflowを取得します。 */
-  public getSettingsHandlerWorkflows(): SettingsHandlerWorkflows {
-    return {
-      setup: this.setupIpc,
-      asana: this.asanaReauthentication.createPort(),
-    };
-  }
-
-  /** Obsidianの最終IPCへ公開するworkflowを取得します。 */
-  public getObsidianHandlerWorkflow(): ReturnType<ObsidianIntegrationWorkflow["createIpcPort"]> {
-    return this.obsidian.createIpcPort();
   }
 
   /** 変更案の最終IPCに公開するworkflowを取得します。 */
@@ -2102,165 +2151,6 @@ export class TaskHubApplication {
     } catch (diagnosticError: unknown) {
       throw combineDiagnosticFailures([error, diagnosticError]);
     }
-  }
-
-  private async detectCodexSafely(
-    signal: AbortSignal,
-  ): Promise<SetupCodexAvailability> {
-    if (this.externalTools.codexDisabledBySafety()) {
-      return setupCodexAvailabilitySchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-    }
-    let availability: SetupCodexAvailability;
-    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
-      value: { kind: "none" },
-    };
-    try {
-      availability = setupCodexAvailabilitySchema.parse(
-        await this.codexAdapter.detectCli(signal, (error) => {
-          knownFailureCapture.value = { kind: "captured", error };
-        }),
-      );
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.recordFeatureFailure(
-        error,
-        "codex",
-        "Codex CLIの検査に失敗したためAI機能を無効にしました。",
-      );
-      return setupCodexAvailabilitySchema.parse({
-        kind: "unavailable",
-        reason_code: "startup_failed",
-      });
-    }
-    const knownFailure = knownFailureCapture.value;
-    if (knownFailure.kind === "captured") {
-      this.recordCodexKnownFailure(
-        knownFailure.error,
-        "Codex CLIを利用できないためAI機能を無効にしました。",
-      );
-    }
-    return availability;
-  }
-
-  private async getCodexAuthenticationStateSafely(
-    signal: AbortSignal,
-  ): Promise<CodexAuthenticationState> {
-    if (this.externalTools.codexDisabledBySafety()) {
-      return codexAuthenticationStateSchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-    }
-    let state: CodexAuthenticationState;
-    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
-      value: { kind: "none" },
-    };
-    try {
-      state = codexAuthenticationStateSchema.parse(
-        await this.codexAdapter.getAuthenticationState(signal, (error) => {
-          knownFailureCapture.value = { kind: "captured", error };
-        }),
-      );
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.recordFeatureFailure(
-        error,
-        "codex",
-        "Codex認証状態の検査に失敗したためAI機能を無効にしました。",
-      );
-      return codexAuthenticationStateSchema.parse({
-        kind: "unavailable",
-        reason_code: "startup_failed",
-      });
-    }
-    const knownFailure = knownFailureCapture.value;
-    if (knownFailure.kind === "captured") {
-      this.recordCodexKnownFailure(
-        knownFailure.error,
-        "Codex認証状態を利用できないためAI機能を無効にしました。",
-      );
-    }
-    return state;
-  }
-
-  private async completeCodexAuthenticationSafely(
-    signal: AbortSignal,
-  ): Promise<CodexAuthenticationState> {
-    if (this.externalTools.codexDisabledBySafety()) {
-      return codexAuthenticationStateSchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-    }
-    let authenticationState: CodexAuthenticationState;
-    const knownFailureCapture: { value: CodexKnownFailureCapture } = {
-      value: { kind: "none" },
-    };
-    try {
-      authenticationState = codexAuthenticationStateSchema.parse(
-        await this.codexAdapter.completeAuthentication(signal, (error) => {
-          knownFailureCapture.value = { kind: "captured", error };
-        }),
-      );
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.recordFeatureFailure(
-        error,
-        "codex",
-        "Codex再認証に失敗したためAI機能を無効にしました。",
-      );
-      return codexAuthenticationStateSchema.parse({
-        kind: "unavailable",
-        reason_code: "startup_failed",
-      });
-    }
-    const knownFailure = knownFailureCapture.value;
-    if (knownFailure.kind === "captured") {
-      this.recordCodexKnownFailure(
-        knownFailure.error,
-        "Codex再認証を完了できないためAI機能を無効にしました。",
-      );
-    }
-    return authenticationState;
-  }
-
-  private async checkCodexCapabilitiesSafely(
-    signal: AbortSignal,
-  ): Promise<SetupCodexAvailability> {
-    if (this.externalTools.codexDisabledBySafety()) {
-      return setupCodexAvailabilitySchema.parse({
-        kind: "unavailable",
-        reason_code: "disabled",
-      });
-    }
-    let availability: SetupCodexAvailability;
-    try {
-      availability = setupCodexAvailabilitySchema.parse(
-        await this.codexAdapter.checkCapabilities(signal),
-      );
-    } catch (error: unknown) {
-      this.rethrowFeatureAbort(error, signal);
-      this.recordFeatureFailure(
-        error,
-        "codex",
-        "Codex能力検査に失敗したためAI機能を無効にしました。",
-      );
-      return setupCodexAvailabilitySchema.parse({
-        kind: "unavailable",
-        reason_code: "startup_failed",
-      });
-    }
-    if (availability.kind === "unavailable") {
-      this.recordFeatureFailure(
-        availability,
-        "codex",
-        "Codex能力検査を完了できないためAI機能を無効にしました。",
-      );
-    }
-    return availability;
   }
 
   private async resumeSetupAtStartup(
@@ -2527,7 +2417,7 @@ export class TaskHubApplication {
 
   private async startCodexForConfigured(signal: AbortSignal): Promise<void> {
     this.aiEvents.publishStatus();
-    const detected = await this.detectCodexSafely(signal);
+    const detected = await this.codexHealth.detectCli(signal);
     this.codexAvailability = detected;
     if (detected.kind === "unavailable") {
       this.aiStartResult = undefined;
@@ -2535,7 +2425,7 @@ export class TaskHubApplication {
       this.aiEvents.publishStatus();
       return;
     }
-    const authentication = await this.getCodexAuthenticationStateSafely(signal);
+    const authentication = await this.codexHealth.getAuthenticationState(signal);
     if (authentication.kind === "unavailable") {
       this.codexAvailability = authentication;
       this.aiStartResult = undefined;
@@ -2552,7 +2442,7 @@ export class TaskHubApplication {
     if (!isReadyCodexResult(this.aiStartResult) || this.codexAuthenticationRequired) {
       return;
     }
-    const availability = await this.checkCodexCapabilitiesSafely(signal);
+    const availability = await this.codexHealth.checkCapabilities(signal);
     this.codexAvailability = availability;
     this.aiEvents.publishStatus();
   }

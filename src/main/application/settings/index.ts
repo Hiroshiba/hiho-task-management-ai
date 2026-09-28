@@ -1,4 +1,5 @@
 export { AsanaReauthenticationRuntime } from "./asana-reauthentication";
+export { CodexHealthWorkflow } from "./codex-health";
 export { SetupIpcWorkflow } from "./setup-ipc-workflow";
 export { SetupOrchestrator } from "./setup-workflow";
 export type { SetupExternalToolConfigurationResult } from "./setup-ports";
