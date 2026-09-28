@@ -36,10 +36,18 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
     return result.value;
   }
 
-  async function resynchronize(): Promise<void> {
-    const result = settingsContracts.getState.response.parse(await api.getState());
+  async function resynchronize(operationFailure: string): Promise<void> {
+    let response: Awaited<ReturnType<SettingsApi["getState"]>>;
+    try {
+      response = await api.getState();
+    } catch (error) {
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      options.onFeedback({ kind: "failure", message: `${operationFailure} 設定状態を再取得できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}` });
+      return;
+    }
+    const result = settingsContracts.getState.response.parse(response);
     if (result.kind === "error") {
-      options.onFeedback({ kind: "failure", message: failureMessage(result) });
+      options.onFeedback({ kind: "failure", message: `${operationFailure} 設定状態を再取得できませんでした。${failureMessage(result)}` });
       return;
     }
     applyState(result.value);
@@ -91,14 +99,16 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
         response = await request;
       } catch (error) {
         const errorId = await reportRendererError(diagnostics, error, "error");
-        options.onFeedback({ kind: "failure", message: `設定操作を完了できませんでした。状態を確認して再試行してください。${errorId == null ? "" : ` エラーID ${errorId}`}` });
-        await resynchronize();
+        const operationFailure = `設定操作を完了できませんでした。状態を確認して再試行してください。${errorId == null ? "" : ` エラーID ${errorId}`}`;
+        options.onFeedback({ kind: "failure", message: operationFailure });
+        await resynchronize(operationFailure);
         return;
       }
       const result = settingsContracts.getState.response.parse(response);
       if (result.kind === "error") {
-        options.onFeedback({ kind: "failure", message: failureMessage(result) });
-        await resynchronize();
+        const operationFailure = failureMessage(result);
+        options.onFeedback({ kind: "failure", message: operationFailure });
+        await resynchronize(operationFailure);
         return;
       }
       if (previousKind === "ready" && action.kind === "complete_codex_authentication" && result.value.kind !== "ready") {

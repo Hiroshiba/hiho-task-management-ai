@@ -103,8 +103,13 @@ const failureIsInHistory = computed(() => {
   const latestEntry = props.conversationHistory.at(-1);
   return latestEntry?.kind === "failure"
     && latestEntry.failure.code === props.state.failure.code
-    && latestEntry.failure.message === props.state.failure.message;
+    && latestEntry.failure.message === props.state.failure.message
+    && latestEntry.failure.error_id === props.state.failure.error_id;
 });
+
+function failureMessage(failure: IpcFailure): string {
+  return `${failure.message}${failure.error_id == null ? "" : ` エラーID ${failure.error_id}`}`;
+}
 
 function historyQuestions(
   entry: AiConversationEntry,
@@ -249,7 +254,7 @@ function sendMessage(): void {
                 AIの応答に失敗しました。
               </p>
               <p class="whitespace-pre-wrap break-words text-rose-800 dark:text-rose-100">
-                {{ entry.failure.message }}
+                {{ failureMessage(entry.failure) }}
               </p>
             </template>
           </li>
@@ -318,22 +323,16 @@ function sendMessage(): void {
         @retry="emit('retry-execution', $event)"
       />
       <div
-        v-if="props.state.kind === 'failed'"
+        v-if="props.state.kind === 'failed' && !failureIsInHistory"
         class="rounded-md bg-amber-50 p-4 dark:bg-amber-950"
         role="alert"
       >
         <p class="font-medium text-amber-900 dark:text-amber-100">
           AIの応答を確認できませんでした。
         </p><p
-          v-if="failureIsInHistory"
           class="mt-1 text-sm text-amber-900 dark:text-amber-100"
         >
-          詳細は会話履歴を確認してください。
-        </p><p
-          v-else
-          class="mt-1 text-sm text-amber-900 dark:text-amber-100"
-        >
-          {{ props.state.failure.message }}
+          {{ failureMessage(props.state.failure) }}
         </p>
       </div>
 

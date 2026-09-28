@@ -380,8 +380,7 @@ export function useProposalWorkspace(options: Options) {
       if (result.kind === "error") {
         updateRecord(sessionId, (value) => ({ ...value,
           conversation_history: [...value.conversation_history.slice(0, -1), { kind: "failure", request: message,
-            failure: { ...result, message: withErrorId(result.message, result.error_id) } }] }));
-        setSessionFailure(sessionId, withErrorId(result.message, result.error_id));
+            failure: result }] }));
         return;
       }
       const state = proposals.sessions.value.find((session) => session.session_id === sessionId)?.state;
@@ -395,18 +394,19 @@ export function useProposalWorkspace(options: Options) {
         }] }));
     } catch (error) {
       const errorId = await reportRendererError(diagnostics, error, "error");
-      if (pendingStarted && !disposed && records.value.some((value) => value.session_id === sessionId)) {
+      const pendingHistory = pendingStarted && !disposed && records.value.some((value) =>
+        value.session_id === sessionId && value.conversation_history.at(-1)?.kind === "pending");
+      if (pendingHistory) {
         updateRecord(sessionId, (value) => ({ ...value,
-          conversation_history: value.conversation_history.at(-1)?.kind === "pending"
-            ? [...value.conversation_history.slice(0, -1), {
-              kind: "failure", request: input.message,
-              failure: { kind: "error", code: "operation_failed",
-                message: withErrorId("AIの応答を確認できませんでした。", errorId),
-                ...(errorId == null ? {} : { error_id: errorId }) },
-            }]
-            : value.conversation_history }));
+          conversation_history: [...value.conversation_history.slice(0, -1), {
+            kind: "failure", request: input.message,
+            failure: { kind: "error", code: "operation_failed",
+              message: "AIの応答を確認できませんでした。",
+              ...(errorId == null ? {} : { error_id: errorId }) },
+          }] }));
+      } else {
+        setSessionFailure(sessionId, withErrorId("AIの応答を確認できませんでした。", errorId));
       }
-      setSessionFailure(sessionId, withErrorId("AIの応答を確認できませんでした。", errorId));
     } finally {
       if (pendingStarted && !disposed) clearSyncWaitingFeedback(sessionId);
     }
