@@ -2254,16 +2254,6 @@
     },
     {
       "path": "src/main/codex/app-server/version.ts",
-      "rule": "module-mutable",
-      "symbol": "safeEnvironmentKeys"
-    },
-    {
-      "path": "src/main/codex/app-server/version.ts",
-      "rule": "module-mutable",
-      "symbol": "safeEnvironmentKeysByLowerCase"
-    },
-    {
-      "path": "src/main/codex/app-server/version.ts",
       "rule": "old-import",
       "symbol": "src/main/codex/app-server/errors.ts"
     },
@@ -2854,11 +2844,6 @@
     },
     {
       "path": "src/main/external-tools/discord.ts",
-      "rule": "module-mutable",
-      "symbol": "discordThreadTypes"
-    },
-    {
-      "path": "src/main/external-tools/discord.ts",
       "rule": "old-import",
       "symbol": "src/main/external-tools/errors.ts"
     },
@@ -2941,21 +2926,6 @@
       "path": "src/main/external-tools/registry.ts",
       "rule": "old-path",
       "symbol": "src/main/external-tools/registry.ts"
-    },
-    {
-      "path": "src/main/external-tools/schemas.ts",
-      "rule": "module-mutable",
-      "symbol": "forbiddenArgumentNameParts"
-    },
-    {
-      "path": "src/main/external-tools/schemas.ts",
-      "rule": "module-mutable",
-      "symbol": "forbiddenCommandParts"
-    },
-    {
-      "path": "src/main/external-tools/schemas.ts",
-      "rule": "module-mutable",
-      "symbol": "readOnlyCommandHeads"
     },
     {
       "path": "src/main/external-tools/schemas.ts",
@@ -3191,21 +3161,6 @@
       "path": "src/main/redact-sensitive-text.ts",
       "rule": "old-path",
       "symbol": "src/main/redact-sensitive-text.ts"
-    },
-    {
-      "path": "src/main/security.ts",
-      "rule": "module-mutable",
-      "symbol": "allowedAsanaAuthorizationHosts"
-    },
-    {
-      "path": "src/main/security.ts",
-      "rule": "module-mutable",
-      "symbol": "allowedAsanaExternalHosts"
-    },
-    {
-      "path": "src/main/security.ts",
-      "rule": "module-mutable",
-      "symbol": "allowedCodexAuthorizationHosts"
     },
     {
       "path": "src/main/security.ts",

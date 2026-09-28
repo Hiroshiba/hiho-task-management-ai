@@ -27,7 +27,7 @@ const defaultSearchResultLimit = 25;
 const defaultThreadResultLimit = 100;
 const maximumSearchQueryBytes = 1_024;
 const maximumDiscordContentCharacters = 16_000;
-const discordThreadTypes = new Set([10, 11, 12]);
+const discordThreadTypes: readonly number[] = Object.freeze([10, 11, 12]);
 
 /** SecretStorage内で使う固定Discord資格情報名です。 */
 export const discordExternalToolCredentialReferenceName = "discord_bot_token";
@@ -604,7 +604,7 @@ async function readDiscordThread(
     signal,
   );
   const thread = parseDiscordResponse(value, discordThreadSchema);
-  if (thread.id !== threadId || !discordThreadTypes.has(thread.type)) {
+  if (thread.id !== threadId || !discordThreadTypes.includes(thread.type)) {
     throw new ExternalToolError(
       "invalid_output",
       "Discord API応答は要求したスレッドではありません。",

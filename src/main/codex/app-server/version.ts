@@ -15,7 +15,7 @@ import {
 } from "./errors";
 import { taskHubExecutablePathEnvironmentVariable } from "../taskctl";
 
-const safeEnvironmentKeys = new Set([
+const safeEnvironmentKeys: readonly string[] = Object.freeze([
   "PATH",
   "HOME",
   "USERPROFILE",
@@ -41,8 +41,11 @@ const safeEnvironmentKeys = new Set([
   "CODEX_HOME",
   taskHubExecutablePathEnvironmentVariable,
 ]);
-const safeEnvironmentKeysByLowerCase = new Map(
-  [...safeEnvironmentKeys].map((key) => [key.toLowerCase(), key]),
+const safeEnvironmentKeyEntriesByLowerCase = Object.freeze(
+  safeEnvironmentKeys.map((key) => Object.freeze({
+    lowerCaseKey: key.toLowerCase(),
+    canonicalKey: key,
+  })),
 );
 const maxCodexHomePathCodeUnits = 4_096;
 
@@ -133,13 +136,15 @@ export function createSafeCodexEnvironment(
       continue;
     }
     if (!isWindows) {
-      if (!safeEnvironmentKeys.has(key)) {
+      if (!safeEnvironmentKeys.includes(key)) {
         continue;
       }
       safeEnvironment[key] = value;
       continue;
     }
-    const canonicalKey = safeEnvironmentKeysByLowerCase.get(key.toLowerCase());
+    const canonicalKey = safeEnvironmentKeyEntriesByLowerCase.find(
+      (entry) => entry.lowerCaseKey === key.toLowerCase(),
+    )?.canonicalKey;
     if (canonicalKey == null || seenWindowsKeys.has(canonicalKey)) {
       continue;
     }

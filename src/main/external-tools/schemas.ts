@@ -30,7 +30,7 @@ const maximumDiscordChannels = 16;
 const maximumStatusEvidenceLocatorBytes = 4_096;
 const maximumStatusEvidenceTargetTaskGidBytes = 200;
 
-const readOnlyCommandHeads = new Set([
+const readOnlyCommandHeads: readonly string[] = Object.freeze([
   "fetch",
   "find",
   "get",
@@ -49,7 +49,7 @@ const readOnlyCommandHeads = new Set([
   "view",
 ]);
 
-const forbiddenCommandParts = new Set([
+const forbiddenCommandParts: readonly string[] = Object.freeze([
   "add",
   "archive",
   "ban",
@@ -91,7 +91,7 @@ const forbiddenCommandParts = new Set([
   "write",
 ]);
 
-const forbiddenArgumentNameParts = new Set([
+const forbiddenArgumentNameParts: readonly string[] = Object.freeze([
   "auth",
   "base",
   "config",
@@ -130,7 +130,11 @@ function hasControlCharacter(value: string): boolean {
 function isReadOnlyCommand(value: string): boolean {
   const parts = value.toLowerCase().split(/[._:-]/u);
   const firstPart = parts[0];
-  if (firstPart == null || !readOnlyCommandHeads.has(firstPart) || parts.some((part) => part.length === 0)) {
+  if (
+    firstPart == null
+    || !readOnlyCommandHeads.includes(firstPart)
+    || parts.some((part) => part.length === 0)
+  ) {
     return false;
   }
   return parts.slice(1).every((part) => {
@@ -146,7 +150,7 @@ function isReadOnlyCommand(value: string): boolean {
 function hasForbiddenWriteArgumentPart(value: string): boolean {
   const parts = value.slice(2).toLowerCase().split("-");
   return parts.some((part) => {
-    if (forbiddenCommandParts.has(part)) {
+    if (forbiddenCommandParts.includes(part)) {
       return true;
     }
     return [...forbiddenCommandParts].some((verb) =>

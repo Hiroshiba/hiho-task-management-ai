@@ -1,8 +1,13 @@
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 
-const allowedAsanaExternalHosts = new Set(["app.asana.com", "asana.com"]);
-const allowedAsanaAuthorizationHosts = new Set(["app.asana.com"]);
-const allowedCodexAuthorizationHosts = new Set([
+const allowedAsanaExternalHosts: readonly string[] = Object.freeze([
+  "app.asana.com",
+  "asana.com",
+]);
+const allowedAsanaAuthorizationHosts: readonly string[] = Object.freeze([
+  "app.asana.com",
+]);
+const allowedCodexAuthorizationHosts: readonly string[] = Object.freeze([
   "auth.openai.com",
   "chatgpt.com",
   "www.chatgpt.com",
@@ -10,7 +15,7 @@ const allowedCodexAuthorizationHosts = new Set([
 
 function assertAllowedHttpsUrl(
   rawUrl: string,
-  allowedHosts: ReadonlySet<string>,
+  allowedHosts: readonly string[],
   failureMessage: string,
 ): URL {
   let parsedUrl: URL;
@@ -26,7 +31,7 @@ function assertAllowedHttpsUrl(
     || (parsedUrl.port !== "" && parsedUrl.port !== "443")
     || parsedUrl.username !== ""
     || parsedUrl.password !== ""
-    || !allowedHosts.has(parsedUrl.hostname)
+    || !allowedHosts.includes(parsedUrl.hostname)
   ) {
     throw new Error(failureMessage);
   }
