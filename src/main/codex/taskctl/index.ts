@@ -6,7 +6,7 @@ export {
   TaskctlAbortError,
   TaskctlBrokerError,
   TaskctlExecutionTimeoutError,
-} from "./errors";
+} from "../../infrastructure/ai/taskctl/errors";
 export {
   taskHubExecutablePathEnvironmentVariable,
 } from "./client-script";
