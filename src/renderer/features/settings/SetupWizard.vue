@@ -1,55 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { isoDateTimeSchema } from "../../shared/domain";
-import type { TaskHubApi } from "../../shared/task-hub-api";
-import {
-  setupAsanaAuthorizationBeginInputSchema,
-  setupAsanaAuthorizationCancelInputSchema,
-  setupAsanaAuthorizationCompleteInputSchema,
-  setupExternalToolChoiceInputSchema,
-  setupProjectSelectionInputSchema,
-  setupVaultChoiceInputSchema,
-  setupWorkspaceSelectionInputSchema,
-  type SetupAsanaAuthorizationCancelInput,
-  type SetupExternalToolChoiceInput,
-  type SetupExternalToolUnavailableReason,
-  type SetupProjectSelectionInput,
-  type SetupState,
-  type SetupVaultChoiceInput,
-  type SetupWorkspaceSelectionInput,
-} from "../../shared/setup";
-import { vaultMappingSchema } from "../../shared/storage";
-import { useTaskHub } from "./task-hub";
-
-type SetupApi = TaskHubApi["setup"];
-
-type SetupAction =
-  | { readonly kind: "start" }
-  | { readonly kind: "complete_codex_authentication" }
-  | {
-      readonly kind: "begin_asana_authorization";
-      readonly request: ReturnType<SetupApi["beginAsanaAuthorization"]>;
-    }
-  | {
-      readonly kind: "complete_asana_authorization";
-      readonly request: ReturnType<SetupApi["completeAsanaAuthorization"]>;
-    }
-  | {
-      readonly kind: "cancel_asana_authorization";
-      readonly request: ReturnType<SetupApi["cancelAsanaAuthorization"]>;
-    }
-  | { readonly kind: "list_workspaces" }
-  | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
-  | { readonly kind: "select_project"; readonly input: SetupProjectSelectionInput }
-  | { readonly kind: "retry_resources" }
-  | { readonly kind: "run_capability" }
-  | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
-  | {
-      readonly kind: "choose_external_tool";
-      readonly request: ReturnType<SetupApi["chooseExternalTool"]>;
-    }
-  | { readonly kind: "run_full_sync" }
-  | { readonly kind: "run_codex_capability" };
+import { dateTimeSchema } from "../../../shared/ipc-contracts/common";
+import { settingsContracts } from "../../../shared/ipc-contracts/settings";
+import type {
+  SetupExternalToolChoiceInput,
+  SetupExternalToolUnavailableReason,
+  SetupState,
+} from "../../../shared/ipc-contracts/setup-schemas";
+import { vaultMappingSchema } from "../../../shared/ipc-contracts/vault-values";
+import type { SetupAction } from "./setup-action";
 
 type SetupProgressStageNumber = 1 | 2 | 3 | 4;
 type SetupProgressStatus = "completed" | "current" | "upcoming";
@@ -65,8 +24,6 @@ const props = defineProps<{
   state: SetupState | undefined;
   busy: boolean;
 }>();
-
-const taskHub = useTaskHub();
 
 const emit = defineEmits<{
   (event: "action", action: SetupAction): void;
@@ -104,8 +61,15 @@ function clearSensitiveInputs(): void {
   clearAuthorizationCode();
 }
 
-watch(() => props.state?.kind, clearSensitiveInputs);
-onBeforeUnmount(clearSensitiveInputs);
+watch(() => props.state, () => {
+  clearSensitiveInputs();
+  clientId.value = "";
+  localError.value = "";
+});
+onBeforeUnmount(() => {
+  clearSensitiveInputs();
+  clientId.value = "";
+});
 
 function stateTitle(state: SetupState | undefined): string {
   if (state == null) {
@@ -246,7 +210,7 @@ function stateDescription(state: SetupState | undefined): string {
 }
 
 function jstDateTimeLabel(value: string): string {
-  const validated = isoDateTimeSchema.parse(value);
+  const validated = dateTimeSchema.parse(value);
   const timestamp = Date.parse(validated);
   if (!Number.isFinite(timestamp)) {
     throw new Error("Asana認証期限を表示できません。");
@@ -322,24 +286,17 @@ function submitCredentials(): void {
   if (secretInput == null) {
     throw new Error("Client Secret入力欄が見つかりません。");
   }
-  const parsed = setupAsanaAuthorizationBeginInputSchema.safeParse({
+  const parsed = settingsContracts.beginAsanaAuthorization.request.safeParse({
     client_id: clientId.value,
     client_secret: secretInput.value,
   });
+  clearClientSecret();
   if (!parsed.success) {
-    clearClientSecret();
     localError.value = "入力値を確認してください。";
     return;
   }
-  try {
-    const request = taskHub.setup.beginAsanaAuthorization(parsed.data);
-    void request.then(clearClientSecret, clearClientSecret);
-    emit("action", { kind: "begin_asana_authorization", request });
-  } catch {
-    localError.value = "Asana認証を開始できませんでした。";
-  } finally {
-    clearClientSecret();
-  }
+  emit("action", { kind: "begin_asana_authorization", input: parsed.data });
+  clientId.value = "";
 }
 
 function submitAuthorizationCode(): void {
@@ -349,24 +306,16 @@ function submitAuthorizationCode(): void {
   if (codeInput == null || state?.kind !== "asana_authorization_pending") {
     throw new Error("OAuth認可コード入力欄が見つかりません。");
   }
-  const parsed = setupAsanaAuthorizationCompleteInputSchema.safeParse({
+  const parsed = settingsContracts.completeAsanaAuthorization.request.safeParse({
     authorization_id: state.authorization_id,
     authorization_code: codeInput.value.trim(),
   });
+  clearAuthorizationCode();
   if (!parsed.success) {
-    clearAuthorizationCode();
     localError.value = "認可コードを確認してください。";
     return;
   }
-  try {
-    const request = taskHub.setup.completeAsanaAuthorization(parsed.data);
-    void request.then(clearAuthorizationCode, clearAuthorizationCode);
-    emit("action", { kind: "complete_asana_authorization", request });
-  } catch {
-    localError.value = "Asana認証を完了できませんでした。";
-  } finally {
-    clearAuthorizationCode();
-  }
+  emit("action", { kind: "complete_asana_authorization", input: parsed.data });
 }
 
 function cancelAuthorization(): void {
@@ -375,25 +324,17 @@ function cancelAuthorization(): void {
   if (state?.kind !== "asana_authorization_pending") {
     throw new Error("OAuth認可待機状態が見つかりません。");
   }
-  const input: SetupAsanaAuthorizationCancelInput =
-    setupAsanaAuthorizationCancelInputSchema.parse({
-      authorization_id: state.authorization_id,
-    });
-  try {
-    const request = taskHub.setup.cancelAsanaAuthorization(input);
-    void request.then(clearAuthorizationCode, clearAuthorizationCode);
-    emit("action", { kind: "cancel_asana_authorization", request });
-  } catch {
-    localError.value = "Asana認証を取り消せませんでした。";
-  } finally {
-    clearAuthorizationCode();
-  }
+  const input = settingsContracts.cancelAsanaAuthorization.request.parse({
+    authorization_id: state.authorization_id,
+  });
+  clearAuthorizationCode();
+  emit("action", { kind: "cancel_asana_authorization", input });
 }
 
 function submitProjectCreate(): void {
   localError.value = "";
   try {
-    const input = setupProjectSelectionInputSchema.parse({
+    const input = settingsContracts.selectProject.request.parse({
       kind: "create",
       name: projectName.value,
     });
@@ -410,7 +351,7 @@ function submitVault(): void {
       vault_id: vaultId.value,
       absolute_path: vaultPath.value,
     });
-    const input = setupVaultChoiceInputSchema.parse({ kind: "configure", mapping });
+    const input = settingsContracts.chooseVault.request.parse({ kind: "configure", mapping });
     emit("action", { kind: "choose_vault", input });
   } catch {
     localError.value = "Vault IDとフォルダパスを確認してください。";
@@ -420,8 +361,8 @@ function submitVault(): void {
 function selectWorkspace(value: string): void {
   localError.value = "";
   try {
-    const input = setupWorkspaceSelectionInputSchema.parse({ workspace_gid: value });
-    emit("action", { kind: "select_workspace", input });
+    const input = settingsContracts.selectWorkspace.request.parse({ workspace_gid: value });
+    emit("action", { kind: "select_workspace", workspaceGid: input.workspace_gid });
   } catch {
     localError.value = "ワークスペースを選択できません。";
   }
@@ -430,7 +371,7 @@ function selectWorkspace(value: string): void {
 function selectProject(value: string): void {
   localError.value = "";
   try {
-    const input = setupProjectSelectionInputSchema.parse({
+    const input = settingsContracts.selectProject.request.parse({
       kind: "existing",
       project_gid: value,
     });
@@ -441,17 +382,12 @@ function selectProject(value: string): void {
 }
 
 function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {
-  try {
-    const request = taskHub.setup.chooseExternalTool(input);
-    emit("action", { kind: "choose_external_tool", request });
-  } catch {
-    localError.value = "外部ツール設定を開始できませんでした。";
-  }
+  emit("action", { kind: "choose_external_tool", input });
 }
 
 function skipExternalTool(): void {
   localError.value = "";
-  const input = setupExternalToolChoiceInputSchema.parse({ kind: "skip" });
+  const input = settingsContracts.chooseExternalTool.request.parse({ kind: "skip" });
   beginExternalToolChoice(input);
 }
 

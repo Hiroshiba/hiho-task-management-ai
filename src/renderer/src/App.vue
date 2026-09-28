@@ -1,32 +1,18 @@
 <script setup lang="ts">
 import {
   computed,
-  defineAsyncComponent,
-  onBeforeUnmount,
   ref,
-  watch,
 } from "vue";
 import { DialogRoot } from "reka-ui";
 import {
-  ipcAsanaAuthenticationStateSchema,
-  ipcAsanaCancelReauthenticationInputSchema,
-  ipcAsanaCompleteReauthenticationInputSchema,
   ipcFailureSchema,
   ipcIntegrationStatusResponseSchema,
   ipcObsidianOpenNoteInputSchema,
   ipcObsidianPathInputSchema,
-  ipcSyncResultSchema,
-  type IpcAsanaAuthenticationState,
   type IpcFailure,
   type IpcIntegrationStatus,
 } from "../../shared/ipc";
-import {
-  setupStateSchema,
-  type SetupProjectSelectionInput,
-  type SetupState,
-  type SetupVaultChoiceInput,
-  type SetupWorkspaceSelectionInput,
-} from "../../shared/setup";
+import type { SetupState } from "../../shared/ipc-contracts/setup-schemas";
 import {
   viewModelTaskDetailSchema,
   type ViewModelTaskDetail,
@@ -35,6 +21,7 @@ import type { VaultMapping } from "../../shared/storage";
 import { useAppScreen } from "../app/use-app-screen";
 import { useAppStartup } from "../app/use-app-startup";
 import { useSystemUpdate } from "../features/system";
+import { VaultSettings } from "../features/obsidian-integration";
 import { ProposalHistoryPanel, useProposals, useProposalWorkspace } from "../features/proposals";
 import {
   TaskFilters,
@@ -47,50 +34,18 @@ import {
   type TaskDetail as TaskDetailDto,
 } from "../features/tasks";
 import AppHeader from "./AppHeader.vue";
-import SettingsDialog from "./SettingsDialog.vue";
+import { AsanaReauthenticationPanel, SettingsDialog, SetupWizard, useSettings } from "../features/settings";
 import TaskDetail from "./TaskDetail.vue";
 import ToastHost from "./ToastHost.vue";
 import {
   rendererFailureSchema,
   rendererSyncStateSchema,
   type RendererFailure,
-  type RendererSyncState,
 } from "./state";
 import { useTaskHub } from "./task-hub";
 import { useToast } from "./useToast";
 
 const taskHub = useTaskHub();
-
-const SetupWizard = defineAsyncComponent(() => import("./SetupWizard.vue"));
-
-type SetupAction =
-  | { readonly kind: "start" }
-  | { readonly kind: "complete_codex_authentication" }
-  | {
-      readonly kind: "begin_asana_authorization";
-      readonly request: Promise<SetupResult>;
-    }
-  | {
-      readonly kind: "complete_asana_authorization";
-      readonly request: Promise<SetupResult>;
-    }
-  | {
-      readonly kind: "cancel_asana_authorization";
-      readonly request: Promise<SetupResult>;
-    }
-  | { readonly kind: "list_workspaces" }
-  | { readonly kind: "select_workspace"; readonly input: SetupWorkspaceSelectionInput }
-  | { readonly kind: "select_project"; readonly input: SetupProjectSelectionInput }
-  | { readonly kind: "retry_resources" }
-  | { readonly kind: "run_capability" }
-  | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
-  | { readonly kind: "choose_external_tool"; readonly request: Promise<SetupResult> }
-  | { readonly kind: "run_full_sync" }
-  | { readonly kind: "run_codex_capability" };
-
-type SetupResult =
-  | { readonly kind: "ok"; readonly value: SetupState }
-  | IpcFailure;
 
 type ObsidianLinkStatus = "exists" | "missing" | "unavailable";
 
@@ -103,23 +58,8 @@ type Feedback = {
   readonly message: string;
 };
 
-const asanaAuthenticationStatePollIntervalMilliseconds = 500;
-const asanaAuthenticationStateMaximumRetryCount = 3;
-
 const { screen, showSetup, showDashboard, showError } = useAppScreen();
-const setupState = ref<SetupState | undefined>();
-const setupBusy = ref(false);
-const asanaAuthenticationBusy = ref(false);
-const asanaAuthenticationStateLoaded = ref(false);
-const asanaAuthenticationStateNeedsRecheck = ref(true);
-const asanaAuthenticationStateRequestBusy = ref(false);
-const asanaAuthenticationState = ref<IpcAsanaAuthenticationState>(
-  ipcAsanaAuthenticationStateSchema.parse({ kind: "idle" }),
-);
-const asanaAuthorizationCodeInput = ref<HTMLInputElement | null>(null);
 const appUpdateState = useSystemUpdate();
-const settingsDialogVisible = ref(false);
-const settingsDialogFeedback = ref<Feedback | undefined>();
 const integrationStatus = ref<IpcIntegrationStatus | undefined>();
 const integrationStatusLoading = ref(false);
 const integrationStatusError = ref<string | undefined>();
@@ -132,9 +72,6 @@ const { addToast } = useToast();
 const feedback = ref<Feedback | undefined>();
 const proposals = useProposals();
 const registeredVaultIds = ref<readonly string[]>([]);
-let asanaAuthenticationStateTimer: number | undefined;
-let asanaAuthenticationStateGeneration = 0;
-let asanaAuthenticationStateLoadInProgress = false;
 let vaultMappingsLoadGeneration = 0;
 function setFeedback(kind: FeedbackKind, message: string): void {
   feedback.value = { kind, message };
@@ -177,7 +114,43 @@ function showGlobalResultFeedback(value: Feedback): void {
   setFeedback(value.kind, value.message);
 }
 
-const configured = computed(() => setupState.value?.kind === "ready");
+const settings = useSettings({
+  onSetupState: (state) => {
+    setCodexFromSetup(state);
+    if (state.kind === "ready") {
+      showDashboard();
+      void startInitialTaskDataRefresh();
+    } else {
+      showSetup();
+    }
+  },
+  onFeedback: setFeedback,
+  onToast: (kind, message) => addToast(kind, message),
+  onCodexAuthentication: () => proposalWorkspace.refreshCodexStatus(),
+  onDialogOpen: () => {
+    closeProposalAssistant();
+    void loadVaultMappings();
+    void loadIntegrationStatus();
+  },
+  authenticationRequired: () => syncState.value.kind === "authentication_required",
+  onAuthenticationRequired: () => setSyncState(rendererSyncStateSchema.parse({ kind: "authentication_required" })),
+  onAuthenticationIdle: () => loadInitialSyncState(),
+  onAuthenticationFailure: () => reconcileSyncStateAfterFailure(rendererSyncStateSchema.parse({ kind: "authentication_required" })),
+  onSynchronized: async (result) => {
+    setConnectionState("online", rendererSyncStateSchema.parse({ kind: "synced", synced_at: result.synced_at }));
+    const refresh = await reloadTaskDataAfterSuccessfulSync(result.synced_at);
+    return refresh.kind !== "failed";
+  },
+  onNormalizationNotifications: (result) => showNormalizationNotificationToast(
+    result.synced_at, result.normalization_notifications,
+  ),
+});
+const { setup, authentication, dialogVisible: settingsDialogVisible,
+  dialogFeedback: settingsDialogFeedback } = settings;
+const { state: setupState, busy: setupBusy, configured } = setup;
+const { state: asanaAuthenticationState, busy: asanaAuthenticationBusy,
+  loaded: asanaAuthenticationStateLoaded, needsRecheck: asanaAuthenticationStateNeedsRecheck,
+  requestBusy: asanaAuthenticationStateRequestBusy } = authentication;
 const {
   overview,
   selectedTask,
@@ -210,7 +183,6 @@ const {
   subscribeSyncState,
   reconcileSyncStateAfterFailure,
   showNormalizationNotificationToast,
-  normalizationNotificationMessage,
   loadInitialSyncState,
   manualSync,
   fullSync,
@@ -243,10 +215,10 @@ const proposalWorkspace = useProposalWorkspace({
   canWrite: canAcceptWrite,
   tasks: proposalTasks,
   selectedTaskGid,
-  closeSettings: () => { settingsDialogVisible.value = false; },
+  closeSettings: settings.closeDialog,
   selectTask,
   onToast: (kind, message) => addToast(kind, message),
-  onSettingsFeedback: (value) => { settingsDialogFeedback.value = value; },
+  onSettingsFeedback: settings.setDialogFeedback,
 });
 const {
   codexState,
@@ -421,569 +393,6 @@ async function collectObsidianStatuses(
     }
   }
   return statuses;
-}
-
-function applySetupState(value: unknown): void {
-  const wasConfigured = configured.value;
-  const wasLoading = screen.value.kind === "loading";
-  const parsed = setupStateSchema.parse(value);
-  setupState.value = parsed;
-  setCodexFromSetup(parsed);
-  if (parsed.kind === "ready") {
-    showDashboard();
-    void startInitialTaskDataRefresh();
-    if (!wasConfigured && !wasLoading && !asanaAuthenticationStateLoaded.value) {
-      void loadAsanaAuthenticationState();
-    }
-    return;
-  }
-  if (wasConfigured) {
-    asanaAuthenticationStateLoaded.value = false;
-    asanaAuthenticationStateNeedsRecheck.value = true;
-    advanceAsanaAuthenticationStateGeneration();
-  }
-  showSetup();
-}
-
-async function resynchronizeSetupState(): Promise<void> {
-  try {
-    const result = await taskHub.setup.getState();
-    if (isFailure(result)) {
-      showFailure(result);
-      return;
-    }
-    applySetupState(result.value);
-  } catch {
-    showUnexpectedFailure();
-  }
-}
-
-async function runSetupRequest(request: Promise<SetupResult>): Promise<void> {
-  setupBusy.value = true;
-  clearFeedback();
-  try {
-    const result = await request;
-    if (isFailure(result)) {
-      showFailure(result);
-      await resynchronizeSetupState();
-      return;
-    }
-    if (result.value.kind === "external_tool_configured") {
-      addToast("success", "Discord読取連携を登録しました。");
-    }
-    applySetupState(result.value);
-  } catch {
-    showUnexpectedFailure();
-    await resynchronizeSetupState();
-  } finally {
-    setupBusy.value = false;
-  }
-}
-
-async function completeCodexAuthenticationFromHeader(): Promise<void> {
-  if (setupBusy.value) {
-    return;
-  }
-  const keepDashboard = screen.value.kind === "dashboard";
-  setupBusy.value = true;
-  clearFeedback();
-  try {
-    const result = await taskHub.setup.completeCodexAuthentication();
-    if (isFailure(result)) {
-      showFailure(result);
-      return;
-    }
-    const state = setupStateSchema.parse(result.value);
-    if (keepDashboard && state.kind !== "ready") {
-      throw new Error("設定済み状態のCodex認証結果が不正です。");
-    }
-    applySetupState(state);
-    if (keepDashboard) {
-      await proposalWorkspace.refreshCodexStatus();
-    }
-  } catch {
-    showUnexpectedFailure();
-  } finally {
-    setupBusy.value = false;
-  }
-}
-
-function clearAsanaAuthorizationCode(): void {
-  const input = asanaAuthorizationCodeInput.value;
-  if (input != null) {
-    input.value = "";
-  }
-}
-
-function clearAsanaAuthenticationStateTimer(): void {
-  if (asanaAuthenticationStateTimer != null) {
-    window.clearTimeout(asanaAuthenticationStateTimer);
-    asanaAuthenticationStateTimer = undefined;
-  }
-}
-
-function advanceAsanaAuthenticationStateGeneration(): number {
-  asanaAuthenticationStateGeneration += 1;
-  asanaAuthenticationStateRequestBusy.value = false;
-  clearAsanaAuthenticationStateTimer();
-  return asanaAuthenticationStateGeneration;
-}
-
-function scheduleAsanaAuthenticationStatePolling(
-  state: IpcAsanaAuthenticationState,
-  generation: number,
-): void {
-  clearAsanaAuthenticationStateTimer();
-  if (generation !== asanaAuthenticationStateGeneration) {
-    return;
-  }
-  let delayMilliseconds: number;
-  switch (state.kind) {
-    case "idle":
-      return;
-    case "opening":
-    case "completing":
-    case "synchronizing":
-      delayMilliseconds = asanaAuthenticationStatePollIntervalMilliseconds;
-      break;
-    case "authorization_pending": {
-      const expiresAt = Date.parse(state.expires_at);
-      if (!Number.isFinite(expiresAt)) {
-        throw new Error("Asana認証の有効期限を確認できません。");
-      }
-      delayMilliseconds = Math.max(0, expiresAt - Date.now());
-      break;
-    }
-  }
-  asanaAuthenticationStateTimer = window.setTimeout(() => {
-    asanaAuthenticationStateTimer = undefined;
-    if (generation !== asanaAuthenticationStateGeneration) {
-      return;
-    }
-    const pollingGeneration = advanceAsanaAuthenticationStateGeneration();
-    void requestAsanaAuthenticationState(pollingGeneration, 0);
-  }, delayMilliseconds);
-}
-
-function scheduleAsanaAuthenticationOpeningPolling(generation: number): void {
-  clearAsanaAuthenticationStateTimer();
-  if (generation !== asanaAuthenticationStateGeneration) {
-    return;
-  }
-  asanaAuthenticationStateTimer = window.setTimeout(() => {
-    asanaAuthenticationStateTimer = undefined;
-    if (generation !== asanaAuthenticationStateGeneration) {
-      return;
-    }
-    const pollingGeneration = advanceAsanaAuthenticationStateGeneration();
-    void requestAsanaAuthenticationState(pollingGeneration, 0);
-  }, asanaAuthenticationStatePollIntervalMilliseconds);
-}
-
-function scheduleAsanaAuthenticationStateRetry(
-  generation: number,
-  retryCount: number,
-): void {
-  clearAsanaAuthenticationStateTimer();
-  if (
-    generation !== asanaAuthenticationStateGeneration
-    || retryCount >= asanaAuthenticationStateMaximumRetryCount
-  ) {
-    return;
-  }
-  asanaAuthenticationStateTimer = window.setTimeout(() => {
-    asanaAuthenticationStateTimer = undefined;
-    if (generation !== asanaAuthenticationStateGeneration) {
-      return;
-    }
-    const retryGeneration = advanceAsanaAuthenticationStateGeneration();
-    void requestAsanaAuthenticationState(retryGeneration, retryCount + 1);
-  }, asanaAuthenticationStatePollIntervalMilliseconds);
-}
-
-function applyAsanaAuthenticationState(
-  value: unknown,
-  generation: number,
-  reconcileSyncStateOnIdleTransition: boolean,
-): IpcAsanaAuthenticationState | undefined {
-  if (generation !== asanaAuthenticationStateGeneration) {
-    return undefined;
-  }
-  const parsed = ipcAsanaAuthenticationStateSchema.parse(value);
-  const previous = asanaAuthenticationState.value;
-  asanaAuthenticationState.value = parsed;
-  asanaAuthenticationStateNeedsRecheck.value = false;
-  scheduleAsanaAuthenticationStatePolling(parsed, generation);
-  if (
-    reconcileSyncStateOnIdleTransition
-    && previous.kind !== "idle"
-    && parsed.kind === "idle"
-  ) {
-    clearAsanaAuthorizationCode();
-    void loadInitialSyncState();
-  }
-  return parsed;
-}
-
-async function loadAsanaAuthenticationState(): Promise<void> {
-  if (asanaAuthenticationStateLoadInProgress || asanaAuthenticationBusy.value) {
-    return;
-  }
-  asanaAuthenticationStateLoadInProgress = true;
-  asanaAuthenticationStateLoaded.value = false;
-  asanaAuthenticationStateNeedsRecheck.value = true;
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  try {
-    asanaAuthenticationBusy.value = true;
-    await requestAsanaAuthenticationState(generation, 0);
-  } finally {
-    asanaAuthenticationBusy.value = false;
-    asanaAuthenticationStateLoadInProgress = false;
-  }
-}
-
-async function requestAsanaAuthenticationState(
-  generation: number,
-  retryCount: number,
-): Promise<boolean> {
-  asanaAuthenticationStateRequestBusy.value = true;
-  try {
-    const result = await taskHub.asana.getAuthenticationState();
-    if (generation !== asanaAuthenticationStateGeneration) {
-      return false;
-    }
-    if (isFailure(result)) {
-      showFailure(result);
-      asanaAuthenticationStateNeedsRecheck.value = true;
-      scheduleAsanaAuthenticationStateRetry(generation, retryCount);
-      return false;
-    }
-    const state = applyAsanaAuthenticationState(
-      result.value,
-      generation,
-      true,
-    );
-    if (state == null) {
-      return false;
-    }
-    if (state.kind === "opening" || state.kind === "authorization_pending") {
-      setSyncState(rendererSyncStateSchema.parse({ kind: "authentication_required" }));
-    }
-    asanaAuthenticationStateLoaded.value = true;
-    return true;
-  } catch {
-    if (generation !== asanaAuthenticationStateGeneration) {
-      return false;
-    }
-    showUnexpectedFailure();
-    asanaAuthenticationStateNeedsRecheck.value = true;
-    scheduleAsanaAuthenticationStateRetry(generation, retryCount);
-    return false;
-  } finally {
-    if (generation === asanaAuthenticationStateGeneration) {
-      asanaAuthenticationStateRequestBusy.value = false;
-    }
-  }
-}
-
-async function resynchronizeAsanaAuthenticationState(): Promise<boolean> {
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  return requestAsanaAuthenticationState(generation, 0);
-}
-
-async function recheckAsanaAuthenticationState(): Promise<void> {
-  if (
-    asanaAuthenticationBusy.value
-    || asanaAuthenticationStateRequestBusy.value
-    || !configured.value
-  ) {
-    return;
-  }
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  asanaAuthenticationBusy.value = true;
-  clearFeedback();
-  clearAsanaAuthorizationCode();
-  try {
-    await requestAsanaAuthenticationState(generation, 0);
-  } finally {
-    clearAsanaAuthorizationCode();
-    asanaAuthenticationBusy.value = false;
-  }
-}
-
-async function reconcileAsanaAuthenticationFailure(
-  fallback: RendererSyncState,
-  failureMessage: string,
-): Promise<void> {
-  asanaAuthenticationStateNeedsRecheck.value = true;
-  const authenticationStateReconciled = await resynchronizeAsanaAuthenticationState();
-  await reconcileSyncStateAfterFailure(fallback);
-  if (authenticationStateReconciled) {
-    setFeedback("failure", failureMessage);
-  }
-}
-
-async function beginAsanaReauthentication(): Promise<void> {
-  if (asanaAuthenticationBusy.value
-    || !configured.value
-    || syncState.value.kind !== "authentication_required"
-    || !asanaAuthenticationStateLoaded.value
-    || asanaAuthenticationState.value.kind !== "idle") {
-    return;
-  }
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  asanaAuthenticationBusy.value = true;
-  clearFeedback();
-  clearAsanaAuthorizationCode();
-  scheduleAsanaAuthenticationOpeningPolling(generation);
-  const authenticationRequired = rendererSyncStateSchema.parse({
-    kind: "authentication_required",
-  });
-  try {
-    const result = await taskHub.asana.beginReauthentication();
-    if (generation !== asanaAuthenticationStateGeneration) {
-      if (asanaAuthenticationBusy.value && isFailure(result)) {
-        asanaAuthenticationStateNeedsRecheck.value = true;
-        clearAsanaAuthorizationCode();
-        showFailure(result);
-        await reconcileAsanaAuthenticationFailure(
-          authenticationRequired,
-          displayFailure(result).message,
-        );
-      }
-      return;
-    }
-    clearAsanaAuthorizationCode();
-    if (isFailure(result)) {
-      const failureMessage = displayFailure(result).message;
-      showFailure(result);
-      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-      return;
-    }
-    const state = applyAsanaAuthenticationState(result.value, generation, false);
-    if (state == null) {
-      return;
-    }
-    if (state.kind === "idle") {
-      throw new Error("Asana再認証の開始結果が不正です。");
-    }
-  } catch {
-    if (generation !== asanaAuthenticationStateGeneration) {
-      if (asanaAuthenticationBusy.value) {
-        showUnexpectedFailure();
-        await reconcileAsanaAuthenticationFailure(
-          authenticationRequired,
-          "Asana再認証の開始に失敗しました。",
-        );
-      }
-      return;
-    }
-    clearAsanaAuthorizationCode();
-    const failureMessage = "Asana再認証の開始に失敗しました。";
-    showUnexpectedFailure();
-    await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-  } finally {
-    clearAsanaAuthorizationCode();
-    asanaAuthenticationBusy.value = false;
-  }
-}
-
-async function completeAsanaReauthentication(): Promise<void> {
-  if (asanaAuthenticationBusy.value
-    || !configured.value
-    || asanaAuthenticationStateNeedsRecheck.value
-    || asanaAuthenticationStateRequestBusy.value
-    || asanaAuthenticationState.value.kind !== "authorization_pending") {
-    return;
-  }
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  const input = asanaAuthorizationCodeInput.value;
-  if (input == null) {
-    throw new Error("Asana認可コード入力欄がありません。");
-  }
-  const state = asanaAuthenticationState.value;
-  const parsedInput = ipcAsanaCompleteReauthenticationInputSchema.safeParse({
-    authorization_id: state.authorization_id,
-    authorization_code: input.value.trim(),
-  });
-  clearAsanaAuthorizationCode();
-  if (!parsedInput.success) {
-    scheduleAsanaAuthenticationStatePolling(state, generation);
-    setFeedback("warning", "Asana認可コードを確認してください。");
-    return;
-  }
-  asanaAuthenticationBusy.value = true;
-  clearFeedback();
-  applyAsanaAuthenticationState({
-    kind: "completing",
-    authorization_id: state.authorization_id,
-  }, generation, false);
-  const authenticationRequired = rendererSyncStateSchema.parse({
-    kind: "authentication_required",
-  });
-  try {
-    const result = await taskHub.asana.completeReauthentication(parsedInput.data);
-    clearAsanaAuthorizationCode();
-    if (isFailure(result)) {
-      const failureMessage = displayFailure(result).message;
-      showFailure(result);
-      if (asanaAuthenticationBusy.value) {
-        await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-      }
-      return;
-    }
-    const synchronized = ipcSyncResultSchema.parse(result.value);
-    const completionGeneration = advanceAsanaAuthenticationStateGeneration();
-    applyAsanaAuthenticationState({ kind: "idle" }, completionGeneration, false);
-    setConnectionState("online", rendererSyncStateSchema.parse({
-      kind: "synced",
-      synced_at: synchronized.synced_at,
-    }));
-    const refreshResult = await reloadTaskDataAfterSuccessfulSync(synchronized.synced_at);
-    if (refreshResult.kind === "failed") {
-      const notificationMessage = normalizationNotificationMessage(synchronized.normalization_notifications);
-      setFeedback("warning", notificationMessage == null
-        ? "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。"
-        : `${notificationMessage} Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。`);
-      return;
-    }
-    showNormalizationNotificationToast(
-      synchronized.synced_at,
-      synchronized.normalization_notifications,
-    );
-    showGlobalResultFeedback({
-      kind: synchronized.application_result.operations.some((operation) => operation.outcome === "conflict")
-        || synchronized.remaining_plan.status_write_task_gids.length
-          + synchronized.remaining_plan.external_write_task_gids.length
-          + synchronized.remaining_plan.tag_write_task_gids.length > 0
-        || synchronized.critical_errors.length > 0 ? "warning" : "success",
-      message: "Asanaを再認証し、タスク表示を更新しました。",
-    });
-  } catch {
-    clearAsanaAuthorizationCode();
-    const failureMessage = "Asanaの再認証に失敗しました。保存済みのタスクを表示しています。";
-    showUnexpectedFailure();
-    if (asanaAuthenticationBusy.value) {
-      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-    }
-  } finally {
-    clearAsanaAuthorizationCode();
-    asanaAuthenticationBusy.value = false;
-  }
-}
-
-async function cancelAsanaReauthentication(): Promise<void> {
-  if (asanaAuthenticationBusy.value
-    || !configured.value
-    || asanaAuthenticationStateNeedsRecheck.value
-    || asanaAuthenticationStateRequestBusy.value
-    || asanaAuthenticationState.value.kind !== "authorization_pending") {
-    return;
-  }
-  const generation = advanceAsanaAuthenticationStateGeneration();
-  const state = asanaAuthenticationState.value;
-  const input = ipcAsanaCancelReauthenticationInputSchema.parse({
-    authorization_id: state.authorization_id,
-  });
-  asanaAuthenticationBusy.value = true;
-  clearFeedback();
-  clearAsanaAuthorizationCode();
-  scheduleAsanaAuthenticationStatePolling(state, generation);
-  const authenticationRequired = rendererSyncStateSchema.parse({
-    kind: "authentication_required",
-  });
-  try {
-    const result = await taskHub.asana.cancelReauthentication(input);
-    if (generation !== asanaAuthenticationStateGeneration) {
-      if (asanaAuthenticationBusy.value && isFailure(result)) {
-        asanaAuthenticationStateNeedsRecheck.value = true;
-        clearAsanaAuthorizationCode();
-        showFailure(result);
-        await reconcileAsanaAuthenticationFailure(
-          authenticationRequired,
-          displayFailure(result).message,
-        );
-      }
-      return;
-    }
-    clearAsanaAuthorizationCode();
-    if (isFailure(result)) {
-      const failureMessage = displayFailure(result).message;
-      showFailure(result);
-      await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-      return;
-    }
-    const nextState = applyAsanaAuthenticationState(result.value, generation, false);
-    if (nextState == null) {
-      return;
-    }
-    if (nextState.kind !== "idle") {
-      throw new Error("Asana再認証の取消結果が不正です。");
-    }
-    setSyncState(authenticationRequired);
-    addToast("warning", "Asana再認証をキャンセルしました。");
-  } catch {
-    if (generation !== asanaAuthenticationStateGeneration) {
-      if (asanaAuthenticationBusy.value) {
-        showUnexpectedFailure();
-        await reconcileAsanaAuthenticationFailure(
-          authenticationRequired,
-          "Asana再認証のキャンセルに失敗しました。",
-        );
-      }
-      return;
-    }
-    clearAsanaAuthorizationCode();
-    const failureMessage = "Asana再認証のキャンセルに失敗しました。";
-    showUnexpectedFailure();
-    await reconcileAsanaAuthenticationFailure(authenticationRequired, failureMessage);
-  } finally {
-    clearAsanaAuthorizationCode();
-    asanaAuthenticationBusy.value = false;
-  }
-}
-
-function handleSetupAction(action: SetupAction): void {
-  switch (action.kind) {
-    case "start":
-      void runSetupRequest(taskHub.setup.start());
-      return;
-    case "complete_codex_authentication":
-      void runSetupRequest(taskHub.setup.completeCodexAuthentication());
-      return;
-    case "begin_asana_authorization":
-    case "complete_asana_authorization":
-    case "cancel_asana_authorization":
-      void runSetupRequest(action.request);
-      return;
-    case "list_workspaces":
-      void runSetupRequest(taskHub.setup.listWorkspaces());
-      return;
-    case "select_workspace":
-      void runSetupRequest(taskHub.setup.selectWorkspace(action.input));
-      return;
-    case "select_project":
-      void runSetupRequest(taskHub.setup.selectProject(action.input));
-      return;
-    case "retry_resources":
-      void runSetupRequest(taskHub.setup.retryResources());
-      return;
-    case "run_capability":
-      void runSetupRequest(taskHub.setup.runCapability());
-      return;
-    case "choose_vault":
-      void runSetupRequest(taskHub.setup.chooseVault(action.input));
-      return;
-    case "choose_external_tool":
-      void runSetupRequest(action.request);
-      return;
-    case "run_full_sync":
-      void runSetupRequest(taskHub.setup.runFullSync());
-      return;
-    case "run_codex_capability":
-      void runSetupRequest(taskHub.setup.runCodexCapability());
-      return;
-  }
 }
 
 async function handleHistorySynchronized(syncedAt: string): Promise<void> {
@@ -1192,45 +601,25 @@ async function loadIntegrationStatus(): Promise<void> {
   }
 }
 
-watch(settingsDialogVisible, (open) => {
-  if (open) {
-    closeProposalAssistant();
-    void loadVaultMappings();
-    void loadIntegrationStatus();
-  }
-});
-
 async function initialize(): Promise<void> {
   subscribeSyncState();
   await proposalWorkspace.initialize();
-  try {
-    const result = await taskHub.setup.getState();
-    if (isFailure(result)) {
-      setScreenError(result);
-    } else {
-      applySetupState(result.value);
-    }
-  } catch {
-    showError(failureText("operation_failed"));
+  const state = await setup.load();
+  if (state == null) {
+    showError("初回設定の状態を読み込めませんでした。");
+    return;
   }
-  if (setupState.value?.kind === "ready") {
+  if (state.kind === "ready") {
     await loadObsidianVaults();
   }
   await loadInitialSyncState();
-  if (setupState.value?.kind === "ready") {
-    await loadAsanaAuthenticationState();
+  if (state.kind === "ready") {
+    await authentication.load();
   }
 }
 
 useAppStartup(initialize, setScreenError, () => {
   showError(failureText("operation_failed"));
-});
-
-onBeforeUnmount(() => {
-  clearAsanaAuthorizationCode();
-  asanaAuthenticationBusy.value = false;
-  asanaAuthenticationStateRequestBusy.value = false;
-  advanceAsanaAuthenticationStateGeneration();
 });
 
 </script>
@@ -1259,12 +648,11 @@ onBeforeUnmount(() => {
         @sync="manualSync"
         @full-sync="fullSync"
         @open-ai-assistant="openProposalAssistant"
-        @complete-codex-authentication="completeCodexAuthenticationFromHeader"
-        @begin-reauthentication="beginAsanaReauthentication"
-        @recheck-authentication-state="recheckAsanaAuthenticationState"
+        @complete-codex-authentication="setup.act({ kind: 'complete_codex_authentication' })"
+        @begin-reauthentication="authentication.begin"
+        @recheck-authentication-state="authentication.recheck"
       />
       <SettingsDialog
-        :open="settingsDialogVisible"
         :integration-status="integrationStatus"
         :integration-status-loading="integrationStatusLoading"
         :integration-status-error="integrationStatusError"
@@ -1272,14 +660,22 @@ onBeforeUnmount(() => {
         :busy="proposalExternalBusy"
         :restore-focus="!proposalDialogVisible"
         :feedback="settingsDialogFeedback"
-        :vault-mappings="vaultMappings"
-        :vault-mappings-loading="vaultMappingsLoading"
         :vault-busy="vaultMappingBusy"
-        :vault-feedback="vaultMappingFeedback"
-        :vault-save-generation="vaultSaveGeneration"
         @set-enabled="setProposalExternalEnabled"
-        @save-vault-mapping="saveVaultMapping"
-      />
+      >
+        <template #vault>
+          <VaultSettings
+            :open="settingsDialogVisible"
+            :vault-mappings="vaultMappings"
+            :vault-mappings-loading="vaultMappingsLoading"
+            :busy="proposalExternalBusy"
+            :vault-busy="vaultMappingBusy"
+            :vault-feedback="vaultMappingFeedback"
+            :vault-save-generation="vaultSaveGeneration"
+            @save-vault-mapping="saveVaultMapping"
+          />
+        </template>
+      </SettingsDialog>
     </DialogRoot>
     <component
       :is="proposalDialogComponent"
@@ -1346,7 +742,7 @@ onBeforeUnmount(() => {
         v-else-if="screen.kind === 'setup'"
         :state="setupState"
         :busy="setupBusy"
-        @action="handleSetupAction"
+        @action="setup.act"
       />
       <div
         v-else-if="screen.kind === 'error'"
@@ -1364,68 +760,14 @@ onBeforeUnmount(() => {
           :history="proposalWorkspace.history"
           @synchronized="handleHistorySynchronized"
         />
-        <section
-          v-if="asanaAuthenticationState.kind === 'opening'
-            || asanaAuthenticationState.kind === 'completing'
-            || asanaAuthenticationState.kind === 'synchronizing'"
-          class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
-          role="status"
-          aria-live="polite"
-        >
-          <p v-if="asanaAuthenticationState.kind === 'opening'">
-            認証ページを開いています
-          </p>
-          <p v-else-if="asanaAuthenticationState.kind === 'completing'">
-            認可コードを確認しています
-          </p>
-          <p v-else>
-            Asana同期を再開しています
-          </p>
-        </section>
-        <section
-          v-if="asanaAuthenticationState.kind === 'authorization_pending'"
-          class="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950"
-          aria-labelledby="asana-reauthentication-title"
-        >
-          <h2
-            id="asana-reauthentication-title"
-            class="text-lg font-semibold text-amber-950 dark:text-amber-100"
-          >
-            Asana認証コードを入力してください
-          </h2>
-          <p class="mt-2 text-sm text-amber-950 dark:text-amber-100">
-            Asanaの認証後に表示された認可コードを貼り付けてください。
-          </p>
-          <form
-            class="mt-3 flex flex-wrap items-end gap-2"
-            @submit.prevent="completeAsanaReauthentication"
-          >
-            <label class="w-full min-w-0 max-w-xl flex-1 text-sm font-medium text-amber-950 dark:text-amber-100">
-              認可コード
-              <input
-                ref="asanaAuthorizationCodeInput"
-                type="text"
-                autocomplete="off"
-                class="mt-1 block w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-600 dark:border-amber-800 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-400 dark:focus:border-sky-400 dark:focus:ring-sky-400"
-              >
-            </label>
-            <button
-              type="submit"
-              class="rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-amber-800 dark:text-amber-100 dark:hover:bg-amber-700 dark:focus:ring-amber-400 dark:focus:ring-offset-slate-950 dark:disabled:bg-slate-700 dark:disabled:text-slate-400"
-              :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
-            >
-              {{ asanaAuthenticationBusy ? "確認中" : "認証を確定" }}
-            </button>
-            <button
-              type="button"
-              class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700 dark:focus:ring-sky-400 dark:focus:ring-offset-slate-950 dark:disabled:border-slate-700 dark:disabled:bg-slate-900 dark:disabled:text-slate-400"
-              :disabled="asanaAuthenticationBusy || asanaAuthenticationStateNeedsRecheck || asanaAuthenticationStateRequestBusy"
-              @click="cancelAsanaReauthentication"
-            >
-              キャンセル
-            </button>
-          </form>
-        </section>
+        <AsanaReauthenticationPanel
+          :state="asanaAuthenticationState"
+          :busy="asanaAuthenticationBusy"
+          :needs-recheck="asanaAuthenticationStateNeedsRecheck"
+          :request-busy="asanaAuthenticationStateRequestBusy"
+          @complete="authentication.complete"
+          @cancel="authentication.cancel"
+        />
         <section
           v-if="overview != null"
           class="space-y-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col"

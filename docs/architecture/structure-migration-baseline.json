@@ -3690,32 +3690,12 @@
     {
       "path": "src/renderer/src/App.vue",
       "rule": "import-boundary",
-      "symbol": "src/renderer/src/SettingsDialog.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/SetupWizard.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
       "symbol": "src/renderer/src/TaskDetail.vue"
     },
     {
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/AppHeader.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/SettingsDialog.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/SetupWizard.vue"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3746,11 +3726,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/shared/ipc/index.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/setup/index.ts"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3866,51 +3841,6 @@
       "path": "src/renderer/src/mocks/task-hub.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/mocks/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/SettingsDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/renderer/src/SettingsDialog.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/SettingsDialog.vue"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/task-hub.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/setup/index.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/task-hub-api.ts"
-    },
-    {
-      "path": "src/renderer/src/SetupWizard.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/SetupWizard.vue"
     },
     {
       "path": "src/renderer/src/state.ts",

@@ -25,8 +25,8 @@
 | 自動更新の表示状態と購読 | `renderer/features/system` | feature mount | subscriptionをunmountで解除。更新状態はMainから再読込 |
 | タスク一覧、選択、filter、sort、編集進捗 | `renderer/features/tasks` | feature mount | timerとlistenerをunmountで解除。sortは再起動で初期値へ戻す |
 | 変更案、AI session表示、承認、適用、復旧、旧非実行履歴の表示と確認入力 | `renderer/features/proposals` | feature mount | subscriptionと未完了UI要求をunmountで解除。案本文と未送信の確認入力は保存しない |
-| 初回設定、認証入力、Vault設定とGitHub連携状態の表示 | `renderer/features/settings` | feature mount | listenerをunmountで解除。保存済み値と連携状態はMainから再読込 |
-| Obsidian link状態 | `renderer/features/obsidian-integration` | feature mount | 要求世代とlistenerをunmountで破棄 |
+| 初回設定、認証入力、設定ダイアログの開閉 | `renderer/features/settings` | feature mount | 認証確認timerをunmountで解除。保存済み値はMainから再読込 |
+| Obsidian Vaultフォームとリンク状態 | `renderer/features/obsidian-integration` | feature mount | 要求世代とlistenerをunmountで破棄 |
 | GitHub連携機能の表示 | `renderer/features/github-integration` | feature mount | listenerをunmountで解除。GitHub App clientがない間はsettingsが利用不可状態を返す |
 | mock選択 | `renderer/shared/mock/mock-selection.ts` | URLを1回解析 | reloadまでimmutable |
 | toastとfeature非依存UI部品 | `renderer/shared/components` | app mount | unmount時にtimerとlistenerを解除 |

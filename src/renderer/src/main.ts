@@ -4,7 +4,8 @@ import { useSystemTheme } from "../app/use-system-theme";
 import { createMockSystemApi } from "../features/system";
 import { createMockTasksApi } from "../features/tasks";
 import { createMockProposalsApi } from "../features/proposals";
-import { diagnosticsApiInjectionKey, proposalsApiInjectionKey, selectFeatureApi, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
+import { createMockSettingsApi } from "../features/settings";
+import { diagnosticsApiInjectionKey, proposalsApiInjectionKey, selectFeatureApi, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { createMockDiagnosticsApi } from "../shared/mock/diagnostics";
 import { parseMockSelection } from "../shared/mock/mock-selection";
@@ -28,12 +29,15 @@ const tasksApi = selectFeatureApi("tasks", mockSelection.features, window.taskHu
 });
 const proposalsApi = selectFeatureApi("proposals", mockSelection.features, window.taskHub?.proposals,
   () => createMockProposalsApi("confirmable", (syncedAt) => mockTasksApi?.completeReadOnlyHistorySync(syncedAt)));
+const settingsApi = selectFeatureApi("settings", mockSelection.features, window.taskHub?.settings,
+  () => createMockSettingsApi("ready", "idle"));
 const app = createApp(App);
 app.provide(taskHubApiInjectionKey, taskHubApi);
 app.provide(systemApiInjectionKey, systemApi);
 app.provide(diagnosticsApiInjectionKey, diagnosticsApi);
 app.provide(tasksApiInjectionKey, tasksApi);
 app.provide(proposalsApiInjectionKey, proposalsApi);
+app.provide(settingsApiInjectionKey, settingsApi);
 installErrorBoundary(app, diagnosticsApi, window);
 app.onUnmount(useSystemTheme(window.matchMedia("(prefers-color-scheme: dark)"), document.documentElement));
 app.mount("#app");
