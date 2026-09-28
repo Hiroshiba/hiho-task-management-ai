@@ -60,6 +60,7 @@ const approvalSourceSchema = z.object({
 const turnSourceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("proposal"),
+    turn_id: identifierSchema,
     message: z.string(),
     questions: z.array(z.object({ question_id: identifierSchema, text: z.string(), options: z.array(z.string()).optional() }).strict()),
     proposal: z.unknown(),
@@ -67,6 +68,7 @@ const turnSourceSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({
     kind: z.literal("no_proposal"),
+    turn_id: identifierSchema,
     message: z.string(),
     questions: z.array(z.object({ question_id: identifierSchema, text: z.string(), options: z.array(z.string()).optional() }).strict()),
     pending_proposal_action: z.enum(["keep", "discard"]),

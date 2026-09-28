@@ -1,12 +1,14 @@
 import { inject, type InjectionKey } from "vue";
 import type { FinalTaskHubApi } from "../../../shared/ipc-contracts";
 import type { DiagnosticsApi } from "../../../shared/ipc-contracts/diagnostics";
+import type { ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { SystemApi } from "../../../shared/ipc-contracts/system";
 import type { TasksApi } from "../../../shared/ipc-contracts/tasks";
 
 export const systemApiInjectionKey: InjectionKey<SystemApi> = Symbol("systemApi");
 export const diagnosticsApiInjectionKey: InjectionKey<DiagnosticsApi> = Symbol("diagnosticsApi");
 export const tasksApiInjectionKey: InjectionKey<TasksApi> = Symbol("tasksApi");
+export const proposalsApiInjectionKey: InjectionKey<ProposalsApi> = Symbol("proposalsApi");
 
 /** 指定した機能の実APIかmock APIを選びます。 */
 export function selectFeatureApi<Api>(
@@ -49,6 +51,15 @@ export function useTasksApi(): TasksApi {
   const api = inject(tasksApiInjectionKey);
   if (api == null) {
     throw new Error("タスクAPIが提供されていません。");
+  }
+  return api;
+}
+
+/** Vueから変更案APIを取得します。 */
+export function useProposalsApi(): ProposalsApi {
+  const api = inject(proposalsApiInjectionKey);
+  if (api == null) {
+    throw new Error("変更案APIが提供されていません。");
   }
   return api;
 }

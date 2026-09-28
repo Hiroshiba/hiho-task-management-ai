@@ -3,7 +3,8 @@ import { installErrorBoundary } from "../app/install-error-boundary";
 import { useSystemTheme } from "../app/use-system-theme";
 import { createMockSystemApi } from "../features/system";
 import { createMockTasksApi } from "../features/tasks";
-import { diagnosticsApiInjectionKey, selectFeatureApi, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
+import { createMockProposalsApi } from "../features/proposals";
+import { diagnosticsApiInjectionKey, proposalsApiInjectionKey, selectFeatureApi, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { createMockDiagnosticsApi } from "../shared/mock/diagnostics";
 import { parseMockSelection } from "../shared/mock/mock-selection";
@@ -21,11 +22,13 @@ const diagnosticsApi = selectFeatureApi(
   createMockDiagnosticsApi,
 );
 const tasksApi = selectFeatureApi("tasks", mockSelection.features, window.taskHub?.tasks, createMockTasksApi);
+const proposalsApi = selectFeatureApi("proposals", mockSelection.features, window.taskHub?.proposals, createMockProposalsApi);
 const app = createApp(App);
 app.provide(taskHubApiInjectionKey, taskHubApi);
 app.provide(systemApiInjectionKey, systemApi);
 app.provide(diagnosticsApiInjectionKey, diagnosticsApi);
 app.provide(tasksApiInjectionKey, tasksApi);
+app.provide(proposalsApiInjectionKey, proposalsApi);
 installErrorBoundary(app, diagnosticsApi, window);
 app.onUnmount(useSystemTheme(window.matchMedia("(prefers-color-scheme: dark)"), document.documentElement));
 app.mount("#app");

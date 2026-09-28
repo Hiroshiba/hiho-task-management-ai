@@ -1858,6 +1858,7 @@ export function createMockTaskHubApi(): TaskHubApi {
         return ipcAiTurnResponseSchema.parse(ok(
           aiWorkflowTurnResultSchema.parse({
             kind: "proposal",
+            turn_id: "mock-turn",
             message: "画面確認用の固定提案です。",
             questions: [],
             proposal: session.proposal,

@@ -15,6 +15,7 @@ export function createNoProposalCommit<TPrepared, TQuestion, TPending, TResult>(
   response: NoProposalResponse<TQuestion>,
   prepared: TPrepared,
   attempt: number,
+  turnId: string,
   dependencies: {
     readonly createPendingWithdrawConfirmation: (response: NoProposalResponse<TQuestion>, prepared: TPrepared) => TPending | undefined;
     readonly createRendererQuestions: (questions: readonly TQuestion[], pending: TPending | undefined, prepared: TPrepared) => unknown;
@@ -29,6 +30,7 @@ export function createNoProposalCommit<TPrepared, TQuestion, TPending, TResult>(
   const pending = dependencies.createPendingWithdrawConfirmation(response, prepared);
   const result = dependencies.parseTurnResult({
     kind: "no_proposal",
+    turn_id: turnId,
     message: response.message,
     questions: dependencies.createRendererQuestions(response.questions, pending, prepared),
     pending_proposal_action: response.pending_proposal_action,
@@ -49,6 +51,7 @@ export function createProposalCommit<TProposal, TQuestion, TPrepared, TDigest, T
   response: ProposalResponse<TProposal, TQuestion>,
   prepared: TPrepared,
   attempt: number,
+  turnId: string,
   replacingProposalId: string | undefined,
   dependencies: {
     readonly candidateDigest: (proposal: TProposal) => TDigest;
@@ -85,6 +88,7 @@ export function createProposalCommit<TProposal, TQuestion, TPrepared, TDigest, T
   const view = dependencies.createProposalView(stored);
   const result = dependencies.parseTurnResult({
     kind: "proposal",
+    turn_id: turnId,
     message: response.message,
     questions: dependencies.createRendererQuestions(response.questions, prepared),
     proposal: view,

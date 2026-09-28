@@ -692,7 +692,7 @@ export class AiWorkflowService {
       workspaceState,
     } = input;
     const attemptId = identifierSchema.parse(randomUUID());
-    const { prepared: turnPrepared, response: generatedResponse, workspace } = await runSessionTurn<
+    const { prepared: turnPrepared, turnId, response: generatedResponse, workspace } = await runSessionTurn<
       AiWorkflowSnapshot,
       TrustedStatusEvidenceReference,
       PreparedTurn,
@@ -818,7 +818,7 @@ export class AiWorkflowService {
       throw new AiWorkflowStateError("AIセッションが切り替わったため、AIターンを破棄しました。");
     }
     if (validatedResponse.kind === "no_proposal") {
-      return createNoProposalCommit(validatedResponse.response, turnPrepared, attempt, {
+      return createNoProposalCommit(validatedResponse.response, turnPrepared, attempt, turnId, {
         createPendingWithdrawConfirmation: (response, prepared) =>
           createPendingWithdrawConfirmation(response, prepared, AiWorkflowError),
         createRendererQuestions: (questions, pending, prepared) =>
@@ -830,6 +830,7 @@ export class AiWorkflowService {
       validatedResponse.response,
       turnPrepared,
       attempt,
+      turnId,
       request.base_proposal_id,
       {
         candidateDigest: workspaceCandidateDigest,

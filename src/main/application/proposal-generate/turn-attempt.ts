@@ -17,7 +17,7 @@ export async function runSessionTurn<
   },
   dependencies: {
     readonly beginTurn: (attemptId: string, signal: AbortSignal) => void | PromiseLike<void>;
-    readonly startTurn: (factory: (signal: AbortSignal) => Promise<TTurnInput>, signal: AbortSignal) => Promise<{ readonly response: TResponse }>;
+    readonly startTurn: (factory: (signal: AbortSignal) => Promise<TTurnInput>, signal: AbortSignal) => Promise<{ readonly turnId: string; readonly response: TResponse }>;
     readonly createTurnInput: (
       signal: AbortSignal,
       markPrepared: (prepared: TPrepared, workspace: TWorkspace) => void,
@@ -29,7 +29,7 @@ export async function runSessionTurn<
     readonly SyncError: new (cause: unknown) => Error;
     readonly StateError: new (message: string) => Error;
   },
-): Promise<{ readonly prepared: TPrepared; readonly response: TResponse; readonly workspace: TWorkspace }> {
+): Promise<{ readonly prepared: TPrepared; readonly turnId: string; readonly response: TResponse; readonly workspace: TWorkspace }> {
   const preparedState: {
     current: { readonly kind: "pending" } | { readonly kind: "ready"; readonly value: TPrepared };
   } = { current: { kind: "pending" } };
@@ -69,5 +69,5 @@ export async function runSessionTurn<
   if (workspace == null) {
     throw new dependencies.StateError("AI変更案ワークスペースが作成されませんでした。");
   }
-  return { prepared: turnPrepared, response: sessionTurnResult.response, workspace };
+  return { prepared: turnPrepared, turnId: sessionTurnResult.turnId, response: sessionTurnResult.response, workspace };
 }

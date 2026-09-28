@@ -410,6 +410,7 @@ const questionSchema = z
 const workflowProposalTurnSchema = z
   .object({
     kind: z.literal("proposal"),
+    turn_id: identifierSchema,
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
     proposal: proposalViewSchema,
@@ -420,6 +421,7 @@ const workflowProposalTurnSchema = z
 const workflowNoProposalTurnSchema = z
   .object({
     kind: z.literal("no_proposal"),
+    turn_id: identifierSchema,
     message: nonBlankMessageSchema,
     questions: z.array(questionSchema).max(8),
     pending_proposal_action: z.enum(["keep", "discard"]),
