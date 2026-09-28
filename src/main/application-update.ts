@@ -165,7 +165,7 @@ export class ApplicationUpdateService {
     private readonly platform: NodeJS.Platform,
     private readonly resourcesPath: string,
     attemptStore: ApplicationUpdateAttemptStore,
-    private readonly reportError: (error: unknown) => void,
+    private readonly reportError: (error: unknown) => string,
   ) {
     this.state = candidate ? { kind: "idle" } : { kind: "unavailable" };
     this.attemptStore = attemptStore;
@@ -217,15 +217,15 @@ export class ApplicationUpdateService {
         return;
       }
     } catch (error) {
-      this.publish({ kind: "failed", phase: "release_source" });
-      this.reportError(error);
+      const errorId = this.reportError(error);
+      this.publish({ kind: "failed", phase: "release_source", error_id: errorId });
       return;
     }
     try {
       assertWindowsUpdatePublisherName(this.platform, this.resourcesPath);
     } catch (error) {
-      this.publish({ kind: "failed", phase: "publisher_name" });
-      this.reportError(error);
+      const errorId = this.reportError(error);
+      this.publish({ kind: "failed", phase: "publisher_name", error_id: errorId });
       return;
     }
     try {
@@ -332,22 +332,24 @@ export class ApplicationUpdateService {
       this.attemptStore.clear();
       return;
     }
-    this.restoredInstallFailure = { kind: "failed", phase: "install" };
-    if (attempt.status === "pending") {
-      this.reportError(new Error(`更新版 ${attempt.targetVersion} を適用できず、実行版は ${this.currentVersion} のままです。`));
-      this.attemptStore.save({ ...attempt, status: "failed" });
+    if (attempt.status === "failed" && attempt.error_id != null) {
+      this.restoredInstallFailure = { kind: "failed", phase: "install", error_id: attempt.error_id };
+      return;
     }
+    const errorId = this.reportError(new Error(`更新版 ${attempt.targetVersion} を適用できず、実行版は ${this.currentVersion} のままです。`));
+    this.restoredInstallFailure = { kind: "failed", phase: "install", error_id: errorId };
+    this.attemptStore.save({ targetVersion: attempt.targetVersion, status: "failed", error_id: errorId });
   }
 
   private fail(error: unknown, phase: "install" | "download" | "check"): void {
     if (this.state.kind === "failed") {
       return;
     }
-    this.publish({ kind: "failed", phase });
-    this.reportError(error);
+    const errorId = this.reportError(error);
+    this.publish({ kind: "failed", phase, error_id: errorId });
     if (this.attemptedVersion != null) {
       try {
-        this.attemptStore.save({ targetVersion: this.attemptedVersion, status: "failed" });
+        this.attemptStore.save({ targetVersion: this.attemptedVersion, status: "failed", error_id: errorId });
       } catch (saveError) {
         this.reportError(saveError);
       }

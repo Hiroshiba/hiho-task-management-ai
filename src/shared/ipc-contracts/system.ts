@@ -35,6 +35,7 @@ export const systemUpdateStateSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("failed"),
       phase: z.enum(["release_source", "publisher_name", "check", "download", "install"]),
+      error_id: z.uuid().optional(),
     })
     .strict(),
 ]);

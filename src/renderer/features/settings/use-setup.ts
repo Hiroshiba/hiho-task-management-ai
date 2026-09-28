@@ -2,6 +2,8 @@ import { computed, ref } from "vue";
 import { settingsContracts, type SettingsApi } from "../../../shared/ipc-contracts/settings";
 import type { SetupState } from "../../../shared/ipc-contracts/setup-schemas";
 import type { SetupAction } from "./setup-action";
+import { useDiagnosticsApi } from "../../shared/api/feature-apis";
+import { reportRendererError } from "../../shared/logging/report-renderer-error";
 
 type SetupFeedback = { readonly kind: "failure" | "warning"; readonly message: string };
 type SetupOptions = {
@@ -14,6 +16,7 @@ type SetupOptions = {
 
 /** 初回設定の状態遷移と要求を所有します。 */
 export function useSetup(api: SettingsApi, options: SetupOptions) {
+  const diagnostics = useDiagnosticsApi();
   const state = ref<SetupState>();
   const busy = ref(false);
   const configured = computed(() => state.value?.kind === "ready");
@@ -86,8 +89,9 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
       let response: Awaited<ReturnType<SettingsApi["getState"]>>;
       try {
         response = await request;
-      } catch {
-        options.onFeedback({ kind: "failure", message: "設定操作を完了できませんでした。状態を確認して再試行してください。" });
+      } catch (error) {
+        const errorId = await reportRendererError(diagnostics, error, "error");
+        options.onFeedback({ kind: "failure", message: `設定操作を完了できませんでした。状態を確認して再試行してください。${errorId == null ? "" : ` エラーID ${errorId}`}` });
         await resynchronize();
         return;
       }

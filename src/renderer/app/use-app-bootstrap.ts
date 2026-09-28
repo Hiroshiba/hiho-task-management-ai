@@ -48,32 +48,33 @@ export function useAppBootstrap(options: BootstrapOptions): AppBootstrap {
     }
   }
 
-  useAppStartup(initialize, (failure) => showError(startupFailureText(failure.code)), () => {
-    showError(startupFailureText("operation_failed"));
+  useAppStartup(initialize, (failure) => showError(startupFailureText(failure.code, failure.error_id)), (errorId) => {
+    showError(startupFailureText("operation_failed", errorId));
   });
 
   return { screen, handleSetupState };
 }
 
-function startupFailureText(code: StartupFailure["code"]): string {
+function startupFailureText(code: StartupFailure["code"], errorId: string | undefined): string {
+  const suffix = errorId == null ? "" : ` エラーID ${errorId}`;
   switch (code) {
     case "invalid_request":
-      return "入力を確認してください。";
+      return `入力を確認してください。${suffix}`;
     case "invalid_response":
-      return "応答を確認できませんでした。";
+      return `応答を確認できませんでした。${suffix}`;
     case "sender_untrusted":
-      return "安全な送信元を確認できませんでした。";
+      return `安全な送信元を確認できませんでした。${suffix}`;
     case "not_configured":
-      return "この機能はまだ設定されていません。";
+      return `この機能はまだ設定されていません。${suffix}`;
     case "operation_failed":
-      return "操作に失敗しました。";
+      return `操作に失敗しました。${suffix}`;
     case "conflict":
-      return "最新状態と競合しました。再同期してください。";
+      return `最新状態と競合しました。再同期してください。${suffix}`;
     case "not_found":
-      return "対象が見つかりません。";
+      return `対象が見つかりません。${suffix}`;
     case "authentication_required":
-      return "認証が必要です。";
+      return `認証が必要です。${suffix}`;
     case "unavailable":
-      return "この機能は現在利用できません。";
+      return `この機能は現在利用できません。${suffix}`;
   }
 }

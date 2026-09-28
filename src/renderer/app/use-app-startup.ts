@@ -10,7 +10,7 @@ type StartupFailure = Extract<IpcResult<{ completed: true }>, { kind: "error" }>
 export function useAppStartup(
   onReady: () => Promise<void>,
   onFailure: (failure: StartupFailure) => void,
-  onUnexpectedFailure: () => void,
+  onUnexpectedFailure: (errorId: string | undefined) => void,
 ): void {
   const system = useSystemApi();
   const diagnostics = useDiagnosticsApi();
@@ -36,9 +36,9 @@ export function useAppStartup(
       }
       await onReady();
     } catch (error) {
-      void reportRendererError(diagnostics, error, "error");
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (mounted) {
-        onUnexpectedFailure();
+        onUnexpectedFailure(errorId);
       }
     }
   }

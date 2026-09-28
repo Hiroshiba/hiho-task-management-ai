@@ -207,7 +207,7 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
   async function loadInitialSyncState(): Promise<void> {
     const result = tasksContracts.getSyncState.response.parse(await api.getSyncState());
     if (result.kind === "error") {
-      options.onFeedback("failure", result.message);
+      options.onFeedback("failure", failureMessage(result));
       return;
     }
     handleSyncState(result.value);
@@ -220,7 +220,7 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
     try {
       const result = tasksContracts.runSync.response.parse(await api.runSync(mode));
       if (result.kind === "error") {
-        options.onFeedback("failure", result.message);
+        options.onFeedback("failure", failureMessage(result));
         await reconcileSyncStateAfterFailure(result.code === "authentication_required"
           ? { kind: "authentication_required" }
           : { kind: "error", error_code: "unexpected_error" });
@@ -234,8 +234,8 @@ export function useTaskSync(api: TasksApi, read: ReturnType<typeof useTaskRead>,
         options.onFeedback(hasWarning ? "warning" : "success", syncFeedbackMessage(result.value));
       }
     } catch (error) {
-      void reportRendererError(diagnostics, error, "error");
-      options.onFeedback("failure", "予期しないエラーが発生しました。もう一度お試しください。");
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      options.onFeedback("failure", `予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`);
       await reconcileSyncStateAfterFailure({ kind: "error", error_code: "unexpected_error" });
     } finally {
       activeSyncMode.value = "idle";
@@ -259,6 +259,10 @@ function syncTimestamp(value: string): number {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) throw new Error("同期日時を比較できません。");
   return timestamp;
+}
+
+function failureMessage(failure: Extract<Awaited<ReturnType<TasksApi["runSync"]>>, { readonly kind: "error" }>): string {
+  return `${failure.message}${failure.error_id == null ? "" : ` エラーID ${failure.error_id}`}`;
 }
 
 function normalizationNotificationMessage(notifications: readonly NormalizationNotification[]): string | undefined {

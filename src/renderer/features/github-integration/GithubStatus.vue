@@ -28,7 +28,7 @@ defineProps<{ state: GithubStatusState }>();
       class="mt-2 text-sm text-slate-700 dark:text-slate-300"
       role="status"
     >
-      GitHub連携は現在利用できません。
+      GitHub App連携が設定されていないため、現在利用できません。エラーID {{ state.errorId }}
     </p>
   </section>
 </template>

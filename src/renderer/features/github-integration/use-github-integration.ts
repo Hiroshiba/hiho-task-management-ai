@@ -5,7 +5,7 @@ import { reportRendererError } from "../../shared/logging/report-renderer-error"
 
 export type GithubStatusState =
   | { readonly kind: "loading" }
-  | { readonly kind: "unavailable" }
+  | { readonly kind: "unavailable"; readonly errorId: string }
   | { readonly kind: "failure"; readonly message: string };
 
 /** GitHub連携の表示状態を所有します。 */
@@ -36,11 +36,11 @@ export function useGithubIntegration() {
         };
         return;
       }
-      state.value = { kind: "unavailable" };
+      state.value = { kind: "unavailable", errorId: result.value.error_id };
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (!disposed && requestGeneration === generation) {
-        state.value = { kind: "failure", message: "GitHub連携の状態を確認できませんでした。" };
+        state.value = { kind: "failure", message: `GitHub連携の状態を確認できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}` };
       }
     }
   }

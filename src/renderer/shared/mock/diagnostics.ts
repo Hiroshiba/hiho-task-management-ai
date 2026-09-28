@@ -7,9 +7,9 @@ export function createMockDiagnosticsApi(): DiagnosticsApi {
     report: (input) => Promise.resolve().then(() => {
       const request = diagnosticsContracts.report.request.parse(input);
       if (request.level === "warning") {
-        console.warn(request.stack);
+        console.warn(request.error);
       } else {
-        console.error(request.stack);
+        console.error(request.error);
       }
       return diagnosticsContracts.report.response.parse({
         kind: "ok",

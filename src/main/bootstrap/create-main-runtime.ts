@@ -245,7 +245,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       },
     });
     const proposalsHandlers = createProposalsHandlers(legacy.getProposalsHandlerWorkflows());
-    const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus });
+    const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus }, engineReporter);
     const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(
       obsidian.workflow.createIpcPort(),
     );

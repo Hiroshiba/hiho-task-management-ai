@@ -48,5 +48,5 @@ function updateClass(state: SystemUpdateState): string {
     :class="updateClass(state)"
     role="status"
     aria-live="polite"
-  >アプリ: {{ updateLabel(state) }}</span>
+  >アプリ: {{ updateLabel(state) }}<template v-if="state.kind === 'failed' && state.error_id != null"> エラーID {{ state.error_id }}</template></span>
 </template>

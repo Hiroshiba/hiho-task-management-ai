@@ -1,5 +1,7 @@
 import { onBeforeUnmount, ref } from "vue";
 import { settingsContracts, type SettingsApi } from "../../../shared/ipc-contracts/settings";
+import { useDiagnosticsApi } from "../../shared/api/feature-apis";
+import { reportRendererError } from "../../shared/logging/report-renderer-error";
 
 const pollIntervalMilliseconds = 500;
 const maximumRetryCount = 3;
@@ -22,6 +24,7 @@ type AuthenticationOptions = {
 
 /** Asana再認証の状態、確認タイマー、操作を所有します。 */
 export function useAsanaReauthentication(api: SettingsApi, options: AuthenticationOptions) {
+  const diagnostics = useDiagnosticsApi();
   const state = ref<AuthenticationState>({ kind: "idle" });
   const busy = ref(false);
   const loaded = ref(false);
@@ -80,9 +83,10 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       if (disposed || currentGeneration !== generation) {
         return;
       }
-      void requestState(advanceGeneration(), retryCount).catch(() => {
+      void requestState(advanceGeneration(), retryCount).catch(async (error) => {
+        const errorId = await reportRendererError(diagnostics, error, "error");
         needsRecheck.value = true;
-        options.onFeedback("failure", "Asana認証状態を確認できませんでした。");
+        options.onFeedback("failure", `Asana認証状態を確認できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
       });
     }, delay);
   }
@@ -105,8 +109,9 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       clearTimer();
     }
     if (reconcileIdle && previous.kind !== "idle" && parsed.value.kind === "idle") {
-      void options.onAuthenticationIdle().catch(() => {
-        options.onFeedback("failure", "Asana同期の状態を確認できませんでした。");
+      void options.onAuthenticationIdle().catch(async (error) => {
+        const errorId = await reportRendererError(diagnostics, error, "error");
+        options.onFeedback("failure", `Asana同期の状態を確認できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
       });
     }
   }
@@ -131,10 +136,11 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
         options.onAuthenticationRequired();
       }
       return true;
-    } catch {
+    } catch (error) {
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (!disposed && currentGeneration === generation) {
         needsRecheck.value = true;
-        options.onFeedback("failure", "Asana認証状態を確認できませんでした。");
+        options.onFeedback("failure", `Asana認証状態を確認できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
         schedule(state.value, currentGeneration, retryCount + 1);
       }
       return false;
@@ -191,9 +197,10 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       let response: Awaited<ReturnType<SettingsApi["beginAsanaReauthentication"]>>;
       try {
         response = await api.beginAsanaReauthentication();
-      } catch {
+      } catch (error) {
+        const errorId = await reportRendererError(diagnostics, error, "error");
         if (!disposed) {
-          await reconcileFailure("Asana再認証の開始に失敗しました。");
+          await reconcileFailure(`Asana再認証の開始に失敗しました。${errorId == null ? "" : ` エラーID ${errorId}`}`);
         }
         return;
       }
@@ -237,9 +244,10 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       let response: Awaited<ReturnType<SettingsApi["completeAsanaReauthentication"]>>;
       try {
         response = await api.completeAsanaReauthentication(parsedInput.data);
-      } catch {
+      } catch (error) {
+        const errorId = await reportRendererError(diagnostics, error, "error");
         if (!disposed) {
-          await reconcileFailure("Asanaの再認証に失敗しました。保存済みのタスクを表示しています。");
+          await reconcileFailure(`Asanaの再認証に失敗しました。保存済みのタスクを表示しています。${errorId == null ? "" : ` エラーID ${errorId}`}`);
         }
         return;
       }
@@ -255,9 +263,10 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       let refreshed: boolean;
       try {
         refreshed = await options.onSynchronized(result.value);
-      } catch {
+      } catch (error) {
+        const errorId = await reportRendererError(diagnostics, error, "error");
         applyState({ kind: "idle" }, advanceGeneration(), false, false);
-        options.onFeedback("warning", "Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。");
+        options.onFeedback("warning", `Asanaの再認証と同期は完了しました。タスク表示を更新できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}`);
         return;
       }
       applyState({ kind: "idle" }, advanceGeneration(), false, false);
@@ -291,9 +300,10 @@ export function useAsanaReauthentication(api: SettingsApi, options: Authenticati
       let response: Awaited<ReturnType<SettingsApi["cancelAsanaReauthentication"]>>;
       try {
         response = await api.cancelAsanaReauthentication(input);
-      } catch {
+      } catch (error) {
+        const errorId = await reportRendererError(diagnostics, error, "error");
         if (!disposed) {
-          await reconcileFailure("Asana再認証のキャンセルに失敗しました。");
+          await reconcileFailure(`Asana再認証のキャンセルに失敗しました。${errorId == null ? "" : ` エラーID ${errorId}`}`);
         }
         return;
       }

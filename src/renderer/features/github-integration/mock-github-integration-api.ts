@@ -5,7 +5,7 @@ export function createMockGithubIntegrationApi(): GithubIntegrationApi {
   return {
     getStatus: () => Promise.resolve(githubIntegrationContracts.getStatus.response.parse({
       kind: "ok",
-      value: { kind: "unavailable", reason_code: "client_unavailable" },
+      value: { kind: "unavailable", reason_code: "client_unavailable", error_id: "00000000-0000-4000-8000-000000000046" },
     })),
   };
 }

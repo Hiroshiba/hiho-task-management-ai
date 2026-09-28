@@ -1,4 +1,4 @@
-import { diagnosticsContracts } from "../../../shared/ipc-contracts/diagnostics";
+import { diagnosticsContracts, type DiagnosticError } from "../../../shared/ipc-contracts/diagnostics";
 import type { ContractHandler } from "./contract-handler";
 
 type DiagnosticsReporter = {
@@ -20,8 +20,7 @@ export function createDiagnosticsHandlers(reporter: DiagnosticsReporter): Diagno
   return {
     report: (payload) => Promise.resolve().then(() => {
       const request = diagnosticsContracts.report.request.parse(payload);
-      const error = new Error(request.message);
-      error.stack = request.stack;
+      const error = restoreDiagnosticError(request.error);
       const errorId = reporter.reportErrorOnce(error, {
         source: "ipc",
         diagnosticCode: "renderer.diagnostic",
@@ -32,4 +31,13 @@ export function createDiagnosticsHandlers(reporter: DiagnosticsReporter): Diagno
       return diagnosticsContracts.report.response.parse({ kind: "ok", value: { error_id: errorId } });
     }),
   };
+}
+
+function restoreDiagnosticError(value: DiagnosticError): Error {
+  const error = value.cause == null
+    ? new Error(value.message)
+    : new Error(value.message, { cause: restoreDiagnosticError(value.cause) });
+  error.name = value.name;
+  error.stack = value.stack;
+  return error;
 }

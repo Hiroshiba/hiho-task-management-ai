@@ -3,10 +3,10 @@ import type { PersistentTextFile } from "./persistent-text-file";
 
 export const stableVersionSchema = z.string().max(64).regex(/^\d+\.\d+\.\d+$/);
 
-const applicationUpdateAttemptSchema = z.object({
-  targetVersion: stableVersionSchema,
-  status: z.enum(["pending", "failed"]),
-}).strict();
+const applicationUpdateAttemptSchema = z.discriminatedUnion("status", [
+  z.object({ targetVersion: stableVersionSchema, status: z.literal("pending") }).strict(),
+  z.object({ targetVersion: stableVersionSchema, status: z.literal("failed"), error_id: z.uuid().optional() }).strict(),
+]);
 
 type ApplicationUpdateAttempt = z.infer<typeof applicationUpdateAttemptSchema>;
 

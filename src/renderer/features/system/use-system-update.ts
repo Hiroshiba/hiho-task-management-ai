@@ -34,7 +34,11 @@ export function useSystemUpdate(): Readonly<ShallowRef<SystemUpdateState>> {
         } catch (error) {
           state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check" });
           eventReceived = true;
-          void reportRendererError(diagnostics, error, "error");
+          void reportRendererError(diagnostics, error, "error").then((errorId) => {
+            if (mounted && errorId != null) {
+              state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check", error_id: errorId });
+            }
+          });
         }
       });
       const result = systemContracts.getUpdateState.response.parse(await system.getUpdateState());
@@ -42,12 +46,12 @@ export function useSystemUpdate(): Readonly<ShallowRef<SystemUpdateState>> {
         return;
       }
       state.value = result.kind === "error"
-        ? systemUpdateStateSchema.parse({ kind: "failed", phase: "check" })
+        ? systemUpdateStateSchema.parse({ kind: "failed", phase: "check", ...(result.error_id == null ? {} : { error_id: result.error_id }) })
         : result.value;
     } catch (error) {
-      void reportRendererError(diagnostics, error, "error");
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (mounted && !eventReceived) {
-        state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check" });
+        state.value = systemUpdateStateSchema.parse({ kind: "failed", phase: "check", ...(errorId == null ? {} : { error_id: errorId }) });
       }
     }
   }

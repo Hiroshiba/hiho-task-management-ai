@@ -10,6 +10,7 @@ import {
   shell,
   type WebContents,
 } from "electron";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { autoUpdater } from "electron-updater";
@@ -74,13 +75,14 @@ function recordPersistentError(
   context: ErrorReportContext["context"],
   severity: ErrorReportContext["level"],
   error: unknown,
-): void {
+): string {
   const logger = lifecycle.getRuntime()?.reporter;
   if (logger == null) {
-    writeErrorReportFailure(error, [], persistentErrorLogFormatter.redactText);
-    return;
+    const errorId = randomUUID();
+    writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), [], persistentErrorLogFormatter.redactText);
+    return errorId;
   }
-  logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
+  return logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
 }
 
 function registerUncaughtExceptionMonitor(): void {
@@ -721,9 +723,7 @@ async function bootstrap(): Promise<void> {
     process.platform,
     process.resourcesPath,
     runtime.createApplicationUpdateAttemptStore(),
-    (error) => {
-      recordPersistentError("main", "app.error", "application_update", "error", error);
-    },
+    (error) => recordPersistentError("main", "app.error", "application_update", "error", error),
   );
   applicationUpdateService = updateService;
   app.on("activate", () => {

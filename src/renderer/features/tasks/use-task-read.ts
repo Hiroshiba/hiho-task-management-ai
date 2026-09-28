@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import { tasksContracts, type TasksApi } from "../../../shared/ipc-contracts/tasks";
+import type { IpcResult } from "../../../shared/ipc-contracts/common";
 import { detailSchema } from "../../../shared/ipc-contracts/task-view";
 import type { z } from "zod";
 import { useDiagnosticsApi } from "../../shared/api/feature-apis";
@@ -96,9 +97,9 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     try {
       await loadSelectedTask(taskGid, detailGeneration);
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
+      const errorId = await reportRendererError(diagnostics, error, "error");
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        options.onTaskFailure("予期しないエラーが発生しました。もう一度お試しください。");
+        options.onTaskFailure(`予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`);
       }
     }
   }
@@ -107,7 +108,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     const result = apiContractDetail(await api.getDetail(taskGid));
     if (result.kind === "error") {
       if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) {
-        options.onTaskFailure(result.message);
+        options.onTaskFailure(failureMessage(result));
         if (result.code === "not_found") {
           options.onTaskMissing(taskGid);
           setTaskFeedback("warning", "対象タスクが見つかりません。未保存の入力は再適用しません。");
@@ -140,8 +141,8 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
     try {
       return await performTaskDataRefresh(generation, detailGeneration, taskGid);
     } catch (error) {
-      await reportRendererError(diagnostics, error, "error");
-      if (generation === taskDataGeneration) options.onFailure("予期しないエラーが発生しました。もう一度お試しください。");
+      const errorId = await reportRendererError(diagnostics, error, "error");
+      if (generation === taskDataGeneration) options.onFailure(`予期しないエラーが発生しました。もう一度お試しください。${errorId == null ? "" : ` エラーID ${errorId}`}`);
       return { kind: "failed" };
     }
   }
@@ -153,7 +154,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
   ): Promise<TaskDataRefreshResult> {
     const result = apiContractOverview(await api.getOverview());
     if (result.kind === "error") {
-      if (generation === taskDataGeneration) options.onFailure(result.message);
+      if (generation === taskDataGeneration) options.onFailure(failureMessage(result));
       return { kind: "failed" };
     }
     const nextOverview = result.value;
@@ -186,7 +187,7 @@ export function useTaskRead(api: TasksApi, options: TaskReadOptions) {
         }
         return { kind: "applied" };
       }
-      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(detailResult.message);
+      if (detailGeneration === taskDetailGeneration && selectedTaskGid.value === taskGid) options.onTaskFailure(failureMessage(detailResult));
       return { kind: "failed" };
     }
     if (generation !== taskDataGeneration) return { kind: "superseded" };
@@ -274,4 +275,8 @@ function apiContractOverview(value: Awaited<ReturnType<TasksApi["getOverview"]>>
 
 function apiContractDetail(value: Awaited<ReturnType<TasksApi["getDetail"]>>) {
   return tasksContracts.getDetail.response.parse(value);
+}
+
+function failureMessage(failure: Extract<IpcResult<unknown>, { readonly kind: "error" }>): string {
+  return `${failure.message}${failure.error_id == null ? "" : ` エラーID ${failure.error_id}`}`;
 }
