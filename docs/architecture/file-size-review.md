@@ -38,6 +38,7 @@
 | `src/main/domain/snapshot-normalization/normalizer.ts` | Asana snapshotから正規化結果を作る | 状態、関係、タグ、外部データを同じ取得時点から投影し、分割すると計画間の参照整合性を再照合する必要があるため。 |
 | `src/main/domain/snapshot-normalization/schemas.ts` | snapshot正規化の入出力契約を定義する | 各planと通知が一つの正規化結果へ集約され、分割すると判別子と結果形の対応が見えにくくなるため。 |
 | `src/main/external-agent/client-script.ts` | 外部エージェントの起動scriptを生成する | client、launcher、installerが同じ実行先と接続引数を共有し、分割すると起動引数の整合を別途維持するため。 |
+| `src/main/external-agent/service.ts` | 外部エージェントの提案準備からGUI承認・適用までを調整する | 準備済みcontextと提案recordが同じbaseline、snapshot、提案ID、revisionを介してCLI編集・検証・提出とGUIの選択・承認・適用へ渡るため、分割すると状態遷移の受け渡しが散る。T49で最終ownerへ分解する予定のため、今は暫定の境界を増やさない。 |
 | `src/main/external-agent/transport.ts` | 外部エージェントとのbridge通信を管理する | endpoint、要求、timeout、停止が同じbridge状態に依存し、分割すると切断時の要求回収が散るため。 |
 | `src/main/external-tools/broker.ts` | 外部ツールの接続と実行要求を配送する | 接続管理、実行中要求、停止処理が同じbroker状態を使い、分割すると中断時の資源回収が分かれるため。 |
 | `src/main/external-tools/client-script.ts` | contextctl clientの起動scriptを生成する | 接続情報の読取から要求転送までを一つのscriptとして出力し、分割すると生成後のscriptを結合するだけになるため。 |
