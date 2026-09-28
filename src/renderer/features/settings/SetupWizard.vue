@@ -6,7 +6,6 @@ import type {
   SetupExternalToolUnavailableReason,
   SetupState,
 } from "../../../shared/ipc-contracts/setup-schemas";
-import { vaultMappingSchema } from "../../../shared/ipc-contracts/vault-values";
 import { jstDateTimeLabel } from "../../shared/format/date-time";
 import type { SetupAction } from "./setup-action";
 
@@ -320,52 +319,54 @@ function cancelAuthorization(): void {
 
 function submitProjectCreate(): void {
   localError.value = "";
-  try {
-    const input = settingsContracts.selectProject.request.parse({
-      kind: "create",
-      name: projectName.value,
-    });
-    emit("action", { kind: "select_project", input });
-  } catch {
+  const parsed = settingsContracts.selectProject.request.safeParse({
+    kind: "create",
+    name: projectName.value,
+  });
+  if (!parsed.success) {
     localError.value = "プロジェクト名を確認してください。";
+    return;
   }
+  emit("action", { kind: "select_project", input: parsed.data });
 }
 
 function submitVault(): void {
   localError.value = "";
-  try {
-    const mapping = vaultMappingSchema.parse({
+  const parsed = settingsContracts.chooseVault.request.safeParse({
+    kind: "configure",
+    mapping: {
       vault_id: vaultId.value,
       absolute_path: vaultPath.value,
-    });
-    const input = settingsContracts.chooseVault.request.parse({ kind: "configure", mapping });
-    emit("action", { kind: "choose_vault", input });
-  } catch {
+    },
+  });
+  if (!parsed.success) {
     localError.value = "Vault IDとフォルダパスを確認してください。";
+    return;
   }
+  emit("action", { kind: "choose_vault", input: parsed.data });
 }
 
 function selectWorkspace(value: string): void {
   localError.value = "";
-  try {
-    const input = settingsContracts.selectWorkspace.request.parse({ workspace_gid: value });
-    emit("action", { kind: "select_workspace", workspaceGid: input.workspace_gid });
-  } catch {
+  const parsed = settingsContracts.selectWorkspace.request.safeParse({ workspace_gid: value });
+  if (!parsed.success) {
     localError.value = "ワークスペースを選択できません。";
+    return;
   }
+  emit("action", { kind: "select_workspace", workspaceGid: parsed.data.workspace_gid });
 }
 
 function selectProject(value: string): void {
   localError.value = "";
-  try {
-    const input = settingsContracts.selectProject.request.parse({
-      kind: "existing",
-      project_gid: value,
-    });
-    emit("action", { kind: "select_project", input });
-  } catch {
+  const parsed = settingsContracts.selectProject.request.safeParse({
+    kind: "existing",
+    project_gid: value,
+  });
+  if (!parsed.success) {
     localError.value = "プロジェクトを選択できません。";
+    return;
   }
+  emit("action", { kind: "select_project", input: parsed.data });
 }
 
 function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {

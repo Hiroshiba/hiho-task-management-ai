@@ -112,7 +112,12 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
         await options.onReady();
       }
       if (previousKind === "ready" && action.kind === "complete_codex_authentication") {
-        await options.onCodexAuthentication();
+        try {
+          await options.onCodexAuthentication();
+        } catch (error) {
+          const errorId = await reportRendererError(diagnostics, error, "error");
+          options.onFeedback({ kind: "failure", message: `Codexの状態を確認できませんでした。${errorId == null ? "" : ` エラーID ${errorId}`}` });
+        }
       }
     } finally {
       busy.value = false;
