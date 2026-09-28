@@ -1,15 +1,11 @@
 import { z } from "zod";
 import {
-  asanaTaskResponseSchema,
-  cleanupItemsSchema,
   dateSchema,
   gidSchema,
   getUtf8ByteLength,
   identifierSchema,
   importanceSchema,
   isoDateTimeSchema,
-  taskSchema,
-  taskTagSchema,
 } from "../domain";
 
 const nonEmptyTextSchema = z.string().refine((value) => value.length > 0, {
@@ -29,170 +25,6 @@ function isAbsoluteVaultPath(value: string): boolean {
     || /^\\\\[^\\/]+[\\/][^\\/]+/u.test(value)
   );
 }
-
-const customExternalDataCacheValidSchema = z
-  .object({
-    status: z.literal("valid"),
-    raw: z.string(),
-  })
-  .strict();
-
-const customExternalDataCacheBrokenSchema = z
-  .object({
-    status: z.literal("broken"),
-    raw: z.string(),
-  })
-  .strict();
-
-const customExternalDataCacheUnknownVersionSchema = z
-  .object({
-    status: z.literal("unknown_version"),
-    raw: z.string(),
-    schema: z.number().int(),
-  })
-  .strict();
-
-/** Custom external dataのキャッシュ状態を検証するスキーマです。 */
-export const customExternalDataCacheSchema = z.discriminatedUnion("status", [
-  customExternalDataCacheValidSchema,
-  customExternalDataCacheBrokenSchema,
-  customExternalDataCacheUnknownVersionSchema,
-]);
-
-/** タスクキャッシュの一件を検証するスキーマです。 */
-export const taskCacheEntrySchema = z
-  .object({
-    gid: gidSchema,
-    asana_response: asanaTaskResponseSchema,
-    task: taskSchema,
-    custom_external_data: customExternalDataCacheSchema.optional(),
-    cached_at: isoDateTimeSchema,
-  })
-  .strict()
-  .superRefine((entry, context) => {
-    if (entry.asana_response.gid !== entry.gid) {
-      context.addIssue({
-        code: "custom",
-        path: ["asana_response", "gid"],
-        message: "AsanaレスポンスのGIDがキャッシュのGIDと一致しません。",
-      });
-    }
-    if (entry.task.gid !== entry.gid) {
-      context.addIssue({
-        code: "custom",
-        path: ["task", "gid"],
-        message: "正規化タスクのGIDがキャッシュのGIDと一致しません。",
-      });
-    }
-  });
-
-/** タスクキャッシュの配列を重複なく検証するスキーマです。 */
-export const taskCacheEntriesSchema = z
-  .array(taskCacheEntrySchema)
-  .superRefine((entries, context) => {
-    const seen = new Set<string>();
-    entries.forEach((entry, index) => {
-      if (seen.has(entry.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "gid"],
-          message: "同じGIDのタスクを重複して保存できません。",
-        });
-        return;
-      }
-      seen.add(entry.gid);
-    });
-  });
-
-const uniqueMissingTaskGidsSchema = z
-  .array(gidSchema)
-  .superRefine((gids, context) => {
-    const seen = new Set<string>();
-    gids.forEach((gid, index) => {
-      if (seen.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "同じGIDを差分削除対象へ重複して指定できません。",
-        });
-        return;
-      }
-      seen.add(gid);
-    });
-  });
-
-/** タスクキャッシュ差分を検証するスキーマです。 */
-export const taskCacheDiffSchema = z
-  .object({
-    upsert: taskCacheEntriesSchema,
-    missing_gids: uniqueMissingTaskGidsSchema,
-  })
-  .strict()
-  .superRefine((diff, context) => {
-    const upsertGids = new Set(diff.upsert.map((entry) => entry.gid));
-    diff.missing_gids.forEach((gid, index) => {
-      if (upsertGids.has(gid)) {
-        context.addIssue({
-          code: "custom",
-          path: ["missing_gids", index],
-          message: "同じGIDをupsertと削除の両方へ指定できません。",
-        });
-      }
-    });
-  });
-
-/** 同期で保存する要整理項目のキャッシュを検証するスキーマです。 */
-export const cleanupItemsCacheSchema = cleanupItemsSchema;
-
-const projectMetadataProjectSchema = z
-  .object({
-    gid: gidSchema,
-    name: z.string().optional(),
-  })
-  .strict();
-
-/** プロジェクトメタデータへ保存するセクションを検証するスキーマです。 */
-export const projectMetadataSectionSchema = z
-  .object({
-    gid: gidSchema,
-    name: nonBlankTextSchema,
-  })
-  .strict();
-
-/** プロジェクトメタデータキャッシュの一件を検証するスキーマです。 */
-export const projectMetadataCacheSchema = z
-  .object({
-    project: projectMetadataProjectSchema,
-    sections: z.array(projectMetadataSectionSchema),
-    tags: z.array(taskTagSchema),
-    cached_at: isoDateTimeSchema,
-  })
-  .strict()
-  .superRefine((cache, context) => {
-    const sectionGids = new Set<string>();
-    cache.sections.forEach((section, index) => {
-      if (sectionGids.has(section.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: ["sections", index, "gid"],
-          message: "同じセクションGIDを重複して保存できません。",
-        });
-      }
-      sectionGids.add(section.gid);
-    });
-
-    const tagGids = new Set<string>();
-    cache.tags.forEach((tag, index) => {
-      if (tagGids.has(tag.gid)) {
-        context.addIssue({
-          code: "custom",
-          path: ["tags", index, "gid"],
-          message: "同じタグGIDを重複して保存できません。",
-        });
-      }
-      tagGids.add(tag.gid);
-    });
-  });
 
 /** 順位点数の内訳を検証するスキーマです。 */
 export const rankingScoreBreakdownSchema = z
@@ -342,16 +174,6 @@ export const rankingCacheSchema = z
       seen.add(task.gid);
     });
   });
-
-/** プロジェクトごとの同期状態を検証するスキーマです。 */
-export const syncStateSchema = z
-  .object({
-    project_gid: gidSchema,
-    events_token: nonEmptyTextSchema.optional(),
-    last_successful_sync_at: isoDateTimeSchema.optional(),
-    last_full_sync_at: isoDateTimeSchema.optional(),
-  })
-  .strict();
 
 /** 端末が使用する四つの状態セクションGIDを検証するスキーマです。 */
 export const deviceSectionGidsSchema = z
@@ -504,19 +326,12 @@ export const diagnosticLogEntrySchema = z
   })
   .strict();
 
-export type CustomExternalDataCache = z.infer<typeof customExternalDataCacheSchema>;
-export type TaskCacheEntry = z.infer<typeof taskCacheEntrySchema>;
-export type TaskCacheDiff = z.infer<typeof taskCacheDiffSchema>;
-export type CleanupItemsCache = z.infer<typeof cleanupItemsCacheSchema>;
-export type ProjectMetadataCache = z.infer<typeof projectMetadataCacheSchema>;
-export type ProjectMetadataSection = z.infer<typeof projectMetadataSectionSchema>;
 export type RankingScoreBreakdown = z.infer<typeof rankingScoreBreakdownSchema>;
 export type RankingExclusionReasonCode = z.infer<typeof rankingExclusionReasonCodeSchema>;
 export type RankingExclusionReason = z.infer<typeof rankingExclusionReasonSchema>;
 export type RankingCacheDetail = z.infer<typeof rankingCacheDetailSchema>;
 export type RankingTieBreak = z.infer<typeof rankingTieBreakSchema>;
 export type RankingCache = z.infer<typeof rankingCacheSchema>;
-export type SyncState = z.infer<typeof syncStateSchema>;
 export type DeviceSectionGids = z.infer<typeof deviceSectionGidsSchema>;
 export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
 export type ExternalToolCredentialReferenceNames = z.infer<

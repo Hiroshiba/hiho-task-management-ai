@@ -19,15 +19,8 @@ import {
 } from "../../domain";
 import {
   deviceSectionGidsSchema,
-  projectMetadataCacheSchema,
   rankingCacheSchema,
-  syncStateSchema,
-  taskCacheEntriesSchema,
-  type CleanupItemsCache,
-  type ProjectMetadataCache,
   type RankingCache,
-  type SyncState,
-  type TaskCacheEntry,
 } from "../../../shared/storage";
 import { AsanaReadClient } from "../client/client";
 import { setupManifest } from "../setup/manifest";
@@ -45,7 +38,13 @@ import {
   AsanaNormalizationPlanApplier,
   asanaNormalizationPlanApplierResultSchema,
 } from "./normalization-plan-applier";
-import type { TaskSyncRepository } from "../../application/common/ports/task-read-repository";
+import type {
+  CleanupItemsRecord as CleanupItemsCache,
+  ProjectMetadataRecord as ProjectMetadataCache,
+  TaskCacheRecord as TaskCacheEntry,
+  TaskReadSyncState,
+  TaskSyncRepository,
+} from "../../application/common/ports/task-read-repository";
 import { asanaSyncTokenSchema } from "../sync-token";
 import {
   compareStrings,
@@ -146,6 +145,12 @@ type SynchronizationMode = z.infer<typeof synchronizationModeSchema>;
 type FallbackReason = z.infer<typeof fallbackReasonSchema>;
 type AsanaTagResponse = z.infer<typeof asanaTagResponseSchema>;
 type ProjectMetadataSource = Omit<ProjectMetadataCache, "cached_at">;
+type SyncState = TaskReadSyncState;
+type CacheParsers = {
+  readonly parseEntries: (value: unknown) => readonly TaskCacheEntry[];
+  readonly parseMetadata: (value: unknown) => ProjectMetadataCache;
+  readonly parseSyncState: (value: unknown) => SyncState;
+};
 type EstablishedEventsToken = {
   readonly sync_token: string;
 };
@@ -380,8 +385,9 @@ function createProjectMetadataSource(
 function createProjectMetadataCache(
   source: ProjectMetadataSource,
   cachedAt: string,
+  parseMetadata: CacheParsers["parseMetadata"],
 ): ProjectMetadataCache {
-  return projectMetadataCacheSchema.parse({
+  return parseMetadata({
     ...source,
     cached_at: cachedAt,
   });
@@ -455,6 +461,7 @@ function createTaskCacheEntries(
   rawTasks: readonly AsanaTaskResponse[],
   normalization: SnapshotNormalizationResult,
   cachedAt: string,
+  parseEntries: CacheParsers["parseEntries"],
 ): readonly TaskCacheEntry[] {
   const normalizedByGid = new Map(
     normalization.tasks.map((task) => [task.gid, task]),
@@ -476,7 +483,7 @@ function createTaskCacheEntries(
     };
     return entry;
   });
-  return taskCacheEntriesSchema.parse(entries);
+  return parseEntries(entries);
 }
 
 function createSyncState(
@@ -484,8 +491,9 @@ function createSyncState(
   eventsToken: string | undefined,
   lastFullSyncedAt: string | undefined,
   syncedAt: string,
+  parseSyncState: (value: unknown) => SyncState,
 ): SyncState {
-  return syncStateSchema.parse({
+  return parseSyncState({
     project_gid: projectGid,
     ...(eventsToken == null ? {} : { events_token: eventsToken }),
     last_successful_sync_at: syncedAt,
@@ -576,6 +584,7 @@ export class AsanaSyncCoordinator {
     CleanupItemsCache
   >;
   private readonly timestampProvider: SyncTimestampProvider;
+  private readonly cacheParsers: CacheParsers;
   private synchronizationInProgress = false;
 
   public constructor(
@@ -591,6 +600,7 @@ export class AsanaSyncCoordinator {
       CleanupItemsCache
     >,
     timestampProvider: SyncTimestampProvider,
+    cacheParsers: CacheParsers,
   ) {
     this.readClient = readClient;
     this.fullSyncSource = fullSyncSource;
@@ -598,6 +608,7 @@ export class AsanaSyncCoordinator {
     this.planApplier = planApplier;
     this.repository = repository;
     this.timestampProvider = timestampProvider;
+    this.cacheParsers = cacheParsers;
   }
 
   /** 指定された方式でAsana同期を実行し、実状態をキャッシュします。 */
@@ -655,6 +666,7 @@ export class AsanaSyncCoordinator {
       const metadata = createProjectMetadataCache(
         collection.metadata,
         syncedAt,
+        this.cacheParsers.parseMetadata,
       );
       const requiredSectionInspection = inspectRequiredSections(
         validatedInput.section_gids,
@@ -720,6 +732,7 @@ export class AsanaSyncCoordinator {
         applicationOutcome.rawTasks,
         finalNormalization,
         syncedAt,
+        this.cacheParsers.parseEntries,
       );
       const syncState = createSyncState(
         validatedInput.project_gid,
@@ -728,6 +741,7 @@ export class AsanaSyncCoordinator {
           ? syncedAt
           : existingState?.last_full_sync_at,
         syncedAt,
+        this.cacheParsers.parseSyncState,
       );
       this.repository.saveSyncSnapshot(
         taskCacheEntries,

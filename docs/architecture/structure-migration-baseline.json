@@ -1189,11 +1189,6 @@
     },
     {
       "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "old-import",
       "symbol": "src/main/obsidian/index.ts"
     },
@@ -1201,11 +1196,6 @@
       "path": "src/main/application/cleanup-aggregation.ts",
       "rule": "old-import",
       "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/application/cleanup-aggregation.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/main/application/cleanup-aggregation.ts",
@@ -1734,11 +1724,6 @@
     },
     {
       "path": "src/main/asana/runtime/service.ts",
-      "rule": "import-boundary",
-      "symbol": "src/shared/storage/index.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
       "rule": "old-import",
       "symbol": "src/main/asana/operation-queue.ts"
     },
@@ -1771,11 +1756,6 @@
       "path": "src/main/asana/runtime/service.ts",
       "rule": "old-import",
       "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/main/asana/runtime/service.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/storage/index.ts"
     },
     {
       "path": "src/main/asana/runtime/service.ts",

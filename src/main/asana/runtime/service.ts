@@ -23,7 +23,7 @@ import {
   asanaSyncCoordinatorResultSchema,
 } from "../sync";
 import { isoDateTimeSchema } from "../../../shared/domain";
-import { syncStateSchema, type SyncState } from "../../../shared/storage";
+import type { TaskReadSyncState } from "../../application/common/ports/task-read-repository";
 import { AsanaSyncRuntimeAlreadyReportedError } from "./errors";
 import {
   createCombinedSignal,
@@ -56,7 +56,7 @@ const fullSyncIntervalMilliseconds = 24 * 60 * 60 * 1000;
 const onlineSyncIntervalMilliseconds = 60 * 1000;
 
 type AsanaSyncCoordinatorPort = Pick<AsanaSyncCoordinator, "coordinate">;
-type SyncStateRepository = { getSyncState(projectGid: string): SyncState | undefined };
+type SyncStateRepository = { getSyncState(projectGid: string): TaskReadSyncState | undefined };
 type BeforeSynchronization = (
   signal: AbortSignal,
   executionId?: string,
@@ -162,6 +162,7 @@ export class AsanaSyncRuntime {
   private readonly forwardUnhandledError: AsanaSyncRuntimeUnhandledErrorForwarder;
   private readonly nowProvider: () => string;
   private readonly operationQueue: AsanaOperationQueue;
+  private readonly parseSyncState: (value: unknown) => TaskReadSyncState;
   private readonly stopController = new AbortController();
   private readonly listeners = new Set<AsanaSyncRuntimeStateListener>();
   private readonly lifecycleAbortListener = (): void => {
@@ -188,6 +189,7 @@ export class AsanaSyncRuntime {
     forwardUnhandledError: AsanaSyncRuntimeUnhandledErrorForwarder,
     nowProvider: () => string,
     operationQueue: AsanaOperationQueue,
+    parseSyncState: (value: unknown) => TaskReadSyncState,
   ) {
     validateFunction(coordinator?.coordinate, "Asana同期コーディネーターが必要です。");
     validateFunction(
@@ -199,6 +201,7 @@ export class AsanaSyncRuntime {
     validateFunction(notifyUnexpectedError, "予期しないエラー通知関数が必要です。");
     validateFunction(forwardUnhandledError, "未処理エラー転送関数が必要です。");
     validateFunction(nowProvider, "現在時刻関数が必要です。");
+    validateFunction(parseSyncState, "同期状態の検証関数が必要です。");
     if (!(operationQueue instanceof AsanaOperationQueue)) {
       throw new TypeError("Asana操作キューが必要です。");
     }
@@ -211,6 +214,7 @@ export class AsanaSyncRuntime {
     this.forwardUnhandledError = forwardUnhandledError;
     this.nowProvider = nowProvider;
     this.operationQueue = operationQueue;
+    this.parseSyncState = parseSyncState;
     const existingState = this.readSyncState();
     this.lastSuccessfulSyncAt = existingState?.last_successful_sync_at;
     this.connectionState = this.configuration.initial_online && !lifecycleSignal.aborted
@@ -525,12 +529,12 @@ export class AsanaSyncRuntime {
     return "delta";
   }
 
-  private readSyncState(): SyncState | undefined {
+  private readSyncState(): TaskReadSyncState | undefined {
     const state = this.stateRepository.getSyncState(this.configuration.project_gid);
     if (state == null) {
       return undefined;
     }
-    const parsed = syncStateSchema.parse(state);
+    const parsed = this.parseSyncState(state);
     if (parsed.project_gid !== this.configuration.project_gid) {
       throw new Error("保存済み同期状態のプロジェクトGIDが一致しません。");
     }

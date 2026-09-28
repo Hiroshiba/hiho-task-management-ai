@@ -5,8 +5,10 @@ import {
   taskSchema,
   type Task,
 } from "../../shared/domain";
-import type { CleanupItemsCache } from "../../shared/storage";
-import type { CleanupItemsRepository } from "./common/ports/task-read-repository";
+import type {
+  CleanupItemsRecord as CleanupItemsCache,
+  CleanupItemsRepository,
+} from "./common/ports/task-read-repository";
 import {
   asanaProposalApplicationResultSchema,
   asanaProposalRecoveryResultSchema,

@@ -232,6 +232,7 @@ import {
   parseCustomExternalData,
   serializeCustomExternalData,
   taskSchema,
+  taskTagSchema,
   type AsanaTaskResponse,
 } from "../../shared/domain";
 import {
@@ -265,22 +266,12 @@ import {
 import {
   deviceSettingsSchema,
   externalToolCredentialReferenceNamesSchema,
-  projectMetadataCacheSchema,
   rankingCacheSchema,
-  syncStateSchema,
-  taskCacheDiffSchema,
-  taskCacheEntriesSchema,
-  taskCacheEntrySchema,
   vaultMappingSchema,
-  type CleanupItemsCache,
   type DeviceSettings,
   type DiagnosticLogEntry,
   type ExternalToolCredentialReferenceNames,
-  type ProjectMetadataCache,
   type RankingCache,
-  type SyncState,
-  type TaskCacheDiff,
-  type TaskCacheEntry,
 } from "../../shared/storage";
 import {
   SqliteExternalToolDefinitionRepository,
@@ -289,10 +280,19 @@ import {
   SqliteVaultMappingRepository,
   SetupCheckpointStore,
   TaskReadPersistenceRepository,
+  createSyncStateSchema,
+  createTaskReadCacheContracts,
+  createTaskReadCacheSchemas,
   type PersistenceRuntime,
   type TaskReadPersistenceContracts,
 } from "../infrastructure/persistence";
-import type { TaskReadEntry } from "./common/ports/task-read-repository";
+import type {
+  CleanupItemsRecord as CleanupItemsCache,
+  ProjectMetadataRecord as ProjectMetadataCache,
+  TaskCacheDiffRecord as TaskCacheDiff,
+  TaskCacheRecord as TaskCacheEntry,
+  TaskReadEntry,
+} from "./common/ports/task-read-repository";
 
 type AiStatus = z.output<typeof proposalsContracts.aiStatus.event.shape.value>;
 type AiDelta = z.output<typeof proposalsContracts.aiDelta.event.shape.value>;
@@ -401,6 +401,8 @@ type ExternalToolDefinitionRecord = ExternalToolDefinition & {
   readonly credential_reference_names: ExternalToolCredentialReferenceNames;
 };
 
+type SyncState = z.infer<ReturnType<typeof createSyncStateSchema>>;
+
 function createExternalToolDefinitionRecordSchema(): z.ZodType<ExternalToolDefinitionRecord> {
   return externalToolDefinitionSchema.extend({
     credential_reference_names: externalToolCredentialReferenceNamesSchema,
@@ -415,48 +417,27 @@ function createTaskReadPersistenceContracts(): TaskReadPersistenceContracts<
   CleanupItemsCache,
   TaskCacheDiff
 > {
-  const cleanupKindsSchema = z.array(cleanupItemKindSchema)
-    .min(1, "置換対象の要整理種別を一つ以上指定してください。")
-    .superRefine((kinds, context) => {
-      const seen = new Set<string>();
-      kinds.forEach((kind, index) => {
-        if (seen.has(kind)) {
-          context.addIssue({
-            code: "custom",
-            path: [index],
-            message: "同じ要整理種別を重複して指定できません。",
-          });
-        }
-        seen.add(kind);
-      });
-    });
-  const parseEntry = (value: unknown): TaskCacheEntry => {
-    const entry = taskCacheEntrySchema.parse(value);
-    const externalData = entry.custom_external_data;
-    if (externalData != null) {
-      const parsed = parseCustomExternalData(externalData.raw);
-      if (parsed.status !== externalData.status) {
-        throw new Error("Custom external dataのキャッシュ状態がrawの解析結果と一致しません。");
-      }
-      if (externalData.status === "unknown_version"
-        && (parsed.kind !== "unknown_version" || parsed.schema !== externalData.schema)) {
-        throw new Error("Custom external dataのschema versionがrawの解析結果と一致しません。");
-      }
-    }
-    return entry;
-  };
-  return {
-    parseGid: (value: string) => gidSchema.parse(value),
-    parseEntry,
-    parseEntries: (value: unknown) => taskCacheEntriesSchema.parse(value),
-    parseDiff: (value: unknown) => taskCacheDiffSchema.parse(value),
-    parseMetadata: (value: unknown) => projectMetadataCacheSchema.parse(value),
-    parseRanking: (value: unknown) => rankingCacheSchema.parse(value),
-    parseSyncState: (value: unknown) => syncStateSchema.parse(value),
-    parseCleanupItems: (value: unknown) => cleanupItemsSchema.parse(value),
-    parseCleanupKinds: (value: unknown) => cleanupKindsSchema.parse(value),
+  const cacheSchemas = createTaskReadCacheSchemas({
+    gidSchema,
+    asanaTaskResponseSchema,
+    taskSchema,
+    taskTagSchema,
+    isoDateTimeSchema,
+  });
+  const syncStateSchema = createSyncStateSchema(gidSchema, isoDateTimeSchema);
+  return createTaskReadCacheContracts({
+    gid: gidSchema,
+    entry: cacheSchemas.taskCacheEntrySchema,
+    entries: cacheSchemas.taskCacheEntriesSchema,
+    diff: cacheSchemas.taskCacheDiffSchema,
+    metadata: cacheSchemas.projectMetadataCacheSchema,
+    ranking: rankingCacheSchema,
+    syncState: syncStateSchema,
+    cleanupItems: cleanupItemsSchema,
+    cleanupKind: cleanupItemKindSchema,
+    parseExternalData: parseCustomExternalData,
     canonicalize: canonicalizeJson,
-  };
+  });
 }
 
 function compareStrings(left: string, right: string): number {
@@ -1163,6 +1144,7 @@ export class TaskHubApplication {
       planApplier,
       this.taskReadRepository,
       () => createNowIso(this.options.now_provider),
+      taskReadPersistenceContracts,
     );
     this.codexWorkspace = initializeCodexWorkspace({
       userDataPath: options.user_data_path,
@@ -1472,10 +1454,9 @@ export class TaskHubApplication {
         await recoverGuiTaskWrites(execution.gui, signal);
         return asanaProposalRecoveryResultSchema.parse(await recoverStoredProposals(execution.proposal, signal));
       },
-      afterRecovery: (result) => this.cleanupAggregation.replaceProposalConflictsFromRecovery(
-        result,
-        true,
-      ),
+      afterRecovery: (result) => {
+        this.cleanupAggregation.replaceProposalConflictsFromRecovery(result, true);
+      },
     });
     this.configuredCodexRuntime = new ConfiguredCodexRuntime({
       validateAbortSignal,
@@ -1747,6 +1728,7 @@ export class TaskHubApplication {
         this.options.unhandled_error_forwarder,
         () => createNowIso(this.options.now_provider),
         this.operationQueue,
+        this.taskReadPersistenceContracts.parseSyncState,
       ),
       parseSyncInput: (value) => tasksContracts.runSync.request.parse(value),
       parseSetupInput: (value) => setupFullSyncInputSchema.parse(value),
@@ -3362,7 +3344,9 @@ export class TaskHubApplication {
         this.requireTaskWriteExecution().proposal,
         signal,
       ),
-      (result) => this.cleanupAggregation.replaceProposalConflictsFromApplication(result),
+      (result) => {
+        this.cleanupAggregation.replaceProposalConflictsFromApplication(result);
+      },
     );
   }
 

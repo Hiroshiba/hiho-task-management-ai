@@ -2,6 +2,9 @@ export { PersistenceRuntime } from "./persistence-runtime";
 export type { PersistentTextFile } from "./persistent-text-file";
 export { SecretStorage } from "./secret-storage";
 export { SetupCheckpointStore } from "./setup-checkpoint-store";
+export { createSyncStateSchema } from "./sync-state-schema";
+export { createTaskReadCacheContracts } from "./task-read-cache-contracts";
+export { createTaskReadCacheSchemas } from "./task-read-cache-schemas";
 export {
   WindowStateStore,
   windowStateSchema,

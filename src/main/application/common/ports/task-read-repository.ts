@@ -1,4 +1,9 @@
-import type { RankingScoreBreakdown, RankingTieBreak } from "../../../domain";
+import type {
+  RankingScoreBreakdown,
+  RankingTieBreak,
+  SnapshotNormalizationInput,
+  SnapshotNormalizationResult,
+} from "../../../domain";
 
 type TaskReadTieBreak = Omit<RankingTieBreak, "effective_due_at"> & {
   readonly effective_due_at?: string | undefined;
@@ -51,6 +56,29 @@ export type TaskReadEntry = {
     readonly projects: readonly { readonly gid: string }[];
     readonly memberships: readonly { readonly project: { readonly gid: string } }[];
   };
+};
+
+/** 同期結果をSQLiteへ保存するタスクキャッシュです。 */
+export type TaskCacheRecord = Omit<TaskReadEntry, "asana_response" | "task"> & {
+  readonly asana_response: SnapshotNormalizationInput["tasks"][number];
+  readonly task: SnapshotNormalizationResult["tasks"][number];
+};
+
+/** 同期結果をSQLiteへ保存するプロジェクト情報です。 */
+export type ProjectMetadataRecord = {
+  readonly project: { readonly gid: string; readonly name?: string | undefined };
+  readonly sections: readonly { readonly gid: string; readonly name: string }[];
+  readonly tags: readonly { readonly gid: string; readonly name: string }[];
+  readonly cached_at: string;
+};
+
+/** 同期結果をSQLiteへ保存する要整理項目です。 */
+export type CleanupItemsRecord = SnapshotNormalizationResult["cleanup_items"];
+
+/** 同期で適用するタスクキャッシュ差分です。 */
+export type TaskCacheDiffRecord = {
+  readonly upsert: readonly TaskCacheRecord[];
+  readonly missing_gids: readonly string[];
 };
 
 /** 読取に必要な順位結果の構造です。 */
