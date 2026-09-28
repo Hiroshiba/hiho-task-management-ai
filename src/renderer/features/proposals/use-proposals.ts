@@ -141,8 +141,26 @@ export function useProposals() {
   async function startSession(): ReturnType<ProposalsApi["startSession"]> {
     const generation = lifecycleGeneration;
     const result = proposalsContracts.startSession.response.parse(await api.startSession());
+    if (!disposed && generation === lifecycleGeneration && result.kind === "ok" && result.value.kind === "authentication_required") {
+      aiStatus.value = { kind: "authentication_required" };
+    }
     if (!disposed && generation === lifecycleGeneration && result.kind === "ok" && result.value.kind === "started") {
       sessions.value = [...sessions.value, { session_id: result.value.session_id, state: { kind: "idle" }, activity: "idle", generation: 0 }];
+    }
+    return result;
+  }
+
+  async function refreshAiStatus(): ReturnType<ProposalsApi["getAiStatus"]> {
+    const generation = aiStatusGeneration;
+    const result = proposalsContracts.getAiStatus.response.parse(await api.getAiStatus());
+    if (!disposed && generation === aiStatusGeneration) {
+      if (result.kind === "ok") {
+        aiStatus.value = result.value;
+        aiStatusFailure.value = undefined;
+      } else {
+        aiStatus.value = undefined;
+        aiStatusFailure.value = result;
+      }
     }
     return result;
   }
@@ -340,6 +358,7 @@ export function useProposals() {
     selectedExternalProposalId,
     selectedExternalProposal,
     initialize,
+    refreshAiStatus,
     startSession,
     startTurn,
     getProposal,

@@ -1,26 +1,23 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import {
-  type AiWorkflowApprovalRequest,
-  type AiWorkflowOperationEdit,
-  type AiWorkflowSelectionRequest,
-  type AiWorkflowTurnRequest,
-} from "../../shared/ai-workflow";
+import type { ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import AiPanel from "./AiPanel.vue";
 import ExternalProposalPanel from "./ExternalProposalPanel.vue";
 import type {
-  ExternalAgentGuiApproveInput,
-  ExternalAgentGuiEditInput,
-  ExternalAgentGuiRejectInput,
-  ExternalAgentGuiSelectInput,
-} from "../../shared/external-agent";
-import type {
-  AiSessionFeedback,
-  AiSessionStatus,
   AiSessionView,
-  RendererExternalAgentEditResult,
-  RendererExternalAgentState,
-} from "./state";
+  AiSessionStatus,
+  Feedback,
+  ExternalEditResult,
+  ExternalProposalViewState,
+  ExternalEditInput,
+  ExternalRejectInput,
+  ExternalSelectionInput,
+  ProposalEditInput,
+  ProposalSelectionInput,
+  ExternalApprovalResult,
+} from "./proposal-presentation";
+
+type TurnInput = Pick<Parameters<ProposalsApi["startTurn"]>[0], "message">;
 
 type AiPanelApi = {
   readonly focusMessageInput: () => "focused" | "unavailable";
@@ -35,32 +32,33 @@ const props = defineProps<{
   open: boolean;
   canStartNewSession: boolean;
   creatingSession: boolean;
-  feedback?: AiSessionFeedback | undefined;
+  feedback?: Feedback | undefined;
   sessions: readonly AiSessionView[];
   tasks: readonly AiTaskReference[];
   selectedSessionId?: string | undefined;
-  externalAgentState: RendererExternalAgentState;
+  externalAgentState: ExternalProposalViewState;
   externalAgentBusy: boolean;
-  externalAgentEditResult?: RendererExternalAgentEditResult | undefined;
+  externalAgentEditResult?: ExternalEditResult | undefined;
   externalReviewRequestId?: string | undefined;
+  externalApprovalResults: Readonly<Record<string, ExternalApprovalResult>>;
 }>();
 
 const emit = defineEmits<{
   (event: "close"): void;
   (event: "new-session"): void;
   (event: "select-session", sessionId: string): void;
-  (event: "start", sessionId: string, input: AiWorkflowTurnRequest): void;
-  (event: "select", sessionId: string, input: AiWorkflowSelectionRequest): void;
-  (event: "edit", sessionId: string, input: AiWorkflowOperationEdit): void;
-  (event: "approve", sessionId: string, input: AiWorkflowApprovalRequest): void;
+  (event: "start", sessionId: string, input: TurnInput): void;
+  (event: "select", sessionId: string, input: ProposalSelectionInput): void;
+  (event: "edit", sessionId: string, input: ProposalEditInput): void;
+  (event: "approve", sessionId: string, input: ProposalSelectionInput): void;
   (event: "reject", sessionId: string, proposalId: string): void;
   (event: "complete", sessionId: string): void;
   (event: "cancel", sessionId: string): void;
   (event: "select-task", sessionId: string, taskGid: string): void;
-  (event: "external-edit", input: ExternalAgentGuiEditInput): void;
-  (event: "external-approve", input: ExternalAgentGuiApproveInput): void;
-  (event: "external-reject", input: ExternalAgentGuiRejectInput): void;
-  (event: "external-select", input: ExternalAgentGuiSelectInput): void;
+  (event: "external-edit", input: ExternalEditInput): void;
+  (event: "external-approve", input: ExternalSelectionInput): void;
+  (event: "external-reject", input: ExternalRejectInput): void;
+  (event: "external-select", input: ExternalSelectionInput): void;
   (event: "external-select-task", taskGid: string): void;
 }>();
 
@@ -140,7 +138,7 @@ function sessionStatusClass(status: AiSessionStatus): string {
   }
 }
 
-function feedbackClass(kind: AiSessionFeedback["kind"]): string {
+function feedbackClass(kind: Feedback["kind"]): string {
   switch (kind) {
     case "success":
       return "bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100";
@@ -153,7 +151,7 @@ function feedbackClass(kind: AiSessionFeedback["kind"]): string {
   }
 }
 
-function feedbackRole(kind: AiSessionFeedback["kind"]): "status" | "alert" {
+function feedbackRole(kind: Feedback["kind"]): "status" | "alert" {
   switch (kind) {
     case "success":
     case "progress":
@@ -180,7 +178,7 @@ function showSessionList(): void {
 
 function completeSession(): void {
   const session = selectedSession.value;
-  if (session == null || session.status !== "completed" || session.operation === "closing") {
+  if (session == null || session.status !== "completed" || session.operation === "close") {
     return;
   }
   emit("complete", session.session_id);
@@ -191,7 +189,7 @@ function cancelSession(): void {
   if (session == null
     || session.status === "completed"
     || session.operation === "approve"
-    || session.operation === "closing") {
+    || session.operation === "close") {
     return;
   }
   emit("cancel", session.session_id);
@@ -509,7 +507,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                   v-if="selectedSession.status === 'completed'"
                   type="button"
                   class="primary-button"
-                  :disabled="selectedSession.operation === 'closing'"
+                  :disabled="selectedSession.operation === 'close'"
                   @click="completeSession"
                 >
                   確認して閉じる
@@ -518,7 +516,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
                   v-else
                   type="button"
                   class="secondary-button"
-                  :disabled="selectedSession.operation === 'approve' || selectedSession.operation === 'closing'"
+                  :disabled="selectedSession.operation === 'approve' || selectedSession.operation === 'close'"
                   @click="cancelSession"
                 >
                   依頼を中止
@@ -540,6 +538,7 @@ watch(() => props.selectedSessionId, (sessionId) => {
             :busy="props.externalAgentBusy"
             :tasks="props.tasks"
             :edit-result="props.externalAgentEditResult"
+            :approval-results="props.externalApprovalResults"
             @edit="(input) => emit('external-edit', input)"
             @approve="(input) => emit('external-approve', input)"
             @reject="(input) => emit('external-reject', input)"

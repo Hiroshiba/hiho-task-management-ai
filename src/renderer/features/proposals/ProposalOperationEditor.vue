@@ -1,27 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { z } from "zod";
-import {
-  proposalOperationSchema,
-  type ProposalOperation,
-} from "../../shared/ai";
-import {
-  aiWorkflowOperationEditSchema,
-  type AiWorkflowOperationEdit,
-} from "../../shared/ai-workflow";
-import {
-  type DependencyScope,
-  dateSchema,
-  isoDateTimeSchema,
-  type ObsidianLink,
-  type ParentWorkMode,
-} from "../../shared/domain";
+import { dateSchema, dateTimeSchema } from "../../../shared/ipc-contracts/common";
+import { proposalOperationSchema } from "../../../shared/ipc-contracts/proposal-values";
+import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
+import type { ProposalEditInput, ProposalOperation, DurationUnit } from "./proposal-presentation";
 import {
   durationMinimum,
   durationUnitOptions,
   parseDurationInput,
-  type DurationUnit,
-} from "./duration";
+} from "./proposal-presentation";
 
 type CreateTaskOperation = Extract<ProposalOperation, { operation: "create_task" }>;
 type ProposalTarget = Extract<ProposalOperation, { operation: "update_title" }>["target"];
@@ -38,7 +26,7 @@ type TargetOption = {
 type DependencyDraft = {
   readonly id: number;
   targetKey: string;
-  scope: DependencyScope;
+  scope: ProposalDependency["scope"];
   source: string;
 };
 
@@ -69,7 +57,7 @@ type FormState = {
   durationSpecified: boolean;
   parentKey: string;
   parentSpecified: boolean;
-  parentWorkMode: ParentWorkMode;
+  parentWorkMode: Extract<ProposalOperation, { operation: "set_parent_work_mode" }>["after"];
   parentWorkModeSpecified: boolean;
   dependencies: DependencyDraft[];
   dependenciesSpecified: boolean;
@@ -90,7 +78,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "save", input: AiWorkflowOperationEdit): void;
+  (event: "save", input: ProposalEditInput): void;
   (event: "cancel"): void;
 }>();
 
@@ -356,7 +344,7 @@ function createDependencyDraft(dependency: ProposalDependency): DependencyDraft 
   };
 }
 
-function createObsidianDraft(link: ObsidianLink): ObsidianDraft {
+function createObsidianDraft(link: Extract<ProposalOperation, { operation: "link_obsidian" }>["after"]): ObsidianDraft {
   return {
     id: draftId(),
     vaultId: link.vault_id,
@@ -433,7 +421,7 @@ function dependenciesAfter(): readonly ProposalDependency[] {
   }));
 }
 
-function obsidianLinksAfter(): readonly ObsidianLink[] {
+function obsidianLinksAfter(): readonly Extract<ProposalOperation, { operation: "link_obsidian" }>["after"][] {
   return form.value.obsidianLinks.map((link) => ({
     vault_id: link.vaultId,
     path: link.path,
@@ -532,9 +520,11 @@ function save(): void {
     form.value.error = "操作後の値を確認してください。";
     return;
   }
-  const editResult = aiWorkflowOperationEditSchema.safeParse({
+  const editResult = proposalsContracts.editOperation.request.safeParse({
+    session_id: "ui-edit",
     proposal_id: props.proposalId,
     operation_id: operation.operation_id,
+    operation: operation.operation,
     after: operationResult.data.after,
     evidence_locator: form.value.evidenceLocator,
   });
@@ -543,7 +533,11 @@ function save(): void {
     return;
   }
   form.value.error = "";
-  emit("save", editResult.data);
+  const { session_id, ...input } = editResult.data;
+  if (session_id !== "ui-edit") {
+    throw new Error("編集要求の検証IDが一致しません。");
+  }
+  emit("save", input);
 }
 
 function addDependency(): void {
@@ -622,11 +616,11 @@ function datetimeLocalToIso(value: string): string {
   if (!Number.isFinite(timestamp)) {
     throw new FormInputError("期限日時を確認してください。");
   }
-  return isoDateTimeSchema.parse(new Date(timestamp).toISOString());
+  return dateTimeSchema.parse(new Date(timestamp).toISOString());
 }
 
 function isoToDatetimeLocal(value: string): string {
-  const validated = isoDateTimeSchema.parse(value);
+  const validated = dateTimeSchema.parse(value);
   const timestamp = Date.parse(validated);
   if (!Number.isFinite(timestamp)) {
     throw new Error("日時を表示用へ変換できません。");

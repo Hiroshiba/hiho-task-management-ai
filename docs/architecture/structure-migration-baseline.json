@@ -3688,71 +3688,6 @@
       "symbol": "src/shared/task-hub-api.ts"
     },
     {
-      "path": "src/renderer/src/AiPanel.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/AiPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/ProposalReviewPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/AiPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/AiPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/AiPanel.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/AiPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/AiPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/ExternalProposalPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/renderer/src/AiSessionDialog.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/AiSessionDialog.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/AiSessionDialog.vue"
-    },
-    {
       "path": "src/renderer/src/App.vue",
       "rule": "import-boundary",
       "symbol": "src/renderer/src/SettingsDialog.vue"
@@ -3766,16 +3701,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "import-boundary",
       "symbol": "src/renderer/src/TaskDetail.vue"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/AiSessionDialog.vue"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3816,21 +3741,6 @@
       "path": "src/renderer/src/App.vue",
       "rule": "old-import",
       "symbol": "src/renderer/src/useToast.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/App.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
     },
     {
       "path": "src/renderer/src/App.vue",
@@ -3886,36 +3796,6 @@
       "path": "src/renderer/src/duration.ts",
       "rule": "old-path",
       "symbol": "src/renderer/src/duration.ts"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/ProposalReviewPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ExternalProposalPanel.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/ExternalProposalPanel.vue"
     },
     {
       "path": "src/renderer/src/main.ts",
@@ -3988,96 +3868,6 @@
       "symbol": "src/renderer/src/mocks/task-hub.ts"
     },
     {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/duration.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalOperationEditor.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/ProposalOperationEditor.vue"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "import-boundary",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/duration.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/ProposalOperationEditor.vue"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/ai/index.ts"
-    },
-    {
-      "path": "src/renderer/src/ProposalReviewPanel.vue",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/ProposalReviewPanel.vue"
-    },
-    {
-      "path": "src/renderer/src/SettingsDialog.vue",
-      "rule": "import-boundary",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/SettingsDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/state.ts"
-    },
-    {
-      "path": "src/renderer/src/SettingsDialog.vue",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
-    },
-    {
       "path": "src/renderer/src/SettingsDialog.vue",
       "rule": "old-import",
       "symbol": "src/shared/storage/index.ts"
@@ -4130,17 +3920,7 @@
     {
       "path": "src/renderer/src/state.ts",
       "rule": "old-import",
-      "symbol": "src/shared/ai-workflow/index.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
-      "rule": "old-import",
       "symbol": "src/shared/domain/index.ts"
-    },
-    {
-      "path": "src/renderer/src/state.ts",
-      "rule": "old-import",
-      "symbol": "src/shared/external-agent/index.ts"
     },
     {
       "path": "src/renderer/src/state.ts",

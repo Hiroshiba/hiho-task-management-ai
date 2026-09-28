@@ -1,14 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import {
-  aiWorkflowApprovalRequestSchema,
-  aiWorkflowSelectionRequestSchema,
-  type AiWorkflowApprovalRequest,
-  type AiWorkflowOperationEdit,
-  type AiWorkflowProposalView,
-  type AiWorkflowSelectionRequest,
-} from "../../shared/ai-workflow";
-import type { ProposalOperation } from "../../shared/ai";
+import { proposalSelectionSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
+import type { ProposalEditInput, ProposalOperation, ProposalSelectionInput, ExternalEditResult } from "./proposal-presentation";
 import {
   CheckboxIndicator,
   CheckboxRoot,
@@ -20,9 +13,8 @@ import {
   importanceLabel,
   parentWorkModeLabel,
   statusLabel,
-} from "./state";
-import type { RendererExternalAgentEditResult } from "./state";
-import { durationLabel } from "./duration";
+} from "./proposal-presentation";
+import { durationLabel } from "./proposal-presentation";
 import ProposalOperationEditor from "./ProposalOperationEditor.vue";
 
 type TaskTitleReference = {
@@ -41,21 +33,21 @@ type ProposalParentValue = Extract<ProposalOperation, { operation: "set_parent" 
 type ProposalDependency = Extract<ProposalOperation, { operation: "set_dependencies" }>["after"][number];
 type CreateTaskFields = CreateTaskOperation["after"];
 type ObsidianLink = Extract<ProposalOperation, { operation: "link_obsidian" }>["after"];
-type RankChange = AiWorkflowProposalView["impact"]["rank_changes"][number];
+type RankChange = ProposalViewDto["impact"]["rank_changes"][number];
 
 const props = defineProps<{
-  proposal: AiWorkflowProposalView;
+  proposal: ProposalViewDto;
   tasks: readonly TaskTitleReference[];
   canWrite: boolean;
   reviewMode: "interactive" | "read-only";
   deferEditClose: boolean;
-  editResult?: RendererExternalAgentEditResult | undefined;
+  editResult?: ExternalEditResult | undefined;
 }>();
 
 const emit = defineEmits<{
-  (event: "select", input: AiWorkflowSelectionRequest): void;
-  (event: "edit", input: AiWorkflowOperationEdit): void;
-  (event: "approve", input: AiWorkflowApprovalRequest): void;
+  (event: "select", input: ProposalSelectionInput): void;
+  (event: "edit", input: ProposalEditInput): void;
+  (event: "approve", input: ProposalSelectionInput): void;
   (event: "reject", proposalId: string): void;
   (event: "select-task", taskGid: string): void;
 }>();
@@ -69,7 +61,7 @@ const editingOperationId = ref<string | undefined>();
 const awaitingEditResult = ref(false);
 const localError = ref("");
 
-function requireProposal(): AiWorkflowProposalView {
+function requireProposal(): ProposalViewDto {
   return props.proposal;
 }
 
@@ -155,8 +147,8 @@ function updateSelectionMode(value: unknown): void {
   selectionMode.value = value;
 }
 
-function selectProposal(proposal: AiWorkflowProposalView): void {
-  let selection: AiWorkflowSelectionRequest["selection"];
+function selectProposal(proposal: ProposalViewDto): void {
+  let selection: ProposalSelectionInput["selection"];
   if (selectionMode.value === "all") {
     selection = { kind: "all" };
   } else if (selectionMode.value === "groups") {
@@ -164,18 +156,16 @@ function selectProposal(proposal: AiWorkflowProposalView): void {
   } else {
     selection = { kind: "operations", operation_ids: selectedOperationIds.value };
   }
-  try {
-    emit("select", aiWorkflowSelectionRequestSchema.parse({
-      proposal_id: proposal.proposal_id,
-      selection,
-    }));
-  } catch {
+  const parsed = proposalSelectionSchema.safeParse(selection);
+  if (!parsed.success) {
     localError.value = "選択するグループまたは操作を指定してください。";
+    return;
   }
+  emit("select", { proposal_id: proposal.proposal_id, selection: parsed.data });
 }
 
-function approveProposal(proposal: AiWorkflowProposalView): void {
-  let selection: AiWorkflowApprovalRequest["selection"];
+function approveProposal(proposal: ProposalViewDto): void {
+  let selection: ProposalSelectionInput["selection"];
   if (selectionMode.value === "all") {
     selection = { kind: "all" };
   } else if (selectionMode.value === "groups") {
@@ -183,14 +173,12 @@ function approveProposal(proposal: AiWorkflowProposalView): void {
   } else {
     selection = { kind: "operations", operation_ids: selectedOperationIds.value };
   }
-  try {
-    emit("approve", aiWorkflowApprovalRequestSchema.parse({
-      proposal_id: proposal.proposal_id,
-      selection,
-    }));
-  } catch {
+  const parsed = proposalSelectionSchema.safeParse(selection);
+  if (!parsed.success) {
     localError.value = "承認するグループまたは操作を指定してください。";
+    return;
   }
+  emit("approve", { proposal_id: proposal.proposal_id, selection: parsed.data });
 }
 
 function operationLabel(operation: ProposalOperation): string {
@@ -256,14 +244,14 @@ function taskLabel(gid: string, includeReference: boolean): string {
   return taskReferenceLabel("タスク", task.title, task.gid, props.tasks, "ID", includeReference);
 }
 
-function createTaskOperations(proposal: AiWorkflowProposalView): readonly CreateTaskOperation[] {
-  return proposal.proposal.groups
+function createTaskOperations(proposal: ProposalViewDto): readonly CreateTaskOperation[] {
+  return proposal.groups
     .flatMap((group) => group.operations)
     .filter((operation): operation is CreateTaskOperation => operation.operation === "create_task");
 }
 
 function createTaskOperationForRef(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   temporaryRef: string,
 ): CreateTaskOperation {
   const operation = createTaskOperations(proposal)
@@ -275,7 +263,7 @@ function createTaskOperationForRef(
 }
 
 function createTaskLabel(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   operation: CreateTaskOperation,
   includeReference: boolean,
 ): string {
@@ -290,7 +278,7 @@ function createTaskLabel(
 }
 
 function targetReferenceLabel(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   target: ProposalTarget,
 ): string {
   if (target.kind === "existing") {
@@ -301,7 +289,7 @@ function targetReferenceLabel(
 }
 
 function targetLabel(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   operation: ProposalOperation,
 ): string {
   if (operation.operation === "create_task") {
@@ -311,7 +299,7 @@ function targetLabel(
 }
 
 function targetDetailLabel(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   operation: ProposalOperation,
 ): string {
   if (operation.operation === "create_task") {
@@ -323,7 +311,7 @@ function targetDetailLabel(
   return createTaskLabel(proposal, createTaskOperationForRef(proposal, operation.target.ref), true);
 }
 
-function rankTaskLabel(proposal: AiWorkflowProposalView, gid: string): string {
+function rankTaskLabel(proposal: ProposalViewDto, gid: string): string {
   const temporaryPrefix = "temporary:";
   if (!gid.startsWith(temporaryPrefix)) {
     return taskLabel(gid, false);
@@ -376,7 +364,7 @@ function dependencyScopeLabel(scope: ProposalDependency["scope"]): string {
 }
 
 function dependencyLines(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   dependencies: readonly ProposalDependency[],
 ): readonly string[] {
   if (dependencies.length === 0) {
@@ -387,7 +375,7 @@ function dependencyLines(
 }
 
 function parentValueLabel(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   value: ProposalParentValue,
 ): string {
   if (value.kind === "absent") {
@@ -401,7 +389,7 @@ function obsidianLinkLabel(link: ObsidianLink): string {
 }
 
 function createTaskFieldsLines(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   fields: CreateTaskFields,
 ): readonly string[] {
   const lines = [`タイトル: ${fields.title}`];
@@ -445,7 +433,7 @@ function createTaskFieldsLines(
 }
 
 function operationValueLines(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   operation: ProposalOperation,
   side: "before" | "after",
 ): readonly string[] {
@@ -644,7 +632,7 @@ function startEditing(operation: ProposalOperation): void {
   localError.value = "";
 }
 
-function saveEditedOperation(input: AiWorkflowOperationEdit): void {
+function saveEditedOperation(input: ProposalEditInput): void {
   awaitingEditResult.value = props.deferEditClose;
   emit("edit", input);
   if (!props.deferEditClose) {
@@ -657,7 +645,7 @@ function cancelEditing(): void {
   editingOperationId.value = undefined;
 }
 
-function operationIsApplicable(proposal: AiWorkflowProposalView, operationId: string): boolean {
+function operationIsApplicable(proposal: ProposalViewDto, operationId: string): boolean {
   const basic = proposal.basic_validation.operations.find((item) => item.operation_id === operationId);
   if (basic == null) {
     throw new Error("basic validationに操作の検証結果がありません。");
@@ -670,10 +658,10 @@ function operationIsApplicable(proposal: AiWorkflowProposalView, operationId: st
 }
 
 function operationIsSelectableInOperationsMode(
-  proposal: AiWorkflowProposalView,
+  proposal: ProposalViewDto,
   operationId: string,
 ): boolean {
-  const group = proposal.proposal.groups.find((candidate) =>
+  const group = proposal.groups.find((candidate) =>
     candidate.operations.some((operation) => operation.operation_id === operationId));
   if (group == null || group.atomic) {
     return false;
@@ -681,15 +669,15 @@ function operationIsSelectableInOperationsMode(
   return operationIsApplicable(proposal, operationId);
 }
 
-function synchronizeProposalSelections(proposal: AiWorkflowProposalView): void {
+function synchronizeProposalSelections(proposal: ProposalViewDto): void {
   const selectedOperationIdsFromServer = new Set(proposal.selected_operation_ids);
-  selectedGroupIds.value = proposal.proposal.groups
+  selectedGroupIds.value = proposal.groups
     .filter((group) =>
       groupIsApplicable(proposal, group.group_id)
       && group.operations.every((operation) => selectedOperationIdsFromServer.has(operation.operation_id)))
     .map((group) => group.group_id);
   selectedOperationIds.value = proposal.selected_operation_ids.filter((operationId) => {
-    const group = proposal.proposal.groups.find((candidate) =>
+    const group = proposal.groups.find((candidate) =>
       candidate.operations.some((operation) => operation.operation_id === operationId));
     if (group == null || !operationIsApplicable(proposal, operationId)) {
       return false;
@@ -725,7 +713,7 @@ watch(selectionMode, (mode) => {
     operationIsSelectableInOperationsMode(currentProposal, operationId));
 });
 
-function operationValidation(proposal: AiWorkflowProposalView, operationId: string): string {
+function operationValidation(proposal: ProposalViewDto, operationId: string): string {
   return operationIsApplicable(proposal, operationId) ? "適用候補" : "適用不可";
 }
 
@@ -733,16 +721,16 @@ function confidenceLabel(confidence: number): string {
   return `${Math.round(confidence * 100)}%`;
 }
 
-function groupIsApplicable(proposal: AiWorkflowProposalView, groupId: string): boolean {
-  const group = proposal.proposal.groups.find((candidate) => candidate.group_id === groupId);
+function groupIsApplicable(proposal: ProposalViewDto, groupId: string): boolean {
+  const group = proposal.groups.find((candidate) => candidate.group_id === groupId);
   if (group == null) {
     throw new Error("変更グループが変更案にありません。");
   }
   return group.operations.every((operation) => operationIsApplicable(proposal, operation.operation_id));
 }
 
-function proposalHasInapplicableOperation(proposal: AiWorkflowProposalView): boolean {
-  return proposal.proposal.groups.some((group) =>
+function proposalHasInapplicableOperation(proposal: ProposalViewDto): boolean {
+  return proposal.groups.some((group) =>
     group.operations.some((operation) => !operationIsApplicable(proposal, operation.operation_id)));
 }
 
@@ -803,7 +791,7 @@ const selectionCanBeSubmitted = computed(() => {
         <h3 class="section-heading">
           変更案
         </h3><div
-          v-for="(group, groupIndex) in requireProposal().proposal.groups"
+          v-for="(group, groupIndex) in requireProposal().groups"
           :key="group.group_id"
           class="rounded-md border border-slate-200 p-4 dark:border-slate-700"
         >
@@ -965,7 +953,7 @@ const selectionCanBeSubmitted = computed(() => {
             </dd>
           </dl>
           <div
-            v-for="group in requireProposal().proposal.groups"
+            v-for="group in requireProposal().groups"
             :key="`detail-${group.group_id}`"
             class="space-y-2 rounded-md bg-slate-50 p-3 dark:bg-slate-800"
           >

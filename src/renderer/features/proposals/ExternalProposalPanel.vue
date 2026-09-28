@@ -1,24 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import {
-  externalAgentGuiApproveInputSchema,
-  externalAgentGuiEditInputSchema,
-  externalAgentGuiRejectInputSchema,
-  externalAgentGuiSelectInputSchema,
-  type ExternalAgentGuiApproveInput,
-  type ExternalAgentGuiEditInput,
-  type ExternalAgentGuiRejectInput,
-  type ExternalAgentGuiSelectInput,
-  type ExternalAgentGuiState,
-  type ExternalAgentProposal,
-  type ExternalAgentProposalStatus,
-} from "../../shared/external-agent";
-import {
-  type AiWorkflowApprovalRequest,
-  type AiWorkflowOperationEdit,
-  type AiWorkflowSelectionRequest,
-} from "../../shared/ai-workflow";
-import type { RendererExternalAgentEditResult } from "./state";
+import { proposalsContracts } from "../../../shared/ipc-contracts/proposals";
+import type {
+  ExternalApprovalResult,
+  ExternalEditInput,
+  ExternalEditResult,
+  ExternalProposal,
+  ExternalProposalStatus,
+  ExternalRejectInput,
+  ExternalSelectionInput,
+  ExternalState,
+  ProposalEditInput,
+  ProposalSelectionInput,
+} from "./proposal-presentation";
+import ApprovalResultPanel from "./ApprovalResultPanel.vue";
 import ProposalReviewPanel from "./ProposalReviewPanel.vue";
 
 type TaskTitleReference = {
@@ -27,17 +22,18 @@ type TaskTitleReference = {
 };
 
 const props = defineProps<{
-  state: ExternalAgentGuiState;
+  state: ExternalState;
   busy: boolean;
   tasks: readonly TaskTitleReference[];
-  editResult?: RendererExternalAgentEditResult | undefined;
+  editResult?: ExternalEditResult | undefined;
+  approvalResults: Readonly<Record<string, ExternalApprovalResult>>;
 }>();
 
 const emit = defineEmits<{
-  (event: "select", input: ExternalAgentGuiSelectInput): void;
-  (event: "edit", input: ExternalAgentGuiEditInput): void;
-  (event: "approve", input: ExternalAgentGuiApproveInput): void;
-  (event: "reject", input: ExternalAgentGuiRejectInput): void;
+  (event: "select", input: ExternalSelectionInput): void;
+  (event: "edit", input: ExternalEditInput): void;
+  (event: "approve", input: ExternalSelectionInput): void;
+  (event: "reject", input: ExternalRejectInput): void;
   (event: "select-task", taskGid: string): void;
 }>();
 
@@ -52,6 +48,12 @@ const selectedProposal = computed(() => {
     }
   }
   return props.state.proposals[0];
+});
+const selectedApprovalResult = computed(() => {
+  const selected = selectedProposal.value;
+  if (selected == null) return undefined;
+  const approval = props.approvalResults[selected.proposal_id];
+  return approval?.revision === selected.revision ? approval.result : undefined;
 });
 
 watch(
@@ -81,18 +83,18 @@ watch(
   { immediate: true },
 );
 
-function proposalTitle(proposal: ExternalAgentProposal): string {
-  return proposal.view.proposal.title;
+function proposalTitle(proposal: ExternalProposal): string {
+  return proposal.view.title;
 }
 
-function proposalStatusLabel(status: ExternalAgentProposalStatus): string {
+function proposalStatusLabel(status: ExternalProposalStatus): string {
   switch (status.kind) {
     case "pending_approval":
       return "承認待ち";
     case "approving":
       return "反映中";
     case "finished":
-      return `完了・${applicationOutcomeLabel(status.result.application.outcome)}`;
+      return `完了・${applicationOutcomeLabel(status.outcome)}`;
     case "rejected":
       return "却下済み";
     case "expired":
@@ -104,14 +106,14 @@ function proposalStatusLabel(status: ExternalAgentProposalStatus): string {
   }
 }
 
-function proposalStatusClass(status: ExternalAgentProposalStatus): string {
+function proposalStatusClass(status: ExternalProposalStatus): string {
   switch (status.kind) {
     case "pending_approval":
       return "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
     case "approving":
       return "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-100";
     case "finished":
-      return applicationOutcomeClass(status.result.application.outcome);
+      return applicationOutcomeClass(status.outcome);
     case "rejected":
     case "expired":
       return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-100";
@@ -164,7 +166,7 @@ function applicationOutcomeClass(
   }
 }
 
-function requireSelectedProposal(): ExternalAgentProposal {
+function requireSelectedProposal(): ExternalProposal {
   const proposal = selectedProposal.value;
   if (proposal == null) {
     throw new Error("表示する外部提案がありません。");
@@ -172,7 +174,7 @@ function requireSelectedProposal(): ExternalAgentProposal {
   return proposal;
 }
 
-function requirePendingProposal(): ExternalAgentProposal {
+function requirePendingProposal(): ExternalProposal {
   const proposal = requireSelectedProposal();
   if (proposal.state.kind !== "pending_approval") {
     throw new Error("承認待ちではない外部提案を操作できません。");
@@ -188,9 +190,9 @@ function selectTask(taskGid: string): void {
   emit("select-task", taskGid);
 }
 
-function select(input: AiWorkflowSelectionRequest): void {
+function select(input: ProposalSelectionInput): void {
   const proposal = requirePendingProposal();
-  const parsedInput = externalAgentGuiSelectInputSchema.parse({
+  const parsedInput = proposalsContracts.selectExternal.request.parse({
     proposal_id: input.proposal_id,
     revision: proposal.revision,
     selection: input.selection,
@@ -198,21 +200,22 @@ function select(input: AiWorkflowSelectionRequest): void {
   emit("select", parsedInput);
 }
 
-function edit(input: AiWorkflowOperationEdit): void {
+function edit(input: ProposalEditInput): void {
   const proposal = requirePendingProposal();
-  const parsedInput = externalAgentGuiEditInputSchema.parse({
+  const parsedInput = proposalsContracts.editExternalOperation.request.parse({
     proposal_id: input.proposal_id,
     operation_id: input.operation_id,
     revision: proposal.revision,
+    operation: input.operation,
     after: input.after,
     evidence_locator: input.evidence_locator,
   });
   emit("edit", parsedInput);
 }
 
-function approve(input: AiWorkflowApprovalRequest): void {
+function approve(input: ProposalSelectionInput): void {
   const proposal = requirePendingProposal();
-  const parsedInput = externalAgentGuiApproveInputSchema.parse({
+  const parsedInput = proposalsContracts.approveExternal.request.parse({
     proposal_id: input.proposal_id,
     revision: proposal.revision,
     selection: input.selection,
@@ -222,24 +225,24 @@ function approve(input: AiWorkflowApprovalRequest): void {
 
 function reject(): void {
   const proposal = requirePendingProposal();
-  emit("reject", externalAgentGuiRejectInputSchema.parse({
+  emit("reject", proposalsContracts.rejectExternal.request.parse({
     proposal_id: proposal.proposal_id,
     revision: proposal.revision,
   }));
 }
 
-function finishedOutcomeLabel(proposal: ExternalAgentProposal): string {
+function finishedOutcomeLabel(proposal: ExternalProposal): string {
   if (proposal.state.kind !== "finished") {
     throw new Error("完了していない外部提案の結果を表示できません。");
   }
-  return applicationOutcomeLabel(proposal.state.result.application.outcome);
+  return applicationOutcomeLabel(proposal.state.outcome);
 }
 
-function finishedOutcomeClass(proposal: ExternalAgentProposal): string {
+function finishedOutcomeClass(proposal: ExternalProposal): string {
   if (proposal.state.kind !== "finished") {
     throw new Error("完了していない外部提案の結果を表示できません。");
   }
-  return applicationOutcomeClass(proposal.state.result.application.outcome);
+  return applicationOutcomeClass(proposal.state.outcome);
 }
 </script>
 
@@ -327,6 +330,12 @@ function finishedOutcomeClass(proposal: ExternalAgentProposal): string {
             @approve="approve"
             @reject="reject"
             @select-task="selectTask"
+          />
+
+          <ApprovalResultPanel
+            v-if="selectedApprovalResult != null"
+            class="mt-4"
+            :result="selectedApprovalResult"
           />
 
           <div

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import type { z } from "zod";
 import {
   DialogClose,
   DialogContent,
@@ -8,27 +9,32 @@ import {
   DialogPortal,
   DialogTitle,
 } from "reka-ui";
-import type { ExternalAgentBridgeState } from "../../shared/external-agent";
+import { externalProposalStateSchema } from "../../shared/ipc-contracts/external-proposal-state";
 import type { IntegrationStatus } from "../../shared/ipc-contracts/integration-status";
 import { vaultMappingSchema, type VaultMapping } from "../../shared/storage";
-import type {
-  AiSessionFeedback,
-  RendererExternalAgentState,
-} from "./state";
+
+type SettingsFeedback = { readonly kind: "success" | "progress" | "warning" | "failure"; readonly message: string };
+
+type ExternalProposalState = z.infer<typeof externalProposalStateSchema>;
+type ExternalProposalViewState =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly value: ExternalProposalState }
+  | { readonly kind: "error"; readonly message: string };
+type ExternalAgentBridgeState = ExternalProposalState["bridge"];
 
 const props = defineProps<{
   open: boolean;
   integrationStatus: IntegrationStatus | undefined;
   integrationStatusLoading: boolean;
   integrationStatusError: string | undefined;
-  state: RendererExternalAgentState;
+  state: ExternalProposalViewState;
   busy: boolean;
   restoreFocus: boolean;
-  feedback?: AiSessionFeedback | undefined;
+  feedback?: SettingsFeedback | undefined;
   vaultMappings: readonly VaultMapping[];
   vaultMappingsLoading: boolean;
   vaultBusy: boolean;
-  vaultFeedback?: AiSessionFeedback | undefined;
+  vaultFeedback?: SettingsFeedback | undefined;
   vaultSaveGeneration: number;
 }>();
 
@@ -84,7 +90,7 @@ function assertNonNullable<T>(value: T | undefined, message: string): asserts va
     throw new Error(message);
   }
 }
-function feedbackClass(kind: AiSessionFeedback["kind"]): string {
+function feedbackClass(kind: SettingsFeedback["kind"]): string {
   switch (kind) {
     case "success":
       return "bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100";
@@ -97,7 +103,7 @@ function feedbackClass(kind: AiSessionFeedback["kind"]): string {
   }
 }
 
-function feedbackRole(kind: AiSessionFeedback["kind"]): "status" | "alert" {
+function feedbackRole(kind: SettingsFeedback["kind"]): "status" | "alert" {
   switch (kind) {
     case "success":
     case "progress":

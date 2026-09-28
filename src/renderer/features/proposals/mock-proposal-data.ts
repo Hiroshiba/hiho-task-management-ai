@@ -8,7 +8,7 @@ const absent = { kind: "absent" };
 const note = { vault_id: "mock-vault", path: "notes/focus.md", title: "集中タスク", confidence: 1 };
 const dependency = { target: { kind: "existing", gid: "mock-task-2" }, scope: "full", source: "mock-source" };
 
-function mockOperation(kind: ProposalOperation["operation"], prefix: string): ProposalOperation {
+function mockOperation(kind: ProposalOperation["operation"], prefix: string, splitCreation: boolean): ProposalOperation {
   const operation_id = `${prefix}-${kind}`;
   const evidence = { kind: "user_message", locator: `${prefix}-request`, excerpt: "画面確認用の変更依頼です。" };
   const common = {
@@ -21,7 +21,18 @@ function mockOperation(kind: ProposalOperation["operation"], prefix: string): Pr
   };
   switch (kind) {
     case "create_task":
-      return proposalOperationSchema.parse({ ...common, operation: kind, temporary_ref: `${prefix}-created`, creation: { kind: "single_task" }, before: absent, after: { title: "新しいタスク" } });
+      return proposalOperationSchema.parse({
+        ...common,
+        operation: kind,
+        temporary_ref: `${prefix}-created`,
+        creation: splitCreation
+          ? { kind: "split_child", parent: { kind: "existing", gid: "mock-task-2" }, instruction_reference: evidence }
+          : { kind: "single_task" },
+        before: absent,
+        after: splitCreation
+          ? { title: "分割した新しいタスク", parent: { kind: "existing", gid: "mock-task-2" } }
+          : { title: "新しいタスク" },
+      });
     case "update_title":
       return proposalOperationSchema.parse({ ...common, operation: kind, target, before: "集中タスク", after: "集中タスクを整理" });
     case "update_notes":
@@ -59,7 +70,7 @@ function mockOperation(kind: ProposalOperation["operation"], prefix: string): Pr
 
 /** 17操作を含む画面確認用の変更案を作成します。 */
 export function createMockProposalView(proposalId: string, revision: number | undefined): ProposalViewDto {
-  const operations = proposalOperationKindSchema.options.map((kind) => mockOperation(kind, proposalId));
+  const operations = proposalOperationKindSchema.options.map((kind) => mockOperation(kind, proposalId, revision == null));
   const groupId = `${proposalId}-group`;
   const validation = {
     operations: operations.map((operation) => ({ kind: "valid", group_id: groupId, operation_id: operation.operation_id })),

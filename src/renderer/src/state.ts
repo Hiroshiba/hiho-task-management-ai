@@ -12,19 +12,12 @@ import {
   type ParentWorkMode,
   type TaskStatus,
 } from "../../shared/domain";
-import {
-  aiWorkflowApprovalResultSchema,
-  aiWorkflowProposalViewSchema,
-  type AiWorkflowApprovalResult,
-  type AiWorkflowProposalView,
-} from "../../shared/ai-workflow";
 import type {
   ViewModelOverview,
   ViewModelDue,
   ViewModelTaskDetail,
   ViewModelTaskRow,
 } from "../../shared/view-model";
-import type { ExternalAgentGuiState } from "../../shared/external-agent";
 import {
   filterTaskRows as sharedFilterTaskRows,
   isTaskDueOverdue,
@@ -167,164 +160,6 @@ export const rendererTaskSortSchema = z.enum([
 
 /** Rendererのタスク一覧の並び順を表す型です。 */
 export type RendererTaskSort = z.infer<typeof rendererTaskSortSchema>;
-
-export type RendererExternalAgentState =
-  | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly value: ExternalAgentGuiState }
-  | { readonly kind: "error"; readonly message: string };
-
-export type RendererExternalAgentEditResult = {
-  readonly kind: "saved" | "failed";
-  readonly proposal_id: string;
-  readonly revision: number;
-};
-
-const rendererQuestionSchema = z
-  .object({
-    question_id: z.string().min(1).max(256),
-    text: rendererMessageSchema,
-    options: z.array(rendererMessageSchema).min(2).max(8).optional(),
-  })
-  .strict();
-
-const rendererPendingProposalSchema = z
-  .object({
-    message: rendererMessageSchema,
-    proposal: aiWorkflowProposalViewSchema,
-  })
-  .strict();
-
-export const rendererAiStateSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("idle"),
-      pending_proposal: rendererPendingProposalSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("streaming"),
-      text: createUtf8ByteLimitedStringSchema(256 * 1024),
-      pending_proposal: rendererPendingProposalSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("questions"),
-      message: rendererMessageSchema,
-      questions: z.array(rendererQuestionSchema).max(8),
-      pending_proposal: rendererPendingProposalSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("proposal"),
-      message: rendererMessageSchema,
-      questions: z.array(rendererQuestionSchema).max(8),
-      proposal: aiWorkflowProposalViewSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("applied"),
-      message: rendererMessageSchema,
-      result: aiWorkflowApprovalResultSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("unavailable"),
-      failure: rendererFailureSchema,
-      pending_proposal: rendererPendingProposalSchema.optional(),
-    })
-    .strict(),
-]);
-
-/** Rendererが表示するAI状態を表す型です。 */
-export type RendererAiState = z.infer<typeof rendererAiStateSchema>;
-
-const rendererAiConversationRequestSchema = createUtf8ByteLimitedStringSchema(64 * 1024)
-  .min(1)
-  .refine((value) => value.trim().length > 0, {
-    message: "AI依頼文を空白だけにできません。",
-  });
-
-export const rendererAiConversationEntrySchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("pending"),
-      request: rendererAiConversationRequestSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("streaming"),
-      request: rendererAiConversationRequestSchema,
-      text: createUtf8ByteLimitedStringSchema(256 * 1024),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("response"),
-      request: rendererAiConversationRequestSchema,
-      message: rendererMessageSchema,
-      questions: z.array(rendererQuestionSchema).max(8),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("failure"),
-      request: rendererAiConversationRequestSchema,
-      failure: rendererFailureSchema,
-    })
-    .strict(),
-]);
-
-/** Rendererが表示するAI会話の1ターンを表す型です。 */
-export type RendererAiConversationEntry = z.infer<typeof rendererAiConversationEntrySchema>;
-
-export type AiSessionStatus =
-  | "waiting_answer"
-  | "waiting_approval"
-  | "running"
-  | "error"
-  | "completed"
-  | "idle";
-
-export type AiSessionFeedback = {
-  readonly kind: "success" | "progress" | "warning" | "failure";
-  readonly message: string;
-};
-
-export type AiSessionOperation =
-  | "idle"
-  | "turn"
-  | "select"
-  | "edit"
-  | "approve"
-  | "reject"
-  | "closing";
-
-export type AiSessionView = {
-  readonly session_id: string;
-  readonly title: string;
-  readonly task_gid?: string | undefined;
-  readonly task_title?: string | undefined;
-  readonly state: RendererAiState;
-  readonly status: AiSessionStatus;
-  readonly operation: AiSessionOperation;
-  readonly conversation_history: readonly RendererAiConversationEntry[];
-  readonly feedback?: AiSessionFeedback | undefined;
-  readonly can_write: boolean;
-  readonly can_send_ai: boolean;
-  readonly ai_send_disabled_reason: string;
-};
-
-/** Rendererが扱うAI変更案の型を明示します。 */
-export type RendererProposal = AiWorkflowProposalView;
-
-/** Rendererが扱うAI適用結果の型を明示します。 */
-export type RendererApprovalResult = AiWorkflowApprovalResult;
 
 /** タスク状態を日本語表示へ変換します。 */
 export function statusLabel(status: TaskStatus): string {
