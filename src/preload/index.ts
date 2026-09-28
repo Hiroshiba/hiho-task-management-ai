@@ -1,6 +1,27 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { IpcRendererEvent } from "electron";
 import { finalIpcContracts, type FinalTaskHubApi } from "../shared/ipc-contracts";
+import { serializeDiagnosticError } from "../shared/ipc-contracts/diagnostics";
+
+function reportPreloadError(error: unknown): void {
+  const contract = finalIpcContracts.diagnostics.report;
+  const input = contract.request.parse({ level: "error", error: serializeDiagnosticError(error) });
+  const logFailure = (failure: unknown): void => {
+    console.error("preloadの診断をMainに記録できませんでした。", input.error, serializeDiagnosticError(failure));
+  };
+  try {
+    void ipcRenderer.invoke(contract.channel, input)
+      .then((value: unknown) => contract.response.parse(value))
+      .then((result) => {
+        if (result.kind === "error") {
+          console.error("preloadの診断をMainに記録できませんでした。", input.error);
+        }
+      })
+      .catch(logFailure);
+  } catch (failure) {
+    logFailure(failure);
+  }
+}
 
 function invokeFinal<Request, Response>(
   contract: {
@@ -28,7 +49,7 @@ function subscribeFinal<Value>(
     readonly channel: string;
     readonly request: { parse(value: unknown): { subscription_id: string } };
   },
-  listener: (value: Value) => void,
+  listener: (value: Value) => void | Promise<void>,
 ): () => void {
   if (typeof listener !== "function") {
     throw new TypeError("IPC購読関数が必要です。");
@@ -39,9 +60,16 @@ function subscribeFinal<Value>(
   const validatedUnsubscribeRequest = unsubscribeContract.request.parse(request);
   let active = true;
   const wrapped = (_event: IpcRendererEvent, payload: unknown): void => {
-    const event = eventContract.event.parse(payload);
-    if (event.subscription_id === subscriptionId) {
-      listener(event.value);
+    try {
+      const event = eventContract.event.parse(payload);
+      if (event.subscription_id === subscriptionId) {
+        const result = listener(event.value);
+        if (result != null) {
+          void Promise.resolve(result).catch(reportPreloadError);
+        }
+      }
+    } catch (error) {
+      reportPreloadError(error);
     }
   };
   const unsubscribe = (): void => {
