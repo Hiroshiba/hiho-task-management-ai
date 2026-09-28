@@ -38,11 +38,9 @@ export function useProposals() {
   let disposed = false;
   let lifecycleGeneration = 0;
   let aiStatusGeneration = 0;
-  let aiDeltaGeneration = 0;
   let externalStateGeneration = 0;
   let executionGeneration = 0;
-  let executionEventGeneration = 0;
-  const pendingSubscriptionFailures = new Map<SubscriptionFailureKind, { readonly failureId: string; readonly generation: number }>();
+  const pendingSubscriptionFailures = new Map<SubscriptionFailureKind, string>();
   const receivedExecutionGenerations = new Map<string, number>();
 
   onBeforeUnmount(() => {
@@ -66,15 +64,6 @@ export function useProposals() {
     const removeExecutionSubscription = removeExecution;
     removeExecution = undefined;
     removeExecutionSubscription?.();
-  }
-
-  function subscriptionGeneration(kind: SubscriptionFailureKind): number {
-    switch (kind) {
-      case "ai_status": return aiStatusGeneration;
-      case "ai_delta": return aiDeltaGeneration;
-      case "execution": return executionEventGeneration;
-      case "external_state": return externalStateGeneration;
-    }
   }
 
   function subscriptionFailureValue(kind: SubscriptionFailureKind, errorId: string | undefined): IpcFailure {
@@ -105,17 +94,14 @@ export function useProposals() {
           aiStatus.value = undefined;
           break;
         case "ai_delta":
-          aiDeltaGeneration += 1;
-          break;
         case "execution":
-          executionEventGeneration += 1;
           break;
         case "external_state":
           externalStateGeneration += 1;
           externalState.value = undefined;
           break;
       }
-      pendingSubscriptionFailures.set(kind, { failureId: event.failure_id, generation: subscriptionGeneration(kind) });
+      pendingSubscriptionFailures.set(kind, event.failure_id);
       const failure = subscriptionFailureValue(kind, undefined);
       subscriptionFailures.value = { ...subscriptionFailures.value, [kind]: failure };
       if (kind === "ai_status") aiStatusFailure.value = { source: "subscription", failure };
@@ -123,7 +109,7 @@ export function useProposals() {
       return;
     }
     const pending = pendingSubscriptionFailures.get(kind);
-    if (pending?.failureId !== event.failure_id || pending.generation !== subscriptionGeneration(kind)) return;
+    if (pending !== event.failure_id) return;
     pendingSubscriptionFailures.delete(kind);
     const failure = subscriptionFailureValue(kind, event.kind === "reported" ? event.error_id : undefined);
     subscriptionFailures.value = { ...subscriptionFailures.value, [kind]: failure };
@@ -181,7 +167,6 @@ export function useProposals() {
   function applyExternalState(value: ExternalState): void {
     externalState.value = externalProposalStateSchema.parse(value);
     externalStateGeneration += 1;
-    clearSubscriptionFailure("external_state");
     externalStateFailure.value = undefined;
     const selectedId = selectedExternalProposalId.value;
     if (selectedId != null && !externalState.value.proposals.some((proposal) => proposal.proposal_id === selectedId)) {
@@ -315,18 +300,17 @@ export function useProposals() {
       removeAiDelta = api.onAiDelta((value) => {
         if (disposed) return;
         handleDelta(value);
-        aiDeltaGeneration += 1;
         clearSubscriptionFailure("ai_delta");
       }, (failure) => handleSubscriptionFailure("ai_delta", failure));
       removeExecution = api.onExecution((value) => {
         if (disposed) return;
         receiveExecution(value);
-        executionEventGeneration += 1;
         clearSubscriptionFailure("execution");
       }, (failure) => handleSubscriptionFailure("execution", failure));
       removeExternalState = api.onExternalState((value) => {
         if (disposed) return;
         applyExternalState(value);
+        clearSubscriptionFailure("external_state");
       }, (failure) => handleSubscriptionFailure("external_state", failure));
     } catch (error) {
       disposed = true;
@@ -352,8 +336,10 @@ export function useProposals() {
     }
     const external = proposalsContracts.getExternalState.response.parse(externalResult);
     if (externalGeneration === externalStateGeneration) {
-      if (external.kind === "ok") applyExternalState(external.value);
-      else {
+      if (external.kind === "ok") {
+        applyExternalState(external.value);
+        clearSubscriptionFailure("external_state");
+      } else {
         externalStateGeneration += 1;
         externalStateFailure.value = external;
       }
@@ -365,7 +351,6 @@ export function useProposals() {
     const result = proposalsContracts.startSession.response.parse(await api.startSession());
     if (!disposed && generation === lifecycleGeneration && result.kind === "ok" && result.value.kind === "authentication_required") {
       aiStatusGeneration += 1;
-      clearSubscriptionFailure("ai_status");
       aiStatus.value = { kind: "authentication_required" };
       aiStatusFailure.value = undefined;
     }
@@ -382,7 +367,6 @@ export function useProposals() {
       aiStatusGeneration += 1;
       if (result.kind === "ok") {
         aiStatus.value = result.value;
-        clearSubscriptionFailure("ai_status");
         aiStatusFailure.value = undefined;
       } else {
         aiStatus.value = undefined;
