@@ -9,7 +9,7 @@ type RuntimeState =
       readonly last_successful_sync_at?: string | undefined;
     };
 
-type SyncStateDependencies<State extends RuntimeState, Event> = {
+export type SyncStateDependencies<State extends RuntimeState, Event> = {
   readonly toEvent: (state: State) => Event;
   readonly recordDiagnostic: (code: "sync.started" | "sync.completed") => void;
   readonly shouldReportKnownFailure: () => boolean;

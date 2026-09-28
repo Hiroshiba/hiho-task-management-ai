@@ -1,13 +1,13 @@
-type SynchronizationResult =
+export type SynchronizationResult =
   | { readonly kind: "synchronized" }
   | { readonly kind: "rejected"; readonly reason: "offline" | "stopped" }
   | { readonly kind: "aborted" }
   | { readonly kind: "failed"; readonly error_code: string; readonly cause: unknown };
 
-type PostWriteResult = { readonly kind: "synchronized" | "recovery_required" };
+export type PostWriteResult = { readonly kind: "synchronized" | "recovery_required" };
 class UnreachableError extends Error {}
 
-type SynchronizationDependencies<
+export type SynchronizationDependencies<
   Result extends SynchronizationResult,
   PostResult extends PostWriteResult,
   FailureCode extends string,

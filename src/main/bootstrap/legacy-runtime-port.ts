@@ -6,7 +6,6 @@ export type LegacyRuntimeOptions = ConstructorParameters<typeof TaskHubApplicati
 
 export type LegacyRuntimePort = Pick<
   TaskHubApplication,
-  | "taskRead"
   | "applyGuiEdit"
   | "getGuiEditExecution"
   | "retryGuiEditExecution"
@@ -14,18 +13,19 @@ export type LegacyRuntimePort = Pick<
   | "onAiDelta"
   | "onExternalAgentChanged"
   | "getSettingsCompositionDependencies"
+  | "getTaskReadCompositionDependencies"
+  | "getSynchronizationCompositionDependencies"
   | "getObsidianCompositionDependencies"
   | "getDiagnosticCompositionDependencies"
   | "attachSettingsRuntime"
+  | "attachTaskReadRuntime"
+  | "attachSynchronizationRuntime"
   | "attachDiagnosticRuntime"
   | "getProposalsHandlerWorkflows"
   | "getState"
   | "getTaskWriteAsanaBridge"
   | "setTaskWriteExecution"
-  | "onForeground"
-  | "onOnline"
   | "recordDiagnostic"
-  | "setOnline"
   | "start"
   | "stop"
 >;

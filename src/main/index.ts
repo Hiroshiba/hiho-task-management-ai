@@ -362,7 +362,7 @@ function scheduleForegroundSync(): void {
       if (application.getState().kind !== "configured") {
         return;
       }
-      await application.onForeground(controller.signal);
+      await controller.taskRead.onForeground(controller.signal);
     } finally {
       foregroundScheduled = false;
     }
@@ -398,18 +398,18 @@ function scheduleOnlinePoll(): void {
   enqueueBackgroundOperation(async () => {
     try {
       const monitor = onlineMonitorState;
-      const application = lifecycle.getRuntime()?.legacy;
-      if (monitor.kind !== "running" || application == null) {
+      const controller = lifecycle.getRuntime();
+      if (monitor.kind !== "running" || controller == null) {
         return;
       }
       const currentOnline = net.isOnline();
       if (currentOnline === monitor.lastOnline) {
         return;
       }
-      const applicationConfigured = application.getState().kind === "configured";
+      const applicationConfigured = controller.legacy.getState().kind === "configured";
       if (!currentOnline) {
         if (applicationConfigured) {
-          application.setOnline(false);
+          controller.taskRead.setOnline(false);
         }
         updateOnlineMonitorState(monitor, false);
         return;
@@ -419,10 +419,10 @@ function scheduleOnlinePoll(): void {
         return;
       }
       try {
-        await application.onOnline();
+        await controller.taskRead.onOnline();
       } catch (error) {
         try {
-          application.setOnline(false);
+          controller.taskRead.setOnline(false);
         } catch (restoreError) {
           throw new AggregateError(
             [error, restoreError],

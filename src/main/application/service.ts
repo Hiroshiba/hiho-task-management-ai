@@ -173,6 +173,8 @@ import {
 } from "../bootstrap/ai-session-runtime";
 import { JournalRecoveryRuntime } from "../bootstrap/journal-recovery-runtime";
 import { SynchronizationOperations } from "../bootstrap/synchronization-operations";
+import type { SynchronizationCompositionPort } from "../bootstrap/create-synchronization-runtime";
+import type { TaskReadCompositionPort } from "../bootstrap/create-task-read-runtime";
 import { ConfiguredCodexRuntime } from "../bootstrap/configured-codex-runtime";
 import {
   AsanaReauthenticationRuntime,
@@ -188,7 +190,6 @@ import { OperationalContextRuntime } from "../bootstrap/operational-context-runt
 import { AiInteractionRuntime } from "../bootstrap/ai-interaction-runtime";
 import { MainLifecycleRuntime } from "../bootstrap/main-lifecycle-runtime";
 import { OperationalServicesRuntime } from "../bootstrap/operational-services-runtime";
-import { SyncStateRuntime, TaskReadIndex, TaskReadWorkflow } from "./task-read";
 import { ObsidianIntegrationWorkflow } from "./obsidian-integration";
 import {
   ExternalToolBroker,
@@ -315,7 +316,6 @@ import {
   type PersistentTextFile,
   type TaskReadPersistenceContracts,
 } from "../infrastructure/persistence";
-import { AsanaTaskReadAdapter } from "../infrastructure/asana";
 import type { TaskReadEntry } from "./common/ports/task-read-repository";
 
 type OperationalContext = {
@@ -947,9 +947,42 @@ type DiagnosticCompositionDependencies = {
   readonly parseEntry: (value: unknown) => DiagnosticLogEntry;
 };
 
+type TaskReadRuntimePort = {
+  readonly createSyncRuntime: (context: OperationalContext, online: boolean) => AsanaSyncRuntime;
+  readonly subscribeRuntime: (runtime: AsanaSyncRuntime) => void;
+  readonly runSetupFullSync: (input: SetupFullSyncInput, signal: AbortSignal) => Promise<void>;
+  readonly synchronizeReauthentication: (signal: AbortSignal) => Promise<AsanaSyncCoordinatorResult>;
+  readonly stop: () => void;
+};
+
+type SynchronizationRuntime = SynchronizationOperations<
+  AsanaSyncRuntimeInternalResult,
+  PostWriteSynchronizationResultWithCause,
+  PostWriteSynchronizationFailureCode
+>;
+
+type SynchronizationCompositionDependencies = SynchronizationCompositionPort<
+  AsanaSyncRuntimeInternalResult,
+  PostWriteSynchronizationResultWithCause,
+  PostWriteSynchronizationFailureCode,
+  OperationalContext
+>;
+
+type TaskReadCompositionDependencies = TaskReadCompositionPort<
+  Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
+  Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
+  AsanaSyncRuntimeInternalResult,
+  AsanaSyncCoordinatorResult,
+  AsanaSyncRuntimeState,
+  OperationalContext,
+  SetupFullSyncInput,
+  AsanaSyncRuntime
+>;
+
 /** TaskHubの主要な依存関係を組み立てるメインプロセスサービスです。 */
 export class TaskHubApplication {
   private readonly options: ApplicationOptions;
+  private readonly taskReadPersistenceContracts: ReturnType<typeof createTaskReadPersistenceContracts>;
   private readonly taskReadRepository: TaskReadPersistenceRepository<
     TaskCacheEntry,
     ProjectMetadataCache,
@@ -985,15 +1018,6 @@ export class TaskHubApplication {
   private readonly codexAdapter: CodexSetupAdapter;
   private readonly codexHealth: CodexHealthWorkflow<SetupCodexAvailability, CodexAuthenticationState>;
   private attachedSetup: SetupOrchestrator | undefined;
-  public readonly taskRead: TaskReadWorkflow<
-    Extract<ReturnType<typeof ipcReadModelOverviewResponseSchema.parse>, { kind: "ok" }>["value"],
-    Extract<ReturnType<typeof ipcReadModelTaskDetailResponseSchema.parse>, { kind: "ok" }>["value"],
-    AsanaSyncRuntimeInternalResult,
-    AsanaSyncCoordinatorResult,
-    AsanaSyncRuntimeState,
-    AsanaSyncRuntimeState,
-    AsanaSyncCoordinatorResult
-  >;
   private readonly obsidian: ObsidianIntegrationWorkflow;
   private readonly cleanupAggregation: CleanupAggregationService;
   private readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
@@ -1048,11 +1072,7 @@ export class TaskHubApplication {
   private codexAvailability: OperationalContext["codex"] | undefined;
   private codexAuthenticationRequired = false;
   private readonly aiEvents: AiEventRuntime<IpcAiStatus, IpcCodexDelta>;
-  private readonly synchronizationOperations: SynchronizationOperations<
-    AsanaSyncRuntimeInternalResult,
-    PostWriteSynchronizationResultWithCause,
-    PostWriteSynchronizationFailureCode
-  >;
+  private attachedSynchronizationOperations: SynchronizationRuntime | undefined;
   private taskWriteExecution: {
     readonly proposal: StoredProposalExecutionPort;
     readonly proposalWorkflow: ProposalExecutionWorkflow;
@@ -1064,6 +1084,7 @@ export class TaskHubApplication {
     AsanaProposalRecoveryResult
   >;
   private readonly configuredCodexRuntime: ConfiguredCodexRuntime;
+  private attachedTaskReadRuntime: TaskReadRuntimePort | undefined;
   private readonly lifecycleRuntime: MainLifecycleRuntime<
     SetupState,
     ApplicationState,
@@ -1090,6 +1111,7 @@ export class TaskHubApplication {
     this.externalAgentInstanceId = identifierSchema.parse(options.create_id());
     this.operationQueue = new AsanaOperationQueue(options.lifecycle_signal);
     const taskReadPersistenceContracts = createTaskReadPersistenceContracts();
+    this.taskReadPersistenceContracts = taskReadPersistenceContracts;
     this.taskReadRepository = new TaskReadPersistenceRepository(
       persistence,
       taskReadPersistenceContracts,
@@ -1110,26 +1132,6 @@ export class TaskHubApplication {
       persistence.connection,
       (value) => deviceSettingsSchema.parse(value),
     );
-    const taskReadContracts = {
-      ...taskReadPersistenceContracts,
-      parseOverview: (value: unknown) => {
-        const response = ipcReadModelOverviewResponseSchema.parse({ kind: "ok", value });
-        if (response.kind !== "ok") {
-          throw new UnreachableError("読取概要の応答形式が不正です。");
-        }
-        return response.value;
-      },
-      parseDetail: (value: unknown) => {
-        const response = ipcReadModelTaskDetailResponseSchema.parse({ kind: "ok", value });
-        if (response.kind !== "ok") {
-          throw new UnreachableError("読取詳細の応答形式が不正です。");
-        }
-        return response.value;
-      },
-      hashBaseline: (entry: TaskReadEntry) => hashGuiEditBaseline(
-        asanaTaskResponseSchema.parse(entry.asana_response),
-      ),
-    };
     this.secretStorage = new SecretStorage(files.secretStorage);
     this.checkpoint = new SetupCheckpointStore(files.checkpoint);
     this.scheduler = new AsanaRequestScheduler();
@@ -1216,7 +1218,6 @@ export class TaskHubApplication {
       recordFailure: (error, message) => this.recordFeatureFailure(error, "codex", message),
       recordKnownFailure: (error, message) => this.recordCodexKnownFailure(error, message),
     });
-    const taskReadIndex = new TaskReadIndex(this.taskReadRepository, taskReadContracts);
     this.cleanupAggregation = new CleanupAggregationService(
       this.taskReadRepository,
       this.obsidian,
@@ -1473,106 +1474,6 @@ export class TaskHubApplication {
         true,
       ),
     });
-    this.synchronizationOperations = new SynchronizationOperations<
-      AsanaSyncRuntimeInternalResult,
-      PostWriteSynchronizationResultWithCause,
-      PostWriteSynchronizationFailureCode
-    >({
-      validateAbortSignal,
-      throwIfAborted,
-      hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
-      hasPendingJournal: () => this.journalRecovery.hasPending(),
-      hasIncompleteJournal: () => this.proposalApplicationHistoryRepository.getIncomplete().length > 0
-        || this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
-        || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
-      isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
-      assertPostWriteSynchronizationReady: (executionId) => {
-        if (this.proposalApplicationHistoryRepository.getIncomplete().length > 0) {
-          throw new Error("未確認の旧適用履歴があるため後続同期を開始できません。");
-        }
-        if (this.requireTaskWriteExecution().proposal.repository.getIncomplete()
-          .some((execution) => execution.execution_id !== executionId)) {
-          throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
-        }
-        if (this.requireTaskWriteExecution().gui.repository.getIncomplete()
-          .some((execution) => execution.execution_id !== executionId)) {
-          throw new Error("別の未完了GUI編集executionがあるため後続同期を開始できません。");
-        }
-      },
-      recoverJournal: (signal) => this.journalRecovery.recover(signal),
-      afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
-      synchronizeCodexAfterAsana: (signal) =>
-        this.configuredCodexRuntime.synchronizeAfterAsana(signal),
-      afterGuiEdit: (requiredTaskGids, executionId, signal) =>
-        this.requireRuntime().afterGuiEdit(requiredTaskGids, executionId, signal),
-      afterAiApply: (requiredTaskGids, executionId, signal) =>
-        this.requireRuntime().afterAiApply(requiredTaskGids, executionId, signal),
-      beforeAiTurn: (signal) => this.requireRuntime().beforeAiTurn(signal),
-      prepareRecoveredSynchronization: (requiredTaskGids, signal) => {
-        const context = this.requireContext();
-        return () => this.syncCoordinator.coordinate(
-          {
-            mode: "delta",
-            project_gid: context.project_gid,
-            section_gids: context.section_gids,
-            device_id: context.device_id,
-            app_version: this.options.app_version,
-            required_task_gids: [...requiredTaskGids],
-          },
-          signal,
-        );
-      },
-      isSynchronizedResult: (
-        result,
-      ): result is Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }> =>
-        result.kind === "synchronized",
-      abortedCode: "aborted",
-      classifyError: classifyPostWriteSynchronizationError,
-      isDiagnosticFailure: (error) => error instanceof DiagnosticFailureDispositionError,
-      recoveryRequired: postWriteRecoveryRequired,
-      recoveryRequiredWithCause: postWriteRecoveryRequiredWithCause,
-      synchronizedPostWrite: () => asanaPostWriteSynchronizationResultSchema.parse({
-        kind: "synchronized",
-      }),
-      fromRuntimeResult: postWriteSynchronizationFromRuntimeResult,
-      recordLocalRefreshFailure: (error) => this.recordFeatureFailure(
-        error,
-        "local_state_refresh",
-        "Asana同期後の補助的なローカル状態更新に失敗しました。",
-      ),
-    });
-    const syncStateRuntime = new SyncStateRuntime<AsanaSyncRuntimeState, AsanaSyncRuntimeState>({
-      toEvent: (state) => state,
-      recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
-      shouldReportKnownFailure: () => this.synchronizationOperations.shouldReportKnownFailure(),
-      reportKnownFailure: (cause) => this.options.diagnostic(
-        cause == null
-          ? new Error("Asana同期で認証または既知のエラーが発生しました。")
-          : cause,
-        "sync",
-        serviceErrorDiagnostic,
-      ),
-      reportListenerFailure: (error) =>
-        this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic),
-      lifecycleSignal: this.options.lifecycle_signal,
-      afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
-      isReadyActivated: () => this.lifecycleRuntime.isReadyActivated(),
-      synchronizeCodex: (signal) => this.configuredCodexRuntime.synchronizeAfterAsana(signal),
-      reportUnexpectedError: (error, feature) => this.recordUnexpectedError(error, feature),
-    });
-    this.taskRead = new TaskReadWorkflow(taskReadIndex, syncStateRuntime, {
-      projectGid: () => this.requireContext().project_gid,
-      assertReady: () => this.assertOperationalReady(),
-      assertReauthenticationIdle: () => this.asanaReauthentication.assertIdle(),
-      asana: new AsanaTaskReadAdapter(() => this.requireRuntime()),
-      parseSyncInput: (value) => ipcSyncInputSchema.parse(value),
-      toSyncState: (state) => state,
-      toSyncResult: (details) => details,
-      requireSynchronizedResult: (result) =>
-        this.synchronizationOperations.requireSynchronizedResult(result),
-      afterSynchronizedState: (result, signal) =>
-        this.synchronizationOperations.afterSynchronizedState(result, signal),
-    });
     this.configuredCodexRuntime = new ConfiguredCodexRuntime({
       validateAbortSignal,
       throwIfAborted,
@@ -1607,24 +1508,8 @@ export class TaskHubApplication {
       getSettings: () => this.operationalContext.getSettings(),
       contextMatchesSettings,
       onlineProvider: () => this.options.online_provider(),
-      createRuntime: (context, online) => new AsanaSyncRuntime(
-        this.syncCoordinator,
-        this.taskReadRepository,
-        {
-          project_gid: context.project_gid,
-          section_gids: context.section_gids,
-          device_id: context.device_id,
-          app_version: this.options.app_version,
-          initial_online: online,
-        },
-        this.options.lifecycle_signal,
-        (signal, executionId) => this.synchronizationOperations.beforeSynchronization(signal, executionId),
-        (error) => this.recordUnexpectedError(error, "sync"),
-        this.options.unhandled_error_forwarder,
-        () => createNowIso(this.options.now_provider),
-        this.operationQueue,
-      ),
-      subscribeRuntime: (runtime) => this.taskRead.subscribeRuntime(runtime),
+      createRuntime: (context, online) => this.requireTaskReadRuntime().createSyncRuntime(context, online),
+      subscribeRuntime: (runtime) => this.requireTaskReadRuntime().subscribeRuntime(runtime),
       createDisplayOrder: () => createAsanaDisplayOrderService(
         this.transport,
         (error) => this.recordUnexpectedError(error, "display_order"),
@@ -1677,7 +1562,7 @@ export class TaskHubApplication {
       stopExternalConfiguration: (errors) => this.externalTools.stopConfiguration(errors),
       externalAgent: this.externalAgent,
       externalAgentBridge: this.externalAgentBridge,
-      stopSyncSubscriptions: () => this.taskRead.stop(),
+      stopSyncSubscriptions: () => this.requireTaskReadRuntime().stop(),
       clearAiListeners: () => {
         this.aiEvents.dispose();
       },
@@ -1710,6 +1595,199 @@ export class TaskHubApplication {
       throw new Error("診断ログサービスを二重に接続できません。");
     }
     this.attachedDiagnostics = diagnostics;
+  }
+
+  /** タスク読取の同期資源を一度だけ接続します。 */
+  public attachTaskReadRuntime(runtime: TaskReadRuntimePort): void {
+    if (this.attachedTaskReadRuntime != null) {
+      throw new Error("タスク読取ランタイムを二重に接続できません。");
+    }
+    this.attachedTaskReadRuntime = runtime;
+  }
+
+  /** 同期の競合状態と復旧入口を一度だけ接続します。 */
+  public attachSynchronizationRuntime(runtime: SynchronizationRuntime): void {
+    if (this.attachedSynchronizationOperations != null) {
+      throw new Error("同期ランタイムを二重に接続できません。");
+    }
+    this.attachedSynchronizationOperations = runtime;
+  }
+
+  private get synchronizationOperations(): SynchronizationRuntime {
+    const runtime = this.attachedSynchronizationOperations;
+    assertNonNullable(runtime, "同期ランタイムが接続されていません。");
+    return runtime;
+  }
+
+  /** 同期の競合状態と復旧を組み立てるための運用操作を公開します。 */
+  public getSynchronizationCompositionDependencies(): SynchronizationCompositionDependencies {
+    return {
+      validateAbortSignal,
+      throwIfAborted,
+      hasOperationOwner: (signal) => this.operationQueue.hasOwner(signal),
+      hasPendingJournal: () => this.journalRecovery.hasPending(),
+      hasIncompleteJournal: () => this.proposalApplicationHistoryRepository.getIncomplete().length > 0
+        || this.requireTaskWriteExecution().proposal.repository.getIncomplete().length > 0
+        || this.requireTaskWriteExecution().gui.repository.getIncomplete().length > 0,
+      isJournalRecoveryRunning: () => this.journalRecovery.isRunning(),
+      assertPostWriteSynchronizationReady: (executionId) => {
+        if (this.proposalApplicationHistoryRepository.getIncomplete().length > 0) {
+          throw new Error("未確認の旧適用履歴があるため後続同期を開始できません。");
+        }
+        if (this.requireTaskWriteExecution().proposal.repository.getIncomplete()
+          .some((execution) => execution.execution_id !== executionId)) {
+          throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
+        }
+        if (this.requireTaskWriteExecution().gui.repository.getIncomplete()
+          .some((execution) => execution.execution_id !== executionId)) {
+          throw new Error("別の未完了GUI編集executionがあるため後続同期を開始できません。");
+        }
+      },
+      recoverJournal: (signal) => this.journalRecovery.recover(signal),
+      afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
+      synchronizeCodexAfterAsana: (signal) =>
+        this.configuredCodexRuntime.synchronizeAfterAsana(signal),
+      afterGuiEdit: (requiredTaskGids, executionId, signal) =>
+        this.requireRuntime().afterGuiEdit(requiredTaskGids, executionId, signal),
+      afterAiApply: (requiredTaskGids, executionId, signal) =>
+        this.requireRuntime().afterAiApply(requiredTaskGids, executionId, signal),
+      beforeAiTurn: (signal) => this.requireRuntime().beforeAiTurn(signal),
+      requireContext: () => this.requireContext(),
+      coordinateRecovered: (context, requiredTaskGids, signal) => this.syncCoordinator.coordinate(
+        {
+          mode: "delta",
+          project_gid: context.project_gid,
+          section_gids: context.section_gids,
+          device_id: context.device_id,
+          app_version: this.options.app_version,
+          required_task_gids: [...requiredTaskGids],
+        },
+        signal,
+      ),
+      isSynchronizedResult: (
+        result,
+      ): result is Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }> =>
+        result.kind === "synchronized",
+      abortedCode: "aborted",
+      classifyError: classifyPostWriteSynchronizationError,
+      isDiagnosticFailure: (error) => error instanceof DiagnosticFailureDispositionError,
+      recoveryRequired: postWriteRecoveryRequired,
+      recoveryRequiredWithCause: postWriteRecoveryRequiredWithCause,
+      synchronizedPostWrite: () => asanaPostWriteSynchronizationResultSchema.parse({
+        kind: "synchronized",
+      }),
+      fromRuntimeResult: postWriteSynchronizationFromRuntimeResult,
+      recordLocalRefreshFailure: (error) => this.recordFeatureFailure(
+        error,
+        "local_state_refresh",
+        "Asana同期後の補助的なローカル状態更新に失敗しました。",
+      ),
+    };
+  }
+
+  private requireTaskReadRuntime(): TaskReadRuntimePort {
+    const runtime = this.attachedTaskReadRuntime;
+    assertNonNullable(runtime, "タスク読取ランタイムが接続されていません。");
+    return runtime;
+  }
+
+  /** タスク読取の構成に必要な運用操作を公開します。 */
+  public getTaskReadCompositionDependencies(): TaskReadCompositionDependencies {
+    return {
+      repository: this.taskReadRepository,
+      contracts: {
+        ...this.taskReadPersistenceContracts,
+        parseOverview: (value: unknown) => {
+          const response = ipcReadModelOverviewResponseSchema.parse({ kind: "ok", value });
+          if (response.kind !== "ok") {
+            throw new UnreachableError("読取概要の応答形式が不正です。");
+          }
+          return response.value;
+        },
+        parseDetail: (value: unknown) => {
+          const response = ipcReadModelTaskDetailResponseSchema.parse({ kind: "ok", value });
+          if (response.kind !== "ok") {
+            throw new UnreachableError("読取詳細の応答形式が不正です。");
+          }
+          return response.value;
+        },
+        hashBaseline: (entry: TaskReadEntry) => hashGuiEditBaseline(
+          asanaTaskResponseSchema.parse(entry.asana_response),
+        ),
+      },
+      syncStateDependencies: {
+        toEvent: (state) => state,
+        recordDiagnostic: (code) => this.recordDiagnostic(code, "info"),
+        shouldReportKnownFailure: () => this.synchronizationOperations.shouldReportKnownFailure(),
+        reportKnownFailure: (cause) => this.options.diagnostic(
+          cause == null
+            ? new Error("Asana同期で認証または既知のエラーが発生しました。")
+            : cause,
+          "sync",
+          serviceErrorDiagnostic,
+        ),
+        reportListenerFailure: (error) =>
+          this.options.diagnostic(error, "sync_state_listener", serviceErrorDiagnostic),
+        lifecycleSignal: this.options.lifecycle_signal,
+        afterLocalStateRefresh: (signal) => this.afterLocalStateRefresh(signal),
+        isReadyActivated: () => this.lifecycleRuntime.isReadyActivated(),
+        synchronizeCodex: (signal) => this.configuredCodexRuntime.synchronizeAfterAsana(signal),
+        reportUnexpectedError: (error, feature) => this.recordUnexpectedError(error, feature),
+      },
+      lifecycleSignal: this.options.lifecycle_signal,
+      projectGid: () => this.requireContext().project_gid,
+      assertReady: () => this.assertOperationalReady(),
+      assertReauthenticationIdle: () => this.asanaReauthentication.assertIdle(),
+      requireRuntime: () => this.requireRuntime(),
+      getRuntime: () => this.operationalServices.getRuntime(),
+      createSyncRuntime: (context, online) => new AsanaSyncRuntime(
+        this.syncCoordinator,
+        this.taskReadRepository,
+        {
+          project_gid: context.project_gid,
+          section_gids: context.section_gids,
+          device_id: context.device_id,
+          app_version: this.options.app_version,
+          initial_online: online,
+        },
+        this.options.lifecycle_signal,
+        (signal, executionId) => this.synchronizationOperations.beforeSynchronization(signal, executionId),
+        (error) => this.recordUnexpectedError(error, "sync"),
+        this.options.unhandled_error_forwarder,
+        () => createNowIso(this.options.now_provider),
+        this.operationQueue,
+      ),
+      parseSyncInput: (value) => ipcSyncInputSchema.parse(value),
+      parseSetupInput: (value) => setupFullSyncInputSchema.parse(value),
+      validateAbortSignal,
+      configureContextFromSetup: () => this.operationalContext.configureFromState(this.setup.getState()),
+      enqueueSynchronization: (signal, run) => this.operationQueue.enqueue({
+        priority: "user",
+        kind: "synchronization",
+        signal,
+        run: (context) => run(context.signal),
+      }),
+      coordinateFull: (input, signal) => this.syncCoordinator.coordinate(
+        {
+          mode: "full",
+          project_gid: input.project_gid,
+          section_gids: input.section_gids,
+          device_id: input.device_id,
+          app_version: this.options.app_version,
+          required_task_gids: [],
+        },
+        signal,
+      ),
+      recordDiagnostic: (code: "sync.started" | "sync.completed") => this.recordDiagnostic(code, "info"),
+      afterLocalStateRefresh: (signal: AbortSignal) => this.afterLocalStateRefresh(signal),
+      requireSynchronizedResult: (result) => this.synchronizationOperations.requireSynchronizedResult(result),
+      afterSynchronizedState: (result, signal) =>
+        this.synchronizationOperations.afterSynchronizedState(result, signal),
+      isSynchronizedResult: (
+        result,
+      ): result is Extract<AsanaSyncRuntimeInternalResult, { kind: "synchronized" }> =>
+        result.kind === "synchronized",
+    };
   }
 
   /** 構造化診断ログの保存契約を組み立て側へ公開します。 */
@@ -1825,7 +1903,7 @@ export class TaskHubApplication {
             this.configureDiscordExternalTool(input, signal),
           deactivateDiscord: (signal: AbortSignal) => this.externalTools.deactivate(signal),
         },
-        fullSync: (input: SetupFullSyncInput, signal: AbortSignal) => this.runSetupFullSync(input, signal),
+        fullSync: (input: SetupFullSyncInput, signal: AbortSignal) => this.requireTaskReadRuntime().runSetupFullSync(input, signal),
         contracts: {
           validation: setupSchemas.validation,
           parseDeviceSettings: (value: unknown) => deviceSettingsSchema.parse(value),
@@ -1876,13 +1954,7 @@ export class TaskHubApplication {
           run: (context) => run(context.signal),
         }),
       configureAsana: (settings: DeviceSettings) => this.operationalContext.configureAsanaFromSettings(settings),
-      synchronize: async (signal: AbortSignal) => {
-        const synchronized = await this.synchronizationOperations.requireSynchronizedResult(
-          this.requireRuntime().onOnline(signal),
-        );
-        await this.synchronizationOperations.afterSynchronizedState(synchronized, signal);
-        return synchronized.result;
-      },
+      synchronize: (signal: AbortSignal) => this.requireTaskReadRuntime().synchronizeReauthentication(signal),
       restoreContext: () => this.operationalContext.configureFromState(this.setup.getState()),
       afterTransition: (state: SetupState): SetupState => {
         const validatedState = setupStateSchema.parse(state);
@@ -2078,51 +2150,6 @@ export class TaskHubApplication {
   /** 外部変更案の状態を購読します。 */
   public onExternalAgentChanged(listener: Parameters<ExternalAgentService["onChanged"]>[0]): () => void {
     return this.externalAgent.onChanged(listener);
-  }
-
-  /** Electronのフォアグラウンド復帰を同期へ渡します。 */
-  public async onForeground(signal: AbortSignal): Promise<void> {
-    validateAbortSignal(signal);
-    this.assertOperationalReady();
-    this.asanaReauthentication.assertIdle();
-    const runtime = this.requireRuntime();
-    const result = await this.synchronizationOperations.requireSynchronizedResult(runtime.onForeground(signal));
-    await this.synchronizationOperations.afterSynchronizedState(result, signal);
-  }
-
-  /** Electronのオンライン復帰を同期へ渡します。 */
-  public async onOnline(): Promise<void> {
-    this.assertOperationalReady();
-    this.asanaReauthentication.assertIdle();
-    const runtime = this.requireRuntime();
-    const result = await runtime.onOnline(this.options.lifecycle_signal);
-    if (result.kind === "synchronized") {
-      await this.synchronizationOperations.afterSynchronizedState(result, this.options.lifecycle_signal);
-      return;
-    }
-    if (result.kind === "failed") {
-      return;
-    }
-    if (result.kind === "aborted") {
-      throw new Error("Asana同期が中断されました。");
-    }
-    throw new Error(
-      result.reason === "offline"
-        ? "オフライン中はAsana同期を実行できません。"
-        : "停止済みのAsana同期ランタイムは実行できません。",
-    );
-  }
-
-  /** ネットワーク状態を同期ランタイムへ渡します。 */
-  public setOnline(online: boolean): void {
-    if (typeof online !== "boolean") {
-      throw new TypeError("オンライン状態は真偽値で指定してください。");
-    }
-    const runtime = this.operationalServices.getRuntime();
-    if (runtime == null) {
-      return;
-    }
-    runtime.setOnline(online);
   }
 
   private configureOperationalServices(): void {
@@ -2372,37 +2399,6 @@ export class TaskHubApplication {
       throw new TypeError("オンライン状態関数は真偽値を返してください。");
     }
     return online;
-  }
-
-  private async runSetupFullSync(
-    input: SetupFullSyncInput,
-    signal: AbortSignal,
-  ): Promise<void> {
-    validateAbortSignal(signal);
-    const validatedInput = setupFullSyncInputSchema.parse(input);
-    this.operationalContext.configureFromState(this.setup.getState());
-    this.recordDiagnostic("sync.started", "info");
-    const result = await this.operationQueue.enqueue({
-      priority: "user",
-      kind: "synchronization",
-      signal,
-      run: (context) => this.syncCoordinator.coordinate(
-        {
-          mode: "full",
-          project_gid: validatedInput.project_gid,
-          section_gids: validatedInput.section_gids,
-          device_id: validatedInput.device_id,
-          app_version: this.options.app_version,
-          required_task_gids: [],
-        },
-        context.signal,
-      ),
-    });
-    if (result.performed_mode !== "full") {
-      throw new Error("初回設定のフル同期が完全同期を返しませんでした。");
-    }
-    await this.afterLocalStateRefresh(signal);
-    this.recordDiagnostic("sync.completed", "info");
   }
 
   private assertSetupReady(): void {

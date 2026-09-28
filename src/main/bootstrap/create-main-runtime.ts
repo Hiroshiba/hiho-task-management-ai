@@ -37,6 +37,8 @@ import {
 import { createTaskWriteRuntime } from "./create-task-write-runtime";
 import { createObsidianRuntime } from "./create-obsidian-runtime";
 import { createSettingsRuntime } from "./create-settings-runtime";
+import { createTaskReadRuntime } from "./create-task-read-runtime";
+import { createSynchronizationRuntime } from "./create-synchronization-runtime";
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
@@ -116,6 +118,11 @@ function recordLegacyMigration(
 /** Mainの単一ランタイムと資源の破棄入口です。 */
 export interface MainRuntime {
   readonly legacy: LegacyRuntimePort;
+  readonly taskRead: {
+    readonly onForeground: (signal: AbortSignal) => Promise<void>;
+    readonly onOnline: () => Promise<void>;
+    readonly setOnline: (online: boolean) => void;
+  };
   readonly reporter: ErrorReporter | undefined;
   readonly taskWriteExecution: {
     readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
@@ -211,10 +218,26 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
     });
     legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
+    legacy.attachSynchronizationRuntime(createSynchronizationRuntime(
+      legacy.getSynchronizationCompositionDependencies(),
+    ));
+    const taskReadHost = legacy.getTaskReadCompositionDependencies();
+    type TaskReadSyncRuntime = ReturnType<typeof taskReadHost.requireRuntime>;
+    const taskRead = createTaskReadRuntime<
+      ReturnType<typeof taskReadHost.contracts.parseOverview>,
+      ReturnType<typeof taskReadHost.contracts.parseDetail>,
+      Awaited<ReturnType<TaskReadSyncRuntime["manualSync"]>>,
+      Awaited<ReturnType<typeof taskReadHost.coordinateFull>>,
+      ReturnType<TaskReadSyncRuntime["getState"]>,
+      Parameters<typeof taskReadHost.createSyncRuntime>[0],
+      ReturnType<typeof taskReadHost.parseSetupInput>,
+      TaskReadSyncRuntime
+    >(taskReadHost);
+    legacy.attachTaskReadRuntime(taskRead);
     const systemHandlers = createSystemHandlers(options.system);
     const settingsHandlers = createSettingsHandlers(createSettingsRuntime(legacy, createId));
     const tasksHandlers = createTasksHandlers({
-      taskRead: legacy.taskRead,
+      taskRead: taskRead.workflow,
       guiEdit: legacy,
       taskWriteExecution: {
         getExecution: (executionId) => legacy.getGuiEditExecution(executionId),
@@ -242,7 +265,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       },
       events: {
         updateState: (listener) => options.system.onUpdateState(listener),
-        syncState: (listener) => legacy.taskRead.onState(listener),
+        syncState: (listener) => taskRead.workflow.onState(listener),
         guiExecution: taskWrite.onGuiChanged,
         aiStatus: (listener) => legacy.onAiStatus(listener),
         aiDelta: (listener) => legacy.onAiDelta(listener),
@@ -253,6 +276,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     let disposal: Promise<void> | undefined;
     return {
       legacy,
+      taskRead,
       reporter,
       taskWriteExecution: {
         repository: taskWrite.repository,

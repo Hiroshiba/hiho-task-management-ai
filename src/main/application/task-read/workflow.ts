@@ -3,13 +3,13 @@ import { TaskReadIndex } from "./task-read-index";
 import { SyncStateRuntime } from "./sync-state-runtime";
 
 type SynchronizedResult<Details> = { readonly kind: "synchronized"; readonly result: Details };
-type TaskReadSyncResult<Details> =
+export type TaskReadSyncResult<Details> =
   | SynchronizedResult<Details>
   | { readonly kind: "rejected"; readonly reason: "offline" | "stopped" }
   | { readonly kind: "aborted" }
   | { readonly kind: "failed"; readonly error_code: string; readonly cause: unknown };
 
-type TaskReadRuntimeState =
+export type TaskReadRuntimeState =
   | { readonly kind: "syncing"; readonly last_successful_sync_at?: string | undefined }
   | { readonly kind: "online"; readonly last_successful_sync_at?: string | undefined }
   | { readonly kind: "offline"; readonly last_successful_sync_at?: string | undefined }
@@ -20,7 +20,7 @@ type TaskReadSyncRuntime<State> = {
   subscribe(listener: (state: State, cause?: unknown) => void): () => void;
 };
 
-type TaskReadWorkflowDependencies<
+export type TaskReadWorkflowDependencies<
   Result extends TaskReadSyncResult<Details>,
   Details,
   State extends TaskReadRuntimeState,

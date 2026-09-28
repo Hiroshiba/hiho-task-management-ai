@@ -1,3 +1,7 @@
 export { TaskReadIndex, type TaskReadContracts } from "./task-read-index";
-export { TaskReadWorkflow } from "./workflow";
-export { SyncStateRuntime } from "./sync-state-runtime";
+export {
+  TaskReadWorkflow,
+  type TaskReadRuntimeState,
+  type TaskReadSyncResult,
+} from "./workflow";
+export { SyncStateRuntime, type SyncStateDependencies } from "./sync-state-runtime";
