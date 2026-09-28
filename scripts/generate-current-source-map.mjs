@@ -17,8 +17,8 @@ const entryPoints = [
   ["Mainの旧統合", "src/main/application/service.ts", "main/bootstrap"],
   ["IPC登録", "src/main/ipc/register-ipc.ts", "main/ipc"],
   ["preload bridge", "src/preload/index.ts", "preload"],
-  ["Renderer起動", "src/renderer/src/main.ts", "renderer/app"],
-  ["Renderer画面", "src/renderer/src/App.vue", "renderer/app"],
+  ["Renderer起動", "src/renderer/app/main.ts", "renderer/app"],
+  ["Renderer画面", "src/renderer/app/App.vue", "renderer/app"],
   ["変更案生成の状態", "src/main/application/proposal-generate/workflow-state.ts", "main/application/proposal-generate"],
   ["変更案生成のCodex接続", "src/main/ai/workflow/service.ts", "main/application/proposal-generate"],
   ["変更案適用と復旧", "src/main/application/proposal-apply/apply-stored-proposal.ts", "main/application/proposal-apply"],
@@ -29,7 +29,7 @@ const entryPoints = [
   ["Obsidian連携", "src/main/application/obsidian-integration/workflow.ts", "main/application/obsidian-integration"],
   ["Vault読取", "src/main/infrastructure/obsidian/read-service.ts", "main/infrastructure/obsidian"],
   ["SQLite schema", "src/main/infrastructure/persistence/sqlite-schema.ts", "main/infrastructure/persistence"],
-  ["mock transport", "src/renderer/src/task-hub.ts", "renderer/shared/api"],
+  ["機能別API選択", "src/renderer/app/feature-api-registry.ts", "renderer/app"],
 ];
 
 const functions = [
@@ -46,11 +46,11 @@ const functions = [
   ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
   ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/infrastructure/persistence/settings-repository.ts, src/main/auth/secret-storage/"],
   ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc-contracts/, src/main/ipc/, src/preload/"],
-  ["タスク画面", "renderer/features/tasks", "src/renderer/src/Task*.vue"],
-  ["変更案画面", "renderer/features/proposals", "src/renderer/src/Ai*.vue, src/renderer/src/*Proposal*.vue"],
-  ["設定画面", "renderer/features/settings", "src/renderer/src/SettingsDialog.vue, src/renderer/src/SetupWizard.vue"],
+  ["タスク画面", "renderer/features/tasks", "src/renderer/features/tasks/"],
+  ["変更案画面", "renderer/features/proposals", "src/renderer/features/proposals/"],
+  ["設定画面", "renderer/features/settings", "src/renderer/features/settings/"],
   ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/infrastructure/persistence/diagnostic-log-repository.ts"],
-  ["mock transport", "renderer/shared/mock", "src/renderer/src/task-hub.ts, src/renderer/src/mocks/"],
+  ["mock指定", "renderer/shared/mock", "src/renderer/shared/mock/mock-selection.ts"],
 ];
 
 const externalAgentResponsibilities = [
@@ -174,13 +174,10 @@ const applicationStateOwners = new Map([
 ]);
 
 function stateOwner(path, symbol, defaultOwner) {
-  if (path === "src/renderer/src/AppHeader.vue" && symbol === "fullSyncConfirmationOpen") {
-    return "renderer/features/tasks";
-  }
   if (path === "src/main/index.ts" && symbol === "persistentErrorLog") {
     return "main/infrastructure/logging";
   }
-  if (path !== "src/renderer/src/App.vue") {
+  if (path !== "src/renderer/app/App.vue") {
     return defaultOwner;
   }
   for (const [owner, symbols] of appStateOwners) {

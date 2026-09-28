@@ -1,11 +1,11 @@
 import { createApp } from "vue";
-import { createFeatureApiRegistry } from "../app/feature-api-registry";
-import { installErrorBoundary } from "../app/install-error-boundary";
-import { useSystemTheme } from "../app/use-system-theme";
+import { createFeatureApiRegistry } from "./feature-api-registry";
+import { installErrorBoundary } from "./install-error-boundary";
+import { useSystemTheme } from "./use-system-theme";
 import { diagnosticsApiInjectionKey, githubIntegrationApiInjectionKey, obsidianIntegrationApiInjectionKey, proposalsApiInjectionKey, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { parseMockSelection } from "../shared/mock/mock-selection";
-import App from "../app/App.vue";
+import App from "./App.vue";
 import "./styles.css";
 
 function mountApp(): void {

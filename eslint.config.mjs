@@ -43,7 +43,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["src/renderer/src/main.ts"],
+    files: ["src/renderer/app/main.ts"],
     rules: {
       "@typescript-eslint/no-unsafe-argument": "off",
     },

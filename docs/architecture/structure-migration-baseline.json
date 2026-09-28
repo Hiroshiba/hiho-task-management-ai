@@ -3353,21 +3353,6 @@
       "symbol": "src/main/window-state.ts"
     },
     {
-      "path": "src/renderer/src/main.ts",
-      "rule": "old-import",
-      "symbol": "src/renderer/src/styles.css"
-    },
-    {
-      "path": "src/renderer/src/main.ts",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/main.ts"
-    },
-    {
-      "path": "src/renderer/src/styles.css",
-      "rule": "old-path",
-      "symbol": "src/renderer/src/styles.css"
-    },
-    {
       "path": "src/shared/ai-workflow/index.ts",
       "rule": "old-import",
       "symbol": "src/shared/ai-workflow/schemas.ts"
