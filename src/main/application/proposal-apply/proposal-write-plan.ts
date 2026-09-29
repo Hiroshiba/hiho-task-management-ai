@@ -15,7 +15,7 @@ type PlannedOperation = {
   readonly context: ProposalOperationPlanningContext;
 };
 
-/** 承認済み操作を旧writerと同じ順序の保存用planへまとめます。 */
+/** 承認済み操作を実行順の保存用planへまとめます。 */
 export function planProposalTaskWrites(
   input: {
     readonly execution_id: string;

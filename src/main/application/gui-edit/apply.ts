@@ -96,7 +96,7 @@ function conflict(
     outcome: "conflict", reason_code: reasonCode, side_effect: "none" };
 }
 
-/** 保存済みGUI編集を従来の操作結果へ投影します。 */
+/** 保存済みGUI編集をGUI編集結果へ投影します。 */
 export function projectGuiExecutionResult(execution: ProposalExecution<GuiTaskWriteResult>): GuiEditResult {
   const context = execution.plan.gui_context;
   if (execution.plan.origin !== "gui-edit" || context == null) {

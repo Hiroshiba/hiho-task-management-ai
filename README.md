@@ -60,7 +60,7 @@ pnpm install
 pnpm run dev
 ```
 
-WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。対応する機能名は`app`、`appUpdate`、`asana`、`readModel`、`sync`、`setup`、`gui`、`externalAgent`、`ai`、`obsidian`です。
+WebとElectronのフロントは、URLの`mock`クエリでmockを選べます。
 
 WebフロントはViteだけを起動します。
 

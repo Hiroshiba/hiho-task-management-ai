@@ -12,7 +12,10 @@
 | タスク取得・同期・順位 | main/application/task-read | src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/infrastructure/asana/sync/, src/main/domain/ranking/ |
 | タスク直接編集 | main/application/gui-edit | src/main/application/gui-edit/, src/main/infrastructure/asana/client/task-write-client.ts |
 | 変更案の生成・検証・編集 | main/application/proposal-generate | src/main/application/proposal-generate/ |
-| 変更案の承認・適用・復旧 | main/application/proposal-apply | src/main/application/proposal-apply/, src/main/application/common/task-write-plan.ts, src/main/infrastructure/persistence/proposal-application-history-repository.ts |
+| 変更案の操作契約 | main/domain | src/main/domain/proposal.ts, src/main/domain/proposal-write-operation.ts |
+| 変更案のhandler登録とstep計画 | main/application/common | src/main/application/common/task-write-operation-manifest.ts, src/main/application/common/task-write-plan.ts |
+| 変更案の承認・適用・復旧 | main/application/proposal-apply | src/main/application/proposal-apply/, src/main/infrastructure/persistence/proposal-application-history-repository.ts |
+| 共通stepの実行と復旧 | main/application/task-write | src/main/application/task-write/, src/main/infrastructure/persistence/proposal-execution-repository.ts |
 | 外部Codex接続とツール | main/infrastructure/ai | src/main/infrastructure/ai/ |
 | 外部提案の準備・生成 | main/application/proposal-generate | src/main/application/proposal-generate/external-agent-generation.ts |
 | 外部提案の承認・適用 | main/application/proposal-apply | src/main/application/proposal-apply/external-agent-application.ts |
@@ -50,6 +53,7 @@
 | Obsidian連携 | src/main/application/obsidian-integration/workflow.ts | main/application/obsidian-integration |
 | Vault読取 | src/main/infrastructure/obsidian/read-service.ts | main/infrastructure/obsidian |
 | SQLite schema | src/main/infrastructure/persistence/sqlite-schema.ts | main/infrastructure/persistence |
+| 変更案実行journalのSQLite schema | src/main/infrastructure/persistence/proposal-execution-schema.ts | main/infrastructure/persistence |
 | 機能別API選択 | src/renderer/app/feature-api-registry.ts | renderer/app |
 
 ## 全sourceのowner
@@ -1070,6 +1074,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/asana/oauth/asana-oauth.ts | AsanaOAuthClient.clientId | main/infrastructure/asana |
 | src/main/infrastructure/asana/oauth/asana-oauth.ts | AsanaOAuthClient.pendingAuthorization | main/infrastructure/asana |
 | src/main/infrastructure/asana/oauth/asana-oauth.ts | AsanaOAuthClient.secretStorage | main/infrastructure/asana |
+| src/main/infrastructure/asana/oauth/coordinator.ts | AsanaOAuthCoordinator.createOAuthClient | main/infrastructure/asana |
 | src/main/infrastructure/asana/oauth/coordinator.ts | AsanaOAuthCoordinator.openAuthorizationUrl | main/infrastructure/asana |
 | src/main/infrastructure/asana/oauth/coordinator.ts | AsanaOAuthCoordinator.outOfBandTransaction | main/infrastructure/asana |
 | src/main/infrastructure/asana/oauth/coordinator.ts | AsanaOAuthCoordinator.secretStorage | main/infrastructure/asana |
@@ -1268,12 +1273,12 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 | proposals:reject | main/application/proposal-generate |
 | proposals:approve | main/application/proposal-apply |
 | proposals:close-session | main/application/proposal-generate |
-| proposals:get-external-state | main/application/proposal-generate |
+| proposals:get-external-state | main/application/proposal-apply |
 | proposals:set-external-enabled | main/application/proposal-generate |
-| proposals:edit-external-operation | main/application/proposal-generate |
-| proposals:select-external | main/application/proposal-generate |
+| proposals:edit-external-operation | main/application/proposal-apply |
+| proposals:select-external | main/application/proposal-apply |
 | proposals:approve-external | main/application/proposal-apply |
-| proposals:reject-external | main/application/proposal-generate |
+| proposals:reject-external | main/application/proposal-apply |
 | proposals:get-history-status | main/application/proposal-apply |
 | proposals:confirm-history | main/application/proposal-apply |
 | proposals:synchronize-history | main/application/proposal-apply |
@@ -1286,9 +1291,9 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 | proposals:ai-delta:subscribe | main/application/proposal-generate |
 | proposals:ai-delta:unsubscribe | main/application/proposal-generate |
 | proposals:ai-delta | main/application/proposal-generate |
-| proposals:external-state:subscribe | main/application/proposal-generate |
-| proposals:external-state:unsubscribe | main/application/proposal-generate |
-| proposals:external-state | main/application/proposal-generate |
+| proposals:external-state:subscribe | main/application/proposal-apply |
+| proposals:external-state:unsubscribe | main/application/proposal-apply |
+| proposals:external-state | main/application/proposal-apply |
 | proposals:execution:subscribe | main/application/proposal-apply |
 | proposals:execution:unsubscribe | main/application/proposal-apply |
 | proposals:execution | main/application/proposal-apply |
@@ -1304,27 +1309,27 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 
 ## 変更案の操作
 
-識別子は`src/main/domain/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約は`main/domain`、適用handlerと実行は`main/application/proposal-apply`が所有します。IPC DTOは`shared/ipc-contracts`が所有します。
+識別子は`src/main/domain/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約は`main/domain`、handler登録とstep計画は`main/application/common`、変更案の承認と適用は`main/application/proposal-apply`が所有します。共通stepの実行は`main/application/task-write`、IPC DTOは`shared/ipc-contracts`が所有します。
 
-| operation | 適用owner |
-| --- | --- |
-| clear_due | main/application/proposal-apply |
-| clear_duration | main/application/proposal-apply |
-| complete | main/application/proposal-apply |
-| create_task | main/application/proposal-apply |
-| link_obsidian | main/application/proposal-apply |
-| set_area | main/application/proposal-apply |
-| set_dependencies | main/application/proposal-apply |
-| set_due | main/application/proposal-apply |
-| set_duration | main/application/proposal-apply |
-| set_importance | main/application/proposal-apply |
-| set_parent | main/application/proposal-apply |
-| set_parent_work_mode | main/application/proposal-apply |
-| set_status | main/application/proposal-apply |
-| unlink_obsidian | main/application/proposal-apply |
-| update_notes | main/application/proposal-apply |
-| update_title | main/application/proposal-apply |
-| withdraw | main/application/proposal-apply |
+| operation | 操作契約owner | handler・step計画owner | 承認・適用owner |
+| --- | --- | --- | --- |
+| clear_due | main/domain | main/application/common | main/application/proposal-apply |
+| clear_duration | main/domain | main/application/common | main/application/proposal-apply |
+| complete | main/domain | main/application/common | main/application/proposal-apply |
+| create_task | main/domain | main/application/common | main/application/proposal-apply |
+| link_obsidian | main/domain | main/application/common | main/application/proposal-apply |
+| set_area | main/domain | main/application/common | main/application/proposal-apply |
+| set_dependencies | main/domain | main/application/common | main/application/proposal-apply |
+| set_due | main/domain | main/application/common | main/application/proposal-apply |
+| set_duration | main/domain | main/application/common | main/application/proposal-apply |
+| set_importance | main/domain | main/application/common | main/application/proposal-apply |
+| set_parent | main/domain | main/application/common | main/application/proposal-apply |
+| set_parent_work_mode | main/domain | main/application/common | main/application/proposal-apply |
+| set_status | main/domain | main/application/common | main/application/proposal-apply |
+| unlink_obsidian | main/domain | main/application/common | main/application/proposal-apply |
+| update_notes | main/domain | main/application/common | main/application/proposal-apply |
+| update_title | main/domain | main/application/common | main/application/proposal-apply |
+| withdraw | main/domain | main/application/common | main/application/proposal-apply |
 
 ## 保存形式
 
@@ -1363,7 +1368,26 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | legacy_application_history | main/application/proposal-apply |
 | pending_normalization_baseline | main/application/task-read |
 | project_metadata_cache | main/application/task-read |
+| proposal_execution_steps | main/application/task-write |
+| proposal_executions | main/application/task-write |
 | ranking_cache | main/application/task-read |
 | sync_state | main/application/task-read |
 | task_cache | main/application/task-read |
 | vault_mappings | main/application/obsidian-integration |
+
+| SQLite table | DDL正本 |
+| --- | --- |
+| application_journal | src/main/infrastructure/persistence/sqlite-schema.ts |
+| cleanup_items_cache | src/main/infrastructure/persistence/sqlite-schema.ts |
+| device_settings | src/main/infrastructure/persistence/sqlite-schema.ts |
+| diagnostic_log | src/main/infrastructure/persistence/sqlite-schema.ts |
+| external_tool_definitions | src/main/infrastructure/persistence/sqlite-schema.ts |
+| legacy_application_history | src/main/infrastructure/persistence/sqlite-schema.ts |
+| pending_normalization_baseline | src/main/infrastructure/persistence/sqlite-schema.ts |
+| project_metadata_cache | src/main/infrastructure/persistence/sqlite-schema.ts |
+| proposal_execution_steps | src/main/infrastructure/persistence/proposal-execution-schema.ts |
+| proposal_executions | src/main/infrastructure/persistence/proposal-execution-schema.ts |
+| ranking_cache | src/main/infrastructure/persistence/sqlite-schema.ts |
+| sync_state | src/main/infrastructure/persistence/sqlite-schema.ts |
+| task_cache | src/main/infrastructure/persistence/sqlite-schema.ts |
+| vault_mappings | src/main/infrastructure/persistence/sqlite-schema.ts |

@@ -28,7 +28,7 @@ const dependenciesSchema = z.array(dependencySchema).max(64).superRefine((depend
 const operationShape = { operation_id: identifierSchema };
 const targetedOperationShape = { ...operationShape, target: targetSchema };
 
-/** 旧変更案から書き込み計画に使う項目だけを取り出すスキーマです。 */
+/** 変更案の書き込みに必要な操作項目を検証するスキーマです。 */
 export const proposalWriteOperationSchema = z.discriminatedUnion("operation", [
   z.object({
     operation: z.literal("create_task"),

@@ -33,6 +33,7 @@ const entryPoints = [
   ["Obsidian連携", "src/main/application/obsidian-integration/workflow.ts", "main/application/obsidian-integration"],
   ["Vault読取", "src/main/infrastructure/obsidian/read-service.ts", "main/infrastructure/obsidian"],
   ["SQLite schema", "src/main/infrastructure/persistence/sqlite-schema.ts", "main/infrastructure/persistence"],
+  ["変更案実行journalのSQLite schema", "src/main/infrastructure/persistence/proposal-execution-schema.ts", "main/infrastructure/persistence"],
   ["機能別API選択", "src/renderer/app/feature-api-registry.ts", "renderer/app"],
 ];
 
@@ -43,7 +44,10 @@ const functions = [
   ["タスク取得・同期・順位", "main/application/task-read", "src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/infrastructure/asana/sync/, src/main/domain/ranking/"],
   ["タスク直接編集", "main/application/gui-edit", "src/main/application/gui-edit/, src/main/infrastructure/asana/client/task-write-client.ts"],
   ["変更案の生成・検証・編集", "main/application/proposal-generate", "src/main/application/proposal-generate/"],
-  ["変更案の承認・適用・復旧", "main/application/proposal-apply", "src/main/application/proposal-apply/, src/main/application/common/task-write-plan.ts, src/main/infrastructure/persistence/proposal-application-history-repository.ts"],
+  ["変更案の操作契約", "main/domain", "src/main/domain/proposal.ts, src/main/domain/proposal-write-operation.ts"],
+  ["変更案のhandler登録とstep計画", "main/application/common", "src/main/application/common/task-write-operation-manifest.ts, src/main/application/common/task-write-plan.ts"],
+  ["変更案の承認・適用・復旧", "main/application/proposal-apply", "src/main/application/proposal-apply/, src/main/infrastructure/persistence/proposal-application-history-repository.ts"],
+  ["共通stepの実行と復旧", "main/application/task-write", "src/main/application/task-write/, src/main/infrastructure/persistence/proposal-execution-repository.ts"],
   ["外部Codex接続とツール", "main/infrastructure/ai", "src/main/infrastructure/ai/"],
   ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/application/proposal-generate/external-agent-generation.ts"],
   ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/application/proposal-apply/external-agent-application.ts"],
@@ -95,7 +99,14 @@ const sqliteOwners = new Map([
   ["vault_mappings", "main/application/obsidian-integration"],
   ["diagnostic_log", "main/infrastructure/logging"],
   ["external_tool_definitions", "main/application/settings"],
+  ["proposal_executions", "main/application/task-write"],
+  ["proposal_execution_steps", "main/application/task-write"],
 ]);
+
+const sqliteSchemaPaths = [
+  "src/main/infrastructure/persistence/sqlite-schema.ts",
+  "src/main/infrastructure/persistence/proposal-execution-schema.ts",
+];
 
 function version(path, name) {
   const match = readSource(path).match(new RegExp(`(?:export )?const ${name} = (\\d+);`));
@@ -114,6 +125,8 @@ function ownerForChannel(channel) {
   }
   if (channel.startsWith("proposals:")) {
     return channel.includes("approve") || channel.includes("history") || channel.includes("execution")
+      || channel.includes("external-state") || channel.includes("external-operation")
+      || channel.includes("select-external") || channel.includes("reject-external")
       ? "main/application/proposal-apply" : "main/application/proposal-generate";
   }
   if (channel.startsWith("obsidian-integration:")) return "main/application/obsidian-integration";
@@ -155,9 +168,12 @@ function render() {
   if (operations.length !== 17) {
     throw new Error(`変更案の操作は17種類のはずです: ${operations.length}`);
   }
-  const databaseSource = readSource("src/main/infrastructure/persistence/sqlite-schema.ts");
-  const tables = [...new Set([...databaseSource.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1]))].sort();
-  if (tables.length !== sqliteOwners.size || tables.some((name) => !sqliteOwners.has(name))) {
+  const tableDefinitions = sqliteSchemaPaths.flatMap((path) =>
+    [...readSource(path).matchAll(/CREATE TABLE (\w+)/g)].map((match) => [match[1], path]));
+  const tableSources = new Map(tableDefinitions);
+  const tables = [...tableSources.keys()].sort();
+  if (tables.length !== tableDefinitions.length || tables.length !== sqliteOwners.size
+    || tables.some((name) => !sqliteOwners.has(name))) {
     throw new Error("SQLite tableのownerが不足しています。");
   }
   for (const [, , path, marker] of fileFormats) {
@@ -207,9 +223,11 @@ function render() {
     table(["channel", "機能owner"], channels.map((channel) => [channel, ownerForChannel(channel)])),
     "## 変更案の操作",
     "",
-    "識別子は`src/main/domain/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約は`main/domain`、適用handlerと実行は`main/application/proposal-apply`が所有します。IPC DTOは`shared/ipc-contracts`が所有します。",
+    "識別子は`src/main/domain/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約は`main/domain`、handler登録とstep計画は`main/application/common`、変更案の承認と適用は`main/application/proposal-apply`が所有します。共通stepの実行は`main/application/task-write`、IPC DTOは`shared/ipc-contracts`が所有します。",
     "",
-    table(["operation", "適用owner"], operations.map((operation) => [operation, "main/application/proposal-apply"])),
+    table(["operation", "操作契約owner", "handler・step計画owner", "承認・適用owner"], operations.map((operation) => [
+      operation, "main/domain", "main/application/common", "main/application/proposal-apply",
+    ])),
     "## 保存形式",
     "",
     table(["形式", "保存先または対象", "source", "利用上のowner"], fileFormats.map(([format, target, path, , owner]) => [format, target, path, owner])),
@@ -217,6 +235,7 @@ function render() {
     "SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaのversionは上記の値です。",
     "",
     table(["SQLite table", "利用上のowner"], tables.map((name) => [name, sqliteOwners.get(name)])),
+    table(["SQLite table", "DDL正本"], tables.map((name) => [name, tableSources.get(name)])),
   ].join("\n");
 }
 

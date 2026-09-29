@@ -49,7 +49,7 @@ type TaskReadBlockReason = { readonly code: string; readonly summary: string };
 type TaskReadTaskReference = { readonly gid: string; readonly kind: "found" | "missing"; readonly title?: string; readonly status?: TaskReadTask["status"] };
 type TaskReadDependencyReference = TaskReadTaskReference & { readonly scope: string; readonly source: string };
 
-/** 旧共有スキーマを実行時に一か所から注入する契約です。 */
+/** タスク読取で使う解析関数と基準ハッシュを定義します。 */
 export type TaskReadContracts<Overview, Detail> = {
   readonly parseGid: (value: string) => string;
   readonly parseEntries: (value: unknown) => readonly TaskReadEntry[];

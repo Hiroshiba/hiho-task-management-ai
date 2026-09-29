@@ -218,7 +218,7 @@ export function toApprovalDto(source: unknown, execution: StoredProposalExecutio
   };
 }
 
-/** 外部変更案の旧状態を最終DTOへ変換します。 */
+/** 外部変更案の状態を表示DTOへ変換します。 */
 export function toExternalStateDto(source: unknown): ExternalStateDto {
   const state = externalStateSourceSchema.parse(source);
   return externalProposalStateSchema.parse({

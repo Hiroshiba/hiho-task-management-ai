@@ -51,7 +51,7 @@ type TaskCacheDiff<Entry> = {
   readonly missing_gids: readonly string[];
 };
 
-/** 保存形式の現行スキーマを旧契約から受け取ります。 */
+/** タスク読取の保存値と差分を検証する関数を定義します。 */
 export type TaskReadPersistenceContracts<
   Entry extends TaskReadEntry,
   Metadata extends TaskReadMetadata,
