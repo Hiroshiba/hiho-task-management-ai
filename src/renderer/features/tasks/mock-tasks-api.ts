@@ -4,6 +4,9 @@ import { syncResultSchema, syncStateSchema, tasksContracts, type TasksApi } from
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
 import { proposalOperationSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
 import type { GuiEditOperation } from "../../../shared/ipc-contracts/task-values";
+import type { IpcSubscriptionFailure } from "../../../shared/ipc-contracts/common";
+import { reportRendererError } from "../../shared/logging/report-renderer-error";
+import { createMockDiagnosticsApi } from "../../shared/mock/diagnostics";
 
 type TaskDetail = z.infer<typeof detailSchema>;
 type TaskOverview = z.infer<typeof overviewSchema>;
@@ -13,15 +16,67 @@ type MockTasksApi = TasksApi & {
   readonly completeExternalSync: (syncedAt: string) => void;
   readonly applyProposalOperations: (operations: readonly ProposalOperation[], syncedAt: string) => void;
 };
+type MockSubscription<Value> = {
+  readonly listener: (value: Value) => void | Promise<void>;
+  readonly onFailure: (failure: IpcSubscriptionFailure) => void;
+  readonly subscriptionId: string;
+  active: boolean;
+  eventGeneration: number;
+};
 const projectGid = "mock-project";
 const syncAt = "2026-09-05T00:00:00.000Z";
 const baselineHash = "0".repeat(64);
+const diagnostics = createMockDiagnosticsApi();
 
-function notifyListener<Value>(listener: (value: Value) => void | Promise<void>, value: Value): void {
-  const result = listener(value);
-  if (result != null) result.catch((error: unknown) => {
+function notifyFailure<Value>(subscription: MockSubscription<Value>, failure: IpcSubscriptionFailure): void {
+  try {
+    subscription.onFailure(failure);
+  } catch (error) {
     queueMicrotask(() => { throw error; });
+  }
+}
+
+function reportFailure<Value>(subscription: MockSubscription<Value>, error: unknown, channel: string, generation: number): void {
+  const failureId = crypto.randomUUID();
+  if (subscription.active && generation === subscription.eventGeneration) {
+    notifyFailure(subscription, { kind: "started", failure_id: failureId });
+  }
+  const contextualError = new Error(`IPC購読通知を処理できませんでした。チャネル ${channel}、購読ID ${subscription.subscriptionId}`, { cause: error });
+  void reportRendererError(diagnostics, contextualError, "error").then((errorId) => {
+    if (!subscription.active || generation !== subscription.eventGeneration) return;
+    notifyFailure(subscription, errorId == null
+      ? { kind: "report_unavailable", failure_id: failureId }
+      : { kind: "reported", failure_id: failureId, error_id: errorId });
   });
+}
+
+function notifyListener<Value>(subscription: MockSubscription<Value>, value: Value, channel: string): void {
+  subscription.eventGeneration += 1;
+  const generation = subscription.eventGeneration;
+  try {
+    const result = subscription.listener(value);
+    if (result != null) {
+      void Promise.resolve(result).catch((error: unknown) => {
+        reportFailure(subscription, error, channel, generation);
+      });
+    }
+  } catch (error) {
+    reportFailure(subscription, error, channel, generation);
+  }
+}
+
+function subscribe<Value>(
+  listeners: Set<MockSubscription<Value>>,
+  listener: (value: Value) => void | Promise<void>,
+  onFailure: (failure: IpcSubscriptionFailure) => void,
+): () => void {
+  const subscription = { listener, onFailure, subscriptionId: crypto.randomUUID(), active: true, eventGeneration: 0 };
+  listeners.add(subscription);
+  return () => {
+    if (!subscription.active) return;
+    subscription.active = false;
+    listeners.delete(subscription);
+  };
 }
 
 function proposalTaskGid(target: { readonly kind: "existing"; readonly gid: string } | { readonly kind: "temporary"; readonly ref: string }): string {
@@ -180,8 +235,8 @@ export function createMockTasksApi(): MockTasksApi {
   let lastSuccessfulSyncAt = syncAt;
   let overview = createOverview(details, lastSuccessfulSyncAt);
   let state: SyncState = syncStateSchema.parse({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
-  const listeners = new Set<Parameters<TasksApi["onSyncState"]>[0]>();
-  const executionListeners = new Set<Parameters<TasksApi["onExecution"]>[0]>();
+  const listeners = new Set<MockSubscription<SyncState>>();
+  const executionListeners = new Set<MockSubscription<ExecutionDto>>();
   const executions = new Map<string, ExecutionDto>();
   let editSequence = 0;
 
@@ -277,7 +332,7 @@ export function createMockTasksApi(): MockTasksApi {
 
   function publish(value: SyncState): void {
     state = syncStateSchema.parse(value);
-    for (const listener of listeners) notifyListener(listener, state);
+    for (const listener of listeners) notifyListener(listener, state, tasksContracts.syncState.channel);
   }
 
   function completeExternalSync(syncedAt: string): void {
@@ -405,7 +460,7 @@ export function createMockTasksApi(): MockTasksApi {
           outcome: "applied", reason_code: "applied" }], group_results: [],
       });
       executions.set(execution.execution_id, execution);
-      for (const listener of executionListeners) notifyListener(listener, execution);
+      for (const listener of executionListeners) notifyListener(listener, execution, tasksContracts.execution.channel);
       return tasksContracts.applyEdit.response.parse({ kind: "ok", value: { kind: "execution", execution } });
     }),
     getExecution: (executionId) => Promise.resolve().then(() => {
@@ -419,13 +474,7 @@ export function createMockTasksApi(): MockTasksApi {
       tasksContracts.retryExecution.request.parse({ retry_of_execution_id: executionId });
       return tasksContracts.retryExecution.response.parse({ kind: "error", code: "conflict", message: "この実行は再試行できません。" });
     }),
-    onSyncState: (listener) => {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
-    onExecution: (listener) => {
-      executionListeners.add(listener);
-      return () => { executionListeners.delete(listener); };
-    },
+    onSyncState: (listener, onFailure) => subscribe(listeners, listener, onFailure),
+    onExecution: (listener, onFailure) => subscribe(executionListeners, listener, onFailure),
   };
 }

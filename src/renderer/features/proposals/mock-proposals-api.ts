@@ -1,9 +1,11 @@
 import { executionDtoSchema, type ExecutionDto } from "../../../shared/ipc-contracts/execution";
-import { ipcFailureSchema, type IpcResult } from "../../../shared/ipc-contracts/common";
+import { ipcFailureSchema, type IpcResult, type IpcSubscriptionFailure } from "../../../shared/ipc-contracts/common";
 import { externalProposalStateSchema } from "../../../shared/ipc-contracts/external-proposal-state";
 import { proposalsContracts, type ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import { proposalSelectionSchema, proposalViewSchema, type ProposalViewDto } from "../../../shared/ipc-contracts/proposal-values";
 import type { z } from "zod";
+import { reportRendererError } from "../../shared/logging/report-renderer-error";
+import { createMockDiagnosticsApi } from "../../shared/mock/diagnostics";
 import { createMockProposalView, editMockProposalView } from "./mock-proposal-data";
 
 type ExternalState = z.infer<typeof externalProposalStateSchema>;
@@ -26,6 +28,14 @@ type HistoryRecord =
   | { readonly kind: "required"; readonly source: HistorySource }
   | { readonly kind: "confirmed" | "synchronized"; readonly source: HistorySource; readonly confirmed_result: HistoryConfirmInput["confirmed_result"] }
   | { readonly kind: "invalid"; readonly proposal_id: string; readonly operation_id: string; readonly error_id: string };
+type MockSubscription<Value> = {
+  readonly listener: (value: Value) => void | Promise<void>;
+  readonly onFailure: (failure: IpcSubscriptionFailure) => void;
+  readonly subscriptionId: string;
+  active: boolean;
+  eventGeneration: number;
+};
+const diagnostics = createMockDiagnosticsApi();
 
 function ok<Value>(value: Value): IpcResult<Value> {
   return { kind: "ok", value };
@@ -35,11 +45,57 @@ function failure(code: "not_found" | "conflict" | "invalid_request", message: st
   return ipcFailureSchema.parse({ kind: "error", code, message });
 }
 
-function notifyListener<Value>(listener: (value: Value) => void | Promise<void>, value: Value): void {
-  const result = listener(value);
-  if (result != null) result.catch((error: unknown) => {
+function notifyFailure<Value>(subscription: MockSubscription<Value>, failure: IpcSubscriptionFailure): void {
+  try {
+    subscription.onFailure(failure);
+  } catch (error) {
     queueMicrotask(() => { throw error; });
+  }
+}
+
+function reportFailure<Value>(subscription: MockSubscription<Value>, error: unknown, channel: string, generation: number): void {
+  const failureId = crypto.randomUUID();
+  if (subscription.active && generation === subscription.eventGeneration) {
+    notifyFailure(subscription, { kind: "started", failure_id: failureId });
+  }
+  const contextualError = new Error(`IPC購読通知を処理できませんでした。チャネル ${channel}、購読ID ${subscription.subscriptionId}`, { cause: error });
+  void reportRendererError(diagnostics, contextualError, "error").then((errorId) => {
+    if (!subscription.active || generation !== subscription.eventGeneration) return;
+    notifyFailure(subscription, errorId == null
+      ? { kind: "report_unavailable", failure_id: failureId }
+      : { kind: "reported", failure_id: failureId, error_id: errorId });
   });
+}
+
+function notifyListener<Value>(subscription: MockSubscription<Value>, value: Value, channel: string): void {
+  subscription.eventGeneration += 1;
+  const generation = subscription.eventGeneration;
+  try {
+    const result = subscription.listener(value);
+    if (result != null) {
+      void Promise.resolve(result).catch((error: unknown) => {
+        reportFailure(subscription, error, channel, generation);
+      });
+    }
+  } catch (error) {
+    reportFailure(subscription, error, channel, generation);
+  }
+}
+
+function subscribe<Value>(
+  listeners: Set<MockSubscription<Value>>,
+  listener: (value: Value) => void | Promise<void>,
+  onFailure: (failure: IpcSubscriptionFailure) => void,
+  initial?: { readonly value: Value; readonly channel: string },
+): () => void {
+  const subscription = { listener, onFailure, subscriptionId: crypto.randomUUID(), active: true, eventGeneration: 0 };
+  listeners.add(subscription);
+  if (initial != null) notifyListener(subscription, initial.value, initial.channel);
+  return () => {
+    if (!subscription.active) return;
+    subscription.active = false;
+    listeners.delete(subscription);
+  };
 }
 
 function selectedIds(view: ProposalViewDto, selection: Selection): readonly string[] | undefined {
@@ -102,10 +158,10 @@ export function createMockProposalsApi(
   let historySyncedAt: string | undefined;
   const aiStatus = proposalsContracts.getAiStatus.response.parse(ok({ kind: "ready", model: "mock-model" }));
   if (aiStatus.kind !== "ok") throw new Error("mockのAI状態を作成できません。");
-  const aiStatusListeners = new Set<Parameters<ProposalsApi["onAiStatus"]>[0]>();
-  const aiDeltaListeners = new Set<Parameters<ProposalsApi["onAiDelta"]>[0]>();
-  const externalListeners = new Set<Parameters<ProposalsApi["onExternalState"]>[0]>();
-  const executionListeners = new Set<Parameters<ProposalsApi["onExecution"]>[0]>();
+  const aiStatusListeners = new Set<MockSubscription<Parameters<Parameters<ProposalsApi["onAiStatus"]>[0]>[0]>>();
+  const aiDeltaListeners = new Set<MockSubscription<Parameters<Parameters<ProposalsApi["onAiDelta"]>[0]>[0]>>();
+  const externalListeners = new Set<MockSubscription<ExternalState>>();
+  const executionListeners = new Set<MockSubscription<ExecutionDto>>();
   let nextSessionNumber = 1;
   let nextTurnNumber = 1;
   let nextExecutionNumber = 1;
@@ -166,7 +222,7 @@ export function createMockProposalsApi(
 
   function publishExternal(next: unknown): void {
     externalState = externalProposalStateSchema.parse(next);
-    for (const listener of externalListeners) notifyListener(listener, externalState);
+    for (const listener of externalListeners) notifyListener(listener, externalState, proposalsContracts.externalState.channel);
   }
 
   function replaceExternal(proposal: ExternalProposal): void {
@@ -181,7 +237,7 @@ export function createMockProposalsApi(
   function publishExecution(execution: ExecutionDto): void {
     const existing = executions.get(execution.execution_id);
     executions.set(execution.execution_id, { execution, rowid: existing?.rowid ?? executions.size + 1 });
-    for (const listener of executionListeners) notifyListener(listener, execution);
+    for (const listener of executionListeners) notifyListener(listener, execution, proposalsContracts.execution.channel);
   }
 
   function finishExecution(executionId: string, result: "succeeded" | "failed" | "confirmation_required"): void {
@@ -375,7 +431,7 @@ export function createMockProposalsApi(
         item_id: "mock-item",
         delta: "画面確認用の変更案を作成しています。",
       });
-      for (const listener of aiDeltaListeners) notifyListener(listener, delta);
+      for (const listener of aiDeltaListeners) notifyListener(listener, delta, proposalsContracts.aiDelta.channel);
       const view = createMockProposalView(`mock-proposal-${session.session_id}`, undefined);
       session.proposal = view;
       return proposalsContracts.startTurn.response.parse(ok({
@@ -606,23 +662,11 @@ export function createMockProposalsApi(
       scheduleExecution(execution, previous.state === "failed" ? "succeeded" : "confirmation_required");
       return proposalsContracts.retryExecution.response.parse(ok(execution));
     }),
-    onAiStatus: (listener) => {
-      aiStatusListeners.add(listener);
-      notifyListener(listener, aiStatus.value);
-      return () => { aiStatusListeners.delete(listener); };
-    },
-    onAiDelta: (listener) => {
-      aiDeltaListeners.add(listener);
-      return () => { aiDeltaListeners.delete(listener); };
-    },
-    onExternalState: (listener) => {
-      externalListeners.add(listener);
-      notifyListener(listener, externalState);
-      return () => { externalListeners.delete(listener); };
-    },
-    onExecution: (listener) => {
-      executionListeners.add(listener);
-      return () => { executionListeners.delete(listener); };
-    },
+    onAiStatus: (listener, onFailure) => subscribe(aiStatusListeners, listener, onFailure,
+      { value: aiStatus.value, channel: proposalsContracts.aiStatus.channel }),
+    onAiDelta: (listener, onFailure) => subscribe(aiDeltaListeners, listener, onFailure),
+    onExternalState: (listener, onFailure) => subscribe(externalListeners, listener, onFailure,
+      { value: externalState, channel: proposalsContracts.externalState.channel }),
+    onExecution: (listener, onFailure) => subscribe(executionListeners, listener, onFailure),
   };
 }
