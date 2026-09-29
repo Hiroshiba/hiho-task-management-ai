@@ -3,7 +3,7 @@ import { systemContracts, systemUpdateStateSchema, type SystemApi } from "../../
 /** 画面確認用のsystem API mockを作成します。 */
 export function createMockSystemApi(): SystemApi {
   const updateState = systemUpdateStateSchema.parse({ kind: "current" });
-  const listeners = new Set<(value: typeof updateState) => void>();
+  const listeners = new Set<Parameters<SystemApi["onUpdateState"]>[0]>();
   return {
     getVersion: () => Promise.resolve().then(() => systemContracts.getVersion.response.parse({
       kind: "ok",

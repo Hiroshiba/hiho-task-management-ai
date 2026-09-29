@@ -17,6 +17,13 @@ const projectGid = "mock-project";
 const syncAt = "2026-09-05T00:00:00.000Z";
 const baselineHash = "0".repeat(64);
 
+function notifyListener<Value>(listener: (value: Value) => void | Promise<void>, value: Value): void {
+  const result = listener(value);
+  if (result != null) result.catch((error: unknown) => {
+    queueMicrotask(() => { throw error; });
+  });
+}
+
 function proposalTaskGid(target: { readonly kind: "existing"; readonly gid: string } | { readonly kind: "temporary"; readonly ref: string }): string {
   return target.kind === "existing" ? target.gid : `mock-created-${target.ref}`;
 }
@@ -173,8 +180,8 @@ export function createMockTasksApi(): MockTasksApi {
   let lastSuccessfulSyncAt = syncAt;
   let overview = createOverview(details, lastSuccessfulSyncAt);
   let state: SyncState = syncStateSchema.parse({ kind: "online", last_successful_sync_at: lastSuccessfulSyncAt });
-  const listeners = new Set<(value: SyncState) => void>();
-  const executionListeners = new Set<(value: ExecutionDto) => void>();
+  const listeners = new Set<Parameters<TasksApi["onSyncState"]>[0]>();
+  const executionListeners = new Set<Parameters<TasksApi["onExecution"]>[0]>();
   const executions = new Map<string, ExecutionDto>();
   let editSequence = 0;
 
@@ -270,7 +277,7 @@ export function createMockTasksApi(): MockTasksApi {
 
   function publish(value: SyncState): void {
     state = syncStateSchema.parse(value);
-    for (const listener of listeners) listener(state);
+    for (const listener of listeners) notifyListener(listener, state);
   }
 
   function completeExternalSync(syncedAt: string): void {
@@ -398,7 +405,7 @@ export function createMockTasksApi(): MockTasksApi {
           outcome: "applied", reason_code: "applied" }], group_results: [],
       });
       executions.set(execution.execution_id, execution);
-      for (const listener of executionListeners) listener(execution);
+      for (const listener of executionListeners) notifyListener(listener, execution);
       return tasksContracts.applyEdit.response.parse({ kind: "ok", value: { kind: "execution", execution } });
     }),
     getExecution: (executionId) => Promise.resolve().then(() => {

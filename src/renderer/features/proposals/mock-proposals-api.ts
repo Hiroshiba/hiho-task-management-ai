@@ -35,6 +35,13 @@ function failure(code: "not_found" | "conflict" | "invalid_request", message: st
   return ipcFailureSchema.parse({ kind: "error", code, message });
 }
 
+function notifyListener<Value>(listener: (value: Value) => void | Promise<void>, value: Value): void {
+  const result = listener(value);
+  if (result != null) result.catch((error: unknown) => {
+    queueMicrotask(() => { throw error; });
+  });
+}
+
 function selectedIds(view: ProposalViewDto, selection: Selection): readonly string[] | undefined {
   const parsed = proposalSelectionSchema.parse(selection);
   const knownGroupIds = new Set(view.groups.map((group) => group.group_id));
@@ -159,7 +166,7 @@ export function createMockProposalsApi(
 
   function publishExternal(next: unknown): void {
     externalState = externalProposalStateSchema.parse(next);
-    for (const listener of externalListeners) listener(externalState);
+    for (const listener of externalListeners) notifyListener(listener, externalState);
   }
 
   function replaceExternal(proposal: ExternalProposal): void {
@@ -174,7 +181,7 @@ export function createMockProposalsApi(
   function publishExecution(execution: ExecutionDto): void {
     const existing = executions.get(execution.execution_id);
     executions.set(execution.execution_id, { execution, rowid: existing?.rowid ?? executions.size + 1 });
-    for (const listener of executionListeners) listener(execution);
+    for (const listener of executionListeners) notifyListener(listener, execution);
   }
 
   function finishExecution(executionId: string, result: "succeeded" | "failed" | "confirmation_required"): void {
@@ -368,7 +375,7 @@ export function createMockProposalsApi(
         item_id: "mock-item",
         delta: "画面確認用の変更案を作成しています。",
       });
-      for (const listener of aiDeltaListeners) listener(delta);
+      for (const listener of aiDeltaListeners) notifyListener(listener, delta);
       const view = createMockProposalView(`mock-proposal-${session.session_id}`, undefined);
       session.proposal = view;
       return proposalsContracts.startTurn.response.parse(ok({
@@ -601,7 +608,7 @@ export function createMockProposalsApi(
     }),
     onAiStatus: (listener) => {
       aiStatusListeners.add(listener);
-      listener(aiStatus.value);
+      notifyListener(listener, aiStatus.value);
       return () => { aiStatusListeners.delete(listener); };
     },
     onAiDelta: (listener) => {
@@ -610,7 +617,7 @@ export function createMockProposalsApi(
     },
     onExternalState: (listener) => {
       externalListeners.add(listener);
-      listener(externalState);
+      notifyListener(listener, externalState);
       return () => { externalListeners.delete(listener); };
     },
     onExecution: (listener) => {
