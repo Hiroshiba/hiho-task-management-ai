@@ -1,12 +1,7 @@
 import { z } from "zod";
-import {
-  canonicalizeTaskWriteJson,
-  dateSchema,
-  gidSchema,
-  identifierSchema,
-  importanceTagNameSchema,
-  areaTagNameSchema,
-} from "../../domain/task-write-values";
+import { dateSchema, gidSchema, identifierSchema } from "../../domain/primitives";
+import { importanceTagNameSchema, areaTagNameSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
 import {
   type TaskWriteExternalBaseline,
@@ -90,9 +85,9 @@ function activityChange(context: ProposalOperationPlanningContext): TaskWriteExt
 }
 
 function compareCollections(left: readonly unknown[], right: readonly unknown[]): boolean {
-  const orderedLeft = left.map(canonicalizeTaskWriteJson).sort();
-  const orderedRight = right.map(canonicalizeTaskWriteJson).sort();
-  return canonicalizeTaskWriteJson(orderedLeft) === canonicalizeTaskWriteJson(orderedRight);
+  const orderedLeft = left.map(canonicalizeJson).sort();
+  const orderedRight = right.map(canonicalizeJson).sort();
+  return canonicalizeJson(orderedLeft) === canonicalizeJson(orderedRight);
 }
 
 function statusCompleted(status: "not_started" | "in_progress" | "completed" | "withdrawn"): boolean {
@@ -264,7 +259,7 @@ function dueEffects(operation: ProposalWriteOperation, context: ProposalOperatio
   if (operation.operation === "set_due") {
     const update = requireOperation(operation, "set_due");
     requireExternalBaseline(context);
-    if (canonicalizeTaskWriteJson(update.before) === canonicalizeTaskWriteJson(update.after)) {
+    if (canonicalizeJson(update.before) === canonicalizeJson(update.after)) {
       return [];
     }
     const native: Extract<TaskWriteStepDraft, { readonly kind: "asana_update_task" }>["payload"]["update"] = update.after.kind === "due_on"
@@ -287,7 +282,7 @@ function durationEffects(operation: ProposalWriteOperation, context: ProposalOpe
   if (operation.operation === "set_duration") {
     const update = requireOperation(operation, "set_duration");
     requireExternalBaseline(context);
-    return canonicalizeTaskWriteJson(update.before) === canonicalizeTaskWriteJson(update.after)
+    return canonicalizeJson(update.before) === canonicalizeJson(update.after)
       ? []
       : [externalEffect(update.target, context, [{ kind: "duration", before: update.before, after: update.after }])];
   }
@@ -310,7 +305,7 @@ function dependenciesEffects(operation: ProposalWriteOperation, context: Proposa
 function parentEffects(operation: ProposalWriteOperation, context: ProposalOperationPlanningContext): readonly OperationEffect[] {
   const update = requireOperation(operation, "set_parent");
   requireExternalBaseline(context);
-  if (canonicalizeTaskWriteJson(update.before) === canonicalizeTaskWriteJson(update.after)) {
+  if (canonicalizeJson(update.before) === canonicalizeJson(update.after)) {
     return [];
   }
   const native: OperationEffect = update.after.kind === "absent"

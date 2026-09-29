@@ -12,7 +12,7 @@ import type {
   SettleProposalExecutionStep,
   StartProposalExecutionStep,
 } from "../../application/common/ports/proposal-execution-repository";
-import { canonicalizeTaskWriteJson, isTaskWriteJsonValue } from "../../domain/task-write-values";
+import { canonicalizeJson, isJsonValue } from "../../domain/canonical-json";
 import { taskWriteSynchronizationFailureCodeSchema } from "../../application/common/ports/asana-task-write";
 import type { PersistenceRuntime } from "./persistence-runtime";
 import {
@@ -167,14 +167,14 @@ implements ProposalExecutionRepository<Result> {
         throw new Error("未停止のexecutionを再試行できません。");
       }
       if (source.proposal_id !== (proposalId ?? undefined)
-        || canonicalizeTaskWriteJson({
+        || canonicalizeJson({
           ...source.plan,
           execution_id: plan.execution_id,
           plan_fingerprint: plan.plan_fingerprint,
-        }) !== canonicalizeTaskWriteJson(plan)
+        }) !== canonicalizeJson(plan)
         || (source.proposal_context == null) !== (context == null)
         || (source.proposal_context != null && context != null
-          && canonicalizeTaskWriteJson(source.proposal_context) !== canonicalizeTaskWriteJson(context))) {
+          && canonicalizeJson(source.proposal_context) !== canonicalizeJson(context))) {
         throw new Error("再試行planと元executionの保存内容が一致しません。");
       }
       const successors = this.runtime.connection.prepare<[string], ExecutionIdRow>(
@@ -519,7 +519,7 @@ implements ProposalExecutionRepository<Result> {
     const executionId = identifierSchema.parse(input.execution_id);
     const completedAt = timestampSchema.parse(input.completed_at);
     const result = this.resultSchema.parse(input.result);
-    if (!isTaskWriteJsonValue(result)) {
+    if (!isJsonValue(result)) {
       throw new Error("execution resultはJSON値で指定してください。");
     }
     const serializedResult = JSON.stringify(result);

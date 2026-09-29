@@ -1,14 +1,6 @@
 import { z } from "zod";
-import {
-  areaSchema,
-  dependencyScopeSchema,
-  durationSchema,
-  gidSchema,
-  identifierSchema,
-  importanceSchema,
-  obsidianLinksSchema,
-  parentWorkModeSchema,
-} from "../task-write-values";
+import { gidSchema, identifierSchema } from "../primitives";
+import { areaSchema, dependencyScopeSchema, durationSchema, importanceSchema, obsidianLinksSchema, parentWorkModeSchema } from "../schemas";
 
 /** 公開タスクの検証後に比較とグラフ計算に必要な値を投影します。 */
 export const analysisTaskSchema = z.object({

@@ -584,6 +584,60 @@ export class ExternalToolRuntime<
     }
   }
 
+  /** 確定済み外部ツール選択を起動してCodexへ反映します。 */
+  public async afterCommittedChoice<State>(
+    state: State,
+    signal: AbortSignal,
+    ports: {
+      readonly selectionFromState: (state: State) => ConfiguredExternalToolSelection | undefined;
+      readonly commitCurrentState: () => State;
+      readonly refreshCodexThread: (signal: AbortSignal) => Promise<void>;
+    },
+  ): Promise<State> {
+    const selection = ports.selectionFromState(state);
+    if (selection == null) {
+      return state;
+    }
+    const activation = await this.initialize(selection, signal);
+    if (activation.kind === "unavailable") {
+      await this.markUnavailableSafely(
+        activation.reason_code,
+        new Error("確定済み固定Discord連携を有効化できませんでした。"),
+      );
+      return ports.commitCurrentState();
+    }
+    await this.refreshCodexThreadAfterCommit(signal, ports.refreshCodexThread);
+    return state;
+  }
+
+  private async refreshCodexThreadAfterCommit(
+    signal: AbortSignal,
+    refreshCodexThread: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
+    try {
+      await refreshCodexThread(signal);
+    } catch (error: unknown) {
+      const errors: unknown[] = [error];
+      try {
+        const deactivation = await this.deactivateInternal(
+          "startup_failed",
+          new AbortController().signal,
+        );
+        if (deactivation.kind === "unavailable") {
+          return;
+        }
+      } catch (deactivationError: unknown) {
+        errors.push(deactivationError);
+      }
+      await this.enterRecovery(
+        "startup_failed",
+        this.currentRecoveryBroker(),
+        errors,
+        "確定済み外部ツール設定のCodex反映に失敗したためAI機能を無効にしました。",
+      );
+    }
+  }
+
   /** 保存済みDiscord外部ツールを起動します。 */
   public async initialize(
     selection: ConfiguredExternalToolSelection,

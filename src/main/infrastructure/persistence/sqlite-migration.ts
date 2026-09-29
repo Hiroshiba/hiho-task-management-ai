@@ -1,4 +1,13 @@
 import { z } from "zod";
+import {
+  asanaTaskResponseSchema,
+  gidSchema,
+  taskSchema,
+  type AsanaTaskResponse,
+  type Task,
+} from "../../domain";
+import type { TaskNormalizationBaseline } from "../../application/common/ports/task-read-repository";
+import { setupSectionGidsSchema, type SetupSectionGids } from "../../domain/setup-state";
 import type { SqliteConnection, SqliteTransaction } from "./sqlite-connection";
 import {
   proposalExecutionColumns,
@@ -13,11 +22,14 @@ import {
   applicationJournalV5Columns,
   legacyApplicationHistoryColumns,
   legacyApplicationHistoryTableSql,
+  pendingNormalizationBaselineColumns,
+  pendingNormalizationBaselineTableSql,
   storageLegacyTableNames,
   storageSchemaSql,
   storageSchemaVersion,
   storageTableNames,
   storageV7TableNames,
+  storageV9TableNames,
   type ExpectedTableColumn,
   type TableInfoRow,
   type TableNameRow,
@@ -29,6 +41,20 @@ type SqliteDatabase = SqliteConnection;
 type CleanupItemsCacheRow = {
   readonly cache_key: number;
   readonly cleanup_items_json: string;
+};
+
+type LegacyTaskCacheRow = {
+  readonly gid: string;
+  readonly asana_response_json: string;
+  readonly task_json: string;
+};
+
+type LegacySectionSettingsRow = {
+  readonly project_gid: string;
+  readonly not_started_section_gid: string;
+  readonly in_progress_section_gid: string;
+  readonly completed_section_gid: string;
+  readonly withdrawn_section_gid: string;
 };
 
 const legacyProposalConflictMessagePattern =
@@ -115,6 +141,97 @@ function assertHistoryTableColumns(database: SqliteDatabase): void {
   assertTableColumns(database, "legacy_application_history", legacyApplicationHistoryColumns);
 }
 
+function createNormalizationBaselineTable(database: SqliteDatabase): void {
+  database.exec(pendingNormalizationBaselineTableSql);
+  assertTableColumns(database, "pending_normalization_baseline", pendingNormalizationBaselineColumns);
+  migrateLegacyNormalizationBaseline(database);
+}
+
+function parseLegacyCacheJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error("SQLiteに保存されたJSONの解析に失敗しました。", { cause: error });
+  }
+}
+
+function isLegacyStatusUnavailable(
+  task: Task,
+  response: AsanaTaskResponse,
+  projectGid: string,
+  sectionGids: SetupSectionGids,
+): boolean {
+  const memberships = response.memberships.filter(
+    (membership) => membership.project.gid === projectGid,
+  );
+  if (memberships.length !== 1) {
+    return true;
+  }
+  const section = memberships[0]?.section;
+  if (section == null) {
+    return true;
+  }
+  const configuredStatus = Object.entries(sectionGids).find(
+    ([, sectionGid]) => sectionGid === section.gid,
+  )?.[0];
+  if (configuredStatus == null) {
+    return true;
+  }
+  const expectedCompleted = configuredStatus === "completed" || configuredStatus === "withdrawn";
+  return task.section_gid !== section.gid
+    || task.completed !== response.completed
+    || task.status !== configuredStatus
+    || response.completed !== expectedCompleted;
+}
+
+function migrateLegacyNormalizationBaseline(database: SqliteDatabase): void {
+  const settings = database.prepare<[], LegacySectionSettingsRow>(
+    "SELECT project_gid, not_started_section_gid, in_progress_section_gid, completed_section_gid, withdrawn_section_gid FROM device_settings WHERE settings_key = 1",
+  ).get();
+  if (settings == null) {
+    return;
+  }
+  const projectGid = gidSchema.parse(settings.project_gid);
+  const sectionGids = setupSectionGidsSchema.parse({
+    not_started: settings.not_started_section_gid,
+    in_progress: settings.in_progress_section_gid,
+    completed: settings.completed_section_gid,
+    withdrawn: settings.withdrawn_section_gid,
+  });
+  const rows = database.prepare<[], LegacyTaskCacheRow>(
+    "SELECT gid, asana_response_json, task_json FROM task_cache ORDER BY gid",
+  ).all();
+  let hasUnavailableStatus = false;
+  const entries = rows.map((row) => {
+    const gid = gidSchema.parse(row.gid);
+    const task = taskSchema.parse(parseLegacyCacheJson(row.task_json));
+    const response = asanaTaskResponseSchema.parse(
+      parseLegacyCacheJson(row.asana_response_json),
+    );
+    if (task.gid !== gid || response.gid !== gid) {
+      throw new Error("旧タスクキャッシュのGIDが保存行と一致しません。");
+    }
+    const unavailable = isLegacyStatusUnavailable(task, response, projectGid, sectionGids);
+    hasUnavailableStatus ||= unavailable;
+    return {
+      gid,
+      previous: unavailable
+        ? { kind: "status_unavailable", task }
+        : { kind: "present", task },
+    } satisfies Extract<TaskNormalizationBaseline, { readonly kind: "pending" }>["entries"][number];
+  });
+  if (!hasUnavailableStatus) {
+    return;
+  }
+  const serializedEntries = JSON.stringify(entries);
+  if (serializedEntries === undefined) {
+    throw new Error("SQLite保存用JSONの変換に失敗しました。");
+  }
+  database.prepare<[string, string]>(
+    "INSERT INTO pending_normalization_baseline (project_gid, entries_json) VALUES (?, ?)",
+  ).run(projectGid, serializedEntries);
+}
+
 function createHistoryTable(database: SqliteDatabase): void {
   database.exec(legacyApplicationHistoryTableSql);
   assertHistoryTableColumns(database);
@@ -123,6 +240,7 @@ function createHistoryTable(database: SqliteDatabase): void {
 function createExecutionTables(database: SqliteDatabase): void {
   database.exec(proposalExecutionTablesSql);
   createHistoryTable(database);
+  createNormalizationBaselineTable(database);
   assertStorageTableNames(readTableNames(database), storageTableNames);
   assertExecutionTableColumns(database);
 }
@@ -496,6 +614,7 @@ function migrateSchemaFromV6(
     database.exec("ALTER TABLE proposal_execution_steps ADD COLUMN sync_error_code TEXT");
     assertExecutionTableColumns(database);
     createHistoryTable(database);
+    createNormalizationBaselineTable(database);
     assertStorageTableNames(readTableNames(database), storageTableNames);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
@@ -511,6 +630,7 @@ function migrateSchemaFromV7(
     assertTableColumns(database, "application_journal", applicationJournalV5Columns);
     assertExecutionTableColumns(database);
     createHistoryTable(database);
+    createNormalizationBaselineTable(database);
     assertStorageTableNames(readTableNames(database), storageTableNames);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
@@ -522,11 +642,12 @@ function migrateSchemaFromV8(
   transaction: SqliteTransaction,
 ): void {
   const migrate = transaction(() => {
-    assertStorageTableNames(readTableNames(database), storageTableNames);
+    assertStorageTableNames(readTableNames(database), storageV9TableNames);
     assertTableColumns(database, "application_journal", applicationJournalV5Columns);
     assertExecutionTableColumns(database);
     assertHistoryTableColumns(database);
     rebuildHistoryTable(database);
+    createNormalizationBaselineTable(database);
     assertStorageTableNames(readTableNames(database), storageTableNames);
     database.pragma(`user_version = ${storageSchemaVersion}`);
   });
@@ -541,6 +662,38 @@ function rebuildHistoryTable(database: SqliteDatabase): void {
     SELECT * FROM legacy_application_history_previous`);
   assertTableRowCount(database, "legacy_application_history", sourceCount);
   database.exec("DROP TABLE legacy_application_history_previous");
+}
+
+function migrateSchemaFromV9(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageV9TableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    assertExecutionTableColumns(database);
+    assertHistoryTableColumns(database);
+    rebuildLegacyHistoryTableIfRequired(database);
+    createNormalizationBaselineTable(database);
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
+}
+
+function rebuildLegacyHistoryTableIfRequired(database: SqliteDatabase): void {
+  const historyTable = database.prepare<[], { readonly sql: string | null }>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'legacy_application_history'",
+  ).get();
+  if (historyTable?.sql == null) {
+    throw new Error("旧適用履歴テーブルの定義を読み取れません。");
+  }
+  if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 8")) {
+    if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 7")) {
+      throw new Error("旧適用履歴テーブルの出所版制約が未対応です。");
+    }
+    rebuildHistoryTable(database);
+  }
 }
 
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
@@ -569,6 +722,7 @@ export function initializeSqliteSchema(
       );
       assertExecutionTableColumns(database);
       assertHistoryTableColumns(database);
+      assertTableColumns(database, "pending_normalization_baseline", pendingNormalizationBaselineColumns);
       database.pragma(`user_version = ${storageSchemaVersion}`);
     });
     createSchema();
@@ -605,6 +759,11 @@ export function initializeSqliteSchema(
     return;
   }
 
+  if (userVersion === 9) {
+    migrateSchemaFromV9(database, transaction);
+    return;
+  }
+
   if (userVersion !== storageSchemaVersion) {
     throw new Error(`未対応のSQLite schema versionです: ${userVersion}`);
   }
@@ -613,16 +772,6 @@ export function initializeSqliteSchema(
   assertTableColumns(database, "application_journal", applicationJournalV5Columns);
   assertExecutionTableColumns(database);
   assertHistoryTableColumns(database);
-  const historyTable = database.prepare<[], { readonly sql: string | null }>(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'legacy_application_history'",
-  ).get();
-  if (historyTable?.sql == null) {
-    throw new Error("旧適用履歴テーブルの定義を読み取れません。");
-  }
-  if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 8")) {
-    if (!historyTable.sql.includes("source_schema_version BETWEEN 3 AND 7")) {
-      throw new Error("旧適用履歴テーブルの出所版制約が未対応です。");
-    }
-    transaction(() => rebuildHistoryTable(database))();
-  }
+  assertTableColumns(database, "pending_normalization_baseline", pendingNormalizationBaselineColumns);
+  transaction(() => rebuildLegacyHistoryTableIfRequired(database))();
 }

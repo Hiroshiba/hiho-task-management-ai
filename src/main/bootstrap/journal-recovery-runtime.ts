@@ -25,6 +25,9 @@ type JournalRecoveryDependencies<Journal extends RecoveryJournal, Result extends
   readonly enqueueRecovery: (signal: AbortSignal, run: (signal: AbortSignal) => Promise<void>) => Promise<void>;
   readonly getIncompleteJournals: () => readonly Journal[];
   readonly hasAdditionalIncomplete: () => boolean;
+  readonly hasIncompleteHistory: () => boolean;
+  readonly incompleteProposalExecutionIds: () => readonly string[];
+  readonly incompleteGuiExecutionIds: () => readonly string[];
   readonly recover: (signal: AbortSignal) => Promise<Result>;
   readonly afterRecovery: (result: Result) => void;
 };
@@ -44,9 +47,27 @@ export class JournalRecoveryRuntime<Journal extends RecoveryJournal, Result exte
     return this.pending || this.dependencies.hasAdditionalIncomplete();
   }
 
+  /** 同期を妨げる未完了履歴またはexecutionがあるか返します。 */
+  public hasIncompleteForSynchronization(): boolean {
+    return this.dependencies.hasIncompleteHistory() || this.dependencies.hasAdditionalIncomplete();
+  }
+
   /** ジャーナル復旧中かを返します。 */
   public isRunning(): boolean {
     return this.running;
+  }
+
+  /** 書込後同期を妨げる別の未完了履歴がないことを確認します。 */
+  public assertPostWriteSynchronizationReady(executionId: string): void {
+    if (this.dependencies.hasIncompleteHistory()) {
+      throw new Error("未確認の旧適用履歴があるため後続同期を開始できません。");
+    }
+    if (this.dependencies.incompleteProposalExecutionIds().some((id) => id !== executionId)) {
+      throw new Error("別の未完了proposal executionがあるため後続同期を開始できません。");
+    }
+    if (this.dependencies.incompleteGuiExecutionIds().some((id) => id !== executionId)) {
+      throw new Error("別の未完了GUI編集executionがあるため後続同期を開始できません。");
+    }
   }
 
   /** 排他実行中の復旧を再利用しながら未完了ジャーナルを復旧します。 */

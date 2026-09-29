@@ -1,12 +1,7 @@
 import { z } from "zod";
-import {
-  canonicalizeTaskWriteJson,
-  customExternalDataSchema,
-  dateSchema,
-  externalTaskGidSchema,
-  gidSchema,
-  identifierSchema,
-} from "../../domain/task-write-values";
+import { dateSchema, externalTaskGidSchema, gidSchema, identifierSchema } from "../../domain/primitives";
+import { customExternalDataSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import { analysisProposalSchema } from "../../domain/proposal-analysis/proposal-projection";
 import { analysisTaskSchema } from "../../domain/proposal-analysis/task-projection";
 import { createUtf8ByteLimitedStringSchema } from "../../domain/proposal-analysis/utf8";
@@ -80,7 +75,7 @@ const applicationRawExternalDataSchema = z
     }
     if (
       external.gid !== `TaskHub:v1:task:${result.data.id}`
-      || canonicalizeTaskWriteJson(result.data) !== external.data
+      || canonicalizeJson(result.data) !== external.data
     ) {
       context.addIssue({
         code: "custom",

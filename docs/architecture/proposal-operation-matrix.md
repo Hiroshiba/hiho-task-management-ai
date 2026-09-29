@@ -1,6 +1,6 @@
 # 変更案17操作の書き込み行列
 
-旧入力は`src/shared/ai/proposal.ts`の`proposalOperationSchema`で検証します。書き込み項目は`src/main/domain/proposal-write-operation.ts`で検証し、`src/main/application/common/task-write-operation-manifest.ts`が操作ごとの保存用stepを生成します。Asanaへの書き込みは`src/main/infrastructure/asana/task-write-call-adapter.ts`のexecutorが実行します。以下は適用可能な基準状態から発生し得るAsana書き込みの順序です。変更後と一致する効果は読み戻しで省きます。
+入力は`src/main/domain/proposal.ts`の`proposalOperationSchema`で検証します。書き込み項目は`src/main/domain/proposal-write-operation.ts`で検証し、`src/main/application/common/task-write-operation-manifest.ts`が操作ごとの保存用stepを生成します。Asanaへの書き込みは`src/main/infrastructure/asana/task-write-call-adapter.ts`のexecutorが実行します。以下は適用可能な基準状態から発生し得るAsana書き込みの順序です。変更後と一致する効果は読み戻しで省きます。
 
 `C`はタスク作成、`U`はタスク属性更新、`S`はセクション移動、`T+`はタグ追加、`T-`はタグ削除、`P+`は親設定、`P-`は親解除、`E`はCustom external data更新、`L`は後続同期です。`E`内の複数項目は一つのAsana `updateTask` callへまとめます。矢印は外部callの順序、`?`は読み戻した状態に応じたcall省略です。
 

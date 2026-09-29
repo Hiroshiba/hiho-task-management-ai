@@ -18,7 +18,7 @@ import {
 } from "../application/task-write";
 import { GuiEditExecutionWorkflow, type GuiEditExecution, type GuiEditExecutionPort } from "../application/gui-edit";
 import { ProposalExecutionWorkflow, type StoredProposalExecution, type StoredProposalExecutionPort } from "../application/proposal-apply";
-import { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
+import type { AsanaTaskWriteCallAdapter, AsanaTaskWriteReadBackAdapter } from "../infrastructure/asana";
 
 type TaskWriteRuntimeOptions = {
   readonly bridge: TaskWriteAsanaBridge;
@@ -29,7 +29,8 @@ type TaskWriteRuntimeOptions = {
   ) => ProposalExecutionRepository<TaskWriteExecutionResult>;
   readonly createId: () => string;
   readonly now: () => Date;
-  readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  readonly createReadBack: () => AsanaTaskWriteReadBackAdapter;
+  readonly createAsanaExecutors: () => ReturnType<AsanaTaskWriteCallAdapter["getExecutors"]>;
 };
 
 /** 保存済みplanのrepositoryと実書き込みengineを公開入口ごとに組み立てます。 */
@@ -46,13 +47,9 @@ export function createTaskWriteRuntime(options: TaskWriteRuntimeOptions): {
   const fingerprint = (canonicalPayload: string): string =>
     createHash("sha256").update(canonicalPayload).digest("hex");
   const repository = options.createRepository(fingerprint);
-  const readBack = new AsanaTaskWriteReadBackAdapter(
-    options.bridge.readClient,
-    (error) => options.bridge.isNotFound(error),
-    options.wait,
-  );
+  const readBack = options.createReadBack();
   const executors = {
-    ...new AsanaTaskWriteCallAdapter(options.bridge.transport, options.bridge.readClient).getExecutors(),
+    ...options.createAsanaExecutors(),
     local_synchronize: {
       1: {
         execute: async (step, context, signal) => {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ProposalExecution } from "../common/ports/proposal-execution-repository";
-import { gidSchema, identifierSchema } from "../../domain/task-write-values";
+import { gidSchema, identifierSchema } from "../../domain/primitives";
 
 const operationResultSchema = z.object({
   group_id: identifierSchema,

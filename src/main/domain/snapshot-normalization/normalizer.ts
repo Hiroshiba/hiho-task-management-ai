@@ -1,20 +1,5 @@
-import {
-  areaTagNameSchema,
-  asanaTaskResponseSchema,
-  canonicalizeJson,
-  cleanupItemSchema,
-  taskSchema,
-  type AsanaTaskResponse,
-  type CleanupItem,
-  type CustomExternalData,
-  type Dependency,
-  type Duration,
-  type ObsidianLink,
-  type ParentWorkMode,
-  type Task,
-  type TaskStatus,
-  type TaskTag,
-} from "../../../shared/domain";
+import { areaTagNameSchema, asanaTaskResponseSchema, cleanupItemSchema, taskSchema, type AsanaTaskResponse, type CleanupItem, type CustomExternalData, type Dependency, type Duration, type ObsidianLink, type ParentWorkMode, type Task, type TaskStatus, type TaskTag } from "../schemas";
+import { canonicalizeJson } from "../canonical-json";
 import {
   ingestAsanaExternalData,
   type ExternalDataIngestionResult,
@@ -707,6 +692,9 @@ export function normalizeAsanaSnapshot(
   const previousByGid = new Map(
     validatedInput.previous_tasks.map((task) => [task.gid, task]),
   );
+  const statusPreviousByGid = new Map(
+    validatedInput.status_previous_tasks.map((task) => [task.gid, task]),
+  );
   const activityBaselineByGid = new Map(
     validatedInput.activity_baseline_tasks.map((task) => [task.gid, task]),
   );
@@ -750,7 +738,7 @@ export function normalizeAsanaSnapshot(
       parsedTask,
       validatedInput.project_gid,
       validatedInput.section_gids,
-      previous,
+      statusPreviousByGid.get(parsedTask.gid),
       ingestion,
     );
     const membership = membershipState(parsedTask, validatedInput.project_gid);

@@ -1,5 +1,5 @@
 import { type ProposalWriteOperation } from "../../domain/proposal-write-operation";
-import { canonicalizeTaskWriteJson } from "../../domain/task-write-values";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import { type TaskWriteExternalBaseline, type TaskWriteStep, type TaskWriteTarget } from "./task-write-step";
 
 type CreatePayload = Extract<TaskWriteStep, { kind: "asana_create_task" }>["payload"];
@@ -18,7 +18,7 @@ function dependencyKeys(
   dependencies: readonly Dependency[],
   knownReferences: ReadonlyMap<string, string>,
 ): readonly string[] {
-  return dependencies.map((dependency) => canonicalizeTaskWriteJson({
+  return dependencies.map((dependency) => canonicalizeJson({
     target: targetKey(dependency.target, knownReferences),
     scope: dependency.scope,
     source: dependency.source,
@@ -30,8 +30,8 @@ function sameDependencies(
   baseline: readonly Dependency[],
   knownReferences: ReadonlyMap<string, string>,
 ): boolean {
-  return canonicalizeTaskWriteJson(dependencyKeys(before, knownReferences))
-    === canonicalizeTaskWriteJson(dependencyKeys(baseline, knownReferences));
+  return canonicalizeJson(dependencyKeys(before, knownReferences))
+    === canonicalizeJson(dependencyKeys(baseline, knownReferences));
 }
 
 /** 操作の外部データ変更前値を承認時baselineと照合します。 */
@@ -50,7 +50,7 @@ export function operationMatchesExternalBaseline(
       const duration = baseline.kind === "stored" ? baseline.data.duration : createPayload?.initial_external.duration;
       return "kind" in operation.before
         ? duration == null
-        : duration != null && canonicalizeTaskWriteJson(operation.before) === canonicalizeTaskWriteJson(duration);
+        : duration != null && canonicalizeJson(operation.before) === canonicalizeJson(duration);
     }
     case "set_dependencies": {
       if (baseline.kind === "created_task") {
@@ -82,7 +82,7 @@ export function operationMatchesExternalBaseline(
       const existing = obsidianLinks?.find((link) => link.vault_id === operation.before.vault_id
         && link.path === operation.before.path);
       return existing != null
-        && canonicalizeTaskWriteJson(existing) === canonicalizeTaskWriteJson(operation.before);
+        && canonicalizeJson(existing) === canonicalizeJson(operation.before);
     }
     case "update_title":
     case "update_notes":

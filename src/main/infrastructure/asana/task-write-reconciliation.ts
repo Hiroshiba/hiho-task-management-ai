@@ -1,4 +1,5 @@
-import { canonicalizeTaskWriteJson, customExternalDataSchema } from "../../domain/task-write-values";
+import { customExternalDataSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import type { TaskWriteExecutionContext } from "../../application/common/ports/task-write-executor";
 import type { TaskWriteReadBackPort } from "../../application/common/ports/task-write-read-back";
 import type { ReadBackAsanaTag, ReadBackAsanaTask } from "./task-write-asana-response";
@@ -15,7 +16,7 @@ type ExternalData = Extract<TaskWriteExternalBaseline, { readonly kind: "stored"
 type Dependency = ExternalData["dependencies"][number];
 
 function same(left: unknown, right: unknown): boolean {
-  return canonicalizeTaskWriteJson(left) === canonicalizeTaskWriteJson(right);
+  return canonicalizeJson(left) === canonicalizeJson(right);
 }
 
 function compare(current: unknown, before: unknown, after: unknown): ComponentState {

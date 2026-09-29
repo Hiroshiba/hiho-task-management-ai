@@ -1,14 +1,7 @@
 import { z } from "zod";
-import {
-  asanaTaskResponseSchema,
-  customExternalDataSchema,
-  dateSchema,
-  externalTaskGidSchema,
-  identifierSchema,
-  parseCustomExternalData,
-  serializeCustomExternalData,
-  type AsanaTaskResponse,
-} from "../../shared/domain";
+import { dateSchema, externalTaskGidSchema, identifierSchema } from "./primitives";
+import { asanaTaskResponseSchema, customExternalDataSchema, type AsanaTaskResponse } from "./schemas";
+import { parseCustomExternalData, serializeCustomExternalData } from "./external-data";
 
 const externalTaskGidPrefix = "TaskHub:v1:task:";
 const activeTaskStatusSchema = z.enum(["not_started", "in_progress"]);

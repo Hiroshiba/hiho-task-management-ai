@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ProposalExecution, ProposalExecutionRepository } from "../common/ports/proposal-execution-repository";
 import type { TaskWriteSynchronizationFailureCode } from "../common/ports/asana-task-write";
 import type { TaskWritePayloadFingerprint } from "../common/task-write-plan";
-import { gidSchema, identifierSchema, dateSchema } from "../../domain/task-write-values";
+import { gidSchema, identifierSchema, dateSchema } from "../../domain/primitives";
 import type { GuiTaskWriteResult } from "../common/gui-task-write-result";
 import { guiExternalBaseline } from "./external-baseline";
 import {

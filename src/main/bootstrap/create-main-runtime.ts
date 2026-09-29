@@ -2,12 +2,19 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
+import { autoUpdater } from "electron-updater";
 import { setupStateSchema } from "../../shared/ipc-contracts";
+import { dateSchema, gidSchema, identifierSchema, importanceSchema, isoDateTimeSchema } from "../domain";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
 import type { ErrorReporter } from "../application/common/errors/error-reporter";
+import type { SecretStorageData, SecretStoragePort } from "../application/common/ports/secret-storage";
 import { DiagnosticLogService } from "../application/common/diagnostic-log-service";
+import { createNowIso } from "../application/common/runtime-clock";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import { getGithubIntegrationStatus } from "../application/github-integration";
+import { createExternalToolStatusEvidenceParser } from "../application/proposal-generate";
+import { ObsidianReadService } from "../infrastructure/obsidian";
+import type { ApplicationState } from "../application/settings";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
 import { createDiagnosticsHandlers, type DiagnosticsHandlers } from "../ipc/handlers/diagnostics";
 import { createGithubIntegrationHandlers, type GithubIntegrationHandlers } from "../ipc/handlers/github-integration";
@@ -20,45 +27,107 @@ import { FeatureIpcRegistry } from "../ipc/register-ipc";
 import type { ProposalExecutionRepository } from "../application/common/ports/proposal-execution-repository";
 import type { GuiEditExecution } from "../application/gui-edit";
 import type { StoredProposalExecution } from "../application/proposal-apply";
-import { JsonlErrorReporter, writeErrorReportFailure } from "../infrastructure/logging";
+import {
+  AsanaCapabilityCheckService,
+  AsanaDeltaSyncSource,
+  AsanaDisplayOrderService,
+  AsanaFullSyncSource,
+  AsanaMutableTokenProvider,
+  AsanaNormalizationPlanApplier,
+  AsanaOAuthClient,
+  AsanaOAuthCoordinator,
+  AsanaOperationQueue,
+  AsanaReadClient,
+  AsanaRequestScheduler,
+  AsanaSetupClient,
+  AsanaSetupResourceCoordinator,
+  AsanaSyncCoordinator,
+  AsanaSyncRuntime,
+  AsanaTaskReadAdapter,
+  AsanaTaskWriteCallAdapter,
+  AsanaTaskWriteClient,
+  AsanaTaskWriteReadBackAdapter,
+  AsanaTransport,
+  getRestAsanaHttpErrorDetail,
+  type AsanaCommunicationRuntime,
+} from "../infrastructure/asana";
+import {
+  ExternalAgentBridge,
+  CodexSessionService,
+  CodexSetupAdapter,
+  ExternalToolBroker,
+  ExternalToolRegistry,
+  ExternalToolStatusEvidenceCollector,
+  SecretStorageDiscordCredentialProvider,
+  createCodexAppServerConnectionFactory,
+  createCodexDiagnosticDetailAdapter,
+  createTaskctlRankingSchemas,
+  createSnapshotHasher,
+  externalToolDefinitionSchema,
+  externalToolStatusEvidenceSchema,
+  initializeCodexSessionWorkspaceParent,
+  initializeCodexWorkspace,
+  installContextctlClientScript,
+  installDisabledExternalToolsSkill,
+  removeCodexSessionWorkspace,
+  resolveCodexExecutable,
+  type ExternalAgentBridgeOptions,
+} from "../infrastructure/ai";
+import { JsonlErrorReporter, createPersistentErrorLogFormatter, knownSecretsFromStorage, writeErrorReportFailure } from "../infrastructure/logging";
 import {
   ApplicationUpdateAttemptStore,
+  ensureSecureUserDataDirectory,
   PersistenceRuntime,
+  readSecurePersistentTextFile,
+  removeSecurePersistentFile,
   SqliteDiagnosticLogRepository,
+  SqliteExternalToolDefinitionRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
+  SqliteSettingsRepository,
+  SqliteVaultMappingRepository,
+  TaskReadPersistenceRepository,
+  createRankingCacheSchema,
+  deviceSettingsSchema,
+  externalToolCredentialReferenceNamesSchema,
   SecretStorage,
   SetupCheckpointStore,
   WindowStateStore,
+  writeSecurePersistentTextFileAtomically,
   type LegacyMigrationSummary,
+  type DiagnosticRecord,
 } from "../infrastructure/persistence";
-import {
-  createLegacyRuntime,
-  type LegacyRuntimeOptions,
-  type LegacyRuntimePort,
-} from "./legacy-runtime-port";
+import { MainWorkflowComposition } from "./main-workflow-composition";
 import { createTaskWriteRuntime } from "./create-task-write-runtime";
 import { createObsidianRuntime } from "./create-obsidian-runtime";
 import { createSettingsRuntime } from "./create-settings-runtime";
 import { createTaskReadRuntime } from "./create-task-read-runtime";
+import type { AsanaSyncRuntimeFactory } from "./create-task-read-composition-dependencies";
 import { createSynchronizationRuntime } from "./create-synchronization-runtime";
+import { createTaskReadPersistenceContracts } from "./task-read-storage-contracts";
+import { createExternalToolDefinitionRecordSchema } from "./external-tool-storage-contracts";
+import { CodexSessionResources } from "./codex-session-resources";
+import { createCodexProcessEnvironment } from "./codex-runtime-utilities";
+import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update-service";
 
 type MainRuntimeOptions = {
   readonly userDataPath: string;
-  readonly secretStoragePath: string;
-  readonly checkpointPath: string;
   readonly logsPath: string;
-  readonly loggerFormatter: ConstructorParameters<typeof JsonlErrorReporter>[2];
+  readonly update: {
+    readonly packaged: boolean;
+    readonly resourcesPath: string;
+  };
   readonly system: SystemHandlerWorkflow;
   readonly ipcSecurity: {
     readonly assertTrustedSender: (event: IpcMainInvokeEvent, webContents: WebContents, rendererUrl: string) => void;
     readonly isApplicationUrl: (url: string, rendererUrl: string) => boolean;
   };
-  readonly legacy: Omit<LegacyRuntimeOptions, "lifecycle_signal" | "now_provider" | "create_id">;
+  readonly composition: Omit<ConstructorParameters<typeof MainWorkflowComposition>[0], "lifecycle_signal" | "now_provider" | "create_id" | "snapshot_hasher" | "user_data_path" | "codex_executable">;
 };
 
 function createFallbackErrorReporter(
   createId: () => string,
+  knownSecrets: () => readonly string[],
   redactText: (value: string) => string,
 ): ErrorReporter {
   const reported = new WeakMap<object, string>();
@@ -67,7 +136,7 @@ function createFallbackErrorReporter(
     const existing = objectError == null ? undefined : reported.get(objectError);
     if (existing != null) return existing;
     const errorId = createId();
-    writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), [], redactText);
+    writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), knownSecrets(), redactText);
     if (objectError != null) reported.set(objectError, errorId);
     return errorId;
   };
@@ -120,13 +189,20 @@ function recordLegacyMigration(
 
 /** Mainの単一ランタイムと資源の破棄入口です。 */
 export interface MainRuntime {
-  readonly legacy: LegacyRuntimePort;
+  getState(): ApplicationState;
+  recordDiagnostic(
+    code: DiagnosticRecord["code"],
+    severity: DiagnosticRecord["severity"],
+    metadata?: Pick<DiagnosticRecord, "asana_gid" | "operation_id" | "proposal_id" | "http_status">,
+  ): void;
+  start(signal: AbortSignal): Promise<ApplicationState>;
   readonly taskRead: {
     readonly onForeground: (signal: AbortSignal) => Promise<void>;
     readonly onOnline: () => Promise<void>;
     readonly setOnline: (online: boolean) => void;
   };
   readonly reporter: ErrorReporter | undefined;
+  readonly knownSecrets: () => readonly string[];
   readonly taskWriteExecution: {
     readonly repository: ProposalExecutionRepository<TaskWriteExecutionResult>;
     readonly engine: ProposalExecutionEngine<TaskWriteExecutionResult>;
@@ -144,66 +220,262 @@ export interface MainRuntime {
   attachWindow(ipcMain: IpcMain, webContents: WebContents, rendererUrl: string): void;
   detachWindow(webContents: WebContents): void;
   createWindowStateStore(): WindowStateStore;
-  createApplicationUpdateAttemptStore(): ApplicationUpdateAttemptStore;
+  createApplicationUpdateService(reportError: (error: unknown) => string): ApplicationUpdateService;
   abort(): void;
   dispose(): Promise<void>;
   closeLateFiles(): void;
 }
 
-/** Mainの診断sink、保存資源、未移行機能を一度だけ組み立てます。 */
+/** Mainの診断sink、保存資源、機能別workflowを一度だけ組み立てます。 */
 export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
+  const userDataPath = ensureSecureUserDataDirectory(options.userDataPath);
+  const loggerFormatter = createPersistentErrorLogFormatter(
+    getRestAsanaHttpErrorDetail,
+    createCodexDiagnosticDetailAdapter(),
+  );
+  const codexExecutable = resolveCodexExecutable();
   const nowProvider = () => new Date();
   const createId = randomUUID;
+  const snapshotHasher = createSnapshotHasher();
+  let currentKnownSecrets: readonly string[] = [];
+  const knownSecrets = (): readonly string[] => currentKnownSecrets;
+  const rememberKnownSecrets = (data: SecretStorageData | undefined): void => {
+    currentKnownSecrets = [...new Set([...currentKnownSecrets, ...knownSecretsFromStorage(data)])];
+  };
   let reporter: ErrorReporter | undefined;
   try {
-    reporter = new JsonlErrorReporter(options.logsPath, [], options.loggerFormatter);
+    reporter = new JsonlErrorReporter(options.logsPath, knownSecrets, loggerFormatter);
   } catch (error) {
-    writeErrorReportFailure(error, [], options.loggerFormatter.redactText);
+    writeErrorReportFailure(error, knownSecrets(), loggerFormatter.redactText);
   }
   const controller = new AbortController();
   let persistence: PersistenceRuntime | undefined;
   try {
-    persistence = new PersistenceRuntime(join(options.userDataPath, "taskhub.sqlite3"));
+    persistence = new PersistenceRuntime(join(userDataPath, "taskhub.sqlite3"));
     const openedPersistence = persistence;
-    const secretStorage = new SecretStorage(
-      openedPersistence.openTextFile(options.secretStoragePath, "秘密情報ファイル"),
+    const storedSecrets = new SecretStorage(
+      openedPersistence.openTextFile(join(userDataPath, "secret-storage.json"), "秘密情報ファイル"),
     );
+    const secretStorage: SecretStoragePort = {
+      load: () => {
+        const data = storedSecrets.load();
+        rememberKnownSecrets(data);
+        return data;
+      },
+      save: (data) => {
+        rememberKnownSecrets(data);
+        storedSecrets.save(data);
+      },
+      clear: () => {
+        storedSecrets.clear();
+      },
+    };
     const files = {
-      openExternalAgentConfigFile: (filePath: string) =>
-        openedPersistence.openTextFile(filePath, "外部連携設定"),
+      createExternalAgentBridge: ({
+        userDataPath,
+        handleRequest,
+        onError,
+      }: Pick<ExternalAgentBridgeOptions, "userDataPath" | "handleRequest" | "onError">) =>
+        new ExternalAgentBridge({
+          userDataPath,
+          handleRequest,
+          onError,
+          openConfigFile: (filePath: string) =>
+            openedPersistence.openTextFile(filePath, "外部連携設定"),
+          secureFiles: {
+            ensureDirectory: ensureSecureUserDataDirectory,
+            readText: readSecurePersistentTextFile,
+            writeText: writeSecurePersistentTextFileAtomically,
+            removeFile: removeSecurePersistentFile,
+          },
+        }),
     };
     const checkpoint = new SetupCheckpointStore(
-      openedPersistence.openTextFile(options.checkpointPath, "初回設定チェックポイント"),
+      openedPersistence.openTextFile(join(userDataPath, "setup-checkpoint.json"), "初回設定チェックポイント"),
       (value) => setupStateSchema.parse(value),
     );
-    const engineReporter = reporter ?? createFallbackErrorReporter(createId, options.loggerFormatter.redactText);
+    const tokenProvider = new AsanaMutableTokenProvider();
+    const transport = new AsanaTransport(new AsanaRequestScheduler(), tokenProvider);
+    const normalTransport = transport.withPriority("normal");
+    const highPriorityTransport = transport.withPriority("high");
+    const readClient = new AsanaReadClient(normalTransport);
+    const writeClient = new AsanaTaskWriteClient(normalTransport);
+    const setupClient = new AsanaSetupClient(normalTransport);
+    const lowPriorityWriteClient = new AsanaTaskWriteClient(transport.withPriority("low"));
+    const operationQueue = new AsanaOperationQueue(controller.signal);
+    const asana: AsanaCommunicationRuntime = {
+      setTokenProvider: (clientId) => tokenProvider.setProvider(
+        new AsanaOAuthClient(clientId, secretStorage),
+      ),
+      highPriorityTransport,
+      readClient,
+      interactiveReadClient: new AsanaReadClient(highPriorityTransport),
+      writeClient,
+      setupClient,
+      setupResources: new AsanaSetupResourceCoordinator(setupClient, readClient),
+      setupCapability: new AsanaCapabilityCheckService(readClient, writeClient, nowProvider),
+      operationQueue,
+      oauth: new AsanaOAuthCoordinator(secretStorage, options.composition.open_authorization_url),
+      createDisplayOrder: (notifyUnexpectedError) => new AsanaDisplayOrderService(
+        lowPriorityWriteClient,
+        notifyUnexpectedError,
+        controller.signal,
+        operationQueue,
+      ),
+    };
+    const engineReporter = reporter ?? createFallbackErrorReporter(createId, knownSecrets, loggerFormatter.redactText);
     const historyRepository = new SqliteProposalApplicationHistoryRepository(openedPersistence, engineReporter);
     recordLegacyMigration(historyRepository.migrate(), engineReporter, openedPersistence.migrationBackupPaths);
     historyRepository.assertNoUnmigratedJournals();
-    const obsidian = createObsidianRuntime(openedPersistence, {
-      openObsidianUrl: options.legacy.open_obsidian_url,
-      readOnlyVaultPaths: options.legacy.read_only_vault_paths,
-      diagnostic: options.legacy.diagnostic,
+    const rankingCacheSchema = createRankingCacheSchema({
+      dateSchema,
+      gidSchema,
+      identifierSchema,
+      importanceSchema,
+      isoDateTimeSchema,
     });
-    const legacy = createLegacyRuntime({
-      ...options.legacy,
+    const taskReadPersistenceContracts = createTaskReadPersistenceContracts(rankingCacheSchema);
+    const taskReadRepository = new TaskReadPersistenceRepository(openedPersistence, taskReadPersistenceContracts);
+    const createSyncRuntime: (
+      coordinator: AsanaSyncCoordinator,
+      ...args: Parameters<AsanaSyncRuntimeFactory>
+    ) => AsanaSyncRuntime = (
+      coordinator: AsanaSyncCoordinator,
+      context,
+      online,
+      beforeSynchronization,
+      reportUnexpectedError,
+    ) => new AsanaSyncRuntime(
+      coordinator,
+      taskReadRepository,
+      {
+        project_gid: context.project_gid,
+        section_gids: context.section_gids,
+        device_id: context.device_id,
+        app_version: options.composition.app_version,
+        initial_online: online,
+      },
+      controller.signal,
+      beforeSynchronization,
+      reportUnexpectedError,
+      options.composition.unhandled_error_forwarder,
+      () => createNowIso(nowProvider),
+      operationQueue,
+      taskReadPersistenceContracts.parseSyncState,
+    );
+    const taskctlSchemas = createTaskctlRankingSchemas(rankingCacheSchema);
+    const externalToolDefinitionRecordSchema = createExternalToolDefinitionRecordSchema();
+    const externalToolDefinitionRepository = new SqliteExternalToolDefinitionRepository(
+      openedPersistence.connection,
+      {
+        parseDefinition: (value) => externalToolDefinitionSchema.parse(value),
+        parseRecord: (value) => externalToolDefinitionRecordSchema.parse(value),
+        parseCredentialReferenceNames: (value) =>
+          externalToolCredentialReferenceNamesSchema.parse(value),
+      },
+    );
+    const settingsRepository = new SqliteSettingsRepository(
+      openedPersistence.connection,
+      (value) => deviceSettingsSchema.parse(value),
+    );
+    const vaultMappingRepository = new SqliteVaultMappingRepository(openedPersistence.connection);
+    const obsidian = createObsidianRuntime({
+      repository: vaultMappingRepository,
+      reader: new ObsidianReadService(vaultMappingRepository),
+    }, {
+      openObsidianUrl: options.composition.open_obsidian_url,
+      readOnlyVaultPaths: options.composition.read_only_vault_paths,
+      diagnostic: options.composition.diagnostic,
+    });
+    const createEvidenceCollector = (): ExternalToolStatusEvidenceCollector =>
+      new ExternalToolStatusEvidenceCollector(
+        createExternalToolStatusEvidenceParser(externalToolStatusEvidenceSchema),
+      );
+    const composition = new MainWorkflowComposition({
+      ...options.composition,
+      codex_executable: codexExecutable,
+      user_data_path: userDataPath,
       lifecycle_signal: controller.signal,
       now_provider: nowProvider,
       create_id: createId,
-    }, openedPersistence, files, historyRepository, {
+      snapshot_hasher: snapshotHasher,
+    }, files, historyRepository, {
       vaultMappingRepository: obsidian.repository,
       obsidian: obsidian.workflow,
       secretStorage,
       checkpoint,
+      asana,
+      createSyncCoordinator: () => new AsanaSyncCoordinator(
+        asana.readClient,
+        new AsanaFullSyncSource(asana.readClient, asana.writeClient),
+        new AsanaDeltaSyncSource(asana.readClient),
+        new AsanaNormalizationPlanApplier(asana.readClient, asana.writeClient, createId),
+        taskReadRepository,
+        () => createNowIso(nowProvider),
+        taskReadPersistenceContracts,
+        rankingCacheSchema,
+      ),
+      createSyncRuntime,
+      taskReadPersistenceContracts,
+      taskReadRepository,
+      taskctlSchemas,
+      externalToolDefinitionRepository,
+      createExternalToolRegistry: (definition) => {
+        const registry = new ExternalToolRegistry();
+        registry.register(definition);
+        return registry;
+      },
+      initializeCodexWorkspace: (path) => initializeCodexWorkspace({ userDataPath: path }),
+      initializeCodexSessionWorkspaceParent,
+      createCodexEnvironment: (codexHomePath) =>
+        createCodexProcessEnvironment(codexHomePath, process.execPath),
+      createCodexConnectionFactory: (environment, onError) =>
+        createCodexAppServerConnectionFactory({
+          executable: codexExecutable,
+          environment,
+          clientInfo: {
+            name: "taskhub",
+            title: "TaskHub",
+            version: options.composition.app_version,
+          },
+          capabilities: { experimentalApi: true },
+          configOverrides: [],
+        }, onError),
+      createCodexSessionResources: (input) => new CodexSessionResources({
+        ...input,
+        createWorkspace: (path) => initializeCodexWorkspace({ userDataPath: path }),
+        createSession: (sessionOptions, schemas) => new CodexSessionService(sessionOptions, schemas),
+        createEvidenceCollector,
+        createBroker: (registry, tmpDirectoryPath, collector) => new ExternalToolBroker({
+          tmp_directory_path: tmpDirectoryPath,
+          registry,
+          discord_credential_provider: new SecretStorageDiscordCredentialProvider(secretStorage),
+          status_evidence_collector: collector,
+        }),
+        installClient: installContextctlClientScript,
+      }),
+      createCodexSetupAdapter: (session, environment) => new CodexSetupAdapter({
+        session,
+        executable: codexExecutable,
+        environment,
+        openAuthorizationUrl: options.composition.open_codex_authorization_url,
+      }),
+      createEvidenceCollector,
+      hasDiscordBotToken: () =>
+        new SecretStorageDiscordCredentialProvider(secretStorage).hasBotToken(),
+      installDisabledSkill: installDisabledExternalToolsSkill,
+      installClient: installContextctlClientScript,
+      removeSessionWorkspace: removeCodexSessionWorkspace,
+      settingsRepository,
     });
-    obsidian.bindHost(legacy.getObsidianCompositionDependencies());
-    const diagnosticDependencies = legacy.getDiagnosticCompositionDependencies();
+    obsidian.bindHost(composition.getObsidianCompositionDependencies());
+    const diagnosticDependencies = composition.getDiagnosticCompositionDependencies();
     const diagnosticLogRepository = new SqliteDiagnosticLogRepository(
       openedPersistence.connection,
       openedPersistence,
       diagnosticDependencies.parseEntry,
     );
-    legacy.attachDiagnosticRuntime(new DiagnosticLogService(
+    composition.attachDiagnosticRuntime(new DiagnosticLogService(
       diagnosticLogRepository,
       diagnosticDependencies.appVersion,
       diagnosticDependencies.now,
@@ -212,8 +484,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       diagnosticDependencies.parseRecord,
       diagnosticDependencies.parseEntry,
     ));
+    const taskWriteBridge = composition.getTaskWriteAsanaBridge();
     const taskWrite = createTaskWriteRuntime({
-      bridge: legacy.getTaskWriteAsanaBridge(),
+      bridge: taskWriteBridge,
       historyRepository,
       reporter: engineReporter,
       createRepository: (fingerprint) => new SqliteProposalExecutionRepository<TaskWriteExecutionResult>(
@@ -225,13 +498,21 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       ),
       createId,
       now: nowProvider,
-      wait: (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
+      createReadBack: () => new AsanaTaskWriteReadBackAdapter(
+        taskWriteBridge.readClient,
+        (error) => taskWriteBridge.isNotFound(error),
+        (milliseconds, signal) => setTimeout(milliseconds, undefined, { signal }),
+      ),
+      createAsanaExecutors: () => new AsanaTaskWriteCallAdapter(
+        taskWriteBridge.transport,
+        taskWriteBridge.readClient,
+      ).getExecutors(),
     });
-    legacy.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
-    legacy.attachSynchronizationRuntime(createSynchronizationRuntime(
-      legacy.getSynchronizationCompositionDependencies(),
+    composition.setTaskWriteExecution({ proposal: taskWrite.proposal, proposalWorkflow: taskWrite.proposalWorkflow, gui: taskWrite.gui, guiWorkflow: taskWrite.guiWorkflow });
+    composition.attachSynchronizationRuntime(createSynchronizationRuntime(
+      composition.getSynchronizationCompositionDependencies(),
     ));
-    const taskReadHost = legacy.getTaskReadCompositionDependencies();
+    const taskReadHost = composition.getTaskReadCompositionDependencies();
     type TaskReadSyncRuntime = ReturnType<typeof taskReadHost.requireRuntime>;
     const taskRead = createTaskReadRuntime<
       ReturnType<typeof taskReadHost.contracts.parseOverview>,
@@ -242,19 +523,21 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       Parameters<typeof taskReadHost.createSyncRuntime>[0],
       ReturnType<typeof taskReadHost.parseSetupInput>,
       TaskReadSyncRuntime
-    >(taskReadHost);
-    legacy.attachTaskReadRuntime(taskRead);
+    >(taskReadHost, new AsanaTaskReadAdapter(taskReadHost.requireRuntime));
+    composition.attachTaskReadRuntime(taskRead);
     const systemHandlers = createSystemHandlers(options.system);
-    const settingsHandlers = createSettingsHandlers(createSettingsRuntime(legacy, createId));
+    const settingsRuntime = createSettingsRuntime(composition.getSettingsCompositionDependencies(), createId);
+    composition.attachSettingsRuntime(settingsRuntime.setupWorkflow, settingsRuntime.reauthenticationWorkflow);
+    const settingsHandlers = createSettingsHandlers(settingsRuntime);
     const tasksHandlers = createTasksHandlers({
       taskRead: taskRead.workflow,
-      guiEdit: legacy,
+      guiEdit: composition,
       taskWriteExecution: {
-        getExecution: (executionId) => legacy.getGuiEditExecution(executionId),
-        retryExecution: (executionId, signal) => legacy.retryGuiEditExecution(executionId, signal),
+        getExecution: (executionId) => composition.getGuiEditExecution(executionId),
+        retryExecution: (executionId, signal) => composition.retryGuiEditExecution(executionId, signal),
       },
     });
-    const proposalsHandlers = createProposalsHandlers(legacy.getProposalsHandlerWorkflows());
+    const proposalsHandlers = createProposalsHandlers(composition.getProposalsHandlerWorkflows());
     const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus }, engineReporter);
     const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(
       obsidian.workflow.createIpcPort(),
@@ -277,17 +560,22 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         updateState: (listener) => options.system.onUpdateState(listener),
         syncState: (listener) => taskRead.workflow.onState(listener),
         guiExecution: taskWrite.onGuiChanged,
-        aiStatus: (listener) => legacy.onAiStatus(listener),
-        aiDelta: (listener) => legacy.onAiDelta(listener),
-        externalState: (listener) => legacy.onExternalAgentChanged(listener),
+        aiStatus: (listener) => composition.onAiStatus(listener),
+        aiDelta: (listener) => composition.onAiDelta(listener),
+        externalState: (listener) => composition.onExternalAgentChanged(listener),
         proposalExecution: taskWrite.onProposalChanged,
       },
     });
     let disposal: Promise<void> | undefined;
+    let windowStateStore: WindowStateStore | undefined;
+    let applicationUpdateServiceCreated = false;
     return {
-      legacy,
+      getState: () => composition.getState(),
+      recordDiagnostic: (code, severity, metadata) => composition.recordDiagnostic(code, severity, metadata),
+      start: (signal) => composition.start(signal),
       taskRead,
       reporter,
+      knownSecrets,
       taskWriteExecution: {
         repository: taskWrite.repository,
         engine: taskWrite.engine,
@@ -304,18 +592,42 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       signal: controller.signal,
       attachWindow: (ipcMain, webContents, rendererUrl) => featureIpc.attach(ipcMain, webContents, rendererUrl),
       detachWindow: (webContents) => featureIpc.detach(webContents),
-      createWindowStateStore: () => new WindowStateStore(
-        openedPersistence.openLateTextFile(
-          join(options.userDataPath, "window-state.json"),
-          "ウィンドウ状態",
-        ),
-      ),
-      createApplicationUpdateAttemptStore: () => new ApplicationUpdateAttemptStore(
-        openedPersistence.openLateTextFile(
-          join(options.userDataPath, "application-update-attempt.json"),
-          "アプリ本体の更新試行",
-        ),
-      ),
+      createWindowStateStore: () => {
+        windowStateStore ??= new WindowStateStore(
+          openedPersistence.openLateTextFile(
+            join(userDataPath, "window-state.json"),
+            "ウィンドウ状態",
+          ),
+        );
+        return windowStateStore;
+      },
+      createApplicationUpdateService: (reportError) => {
+        if (applicationUpdateServiceCreated) {
+          throw new Error("アプリ本体の更新サービスは既に生成されています。");
+        }
+        const service = new ApplicationUpdateService(
+          autoUpdater,
+          options.composition.app_version,
+          isApplicationUpdateCandidate(
+            options.update.packaged,
+            process.platform,
+            process.arch,
+            options.composition.app_version,
+            options.update.resourcesPath,
+          ),
+          process.platform,
+          options.update.resourcesPath,
+          new ApplicationUpdateAttemptStore(
+            openedPersistence.openLateTextFile(
+              join(userDataPath, "application-update-attempt.json"),
+              "アプリ本体の更新試行",
+            ),
+          ),
+          reportError,
+        );
+        applicationUpdateServiceCreated = true;
+        return service;
+      },
       abort: () => {
         controller.abort();
         featureIpc.stop();
@@ -333,7 +645,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
             errors.push(error);
           }
           try {
-            await legacy.stop();
+            await composition.stop();
           } catch (error) {
             errors.push(error);
           }
@@ -373,7 +685,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       }
     }
     if (reporter == null) {
-      writeErrorReportFailure(failure, [], options.loggerFormatter.redactText);
+      writeErrorReportFailure(failure, knownSecrets(), loggerFormatter.redactText);
     } else {
       reporter.reportErrorOnce(failure, {
         source: "main",

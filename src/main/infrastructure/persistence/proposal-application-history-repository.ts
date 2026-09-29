@@ -15,7 +15,7 @@ import {
   parseLegacyStep,
   parseOriginalLegacyRow,
 } from "./proposal-application-history-record";
-import { identifierSchema } from "../../domain/task-write-values";
+import { identifierSchema } from "../../domain/primitives";
 import type { PersistenceRuntime } from "./persistence-runtime";
 
 export type LegacyMigrationFailure = {

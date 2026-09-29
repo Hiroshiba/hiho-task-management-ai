@@ -1,8 +1,5 @@
 import { z } from "zod";
-import {
-  gidSchema,
-  identifierSchema,
-} from "../task-write-values";
+import { gidSchema, identifierSchema } from "../primitives";
 import {
   analysisProposalSchema as proposalSchema,
   type AnalysisProposal as Proposal,

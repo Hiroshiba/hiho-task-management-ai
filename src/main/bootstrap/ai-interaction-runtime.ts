@@ -24,7 +24,6 @@ type AiInteractionDependencies<
 > = {
   readonly assertOperationalReady: () => void;
   readonly assertMutationRequestAccepted: () => void;
-  readonly assertProposalOperationAvailable: (record: Record) => void;
   readonly requireSession: (sessionId: string) => Record;
   readonly parseTurnRequest: (input: TurnInput) => TurnRequest;
   readonly runTurn: (
@@ -70,6 +69,12 @@ export class AiInteractionRuntime<
       Context
     >,
   ) {}
+
+  private assertProposalOperationAvailable(record: Record): void {
+    if (record.turnInFlight || record.approvalInFlight) {
+      throw new Error("同じAIセッションでAI操作実行中は変更案を操作できません。");
+    }
+  }
 
   /** AIターンを実行し、変更案と基準データの対応を更新します。 */
   public async startTurn(input: TurnInput, signal: AbortSignal): Promise<TurnResult> {
@@ -119,7 +124,7 @@ export class AiInteractionRuntime<
   public async approve(input: ApprovalInput, signal: AbortSignal): Promise<ApprovalResult> {
     this.dependencies.assertMutationRequestAccepted();
     const record = this.dependencies.requireSession(input.session_id);
-    this.dependencies.assertProposalOperationAvailable(record);
+    this.assertProposalOperationAvailable(record);
     const request = this.dependencies.parseApprovalRequest(input);
     const context = this.dependencies.requireContext();
     record.approvalInFlight = true;
@@ -141,8 +146,16 @@ export class AiInteractionRuntime<
     this.dependencies.assertOperationalReady();
     const record = this.dependencies.requireSession(input.session_id);
     if (requireAvailable) {
-      this.dependencies.assertProposalOperationAvailable(record);
+      this.assertProposalOperationAvailable(record);
     }
     return run(record);
+  }
+
+  /** AI変更案を棄却して対応する基準データを解放します。 */
+  public reject(input: { readonly session_id: string; readonly proposal_id: string }): void {
+    this.withProposalRecord(input, true, (record) => {
+      this.dependencies.rejectProposal(record, input.proposal_id);
+      this.dependencies.forgetProposal(record, input.proposal_id);
+    });
   }
 }

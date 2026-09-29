@@ -7,7 +7,7 @@ import {
   type TaskReadRuntimeState,
   type TaskReadSyncResult,
 } from "../application/task-read";
-import { AsanaTaskReadAdapter } from "../infrastructure/asana";
+import type { AsanaTaskReadAdapter } from "../infrastructure/asana";
 
 class UnreachableError extends Error {}
 
@@ -74,6 +74,7 @@ export function createTaskReadRuntime<
   Runtime extends SyncRuntime<Result, State>,
 >(
   host: TaskReadCompositionPort<Overview, Detail, Result, Details, State, Context, SetupInput, Runtime>,
+  asanaAdapter: AsanaTaskReadAdapter<Result, State>,
 ): {
   readonly workflow: TaskReadWorkflow<Overview, Detail, Result, Details, State, State, Details>;
   readonly createSyncRuntime: (context: Context, online: boolean) => Runtime;
@@ -94,7 +95,7 @@ export function createTaskReadRuntime<
       projectGid: host.projectGid,
       assertReady: host.assertReady,
       assertReauthenticationIdle: host.assertReauthenticationIdle,
-      asana: new AsanaTaskReadAdapter(host.requireRuntime),
+      asana: asanaAdapter,
       parseSyncInput: host.parseSyncInput,
       toSyncState: (state) => state,
       toSyncResult: (details) => details,

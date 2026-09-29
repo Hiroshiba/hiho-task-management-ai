@@ -1,13 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ProposalApplicationHistoryStep } from "../../application/common/ports/proposal-application-history";
-import {
-  canonicalizeTaskWriteJson,
-  customExternalDataSchema,
-  gidSchema,
-  identifierSchema,
-  isoDateTimeSchema,
-} from "../../domain/task-write-values";
+import { gidSchema, identifierSchema, isoDateTimeSchema } from "../../domain/primitives";
+import { customExternalDataSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 
 const legacyTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new_task"), uuid: z.uuid() }).strict(),
@@ -252,10 +248,10 @@ function assertLegacyPlan(row: LegacyRow): void {
   if (
     operation.operation !== row.operation_kind
     || operation.operation_id !== row.operation_id
-    || canonicalizeTaskWriteJson(operation.expected_before)
-      !== canonicalizeTaskWriteJson(parseLegacyJson(requirePlanField(row.expected_before_json)))
-    || canonicalizeTaskWriteJson(operation.expected_after)
-      !== canonicalizeTaskWriteJson(parseLegacyJson(requirePlanField(row.expected_after_json)))
+    || canonicalizeJson(operation.expected_before)
+      !== canonicalizeJson(parseLegacyJson(requirePlanField(row.expected_before_json)))
+    || canonicalizeJson(operation.expected_after)
+      !== canonicalizeJson(parseLegacyJson(requirePlanField(row.expected_after_json)))
   ) {
     throw new Error("旧適用ジャーナルの操作と復旧計画が一致しません。");
   }

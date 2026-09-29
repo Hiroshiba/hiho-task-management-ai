@@ -1,3 +1,8 @@
+import { asanaTaskResponseSchema, normalizeTaskGraph, taskSchema } from "../../domain";
+import { throwIfAborted, validateAbortSignal } from "../common/abort-signal";
+import type { TaskCacheRecord } from "../common/ports/task-read-repository";
+import type { GuiEditDependencies } from "./apply";
+
 type RelationRequest<TDependency> =
   | {
       readonly kind: "dependencies";
@@ -69,4 +74,21 @@ export function validateRelationGraph<TStatus, TDependency, TParentWorkMode>(
     return { kind: "conflict", reason_code: "relationship_cycle" };
   }
   return { kind: "valid" };
+}
+
+/** 保存済みタスクからGUI編集の関係グラフを検証します。 */
+export function validateCachedRelationGraph(
+  request: Parameters<GuiEditDependencies["validateRelation"]>[0],
+  entries: readonly TaskCacheRecord[],
+  signal: AbortSignal,
+): Promise<Awaited<ReturnType<GuiEditDependencies["validateRelation"]>>> {
+  validateAbortSignal(signal);
+  throwIfAborted(signal);
+  const tasks = entries.map((entry) => {
+    asanaTaskResponseSchema.parse(entry.asana_response);
+    return taskSchema.parse(entry.task);
+  });
+  const result = validateRelationGraph(request, tasks, (projected) =>
+    normalizeTaskGraph({ tasks: projected, inaccessible_gids: [] }));
+  return Promise.resolve(result);
 }

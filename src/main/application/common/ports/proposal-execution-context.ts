@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { gidSchema, identifierSchema } from "../../../domain/task-write-values";
+import { gidSchema, identifierSchema } from "../../../domain/primitives";
 
 const preflightResultSchema = z.discriminatedUnion("reason_code", [
   z.object({

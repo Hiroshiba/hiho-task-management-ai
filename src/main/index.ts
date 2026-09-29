@@ -8,768 +8,385 @@ import {
   screen,
   session,
   shell,
-  type WebContents,
 } from "electron";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { autoUpdater } from "electron-updater";
-import { applicationDiagnosticSchema, type ApplicationDiagnostic, type DiagnosticRecord } from "./application/diagnostics";
+import { z } from "zod";
+import type { DiagnosticRecord } from "./infrastructure/persistence";
 import type { ErrorReportContext } from "./application/common/errors/error-reporter";
-import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
 import { createMainRuntime, type MainRuntime } from "./bootstrap/create-main-runtime";
-import type { LegacyRuntimePort } from "./bootstrap/legacy-runtime-port";
 import { registerMainLifecycle } from "./bootstrap/register-main-lifecycle";
-import { createMainWindowReadyWait, type MainWindowReadyWait } from "./bootstrap/main-window-readiness";
+import { MainWindowRuntime } from "./bootstrap/main-window-runtime";
+import { OperationalEventRuntime } from "./bootstrap/operational-event-runtime";
 import { openAuthorizedExternalUrl, openObsidianUrl, openResolvedPath } from "./bootstrap/open-external-resource";
 import { configureContentSecurityPolicy, configurePermissionPolicy, resolveRendererUrl } from "./bootstrap/renderer-environment";
 import {
   diagnosticFailureDispositionFromError,
   type DiagnosticFailureDisposition,
 } from "./application/common/errors/diagnostic-failure";
-import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
-import { getUniqueAsanaHttpStatus } from "./asana/transport";
-import { resolveCodexExecutable } from "./codex/app-server";
-import { ensureSecureUserDataDirectory } from "./local-storage-path";
+import { AsanaSyncRuntimeAlreadyReportedError } from "./infrastructure/asana";
+import { getUniqueAsanaHttpStatus } from "./infrastructure/asana";
 import { obsidianOpenUriInputSchema } from "./domain/obsidian-uri";
-import { persistentErrorLogFormatter } from "./persistent-error-log";
-import { createStartupGate } from "./startup-gate";
-import { writeErrorReportFailure } from "./infrastructure/logging";
+import { redactSensitiveText, writeErrorReportFailure } from "./infrastructure/logging";
 import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
-  assertAllowedExternalUrl,
   assertTrustedIpcSender,
   isApplicationUrl,
-} from "./security";
-import { WindowStateController } from "./window-state";
+} from "./bootstrap/security";
 
-const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-type OnlineMonitorState =
-  | { readonly kind: "stopped" }
-  | {
-      readonly kind: "running";
-      readonly timer: ReturnType<typeof setInterval>;
-      readonly lastOnline: boolean;
-    };
+const applicationDiagnosticSchema = z.object({
+  kind: z.literal("service"),
+  severity: z.enum(["warning", "error"]),
+}).strict();
+type ApplicationDiagnostic = z.infer<typeof applicationDiagnosticSchema>;
 
-let mainWindow: BrowserWindow | undefined;
-let mainWindowStateController: WindowStateController | undefined;
-let applicationUpdateService: ApplicationUpdateService | undefined;
-let windowCreationPromise: Promise<void> | undefined;
-let applicationStartPromise: Promise<void> | undefined;
-let backgroundOperations: Promise<void> = Promise.resolve();
-let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
-let foregroundScheduled = false;
-let onlinePollScheduled = false;
-let powerMonitorRegistered = false;
-let uncaughtExceptionMonitorRegistered = false;
-const startupGate = createStartupGate();
-
-registerUncaughtExceptionMonitor();
-
-function recordPersistentError(
-  source: ErrorReportContext["source"],
-  diagnosticCode: DiagnosticRecord["code"],
-  context: ErrorReportContext["context"],
-  severity: ErrorReportContext["level"],
-  error: unknown,
-): string {
-  const logger = lifecycle.getRuntime()?.reporter;
-  if (logger == null) {
-    const errorId = randomUUID();
-    writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), [], persistentErrorLogFormatter.redactText);
-    return errorId;
-  }
-  return logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
-}
-
-function registerUncaughtExceptionMonitor(): void {
-  if (uncaughtExceptionMonitorRegistered) {
-    return;
-  }
-  process.on("uncaughtExceptionMonitor", (error) => {
-    recordPersistentError(
-      "uncaught_exception",
-      "app.error",
-      "uncaught_exception",
-      "error",
-      error,
-    );
-  });
-  uncaughtExceptionMonitorRegistered = true;
-}
-
-function recordDiagnostic(
-  code: DiagnosticRecord["code"],
-  severity: DiagnosticRecord["severity"],
-  metadata?: Pick<
-    DiagnosticRecord,
-    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
-  >,
-  error?: unknown,
-): void {
-  const httpStatus = error == null ? undefined : getUniqueAsanaHttpStatus(error);
-  let resolvedMetadata = metadata;
-  if (resolvedMetadata == null) {
-    if (httpStatus != null) {
-      resolvedMetadata = { http_status: httpStatus };
+function registerMain(): void {
+  function recordPersistentError(
+    source: ErrorReportContext["source"],
+    diagnosticCode: DiagnosticRecord["code"],
+    context: ErrorReportContext["context"],
+    severity: ErrorReportContext["level"],
+    error: unknown,
+  ): string {
+    const logger = lifecycle.getRuntime()?.reporter;
+    if (logger == null) {
+      const errorId = randomUUID();
+      writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), lifecycle.getRuntime()?.knownSecrets() ?? [], redactSensitiveText);
+      return errorId;
     }
-  } else if (resolvedMetadata.http_status == null && httpStatus != null) {
-    resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
+    return logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
   }
-  const application = lifecycle.getRuntime()?.legacy;
-  if (application == null) {
-    console.error("診断情報を記録できませんでした。");
-    return;
-  }
-  try {
-    application.recordDiagnostic(code, severity, resolvedMetadata);
-  } catch (error) {
-    recordPersistentError("main", "storage.error", "diagnostic_storage", "error", error);
-    console.error("診断情報を記録できませんでした。");
-  }
-}
 
-function recordServiceDiagnostic(
-  error: unknown,
-  channel: string,
-  rawDiagnostic: ApplicationDiagnostic,
-): void {
-  const diagnostic = applicationDiagnosticSchema.parse(rawDiagnostic);
-  let diagnosticCode: DiagnosticRecord["code"];
-  switch (channel) {
-    case "sync":
-    case "display_order":
-      diagnosticCode = "sync.failed";
-      break;
-    case "codex":
-      diagnosticCode = "codex.status";
-      break;
-    case "external_tools":
-      diagnosticCode = "external_tools.status";
-      break;
-    case "proposal_application":
-      diagnosticCode = "proposal.application";
-      break;
-    case "ipc":
-    case "sync_state_listener":
-    case "ai_status_listener":
-    case "ai_delta_listener":
-      diagnosticCode = "ipc.error";
-      break;
-    default:
-      diagnosticCode = "app.error";
-  }
-  recordPersistentError(
-    "service",
-    diagnosticCode,
-    "service_diagnostic",
-    diagnostic.severity,
-    new Error(JSON.stringify(diagnostic), { cause: error }),
-  );
-  recordDiagnostic(diagnosticCode, diagnostic.severity, undefined, error);
-}
-
-function mainDiagnosticFailureDisposition(
-  error: unknown,
-): DiagnosticFailureDisposition {
-  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-    return {
-      kind: "recorded_only",
-      recorded_error: error,
-      response_error: error.cause,
-    };
-  }
-  return diagnosticFailureDispositionFromError(error);
-}
-
-function getRendererUrl(): string {
-  return resolveRendererUrl({
-    packaged: app.isPackaged,
-    rendererIndexPath: join(__dirname, "../renderer/index.html"),
-    developmentUrl: developmentRendererUrl,
-    arguments: process.argv,
-  });
-}
-
-function forwardUnhandledError(error: unknown): void {
-  queueMicrotask(() => {
-    throw error;
-  });
-}
-
-function createApplicationRuntime(): MainRuntime {
-  const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
-  return createMainRuntime({
-    userDataPath,
-    secretStoragePath: join(userDataPath, "secret-storage.json"),
-    checkpointPath: join(userDataPath, "setup-checkpoint.json"),
-    logsPath: app.getPath("logs"),
-    loggerFormatter: persistentErrorLogFormatter,
-    ipcSecurity: {
-      assertTrustedSender: assertTrustedIpcSender,
-      isApplicationUrl,
-    },
-    system: {
-      getVersion: () => app.getVersion(),
-      waitForStartup: (signal) => startupGate.waitForStartup(signal),
-      getUpdateState: () => requireApplicationUpdateService().getState(),
-      onUpdateState: (listener) => requireApplicationUpdateService().onState(listener),
-    },
-    legacy: {
-      user_data_path: userDataPath,
-      app_version: app.getVersion(),
-      codex_executable: resolveCodexExecutable(),
-      read_only_vault_paths: [],
-      online_provider: () => net.isOnline(),
-      open_authorization_url: (authorizationUrl, signal) =>
-        openAuthorizedExternalUrl(
-          authorizationUrl,
-          signal,
-          assertAllowedAsanaAuthorizationUrl,
-        ),
-      open_codex_authorization_url: (authorizationUrl, signal) =>
-        openAuthorizedExternalUrl(
-          authorizationUrl,
-          signal,
-          assertAllowedCodexAuthorizationUrl,
-        ),
-      open_obsidian_url: (obsidianUrl, signal) =>
-        openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
-          obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
-        }),
-      open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
-      diagnostic: recordServiceDiagnostic,
-      unhandled_error_forwarder: forwardUnhandledError,
-      open_external_agent_review: async () => {
-        const runtime = lifecycle.getRuntime();
-        if (runtime == null) {
-          throw new Error("TaskHubアプリケーションが初期化されていません。");
-        }
-        await ensureMainWindow(
-          getRendererUrl(),
-          runtime,
-        );
-        if (!showAndFocusMainWindow()) {
-          throw new Error("TaskHubメインウィンドウを表示できません。");
-        }
-      },
-    },
-  });
-}
-
-function requireApplicationUpdateService(): ApplicationUpdateService {
-  const service = applicationUpdateService;
-  if (service == null) {
-    throw new Error("アプリ本体の更新サービスが初期化されていません。");
-  }
-  return service;
-}
-
-function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {
-  window.webContents.on("will-navigate", (event, requestedUrl) => {
-    if (!isApplicationUrl(requestedUrl, rendererUrl)) {
-      event.preventDefault();
+  function recordDiagnostic(
+    code: DiagnosticRecord["code"],
+    severity: DiagnosticRecord["severity"],
+    metadata?: Pick<
+      DiagnosticRecord,
+      "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+    >,
+    error?: unknown,
+  ): void {
+    const httpStatus = error == null ? undefined : getUniqueAsanaHttpStatus(error);
+    let resolvedMetadata = metadata;
+    if (resolvedMetadata == null) {
+      if (httpStatus != null) {
+        resolvedMetadata = { http_status: httpStatus };
+      }
+    } else if (resolvedMetadata.http_status == null && httpStatus != null) {
+      resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
     }
-  });
-  window.webContents.on("will-redirect", (event, requestedUrl) => {
-    if (!isApplicationUrl(requestedUrl, rendererUrl)) {
-      event.preventDefault();
-    }
-  });
-
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const externalUrl = assertAllowedExternalUrl(url);
-      void shell.openExternal(externalUrl.href).catch((error) => {
-        recordPersistentError("main", "app.error", "external_url", "error", error);
-        recordDiagnostic("app.error", "error", undefined, error);
-      });
-    } catch (error) {
-      recordPersistentError("main", "app.error", "external_url", "error", error);
-      recordDiagnostic("app.error", "error", undefined, error);
-    }
-    return { action: "deny" };
-  });
-}
-
-function detachMainWindow(runtime: MainRuntime, webContents: WebContents): void {
-  try {
-    runtime.detachWindow(webContents);
-  } catch (error) {
-    recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
-    recordDiagnostic("ipc.error", "error", undefined, error);
-  }
-}
-
-function enqueueBackgroundOperation(
-  operation: () => Promise<void>,
-  failureCode: DiagnosticRecord["code"],
-): void {
-  backgroundOperations = backgroundOperations.then(async () => {
-    const controller = lifecycle.getRuntime();
-    if (
-      !lifecycle.isRunning()
-      || controller == null
-      || controller.signal.aborted
-    ) {
+    const runtime = lifecycle.getRuntime();
+    if (runtime == null) {
+      console.error("診断情報を記録できませんでした。");
       return;
     }
     try {
-      await operation();
-    } catch (error) {
-      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+      runtime.recordDiagnostic(code, severity, resolvedMetadata);
+    } catch (diagnosticError) {
+      recordPersistentError("main", "storage.error", "diagnostic_storage", "error", diagnosticError);
+      console.error("診断情報を記録できませんでした。");
+    }
+  }
+
+  function recordServiceDiagnostic(
+    error: unknown,
+    channel: string,
+    rawDiagnostic: ApplicationDiagnostic,
+  ): void {
+    const diagnostic = applicationDiagnosticSchema.parse(rawDiagnostic);
+    let diagnosticCode: DiagnosticRecord["code"];
+    switch (channel) {
+      case "sync":
+      case "display_order":
+        diagnosticCode = "sync.failed";
+        break;
+      case "codex":
+        diagnosticCode = "codex.status";
+        break;
+      case "external_tools":
+        diagnosticCode = "external_tools.status";
+        break;
+      case "proposal_application":
+        diagnosticCode = "proposal.application";
+        break;
+      case "ipc":
+      case "sync_state_listener":
+      case "ai_status_listener":
+      case "ai_delta_listener":
+        diagnosticCode = "ipc.error";
+        break;
+      default:
+        diagnosticCode = "app.error";
+    }
+    recordPersistentError(
+      "service",
+      diagnosticCode,
+      "service_diagnostic",
+      diagnostic.severity,
+      new Error(JSON.stringify(diagnostic), { cause: error }),
+    );
+    recordDiagnostic(diagnosticCode, diagnostic.severity, undefined, error);
+  }
+
+  function mainDiagnosticFailureDisposition(error: unknown): DiagnosticFailureDisposition {
+    if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+      return {
+        kind: "recorded_only",
+        recorded_error: error,
+        response_error: error.cause,
+      };
+    }
+    return diagnosticFailureDispositionFromError(error);
+  }
+
+  function getRendererUrl(): string {
+    return resolveRendererUrl({
+      packaged: app.isPackaged,
+      rendererIndexPath: join(__dirname, "../renderer/index.html"),
+      developmentUrl: developmentRendererUrl,
+      arguments: process.argv,
+    });
+  }
+
+  function forwardUnhandledError(error: unknown): void {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
+
+  const operationalEvents = new OperationalEventRuntime({
+    powerMonitor,
+    isOnline: () => net.isOnline(),
+    isRunning: () => lifecycle.isRunning(),
+    getRuntime: () => lifecycle.getRuntime(),
+    isStartupReady: () => lifecycle.startupGate.isReady(),
+    reportPersistentError: (code, error) => {
+      recordPersistentError("main", code, "background_operation", "error", error);
+    },
+    recordDiagnostic: (code, error) => recordDiagnostic(code, "error", undefined, error),
+  });
+  const windows = new MainWindowRuntime({
+    app,
+    ipcMain,
+    screen,
+    shell,
+    isRunning: () => lifecycle.isRunning(),
+    scheduleForegroundSync: operationalEvents.scheduleForegroundSync,
+    reportPersistentError: (context, error) => {
+      const code = context === "registry_dispose" ? "ipc.error" : "app.error";
+      recordPersistentError("main", code, context, "error", error);
+    },
+    recordDiagnostic: (code, error) => recordDiagnostic(code, "error", undefined, error),
+  });
+
+  function createApplicationRuntime(): MainRuntime {
+    return createMainRuntime({
+      userDataPath: app.getPath("userData"),
+      logsPath: app.getPath("logs"),
+      update: {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+      },
+      ipcSecurity: {
+        assertTrustedSender: assertTrustedIpcSender,
+        isApplicationUrl,
+      },
+      system: {
+        getVersion: () => app.getVersion(),
+        waitForStartup: (signal) => lifecycle.startupGate.waitForStartup(signal),
+        getUpdateState: () => requireApplicationUpdateService().getState(),
+        onUpdateState: (listener) => requireApplicationUpdateService().onState(listener),
+      },
+      composition: {
+        app_version: app.getVersion(),
+        read_only_vault_paths: [],
+        online_provider: () => net.isOnline(),
+        open_authorization_url: (authorizationUrl, signal) =>
+          openAuthorizedExternalUrl(
+            authorizationUrl,
+            signal,
+            assertAllowedAsanaAuthorizationUrl,
+          ),
+        open_codex_authorization_url: (authorizationUrl, signal) =>
+          openAuthorizedExternalUrl(
+            authorizationUrl,
+            signal,
+            assertAllowedCodexAuthorizationUrl,
+          ),
+        open_obsidian_url: (obsidianUrl, signal) =>
+          openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
+            obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
+          }),
+        open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
+        diagnostic: recordServiceDiagnostic,
+        unhandled_error_forwarder: forwardUnhandledError,
+        open_external_agent_review: async () => {
+          const runtime = lifecycle.getRuntime();
+          if (runtime == null) {
+            throw new Error("TaskHubアプリケーションが初期化されていません。");
+          }
+          await windows.ensure(getRendererUrl(), runtime);
+          if (!windows.showAndFocus()) {
+            throw new Error("TaskHubメインウィンドウを表示できません。");
+          }
+        },
+      },
+    });
+  }
+
+  function requireApplicationUpdateService() {
+    const service = lifecycle.getUpdateService();
+    if (service == null) {
+      throw new Error("アプリ本体の更新サービスが初期化されていません。");
+    }
+    return service;
+  }
+
+  function yieldToRenderer(): Promise<void> {
+    return new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+
+  async function startApplication(application: MainRuntime, signal: AbortSignal): Promise<void> {
+    try {
+      await application.start(signal);
+      if (signal.aborted || !lifecycle.isRunning()) {
+        lifecycle.startupGate.markStopped();
         return;
       }
-      const disposition = diagnosticFailureDispositionFromError(error);
+      operationalEvents.start();
+      lifecycle.startupGate.markReady();
+    } catch (error) {
+      if (signal.aborted || !lifecycle.isRunning()) {
+        lifecycle.startupGate.markStopped();
+        return;
+      }
+      const disposition = mainDiagnosticFailureDisposition(error);
       switch (disposition.kind) {
         case "recorded_only":
-          return;
+          break;
         case "unrecorded_only":
         case "recorded_and_unrecorded":
-          recordPersistentError(
-            "main",
-            failureCode,
-            "background_operation",
-            "error",
-            disposition.unrecorded_error,
-          );
-          if (!controller.signal.aborted) {
-            recordDiagnostic(failureCode, "error", undefined, disposition.unrecorded_error);
-          }
-          return;
+          recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
+          recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+          break;
       }
+      console.error("アプリケーションの起動に失敗しました。");
+      lifecycle.startupGate.markFailed(disposition.response_error);
     }
-  });
-}
-
-function scheduleForegroundSync(): void {
-  if (
-    foregroundScheduled
-    || !lifecycle.isRunning()
-    || !startupGate.isReady()
-  ) {
-    return;
   }
-  foregroundScheduled = true;
-  enqueueBackgroundOperation(async () => {
+
+  async function stopApplication(): Promise<void> {
+    const runtime = lifecycle.getRuntime();
+    runtime?.abort();
+    lifecycle.startupGate.markStopped();
+    const errors: unknown[] = [];
     try {
-      const application = lifecycle.getRuntime()?.legacy;
-      const controller = lifecycle.getRuntime();
-      if (application == null || controller == null) {
-        throw new Error("アプリケーションが初期化されていません。");
-      }
-      if (application.getState().kind !== "configured") {
-        return;
-      }
-      await controller.taskRead.onForeground(controller.signal);
-    } finally {
-      foregroundScheduled = false;
-    }
-  }, "sync.failed");
-}
-
-function updateOnlineMonitorState(
-  monitor: Extract<OnlineMonitorState, { readonly kind: "running" }>,
-  lastOnline: boolean,
-): void {
-  const activeMonitor = onlineMonitorState;
-  if (
-    activeMonitor.kind === "running"
-    && activeMonitor.timer === monitor.timer
-  ) {
-    onlineMonitorState = {
-      kind: "running",
-      timer: monitor.timer,
-      lastOnline,
-    };
-  }
-}
-
-function scheduleOnlinePoll(): void {
-  if (
-    onlinePollScheduled
-    || !lifecycle.isRunning()
-    || !startupGate.isReady()
-  ) {
-    return;
-  }
-  onlinePollScheduled = true;
-  enqueueBackgroundOperation(async () => {
-    try {
-      const monitor = onlineMonitorState;
-      const controller = lifecycle.getRuntime();
-      if (monitor.kind !== "running" || controller == null) {
-        return;
-      }
-      const currentOnline = net.isOnline();
-      if (currentOnline === monitor.lastOnline) {
-        return;
-      }
-      const applicationConfigured = controller.legacy.getState().kind === "configured";
-      if (!currentOnline) {
-        if (applicationConfigured) {
-          controller.taskRead.setOnline(false);
-        }
-        updateOnlineMonitorState(monitor, false);
-        return;
-      }
-      if (!applicationConfigured) {
-        updateOnlineMonitorState(monitor, true);
-        return;
-      }
-      try {
-        await controller.taskRead.onOnline();
-      } catch (error) {
-        try {
-          controller.taskRead.setOnline(false);
-        } catch (restoreError) {
-          throw new AggregateError(
-            [error, restoreError],
-            "オンライン復帰失敗後の状態復元に失敗しました。",
-          );
-        }
-        throw error;
-      }
-      updateOnlineMonitorState(monitor, true);
-    } finally {
-      onlinePollScheduled = false;
-    }
-  }, "sync.failed");
-}
-
-function startOperationalEventMonitoring(): void {
-  if (onlineMonitorState.kind !== "stopped" || powerMonitorRegistered) {
-    throw new Error("運用イベント監視は重複開始できません。");
-  }
-  const timer = setInterval(scheduleOnlinePoll, onlinePollIntervalMilliseconds);
-  onlineMonitorState = {
-    kind: "running",
-    timer,
-    lastOnline: net.isOnline(),
-  };
-  powerMonitor.on("resume", scheduleForegroundSync);
-  powerMonitorRegistered = true;
-}
-
-function stopOperationalEventMonitoring(): void {
-  const monitor = onlineMonitorState;
-  if (monitor.kind === "running") {
-    clearInterval(monitor.timer);
-    onlineMonitorState = { kind: "stopped" };
-  }
-  if (powerMonitorRegistered) {
-    powerMonitor.removeListener("resume", scheduleForegroundSync);
-    powerMonitorRegistered = false;
-  }
-}
-
-function showAndFocusMainWindow(): boolean {
-  if (!lifecycle.isRunning()) {
-    return false;
-  }
-  const window = mainWindow;
-  if (window == null || window.isDestroyed()) {
-    return false;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  if (!window.isVisible()) {
-    window.show();
-  }
-  window.focus();
-  return true;
-}
-
-async function createMainWindow(
-  rendererUrl: string,
-  runtime: MainRuntime,
-): Promise<void> {
-  const signal = runtime.signal;
-  if (!lifecycle.isRunning() || signal.aborted) {
-    return;
-  }
-  const windowStateStore = runtime.createWindowStateStore();
-  const savedWindowState = windowStateStore.load();
-  const window = new BrowserWindow({
-    show: false,
-    icon: app.isPackaged
-      ? join(process.resourcesPath, "icon.png")
-      : join(__dirname, "../../build/icon.png"),
-    webPreferences: {
-      devTools: !app.isPackaged,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      preload: join(__dirname, "../preload/index.cjs"),
-    },
-  });
-  const windowWebContents = window.webContents;
-  const windowStateController = new WindowStateController(
-    window,
-    windowStateStore,
-    () => {
-      const primaryDisplay = screen.getPrimaryDisplay();
-      return [
-        primaryDisplay,
-        ...screen.getAllDisplays().filter((display) => display.id !== primaryDisplay.id),
-      ];
-    },
-    savedWindowState,
-  );
-  mainWindow = window;
-  mainWindowStateController = windowStateController;
-  let readyToShow: MainWindowReadyWait | undefined;
-  try {
-    configureWindowSecurity(window, rendererUrl);
-    runtime.attachWindow(ipcMain, windowWebContents, rendererUrl);
-    windowStateController.attach();
-    windowStateController.restore(savedWindowState);
-    window.on("focus", scheduleForegroundSync);
-    window.on("close", (event) => {
-      if (process.platform === "darwin" && lifecycle.isRunning()) {
-        event.preventDefault();
-        window.hide();
-        return;
-      }
-      detachMainWindow(runtime, windowWebContents);
-    });
-    window.once("closed", () => {
-      detachMainWindow(runtime, windowWebContents);
-      if (mainWindowStateController === windowStateController) {
-        mainWindowStateController = undefined;
-      }
-      if (mainWindow === window) {
-        mainWindow = undefined;
-      }
-    });
-    readyToShow = createMainWindowReadyWait(window, signal, showAndFocusMainWindow);
-    const loadPromise = Promise.resolve().then(() => app.isPackaged
-      ? window.loadFile(
-        fileURLToPath(rendererUrl),
-        { search: new URL(rendererUrl).search },
-      )
-      : window.loadURL(rendererUrl));
-    await Promise.all([loadPromise, readyToShow.promise]);
-  } catch (error) {
-    readyToShow?.reject(error);
-    detachMainWindow(runtime, windowWebContents);
-    if (mainWindowStateController === windowStateController) {
-      mainWindowStateController = undefined;
-    }
-    if (mainWindow === window) {
-      mainWindow = undefined;
-    }
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
-    if (signal.aborted || !lifecycle.isRunning()) {
-      return;
-    }
-    throw error;
-  }
-}
-
-function ensureMainWindow(
-  rendererUrl: string,
-  runtime: MainRuntime,
-): Promise<void> {
-  const signal = runtime.signal;
-  if (!lifecycle.isRunning() || signal.aborted) {
-    return Promise.resolve();
-  }
-  if (mainWindow != null && !mainWindow.isDestroyed()) {
-    return Promise.resolve();
-  }
-  if (windowCreationPromise != null) {
-    return windowCreationPromise;
-  }
-  windowCreationPromise = createMainWindow(
-    rendererUrl,
-    runtime,
-  ).finally(() => {
-    windowCreationPromise = undefined;
-  });
-  return windowCreationPromise;
-}
-
-function yieldToRenderer(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
-async function startApplication(
-  application: LegacyRuntimePort,
-  signal: AbortSignal,
-): Promise<void> {
-  try {
-    await application.start(signal);
-    if (signal.aborted || !lifecycle.isRunning()) {
-      startupGate.markStopped();
-      return;
-    }
-    startOperationalEventMonitoring();
-    startupGate.markReady();
-  } catch (error) {
-    if (signal.aborted || !lifecycle.isRunning()) {
-      startupGate.markStopped();
-      return;
-    }
-    const disposition = mainDiagnosticFailureDisposition(error);
-    switch (disposition.kind) {
-      case "recorded_only":
-        break;
-      case "unrecorded_only":
-      case "recorded_and_unrecorded":
-        recordPersistentError(
-          "main",
-          "app.error",
-          "bootstrap",
-          "error",
-          disposition.unrecorded_error,
-        );
-        recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
-        break;
-    }
-    console.error("アプリケーションの起動に失敗しました。");
-    startupGate.markFailed(disposition.response_error);
-  }
-}
-
-async function stopApplication(): Promise<void> {
-  const runtime = lifecycle.getRuntime();
-  runtime?.abort();
-  startupGate.markStopped();
-  stopOperationalEventMonitoring();
-  if (runtime != null && mainWindow != null) {
-    detachMainWindow(runtime, mainWindow.webContents);
-  }
-  const errors: unknown[] = [];
-  const startPromise = applicationStartPromise;
-  if (startPromise != null) {
-    try {
-      await startPromise;
+      await windows.stop();
     } catch (error) {
       errors.push(error);
     }
-  }
-  try {
-    await backgroundOperations;
-  } catch (error) {
-    errors.push(error);
-  }
-  if (runtime != null) {
     try {
-      await runtime.dispose();
+      await lifecycle.waitForApplicationStart();
     } catch (error) {
-      if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
-        const disposition = diagnosticFailureDispositionFromError(error);
-        switch (disposition.kind) {
-          case "recorded_only":
-            break;
-          case "unrecorded_only":
-          case "recorded_and_unrecorded":
-            recordPersistentError(
-              "main",
-              "app.error",
-              "application_stop",
-              "error",
-              disposition.unrecorded_error,
-            );
-            recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
-            break;
-        }
-      }
-      console.error("アプリケーションの停止に失敗しました。");
+      errors.push(error);
     }
-  }
-  if (errors.length === 1) {
-    throw errors[0];
-  }
-  if (errors.length > 1) {
-    throw new AggregateError(errors, "アプリケーションの終了処理に複数の失敗がありました。", {
-      cause: errors[0],
-    });
-  }
-}
-
-async function bootstrap(): Promise<void> {
-  await app.whenReady();
-  if (!lifecycle.isRunning()) {
-    return;
-  }
-  Menu.setApplicationMenu(null);
-  configureContentSecurityPolicy(session.defaultSession, app.isPackaged);
-  configurePermissionPolicy(session.defaultSession);
-  const rendererUrl = getRendererUrl();
-  const runtime = createApplicationRuntime();
-  lifecycle.setRuntime(runtime);
-  const application = runtime.legacy;
-  const updateService = new ApplicationUpdateService(
-    autoUpdater,
-    app.getVersion(),
-    isApplicationUpdateCandidate(
-      app.isPackaged,
-      process.platform,
-      process.arch,
-      app.getVersion(),
-      process.resourcesPath,
-    ),
-    process.platform,
-    process.resourcesPath,
-    runtime.createApplicationUpdateAttemptStore(),
-    (error) => recordPersistentError("main", "app.error", "application_update", "error", error),
-  );
-  applicationUpdateService = updateService;
-  app.on("activate", () => {
-    if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
-      void ensureMainWindow(
-        rendererUrl,
-        runtime,
-      ).catch((error) => {
-        if (runtime.signal.aborted || !lifecycle.isRunning()) {
-          return;
+    try {
+      await operationalEvents.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (runtime != null) {
+      try {
+        await runtime.dispose();
+      } catch (error) {
+        if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
+          const disposition = diagnosticFailureDispositionFromError(error);
+          switch (disposition.kind) {
+            case "recorded_only":
+              break;
+            case "unrecorded_only":
+            case "recorded_and_unrecorded":
+              recordPersistentError("main", "app.error", "application_stop", "error", disposition.unrecorded_error);
+              recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+              break;
+          }
         }
-        recordPersistentError("main", "app.error", "main_window", "error", error);
-        recordDiagnostic("app.error", "error", undefined, error);
+        console.error("アプリケーションの停止に失敗しました。");
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "アプリケーションの終了処理に複数の失敗がありました。", {
+        cause: errors[0],
       });
     }
-  });
-  await ensureMainWindow(
-    rendererUrl,
-    runtime,
-  );
-  await yieldToRenderer();
-  if (runtime.signal.aborted || !lifecycle.isRunning()) {
-    return;
   }
-  updateService.start();
-  applicationStartPromise = startApplication(application, runtime.signal);
-  await applicationStartPromise;
+
+  async function bootstrap(): Promise<void> {
+    await app.whenReady();
+    if (!lifecycle.isRunning()) {
+      return;
+    }
+    Menu.setApplicationMenu(null);
+    configureContentSecurityPolicy(session.defaultSession, app.isPackaged);
+    configurePermissionPolicy(session.defaultSession);
+    const rendererUrl = getRendererUrl();
+    const runtime = createApplicationRuntime();
+    lifecycle.setRuntime(runtime);
+    const updateService = runtime.createApplicationUpdateService(
+      (error) => recordPersistentError("main", "app.error", "application_update", "error", error),
+    );
+    lifecycle.setUpdateService(updateService);
+    const onActivate = (): void => {
+      if (!windows.showAndFocus() && BrowserWindow.getAllWindows().length === 0) {
+        void windows.ensure(rendererUrl, runtime).catch((error) => {
+          if (runtime.signal.aborted || !lifecycle.isRunning()) {
+            return;
+          }
+          recordPersistentError("main", "app.error", "main_window", "error", error);
+          recordDiagnostic("app.error", "error", undefined, error);
+        });
+      }
+    };
+    app.on("activate", onActivate);
+    app.once("will-quit", () => app.removeListener("activate", onActivate));
+    await windows.ensure(rendererUrl, runtime);
+    await yieldToRenderer();
+    if (runtime.signal.aborted || !lifecycle.isRunning()) {
+      return;
+    }
+    updateService.start();
+    await lifecycle.startApplication(() => startApplication(runtime, runtime.signal));
+  }
+
+  const lifecycle = registerMainLifecycle(app, {
+    bootstrap,
+    stop: stopApplication,
+    flushWindowState: () => windows.flush(),
+    showSecondInstance: () => { windows.showAndFocus(); },
+    reportUncaughtException: (error) => {
+      recordPersistentError("uncaught_exception", "app.error", "uncaught_exception", "error", error);
+    },
+    reportStopFailure: (error) => {
+      recordPersistentError("main", "app.error", "application_quit", "error", error);
+      recordDiagnostic("app.error", "error", undefined, error);
+      console.error("アプリケーションの停止に失敗しました。");
+    },
+    reportBootstrapFailure: (error) => {
+      const disposition = mainDiagnosticFailureDisposition(error);
+      if (disposition.kind !== "recorded_only") {
+        recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
+        recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+      }
+      console.error("アプリケーションの起動に失敗しました。");
+    },
+  });
 }
 
-const lifecycle = registerMainLifecycle(app, {
-  bootstrap,
-  stop: stopApplication,
-  flushWindowState: () => mainWindowStateController?.flush(),
-  installUpdateOnQuit: (quit) => applicationUpdateService?.installOnQuit(quit) === true,
-  showSecondInstance: showAndFocusMainWindow,
-  reportStopFailure: (error) => {
-    recordPersistentError("main", "app.error", "application_quit", "error", error);
-    recordDiagnostic("app.error", "error", undefined, error);
-    console.error("アプリケーションの停止に失敗しました。");
-  },
-  reportBootstrapFailure: (error) => {
-    const disposition = mainDiagnosticFailureDisposition(error);
-    if (disposition.kind !== "recorded_only") {
-      recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
-      recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
-    }
-    console.error("アプリケーションの起動に失敗しました。");
-  },
-});
+registerMain();

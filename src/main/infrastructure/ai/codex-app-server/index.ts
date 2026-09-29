@@ -66,3 +66,15 @@ export {
   type CodexConfigOverrideValue,
   type TaskHubVerifiedPermissionProfilePaths,
 } from "./connection-overrides";
+
+export { CodexAppServerConnection } from "./connection";
+export { type CodexDynamicToolHandler, type CodexDiagnosticListener, type CodexNotificationListener } from "./rpc-endpoint";
+export {
+  CodexConnectionStateError, CodexConnectionStoppedError, CodexExecutableNotFoundError,
+  CodexPendingRequestLimitError, CodexProcessError, CodexProcessExitError,
+  CodexProtocolError, CodexRequestAbortedError, CodexRequestIdExhaustedError,
+  CodexRequestTimeoutError, CodexResponseValidationError, CodexRpcError,
+  CodexStopTimeoutError, CodexStdioError, CodexUnknownResponseIdError,
+  CodexVersionCommandError, CodexWriteError, type CodexProtocolFailureCode,
+} from "./errors";
+export { createSafeCodexEnvironment, resolveCodexHomePath, resolveCodexExecutable } from "./version";

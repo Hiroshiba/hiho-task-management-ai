@@ -1,9 +1,6 @@
 import { z } from "zod";
-import {
-  canonicalizeTaskWriteJson as canonicalizeJson,
-  gidSchema,
-  identifierSchema,
-} from "../task-write-values";
+import { gidSchema, identifierSchema } from "../primitives";
+import { canonicalizeJson } from "../canonical-json";
 import {
   analysisProposalSchema as proposalSchema,
   type AnalysisProposal as Proposal,

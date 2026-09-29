@@ -1,4 +1,4 @@
-import { canonicalizeTaskWriteJson } from "../../domain/task-write-values";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import { proposalWriteOperationSchema, type ProposalWriteOperation } from "../../domain/proposal-write-operation";
 import {
   createTaskWritePlan,
@@ -62,7 +62,7 @@ export function planProposalTaskWrites(
     const target: TaskWriteTarget = operation.operation === "create_task"
       ? { kind: "temporary", ref: operation.temporary_ref }
       : operation.target;
-    targets.set(canonicalizeTaskWriteJson(target), target);
+    targets.set(canonicalizeJson(target), target);
   }
   steps.push({
     step_id: `${input.execution_id}:sync`,

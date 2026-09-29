@@ -1,20 +1,7 @@
 import { z } from "zod";
 import { proposalWriteOperationSchema } from "../../domain/proposal-write-operation";
-import {
-  customExternalDataSchema,
-  dateSchema,
-  dependencyScopeSchema,
-  durationSchema,
-  externalTaskGidSchema,
-  gidSchema,
-  identifierSchema,
-  importanceTagNameSchema,
-  areaTagNameSchema,
-  isoDateTimeSchema,
-  obsidianLinkSchema,
-  obsidianLinksSchema,
-  parentWorkModeSchema,
-} from "../../domain/task-write-values";
+import { dateSchema, externalTaskGidSchema, gidSchema, identifierSchema, isoDateTimeSchema } from "../../domain/primitives";
+import { customExternalDataSchema, dependencyScopeSchema, durationSchema, importanceTagNameSchema, areaTagNameSchema, obsidianLinkSchema, obsidianLinksSchema, parentWorkModeSchema } from "../../domain/schemas";
 
 const activeStatusSchema = z.enum(["not_started", "in_progress"]);
 

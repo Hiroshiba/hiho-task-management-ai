@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  dateSchema,
-  externalTaskGidSchema,
-  gidSchema,
-  isoDateTimeSchema,
-} from "../../domain/task-write-values";
+import { dateSchema, externalTaskGidSchema, gidSchema, isoDateTimeSchema } from "../../domain/primitives";
 
 const customExternalDataMaxBytes = 28 * 1024;
 

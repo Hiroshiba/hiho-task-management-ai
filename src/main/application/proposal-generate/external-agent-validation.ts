@@ -45,13 +45,3 @@ export function validateExternalAgentWorkspaceProposal<TProposal, TBasic, TGraph
     },
   };
 }
-
-/** 提出済み提案を基礎検証からグラフ検証まで実行します。 */
-export function validateExternalAgentSubmittedProposal<TBasic, TGraph>(ports: {
-  readonly validateBasic: () => TBasic;
-  readonly validateGraph: (basic: TBasic) => TGraph;
-}): { readonly basic: TBasic; readonly graph: TGraph } {
-  const basic = ports.validateBasic();
-  const graph = ports.validateGraph(basic);
-  return { basic, graph };
-}

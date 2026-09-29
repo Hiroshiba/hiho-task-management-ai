@@ -3,6 +3,7 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  mkdirSync,
   openSync,
   statSync,
   unlinkSync,
@@ -16,7 +17,9 @@ import {
   assertUsableIdentity,
   errorCode,
   inspectPathWithoutSymlinks,
+  normalizeDirectoryPath,
   normalizeSecurePersistentFilePath,
+  secureDirectoryMode,
   secureFileMode,
   validateLabel,
   type PathInspection,
@@ -32,6 +35,22 @@ export type FileOperationResult<Result> =
 type CloseResult =
   | { readonly kind: "succeeded" }
   | { readonly kind: "failed"; readonly error: unknown };
+
+/** userDataを安全な永続保存ディレクトリとして検証します。 */
+export function ensureSecureUserDataDirectory(userDataPath: string): string {
+  const normalizedPath = normalizeDirectoryPath(userDataPath);
+  const label = "userDataディレクトリ";
+  const inspection = inspectPathWithoutSymlinks(normalizedPath, label);
+  if (inspection.kind === "missing") {
+    try {
+      mkdirSync(normalizedPath, { recursive: true, mode: secureDirectoryMode });
+    } catch (error) {
+      throw new Error("userDataディレクトリを作成できません。", { cause: error });
+    }
+  }
+  captureDirectory(normalizedPath, label);
+  return normalizedPath;
+}
 
 function getReadOpenFlags(): number {
   let flags = constants.O_RDONLY;

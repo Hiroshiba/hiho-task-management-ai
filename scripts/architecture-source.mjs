@@ -15,7 +15,6 @@ const ownerRules = [
   [/^src\/main\/(local-storage-path|window-state)\.ts$/, "main/infrastructure/persistence"],
   [/^src\/main\/(persistent-error-log|redact-sensitive-text)\.ts$/, "main/infrastructure/logging"],
   [/^src\/main\/application\/service\.ts$/, "main/bootstrap"],
-  [/^src\/main\/application\/checkpoint\.ts$/, "main/infrastructure/persistence"],
   [/^src\/main\/application\/cleanup-aggregation\.ts$/, "main/application/task-read"],
   [/^src\/main\/application\/codex-adapter\.ts$/, "main/infrastructure/ai"],
   [/^src\/main\/application\/diagnostics\.ts$/, "main/infrastructure/logging"],
@@ -23,7 +22,6 @@ const ownerRules = [
   [/^src\/main\/ai\/proposal-application\//, "main/application/proposal-apply"],
   [/^src\/main\/ai\//, "main/application/proposal-generate"],
   [/^src\/main\/asana\//, "main/infrastructure/asana"],
-  [/^src\/main\/auth\/asana-oauth\//, "main/infrastructure/asana"],
   [/^src\/main\/codex\//, "main/infrastructure/ai"],
   [/^src\/main\/domain\//, "main/domain"],
   [/^src\/main\/external-agent\/service\.ts$/, "main/application/proposal-generate"],
@@ -45,9 +43,6 @@ const ownerRules = [
   [/^src\/renderer\/app\//, "renderer/app"],
   [/^src\/renderer\/features\/(tasks|proposals|settings|system|github-integration|obsidian-integration)\//, null],
   [/^src\/renderer\/shared\/(api|components|format|logging|mock)\//, null],
-  [/^src\/shared\/domain\//, "main/domain"],
-  [/^src\/shared\/ai\/(index|proposal)\.ts$/, "main/domain"],
-  [/^src\/shared\/storage\/schemas\.ts$/, "main/infrastructure/persistence"],
   [/^src\/shared\//, "shared/ipc-contracts"],
 ];
 
@@ -69,7 +64,7 @@ export function listSourceFiles() {
   return walk(join(repositoryRoot, "src")).sort();
 }
 
-/** sourceの最終owner候補を返します。 */
+/** sourceのownerを返します。 */
 export function ownerForPath(path) {
   for (const [pattern, owner] of ownerRules) {
     if (pattern.test(path)) {
@@ -88,7 +83,7 @@ export function ownerForPath(path) {
       return path.split("/").slice(0, 4).join("/").replace(/^src\//, "");
     }
   }
-  throw new Error(`sourceのowner候補がありません: ${path}`);
+  throw new Error(`sourceのownerがありません: ${path}`);
 }
 
 function literalFromCall(node, name) {
@@ -226,21 +221,37 @@ function collectInstanceState(sourceFile) {
   return [...new Set(entries)].sort();
 }
 
+function staticImportSpecifier(node) {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return node.text;
+  }
+  return undefined;
+}
+
 function collectImports(sourceFile) {
   const imports = [];
   function visit(node) {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-      && node.moduleSpecifier != null
-      && ts.isStringLiteral(node.moduleSpecifier)) {
-      imports.push(node.moduleSpecifier.text);
+      && node.moduleSpecifier != null) {
+      const specifier = staticImportSpecifier(node.moduleSpecifier);
+      if (specifier != null) {
+        imports.push(specifier);
+      }
+    }
+    if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      const specifier = staticImportSpecifier(node.argument.literal);
+      if (specifier != null) {
+        imports.push(specifier);
+      }
     }
     if (ts.isCallExpression(node)
       && node.arguments.length === 1
       && (node.expression.kind === ts.SyntaxKind.ImportKeyword
         || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
       const [argument] = node.arguments;
-      if (argument != null && ts.isStringLiteral(argument)) {
-        imports.push(argument.text);
+      const specifier = argument != null ? staticImportSpecifier(argument) : undefined;
+      if (specifier != null) {
+        imports.push(specifier);
       }
     }
     ts.forEachChild(node, visit);
@@ -328,7 +339,7 @@ export function objectStringValues(path, variableName) {
 
 /** 変更案schemaの操作識別子を抽出します。 */
 export function proposalOperationKinds() {
-  const path = "src/shared/ai/proposal.ts";
+  const path = "src/main/domain/proposal.ts";
   const sourceFile = ts.createSourceFile(path, readSource(path), ts.ScriptTarget.Latest, true);
   const kinds = new Set();
   function visit(node) {

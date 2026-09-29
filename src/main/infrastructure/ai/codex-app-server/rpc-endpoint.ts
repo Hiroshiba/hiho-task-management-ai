@@ -50,7 +50,7 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
-} from "./index";
+} from "./rpc-schemas";
 import {
   CodexConnectionStateError,
   CodexConnectionStoppedError,

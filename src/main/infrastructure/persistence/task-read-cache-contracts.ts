@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { gidSchema, taskSchema } from "../../domain";
 import type {
   TaskReadCleanupItem,
   TaskReadEntry,
   TaskReadMetadata,
   TaskReadRanking,
   TaskReadSyncState,
+  TaskNormalizationBaseline,
 } from "../../application/common/ports/task-read-repository";
 import type { TaskReadPersistenceContracts } from "./task-read-repository";
 
@@ -13,6 +15,43 @@ type ExternalDataResult =
   | { readonly kind: "valid"; readonly status: "valid" }
   | { readonly kind: "broken"; readonly status: "broken" }
   | { readonly kind: "unknown_version"; readonly status: "unknown_version"; readonly schema: number };
+
+const normalizationBaselineEntrySchema = z.object({
+  gid: gidSchema,
+  previous: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("present"), task: taskSchema }).strict(),
+    z.object({ kind: z.literal("status_unavailable"), task: taskSchema }).strict(),
+    z.object({ kind: z.literal("absent") }).strict(),
+  ]),
+}).strict().superRefine((entry, context) => {
+  if (entry.previous.kind !== "absent" && entry.previous.task.gid !== entry.gid) {
+    context.addIssue({
+      code: "custom",
+      path: ["previous", "task", "gid"],
+      message: "正規化基準タスクのGIDが保存対象と一致しません。",
+    });
+  }
+});
+
+const normalizationBaselineSchema: z.ZodType<TaskNormalizationBaseline> = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }).strict(),
+  z.object({
+    kind: z.literal("pending"),
+    entries: z.array(normalizationBaselineEntrySchema).superRefine((entries, context) => {
+      const seen = new Set<string>();
+      entries.forEach((entry, index) => {
+        if (seen.has(entry.gid)) {
+          context.addIssue({
+            code: "custom",
+            path: [index, "gid"],
+            message: "同じGIDの正規化基準を重複して保存できません。",
+          });
+        }
+        seen.add(entry.gid);
+      });
+    }),
+  }).strict(),
+]);
 
 type TaskReadCacheSchemas<
   Entry extends TaskReadEntry,
@@ -84,6 +123,7 @@ export function createTaskReadCacheContracts<
     parseMetadata: (value) => schemas.metadata.parse(value),
     parseRanking: (value) => schemas.ranking.parse(value),
     parseSyncState: (value) => schemas.syncState.parse(value),
+    parseNormalizationBaseline: (value) => normalizationBaselineSchema.parse(value),
     parseCleanupItems: (value) => schemas.cleanupItems.parse(value),
     parseCleanupKinds: (value) => cleanupKindsSchema.parse(value),
     canonicalize: schemas.canonicalize,

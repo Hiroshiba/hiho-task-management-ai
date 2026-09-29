@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ProposalExecution } from "./ports/proposal-execution-repository";
-import { gidSchema, identifierSchema } from "../../domain/task-write-values";
+import { gidSchema, identifierSchema } from "../../domain/primitives";
 
 /** GUI編集の保存済み成功結果を検証します。 */
 export const guiTaskWriteResultSchema = z.object({

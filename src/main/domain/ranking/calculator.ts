@@ -1,12 +1,6 @@
 import { z } from "zod";
-import {
-  dateSchema,
-  identifierSchema,
-  isoDateTimeSchema,
-  taskSchema,
-  type Importance,
-  type TaskStatus,
-} from "../../../shared/domain";
+import { dateSchema, identifierSchema, isoDateTimeSchema } from "../primitives";
+import { taskSchema, type Importance, type TaskStatus } from "../schemas";
 import { DuplicateTaskGidError } from "../normalization/graph";
 
 const dayMilliseconds = 24 * 60 * 60 * 1000;

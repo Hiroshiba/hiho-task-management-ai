@@ -38,6 +38,12 @@ type WorkflowOptionsShape = {
   readonly snapshotProvider: unknown;
   readonly taskctlSnapshotProvider: unknown;
   readonly parseTaskctlSnapshot: unknown;
+  readonly createId: unknown;
+  readonly hashCanonicalJson: unknown;
+  readonly hashBaselineSnapshot: unknown;
+  readonly redactSensitiveText: unknown;
+  readonly isSessionOutputValidationError: unknown;
+  readonly isSessionSyncError: unknown;
   readonly baselineExternalDataProvider: unknown;
   readonly externalStatusEvidenceCollector: unknown;
   readonly executeApproval: unknown;
@@ -55,6 +61,12 @@ export function parseWorkflowOptions<TOptions extends WorkflowOptionsShape>(
   readonly snapshotProvider: TOptions["snapshotProvider"];
   readonly taskctlSnapshotProvider: TOptions["taskctlSnapshotProvider"];
   readonly parseTaskctlSnapshot: TOptions["parseTaskctlSnapshot"];
+  readonly createId: TOptions["createId"];
+  readonly hashCanonicalJson: TOptions["hashCanonicalJson"];
+  readonly hashBaselineSnapshot: TOptions["hashBaselineSnapshot"];
+  readonly redactSensitiveText: TOptions["redactSensitiveText"];
+  readonly isSessionOutputValidationError: TOptions["isSessionOutputValidationError"];
+  readonly isSessionSyncError: TOptions["isSessionSyncError"];
   readonly baselineExternalDataProvider: TOptions["baselineExternalDataProvider"];
   readonly externalStatusEvidenceCollector: TOptions["externalStatusEvidenceCollector"];
   readonly executeApproval: TOptions["executeApproval"];
@@ -90,6 +102,35 @@ const taskctlSnapshotProviderSchema = z.custom<TOptions["taskctlSnapshotProvider
 const taskctlSnapshotParserSchema = z.custom<TOptions["parseTaskctlSnapshot"]>(
   (value) => typeof value === "function",
   "taskctlスナップショット検証関数が必要です。",
+);
+
+const idFactorySchema = z.custom<TOptions["createId"]>(
+  (value) => typeof value === "function",
+  "変更案のID生成関数が必要です。",
+);
+
+const canonicalJsonHashSchema = z.custom<TOptions["hashCanonicalJson"]>(
+  (value) => typeof value === "function",
+  "変更案のハッシュ生成関数が必要です。",
+);
+const baselineSnapshotHashSchema = z.custom<TOptions["hashBaselineSnapshot"]>(
+  (value) => typeof value === "function",
+  "基準スナップショットのハッシュ生成関数が必要です。",
+);
+
+const redactSensitiveTextSchema = z.custom<TOptions["redactSensitiveText"]>(
+  (value) => typeof value === "function",
+  "診断情報の伏せ字関数が必要です。",
+);
+
+const sessionOutputValidationErrorGuardSchema = z.custom<TOptions["isSessionOutputValidationError"]>(
+  (value) => typeof value === "function",
+  "Codexの構造化出力エラー判定関数が必要です。",
+);
+
+const sessionSyncErrorGuardSchema = z.custom<TOptions["isSessionSyncError"]>(
+  (value) => typeof value === "function",
+  "Codexの同期エラー判定関数が必要です。",
 );
 
 const baselineExternalDataProviderSchema = z.custom<TOptions["baselineExternalDataProvider"]>(
@@ -130,6 +171,12 @@ return z
     snapshotProvider: snapshotProviderSchema,
     taskctlSnapshotProvider: taskctlSnapshotProviderSchema,
     parseTaskctlSnapshot: taskctlSnapshotParserSchema,
+    createId: idFactorySchema,
+    hashCanonicalJson: canonicalJsonHashSchema,
+    hashBaselineSnapshot: baselineSnapshotHashSchema,
+    redactSensitiveText: redactSensitiveTextSchema,
+    isSessionOutputValidationError: sessionOutputValidationErrorGuardSchema,
+    isSessionSyncError: sessionSyncErrorGuardSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
     externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
     executeApproval: approvalExecutorSchema,

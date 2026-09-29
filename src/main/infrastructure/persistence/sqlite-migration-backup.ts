@@ -83,7 +83,7 @@ export function backupSqliteBeforeMigration(
     throw new Error("移行前のSQLite schema versionを読み取れません。");
   }
   if (version === 0) return {};
-  if (version < 3 || version > 9) {
+  if (version < 3 || version > 10) {
     throw new Error(`未対応のSQLite schema versionです: ${version}`);
   }
   const preV9Path = `${dbPath}.pre-v9.backup.sqlite3`;
@@ -108,7 +108,7 @@ export function backupSqliteBeforeMigration(
       preV9.close();
     }
     preV9BackupPath = preV9Path;
-  } else if (version === 9) {
+  } else if (version >= 9) {
     const existing = captureSecurePersistentFile(preV9Path, "SQLite v9移行前バックアップ");
     if (existing.kind === "existing") {
       assertSecurePersistentFileSnapshot(preV9Path, existing, "SQLite v9移行前バックアップ");

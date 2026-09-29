@@ -6,7 +6,7 @@ import type {
   TaskWriteReadBackHint,
   TaskWriteReadBackPort,
 } from "../../application/common/ports/task-write-read-back";
-import { canonicalizeTaskWriteJson } from "../../domain/task-write-values";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import {
   parseReadBackAsanaTags,
   parseReadBackAsanaTask,
@@ -41,7 +41,7 @@ type Wait = (milliseconds: number, signal: AbortSignal) => Promise<void>;
 const createReadBackDelays = [200, 500, 1000] as const;
 
 function fingerprint(value: unknown): string {
-  return createHash("sha256").update(canonicalizeTaskWriteJson(value)).digest("hex");
+  return createHash("sha256").update(canonicalizeJson(value)).digest("hex");
 }
 
 function resolveTarget(target: TaskWriteTarget, context: TaskWriteExecutionContext): string {
@@ -122,9 +122,9 @@ function due(task: ReadBackAsanaTask): object {
 }
 
 function compare(current: unknown, before: unknown, after: unknown): FieldState {
-  const serialized = canonicalizeTaskWriteJson(current);
-  if (serialized === canonicalizeTaskWriteJson(after)) return "after";
-  if (serialized === canonicalizeTaskWriteJson(before)) return "before";
+  const serialized = canonicalizeJson(current);
+  if (serialized === canonicalizeJson(after)) return "after";
+  if (serialized === canonicalizeJson(before)) return "before";
   return "conflict";
 }
 
@@ -193,7 +193,7 @@ function createState(
   if (task.name !== payload.title
     || task.notes !== (payload.notes ?? "")
     || task.completed
-    || canonicalizeTaskWriteJson(due(task)) !== canonicalizeTaskWriteJson(payload.due ?? { kind: "absent" })) {
+    || canonicalizeJson(due(task)) !== canonicalizeJson(payload.due ?? { kind: "absent" })) {
     return "unknown";
   }
   const section = projectSection(task, payload.project_gid);
@@ -202,7 +202,7 @@ function createState(
   const external = readExternalData(task);
   if (external.kind !== "valid") return task.external == null ? "projection" : "unknown";
   if (external.gid !== `TaskHub:v1:task:${payload.create_uuid}`
-    || canonicalizeTaskWriteJson(external.data) !== canonicalizeTaskWriteJson(initialExternalData(step, context))) {
+    || canonicalizeJson(external.data) !== canonicalizeJson(initialExternalData(step, context))) {
     return "unknown";
   }
   return "applied";

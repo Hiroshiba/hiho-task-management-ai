@@ -1,5 +1,7 @@
 import type { App } from "electron";
+import type { ApplicationUpdateService } from "./application-update-service";
 import type { MainRuntime } from "./create-main-runtime";
+import { createStartupGate, type StartupGate } from "./startup-gate";
 
 type ShutdownState =
   | { readonly kind: "running" }
@@ -10,8 +12,8 @@ type MainLifecycleHooks = {
   readonly bootstrap: () => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly flushWindowState: () => void;
-  readonly installUpdateOnQuit: (quit: () => void) => boolean;
   readonly showSecondInstance: () => void;
+  readonly reportUncaughtException: (error: Error) => void;
   readonly reportBootstrapFailure: (error: unknown) => void;
   readonly reportStopFailure: (error: unknown) => void;
 };
@@ -19,8 +21,13 @@ type MainLifecycleHooks = {
 /** Electronライフサイクルの状態とMainRuntimeの参照を管理します。 */
 export interface MainLifecycleRegistration {
   isRunning(): boolean;
+  readonly startupGate: StartupGate;
   getRuntime(): MainRuntime | undefined;
   setRuntime(runtime: MainRuntime): void;
+  getUpdateService(): ApplicationUpdateService | undefined;
+  setUpdateService(service: ApplicationUpdateService): void;
+  startApplication(start: () => Promise<void>): Promise<void>;
+  waitForApplicationStart(): Promise<void>;
 }
 
 /** Electronの単一起動、終了、再起動時の処理順を登録します。 */
@@ -30,6 +37,11 @@ export function registerMainLifecycle(
 ): MainLifecycleRegistration {
   let state: ShutdownState = { kind: "running" };
   let runtime: MainRuntime | undefined;
+  let applicationUpdateService: ApplicationUpdateService | undefined;
+  let applicationStartPromise: Promise<void> | undefined;
+  const startupGate = createStartupGate();
+  const reportUncaughtException = (error: Error): void => hooks.reportUncaughtException(error);
+  process.on("uncaughtExceptionMonitor", reportUncaughtException);
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
@@ -49,7 +61,7 @@ export function registerMainLifecycle(
     state = { kind: "stopping" };
     void hooks.stop().then(() => {
       state = { kind: "stopped" };
-      if (hooks.installUpdateOnQuit(() => app.quit())) {
+      if (applicationUpdateService?.installOnQuit(() => app.quit()) === true) {
         return;
       }
       app.quit();
@@ -61,6 +73,8 @@ export function registerMainLifecycle(
   });
 
   app.on("will-quit", () => {
+    process.removeListener("uncaughtExceptionMonitor", reportUncaughtException);
+    applicationUpdateService?.dispose();
     runtime?.closeLateFiles();
   });
 
@@ -77,12 +91,32 @@ export function registerMainLifecycle(
 
   return {
     isRunning: () => state.kind === "running",
+    startupGate,
     getRuntime: () => runtime,
     setRuntime: (createdRuntime) => {
       if (runtime != null) {
         throw new Error("MainRuntimeは既に初期化されています。");
       }
       runtime = createdRuntime;
+    },
+    getUpdateService: () => applicationUpdateService,
+    setUpdateService: (service) => {
+      if (applicationUpdateService != null) {
+        throw new Error("アプリ本体の更新サービスは既に初期化されています。");
+      }
+      applicationUpdateService = service;
+    },
+    startApplication: (start) => {
+      if (applicationStartPromise != null) {
+        throw new Error("アプリケーションの起動は既に開始されています。");
+      }
+      applicationStartPromise = start();
+      return applicationStartPromise;
+    },
+    waitForApplicationStart: async () => {
+      if (applicationStartPromise != null) {
+        await applicationStartPromise;
+      }
     },
   };
 }

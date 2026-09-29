@@ -1,10 +1,6 @@
 import { z } from "zod";
-import {
-  areaSchema,
-  gidSchema,
-  identifierSchema,
-  snapshotHashSchema,
-} from "../task-write-values";
+import { gidSchema, identifierSchema } from "../primitives";
+import { areaSchema, snapshotHashSchema } from "../schemas";
 import {
   analysisProposalSchema as proposalSchema,
   type AnalysisProposal as Proposal,

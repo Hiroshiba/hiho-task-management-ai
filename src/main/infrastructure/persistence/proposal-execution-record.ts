@@ -8,7 +8,7 @@ import type {
   ProposalExecution,
   ProposalExecutionStep,
 } from "../../application/common/ports/proposal-execution-repository";
-import { canonicalizeTaskWriteJson } from "../../domain/task-write-values";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import { taskWriteSynchronizationFailureCodeSchema } from "../../application/common/ports/asana-task-write";
 
 const identifierSchema = z.string().min(1).regex(/^\S+$/u);
@@ -61,7 +61,7 @@ export type ReceiptParser = (value: unknown) => NonNullable<ProposalExecutionSte
 
 /** proposal contextの正規化JSONからfingerprintを作ります。 */
 export function fingerprintProposalExecutionContext(context: ProposalExecutionContext): string {
-  return createHash("sha256").update(canonicalizeTaskWriteJson(context)).digest("hex");
+  return createHash("sha256").update(canonicalizeJson(context)).digest("hex");
 }
 
 /** 保存済みcontextの選択操作をplanと事前判定結果に照らして検証します。 */

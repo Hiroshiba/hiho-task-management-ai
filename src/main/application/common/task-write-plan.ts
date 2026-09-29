@@ -1,12 +1,7 @@
 import { z } from "zod";
-import {
-  canonicalizeTaskWriteJson,
-  gidSchema,
-  identifierSchema,
-  isTaskWriteJsonValue,
-  isoDateTimeSchema,
-  snapshotHashSchema,
-} from "../../domain/task-write-values";
+import { gidSchema, identifierSchema, isoDateTimeSchema } from "../../domain/primitives";
+import { snapshotHashSchema } from "../../domain/schemas";
+import { canonicalizeJson, isJsonValue } from "../../domain/canonical-json";
 import {
   taskWriteStepSchema,
   type TaskWriteStep,
@@ -211,7 +206,7 @@ const taskWritePlanSchema = z.object({
     if (step.kind === "asana_merge_external_data" && plan.origin === "proposal" && step.scope.kind === "operation") {
       const operationBaseline = operationBaselines.get(step.scope.operation_id);
       if (operationBaseline == null
-        || canonicalizeTaskWriteJson(operationBaseline) !== canonicalizeTaskWriteJson(step.payload.baseline)) {
+        || canonicalizeJson(operationBaseline) !== canonicalizeJson(step.payload.baseline)) {
         context.addIssue({ code: "custom", path: ["steps", index, "payload", "baseline"], message: "外部データ更新の基準が操作の承認時基準と一致しません。" });
       }
     }
@@ -322,17 +317,17 @@ export function parseTaskWritePlan(
   value: unknown,
   fingerprint: TaskWritePayloadFingerprint,
 ): TaskWritePlan {
-  if (!isTaskWriteJsonValue(value)) {
+  if (!isJsonValue(value)) {
     throw new TypeError("write planはJSON値で指定してください。");
   }
   const plan = taskWritePlanSchema.parse(value);
   const { plan_fingerprint: planFingerprint, ...planContents } = plan;
-  const expectedPlanFingerprint = snapshotHashSchema.parse(fingerprint(canonicalizeTaskWriteJson(planContents)));
+  const expectedPlanFingerprint = snapshotHashSchema.parse(fingerprint(canonicalizeJson(planContents)));
   if (expectedPlanFingerprint !== planFingerprint) {
     throw new Error("保存済みwrite planのfingerprintが一致しません。");
   }
   for (const step of plan.steps) {
-    const expected = snapshotHashSchema.parse(fingerprint(canonicalizeTaskWriteJson(step.payload)));
+    const expected = snapshotHashSchema.parse(fingerprint(canonicalizeJson(step.payload)));
     if (expected !== step.payload_fingerprint) {
       throw new Error("保存済みwrite stepのpayload fingerprintが一致しません。");
     }
@@ -354,14 +349,14 @@ export function createTaskWritePlan(
   },
   fingerprint: TaskWritePayloadFingerprint,
 ): TaskWritePlan {
-  if (!isTaskWriteJsonValue(input)) {
+  if (!isJsonValue(input)) {
     throw new TypeError("write planの入力はJSON値で指定してください。");
   }
   const steps = input.steps.map((draft) => taskWriteStepSchema.parse({
     ...draft,
     executor_version: 1,
     retry_class: retryClassForStep(draft.kind),
-    payload_fingerprint: snapshotHashSchema.parse(fingerprint(canonicalizeTaskWriteJson(draft.payload))),
+    payload_fingerprint: snapshotHashSchema.parse(fingerprint(canonicalizeJson(draft.payload))),
   }));
   const planContents = {
     format_version: 1,
@@ -373,6 +368,6 @@ export function createTaskWritePlan(
   };
   return parseTaskWritePlan({
     ...planContents,
-    plan_fingerprint: snapshotHashSchema.parse(fingerprint(canonicalizeTaskWriteJson(planContents))),
+    plan_fingerprint: snapshotHashSchema.parse(fingerprint(canonicalizeJson(planContents))),
   }, fingerprint);
 }

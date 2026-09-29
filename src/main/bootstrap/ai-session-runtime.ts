@@ -63,7 +63,10 @@ type AiSessionServicePort = {
 };
 
 type AiSessionBrokerPort = { stop(): Promise<void> };
-type AiSessionWorkflowPort = { dispose(): void };
+type AiSessionWorkflowPort = {
+  dispose(): void;
+  resetPendingWithdrawConfirmation(): void;
+};
 type AiSessionWorkspacePort = { readonly userDataPath: string };
 
 type AiSessionRuntimeDependencies<
@@ -145,6 +148,27 @@ export class AiSessionRuntime<
   /** 実行中のAIセッションを列挙します。 */
   public activeSessions(): Iterable<AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>> {
     return this.sessions.values();
+  }
+
+  /** 実行中のAIセッションで保留中の取り消し確認を解除します。 */
+  public resetPendingWithdrawConfirmations(): void {
+    for (const record of this.sessions.values()) {
+      record.workflow.resetPendingWithdrawConfirmation();
+    }
+  }
+
+  /** AIターンのtaskctl基準スナップショットを要求します。 */
+  public requireTaskctlSnapshot(
+    signal: AbortSignal,
+    baselineStore: AiSessionBaselineStore<ExternalData, Snapshot>,
+  ): Snapshot {
+    this.dependencies.validateAbortSignal(signal);
+    this.dependencies.throwIfAborted(signal);
+    const snapshot = baselineStore.taskctlSnapshot;
+    if (snapshot == null) {
+      throw new Error("AIターンのtaskctl基準スナップショットがありません。");
+    }
+    return snapshot;
   }
 
   /** 開始中または実行中のAIセッションがあるかを返します。 */

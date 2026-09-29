@@ -1,7 +1,7 @@
 import type { GuiTaskWriteResult } from "../common/gui-task-write-result";
 import type { ProposalExecution } from "../common/ports/proposal-execution-repository";
 import { prepareTaskWriteRetry } from "../common/prepare-task-write-retry";
-import { identifierSchema } from "../../domain/task-write-values";
+import { identifierSchema } from "../../domain/primitives";
 import type { GuiEditExecutionPort } from "./apply";
 
 export { TaskWriteRetryNotAllowedError } from "../common/prepare-task-write-retry";

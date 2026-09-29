@@ -15,7 +15,6 @@ import {
   writeSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { inspect } from "node:util";
 import { z } from "zod";
 import {
   errorReportContextSchema,
@@ -23,10 +22,11 @@ import {
   type ErrorReportContext,
   type ErrorReporter,
 } from "../../application/common/errors/error-reporter";
+import { redactKnownSecrets } from "./redact-known-secrets";
+import { writeErrorReportFailure } from "./stderr-error-report";
 
 const maximumLogBytes = 1 * 1024 * 1024;
 const errorLogFileName = "taskhub-error.log";
-const errorLogFailureMessage = "永続エラーログの書き込みに失敗しました。";
 
 type ErrorDetail = {
   error_name: string;
@@ -85,29 +85,6 @@ const absolutePathSchema = z
 
 function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function redactKnownSecrets(
-  value: string,
-  knownSecrets: readonly string[],
-  redactText: (value: string) => string,
-): string {
-  let sanitized = redactText(value);
-  for (const secret of knownSecrets) {
-    sanitized = sanitized.replaceAll(secret, "[REDACTED]");
-  }
-  return sanitized;
-}
-
-/** ログ保存先の故障時に置換済みの原因とスタックを標準エラーへ記録します。 */
-export function writeErrorReportFailure(
-  error: unknown,
-  knownSecrets: readonly string[],
-  redactText: (value: string) => string,
-): void {
-  const details = inspect(error, { depth: null, maxStringLength: null, maxArrayLength: null });
-  const failureMessage = `${errorLogFailureMessage}\n${redactKnownSecrets(details, knownSecrets, redactText)}\n`;
-  writeSync(2, Buffer.from(failureMessage, "utf8"));
 }
 
 function assertRegularFile(path: string): void {
@@ -195,20 +172,18 @@ function restoreAppendStart(
 export class JsonlErrorReporter implements ErrorReporter {
   private readonly logsPath: string;
   private readonly errorLogPath: string;
-  private readonly knownSecrets: readonly string[];
-  private readonly encodedSecrets: readonly string[];
+  private readonly knownSecrets: () => readonly string[];
   private readonly formatter: ErrorLogFormatter;
   private readonly reported = new WeakMap<object, ReportedState>();
   private writing = false;
 
   public constructor(
     logsPath: string,
-    knownSecrets: readonly string[],
+    knownSecrets: () => readonly string[],
     formatter: ErrorLogFormatter,
   ) {
     const validatedLogsPath = absolutePathSchema.parse(logsPath);
-    this.knownSecrets = z.array(z.string().min(1)).parse(knownSecrets);
-    this.encodedSecrets = this.knownSecrets.map((secret) => JSON.stringify(secret).slice(1, -1));
+    this.knownSecrets = knownSecrets;
     this.formatter = errorLogFormatterSchema.parse(formatter);
     this.logsPath = resolve(validatedLogsPath);
     this.errorLogPath = join(this.logsPath, errorLogFileName);
@@ -263,7 +238,7 @@ export class JsonlErrorReporter implements ErrorReporter {
         "永続エラーログの保存に失敗しました。",
         { cause: reportableError },
       );
-      writeErrorReportFailure(fallbackError, this.knownSecrets, this.formatter.redactText);
+      writeErrorReportFailure(fallbackError, this.knownSecrets(), this.formatter.redactText);
       const fallbackState = { kind: "fallback", errorId, failure } satisfies ReportedState;
       this.markReported(error, fallbackState);
       this.markReported(failure, fallbackState);
@@ -294,15 +269,15 @@ export class JsonlErrorReporter implements ErrorReporter {
     }
     this.writing = true;
     try {
-      const serialized = JSON.stringify(record);
+      const knownSecrets = z.array(z.string().min(1)).parse(this.knownSecrets());
+      const serialized = JSON.stringify(record, (_key, value: unknown): unknown =>
+        typeof value === "string"
+          ? redactKnownSecrets(value, knownSecrets, this.formatter.redactText)
+          : value);
       if (serialized == null) {
         throw new Error("永続エラーログをシリアライズできませんでした。");
       }
-      this.append(redactKnownSecrets(
-        serialized,
-        this.encodedSecrets,
-        this.formatter.redactText,
-      ));
+      this.append(serialized);
     } finally {
       this.writing = false;
     }

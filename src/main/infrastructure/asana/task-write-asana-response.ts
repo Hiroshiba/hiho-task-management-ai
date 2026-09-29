@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { dateSchema, gidSchema, isoDateTimeSchema } from "../../domain/task-write-values";
+import { dateSchema, gidSchema, isoDateTimeSchema } from "../../domain/primitives";
 
 const tagSchema = z.object({ gid: gidSchema, name: z.string() }).strip();
 const taskSchema = z.object({

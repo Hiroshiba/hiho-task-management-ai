@@ -1,7 +1,16 @@
 import { ObsidianIntegrationWorkflow } from "../application/obsidian-integration";
-import { ObsidianReadError, ObsidianReadService, discoverTasksVault } from "../infrastructure/obsidian";
-import { SqliteVaultMappingRepository, type PersistenceRuntime } from "../infrastructure/persistence";
-import type { LegacyRuntimePort } from "./legacy-runtime-port";
+import { ObsidianReadError, discoverTasksVault } from "../infrastructure/obsidian";
+import { SqliteVaultMappingRepository } from "../infrastructure/persistence";
+import type { CodexSessionService } from "../infrastructure/ai";
+
+export type ObsidianCompositionDependencies = {
+  readonly assertOperationalReady: () => void;
+  readonly isStopped: () => boolean;
+  readonly isExternalToolConfigurationRunning: () => boolean;
+  readonly hasActiveAiSessions: () => boolean;
+  readonly codexSessionState: () => ReturnType<CodexSessionService["getState"]>;
+  readonly setCodexReadOnlyVaultPaths: (paths: readonly string[]) => void;
+};
 
 type ObsidianRuntimeOptions = {
   readonly readOnlyVaultPaths: readonly string[];
@@ -11,16 +20,19 @@ type ObsidianRuntimeOptions = {
 
 /** Vault保存先とObsidian操作をMainの運用状態へ接続します。 */
 export function createObsidianRuntime(
-  persistence: PersistenceRuntime,
+  adapters: {
+    readonly repository: SqliteVaultMappingRepository;
+    readonly reader: ConstructorParameters<typeof ObsidianIntegrationWorkflow>[0]["reader"];
+  },
   options: ObsidianRuntimeOptions,
 ): {
   readonly repository: SqliteVaultMappingRepository;
   readonly workflow: ObsidianIntegrationWorkflow;
-  readonly bindHost: (host: ReturnType<LegacyRuntimePort["getObsidianCompositionDependencies"]>) => void;
+  readonly bindHost: (host: ObsidianCompositionDependencies) => void;
 } {
-  const repository = new SqliteVaultMappingRepository(persistence.connection);
-  let host: ReturnType<LegacyRuntimePort["getObsidianCompositionDependencies"]> | undefined;
-  const requireHost = (): ReturnType<LegacyRuntimePort["getObsidianCompositionDependencies"]> => {
+  const { repository } = adapters;
+  let host: ObsidianCompositionDependencies | undefined;
+  const requireHost = (): ObsidianCompositionDependencies => {
     if (host == null) {
       throw new Error("Obsidian連携の接続が完了していません。");
     }
@@ -28,7 +40,7 @@ export function createObsidianRuntime(
   };
   const workflow = new ObsidianIntegrationWorkflow({
     repository,
-    reader: new ObsidianReadService(repository),
+    reader: adapters.reader,
     discoverTasksVault,
     assertOperationalReady: () => requireHost().assertOperationalReady(),
     isStopped: () => requireHost().isStopped(),

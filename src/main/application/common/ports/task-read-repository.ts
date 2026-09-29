@@ -88,6 +88,20 @@ export type TaskCacheDiffRecord = {
   readonly missing_gids: readonly string[];
 };
 
+/** 未適用の正規化より前に保存されていたタスクを表します。 */
+export type TaskNormalizationBaseline =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "pending";
+      readonly entries: readonly {
+        readonly gid: string;
+        readonly previous:
+          | { readonly kind: "present"; readonly task: TaskCacheRecord["task"] }
+          | { readonly kind: "status_unavailable"; readonly task: TaskCacheRecord["task"] }
+          | { readonly kind: "absent" };
+      }[];
+    };
+
 /** 保存と公開に共通する順位キャッシュの構造です。 */
 export type TaskReadRanking = {
   readonly app_version: string;
@@ -168,11 +182,13 @@ export interface TaskSyncRepository<
   SyncState extends TaskReadSyncState,
   CleanupItems extends TaskReadCleanupItem[],
 > extends TaskReadRepository<Entry, Metadata, Ranking, SyncState, CleanupItems[number]> {
+  getNormalizationBaseline(projectGid: string): TaskNormalizationBaseline;
   saveSyncSnapshot(
     entries: readonly Entry[],
     metadata: Metadata,
     ranking: Ranking,
     syncState: SyncState,
     cleanupItems: CleanupItems,
+    normalizationBaseline: TaskNormalizationBaseline,
   ): void;
 }

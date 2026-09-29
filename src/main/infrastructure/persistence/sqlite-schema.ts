@@ -1,6 +1,6 @@
 import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageSchemaVersion = 9;
+export const storageSchemaVersion = 10;
 
 export const storageLegacyTableNames = [
   "task_cache",
@@ -21,10 +21,27 @@ export const storageV7TableNames = [
   "proposal_execution_steps",
 ] as const;
 
-export const storageTableNames = [
+export const storageV9TableNames = [
   ...storageV7TableNames,
   "legacy_application_history",
 ] as const;
+
+export const storageTableNames = [
+  ...storageV9TableNames,
+  "pending_normalization_baseline",
+] as const;
+
+export const pendingNormalizationBaselineTableSql = `
+CREATE TABLE pending_normalization_baseline (
+  project_gid TEXT PRIMARY KEY NOT NULL,
+  entries_json TEXT NOT NULL
+);
+`;
+
+export const pendingNormalizationBaselineColumns: readonly ExpectedTableColumn[] = [
+  { name: "project_gid", type: "TEXT", notnull: 1, pk: 1 },
+  { name: "entries_json", type: "TEXT", notnull: 1, pk: 0 },
+];
 
 export const legacyApplicationHistoryTableSql = `
 CREATE TABLE legacy_application_history (
@@ -298,6 +315,7 @@ CREATE TABLE external_tool_definitions (
 );
 ${proposalExecutionTablesSql}
 ${legacyApplicationHistoryTableSql}
+${pendingNormalizationBaselineTableSql}
 `;
 
 export interface TableNameRow {

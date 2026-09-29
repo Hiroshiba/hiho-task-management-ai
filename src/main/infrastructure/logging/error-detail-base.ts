@@ -1,5 +1,3 @@
-import { inspect } from "node:util";
-
 /** 値が参照可能なオブジェクトか判定します。 */
 export function isObject(value: unknown): value is object {
   return typeof value === "object" && value != null;
@@ -38,23 +36,15 @@ export function getErrorName(value: unknown, redactText: (value: string) => stri
   return redactText(value.name);
 }
 
-function stringifyThrownValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  return inspect(value, {
-    depth: null,
-    maxStringLength: null,
-    maxArrayLength: null,
-  });
-}
-
 /** エラーメッセージを伏せ字処理して返します。 */
 export function getErrorMessage(value: unknown, redactText: (value: string) => string): string {
-  const message = value instanceof Error
-    ? stringifyThrownValue(value.message)
-    : stringifyThrownValue(value);
-  return redactText(message);
+  if (value instanceof Error) {
+    return redactText(value.message);
+  }
+  if (typeof value === "string") {
+    return redactText(value);
+  }
+  return `Error以外の${getNonErrorName(value)}が例外として渡されました。`;
 }
 
 /** スタックを伏せ字処理して返します。 */

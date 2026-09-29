@@ -8,6 +8,8 @@ type OperationalContextDependencies<
   readonly parseState: (state: State) => State;
   readonly contextFromState: (state: State) => Context | undefined;
   readonly operationKey: (context: Context) => string;
+  readonly canonicalizeContext: (context: Context) => string;
+  readonly createContextChangedError: () => Error;
   readonly availabilityFromState: (state: State) => Availability | undefined;
   readonly clientIdFromState: (state: State) => string | undefined;
   readonly readSettings: () => Settings | undefined;
@@ -61,6 +63,22 @@ export class OperationalContextRuntime<
       throw new Error("Asana設定の文脈がありません。");
     }
     return context;
+  }
+
+  /** 全文脈が操作開始時と一致することを確認します。 */
+  public assertContextUnchanged(expected: Context): void {
+    if (this.dependencies.canonicalizeContext(this.requireContext())
+      !== this.dependencies.canonicalizeContext(expected)) {
+      throw this.dependencies.createContextChangedError();
+    }
+  }
+
+  /** Asana操作に必要な文脈が開始時と一致することを確認します。 */
+  public assertOperationContextUnchanged(expected: Context): void {
+    if (this.dependencies.operationKey(this.requireContext())
+      !== this.dependencies.operationKey(expected)) {
+      throw this.dependencies.createContextChangedError();
+    }
   }
 
   /** 運用可能な端末設定を要求します。 */

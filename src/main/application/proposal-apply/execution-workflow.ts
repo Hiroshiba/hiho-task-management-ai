@@ -4,7 +4,7 @@ import type {
   ProposalExecutionListPage,
 } from "../common/ports/proposal-execution-repository";
 import { prepareTaskWriteRetry } from "../common/prepare-task-write-retry";
-import { identifierSchema } from "../../domain/task-write-values";
+import { identifierSchema } from "../../domain/primitives";
 import type { StoredProposalExecutionPort } from "./apply-stored-proposal";
 import { latestProposalExecution } from "./latest-proposal-execution";
 import type { StoredProposalWriteResult } from "./stored-proposal-result";

@@ -1,7 +1,8 @@
 import type { z } from "zod";
 import type { TaskWriteExecutionContext, TaskWriteExecutorRegistry } from "../../application/common/ports/task-write-executor";
 import { mergeCustomExternalData, type CustomExternalDataMergeOperation } from "../../domain/external-data-merge";
-import { canonicalizeTaskWriteJson, customExternalDataSchema } from "../../domain/task-write-values";
+import { customExternalDataSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import type { ReadBackAsanaTask } from "./task-write-asana-response";
 import { initialExternalData, readExternalData } from "./task-write-reconciliation";
 
@@ -13,7 +14,7 @@ type ExternalData = z.infer<typeof customExternalDataSchema>;
 
 /** Custom external dataを検証済みの正規化JSONへ変換します。 */
 export function serializeTaskWriteExternalData(data: unknown): string {
-  return canonicalizeTaskWriteJson(customExternalDataSchema.parse(data));
+  return canonicalizeJson(customExternalDataSchema.parse(data));
 }
 
 /** 保存済みの一時参照をAsanaタスクGIDへ解決します。 */
@@ -90,7 +91,7 @@ function mergeOperation(
           after: [...baseline.obsidian_links, change.link],
         };
       }
-      if (previous == null || canonicalizeTaskWriteJson(previous) !== canonicalizeTaskWriteJson(change.link)) {
+      if (previous == null || canonicalizeJson(previous) !== canonicalizeJson(change.link)) {
         throw new Error("解除するObsidianリンクが承認時基準と一致しません。");
       }
       return {

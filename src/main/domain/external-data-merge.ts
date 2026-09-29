@@ -1,18 +1,8 @@
 import { z } from "zod";
-import {
-  canonicalizeJson,
-  customExternalDataSchema,
-  dateSchema,
-  dependenciesSchema,
-  durationSchema,
-  identifierSchema,
-  obsidianLinksSchema,
-  parentWorkModeSchema,
-  serializeCustomExternalData,
-  type CustomExternalData,
-  type Duration,
-  type ObsidianLink,
-} from "../../shared/domain";
+import { dateSchema, identifierSchema } from "./primitives";
+import { customExternalDataSchema, dependenciesSchema, durationSchema, obsidianLinksSchema, parentWorkModeSchema, type CustomExternalData, type Duration, type ObsidianLink } from "./schemas";
+import { canonicalizeJson } from "./canonical-json";
+import { serializeCustomExternalData } from "./external-data";
 
 const activeTaskStatusSchema = z.enum(["not_started", "in_progress"]);
 const customExternalDataMergeFieldSchema = z.enum([

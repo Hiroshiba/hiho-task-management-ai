@@ -14,16 +14,20 @@ const entryPoints = [
   ["Electron起動入口", "src/main/index.ts", "main/bootstrap"],
   ["MainRuntime生成", "src/main/bootstrap/create-main-runtime.ts", "main/bootstrap"],
   ["Electron起動と終了", "src/main/bootstrap/register-main-lifecycle.ts", "main/bootstrap"],
-  ["Mainの旧統合", "src/main/application/service.ts", "main/bootstrap"],
+  ["ウィンドウの生成と保存", "src/main/bootstrap/main-window-runtime.ts", "main/bootstrap"],
+  ["運用イベント監視", "src/main/bootstrap/operational-event-runtime.ts", "main/bootstrap"],
+  ["アプリ本体の更新", "src/main/bootstrap/application-update-service.ts", "main/bootstrap"],
+  ["Main workflow生成", "src/main/bootstrap/main-workflow-construction.ts", "main/bootstrap"],
+  ["Main workflow結線", "src/main/bootstrap/main-workflow-composition.ts", "main/bootstrap"],
   ["IPC登録", "src/main/ipc/register-ipc.ts", "main/ipc"],
   ["preload bridge", "src/preload/index.ts", "preload"],
   ["Renderer起動", "src/renderer/app/main.ts", "renderer/app"],
   ["Renderer画面", "src/renderer/app/App.vue", "renderer/app"],
   ["変更案生成の状態", "src/main/application/proposal-generate/workflow-state.ts", "main/application/proposal-generate"],
-  ["変更案生成のCodex接続", "src/main/ai/workflow/service.ts", "main/application/proposal-generate"],
+  ["変更案生成のCodex接続", "src/main/application/proposal-generate/workflow-service.ts", "main/application/proposal-generate"],
   ["変更案適用と復旧", "src/main/application/proposal-apply/apply-stored-proposal.ts", "main/application/proposal-apply"],
   ["GUI編集", "src/main/application/gui-edit/apply.ts", "main/application/gui-edit"],
-  ["Asana同期", "src/main/asana/sync/coordinator.ts", "main/infrastructure/asana"],
+  ["Asana同期", "src/main/infrastructure/asana/sync/coordinator.ts", "main/infrastructure/asana"],
   ["タスク読取と同期", "src/main/application/task-read/workflow.ts", "main/application/task-read"],
   ["タスク読取の保存", "src/main/infrastructure/persistence/task-read-repository.ts", "main/infrastructure/persistence"],
   ["Obsidian連携", "src/main/application/obsidian-integration/workflow.ts", "main/application/obsidian-integration"],
@@ -33,15 +37,16 @@ const entryPoints = [
 ];
 
 const functions = [
-  ["アプリ起動・更新・ウィンドウ", "main/bootstrap", "src/main/bootstrap/create-main-runtime.ts, src/main/bootstrap/register-main-lifecycle.ts, src/main/index.ts, src/main/application-update.ts, src/main/window-state.ts"],
-  ["初回設定とAsana認証", "main/application/settings", "src/main/setup/, src/main/auth/asana-oauth/"],
-  ["タスク取得・同期・順位", "main/application/task-read", "src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/asana/sync/, src/main/domain/ranking/"],
-  ["タスク直接編集", "main/application/gui-edit", "src/main/application/gui-edit/, src/main/asana/client/task-write-client.ts"],
-  ["変更案の生成・検証・編集", "main/application/proposal-generate", "src/main/application/proposal-generate/, src/main/ai/workflow/, src/main/ai/proposal-validation/, src/main/ai/proposal-workspace/"],
+  ["アプリ起動・更新・ウィンドウ", "main/bootstrap", "src/main/index.ts, src/main/bootstrap/create-main-runtime.ts, src/main/bootstrap/register-main-lifecycle.ts, src/main/bootstrap/main-window-runtime.ts, src/main/bootstrap/window-state-controller.ts, src/main/bootstrap/operational-event-runtime.ts, src/main/bootstrap/application-update-service.ts"],
+  ["Main workflowの生成と結線", "main/bootstrap", "src/main/bootstrap/main-workflow-construction.ts, src/main/bootstrap/main-workflow-composition.ts"],
+  ["初回設定とAsana認証", "main/application/settings", "src/main/application/settings/, src/main/infrastructure/asana/oauth/, src/main/infrastructure/asana/setup/"],
+  ["タスク取得・同期・順位", "main/application/task-read", "src/main/application/task-read/, src/main/infrastructure/asana/task-read-adapter.ts, src/main/infrastructure/persistence/task-read-repository.ts, src/main/infrastructure/asana/sync/, src/main/domain/ranking/"],
+  ["タスク直接編集", "main/application/gui-edit", "src/main/application/gui-edit/, src/main/infrastructure/asana/client/task-write-client.ts"],
+  ["変更案の生成・検証・編集", "main/application/proposal-generate", "src/main/application/proposal-generate/"],
   ["変更案の承認・適用・復旧", "main/application/proposal-apply", "src/main/application/proposal-apply/, src/main/application/common/task-write-plan.ts, src/main/infrastructure/persistence/proposal-application-history-repository.ts"],
-  ["外部Codex接続とツール", "main/infrastructure/ai", "src/main/codex/, src/main/external-agent/transport.ts, src/main/external-tools/"],
-  ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/external-agent/service.ts"],
-  ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/external-agent/service.ts"],
+  ["外部Codex接続とツール", "main/infrastructure/ai", "src/main/infrastructure/ai/"],
+  ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/application/proposal-generate/external-agent-generation.ts"],
+  ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/application/proposal-apply/external-agent-application.ts"],
   ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
   ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
   ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/application/common/ports/secret-storage.ts, src/main/infrastructure/persistence/settings-repository.ts, src/main/infrastructure/persistence/secret-storage.ts"],
@@ -49,36 +54,38 @@ const functions = [
   ["タスク画面", "renderer/features/tasks", "src/renderer/features/tasks/"],
   ["変更案画面", "renderer/features/proposals", "src/renderer/features/proposals/"],
   ["設定画面", "renderer/features/settings", "src/renderer/features/settings/"],
-  ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/persistent-error-log.ts, src/main/infrastructure/persistence/diagnostic-log-repository.ts"],
+  ["ログ・診断", "main/infrastructure/logging", "src/main/infrastructure/logging/, src/main/infrastructure/persistence/diagnostic-log-repository.ts"],
   ["mock指定", "renderer/shared/mock", "src/renderer/shared/mock/mock-selection.ts"],
 ];
 
 const externalAgentResponsibilities = [
-  ["src/main/external-agent/service.ts", "CLI要求の検証・応答、bridgeとの接続", "main/infrastructure/ai"],
-  ["src/main/external-agent/service.ts", "文脈、提案基準、作業領域、提出要求", "main/application/proposal-generate"],
-  ["src/main/external-agent/service.ts", "提出済み提案の確認、承認、適用、履歴照会", "main/application/proposal-apply"],
-  ["src/main/external-agent/service.ts", "GUI状態の購読と解除", "main/ipc"],
-  ["src/main/external-agent/service.ts", "依存の組み立てと停止", "main/bootstrap"],
+  ["src/main/application/proposal-generate/external-agent-generation.ts", "CLI要求、文脈、提案基準、作業領域、提出要求", "main/application/proposal-generate"],
+  ["src/main/application/proposal-apply/external-agent-application.ts", "提出済み提案の確認、承認、適用、履歴照会、状態購読", "main/application/proposal-apply"],
+  ["src/main/infrastructure/ai/external-agent/transport.ts", "外部連携bridgeの通信", "main/infrastructure/ai"],
+  ["src/main/bootstrap/create-main-runtime.ts", "外部連携bridge adapterの生成", "main/bootstrap"],
+  ["src/main/bootstrap/main-workflow-construction.ts", "外部提案workflowとbridge factoryの接続", "main/bootstrap"],
+  ["src/main/bootstrap/main-workflow-composition.ts", "Main workflowとportの結線", "main/bootstrap"],
 ];
 
 const fileFormats = [
   ["SQLite", "taskhub.sqlite3", "src/main/bootstrap/create-main-runtime.ts", '"taskhub.sqlite3"', "main/infrastructure/persistence"],
-  ["暗号化JSON", "secret-storage.json", "src/main/index.ts", '"secret-storage.json"', "main/infrastructure/persistence"],
-  ["初回設定JSON", "setup-checkpoint.json", "src/main/index.ts", '"setup-checkpoint.json"', "main/application/settings"],
+  ["暗号化JSON", "secret-storage.json", "src/main/bootstrap/create-main-runtime.ts", '"secret-storage.json"', "main/infrastructure/persistence"],
+  ["初回設定JSON", "setup-checkpoint.json", "src/main/bootstrap/create-main-runtime.ts", '"setup-checkpoint.json"', "main/application/settings"],
   ["ウィンドウJSON", "window-state.json", "src/main/bootstrap/create-main-runtime.ts", '"window-state.json"', "main/bootstrap"],
   ["更新試行JSON", "application-update-attempt.json", "src/main/bootstrap/create-main-runtime.ts", '"application-update-attempt.json"', "main/bootstrap"],
   ["エラーJSONL", "taskhub-error.log", "src/main/infrastructure/logging/jsonl-error-reporter.ts", '"taskhub-error.log"', "main/infrastructure/logging"],
-  ["外部Codex設定JSON", "external-agent/config.json", "src/main/external-agent/resources.ts", '"config.json"', "main/application/settings"],
-  ["外部Codex接続JSON", "external-agent/connection.json", "src/main/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
-  ["taskctl接続JSON", "taskctl-connection.json", "src/main/codex/taskctl/broker.ts", '"taskctl-connection.json"', "main/infrastructure/ai"],
-  ["contextctl接続JSON", "contextctl-connection.json", "src/main/external-tools/broker.ts", '"contextctl-connection.json"', "main/infrastructure/ai"],
-  ["Codex作業資源", "codex-workspace/ と codex-home/", "src/main/codex/workspace/schemas.ts", '"codex-workspace"', "main/infrastructure/ai"],
-  ["Asana Custom external data", "Asana task external data", "src/shared/domain/external-data.ts", "customExternalDataSchemaVersion", "main/domain"],
+  ["外部Codex設定JSON", "external-agent/config.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"config.json"', "main/application/settings"],
+  ["外部Codex接続JSON", "external-agent/connection.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
+  ["taskctl接続JSON", "taskctl-connection.json", "src/main/infrastructure/ai/taskctl/broker.ts", '"taskctl-connection.json"', "main/infrastructure/ai"],
+  ["contextctl接続JSON", "contextctl-connection.json", "src/main/infrastructure/ai/external-tools/broker.ts", '"contextctl-connection.json"', "main/infrastructure/ai"],
+  ["Codex作業資源", "codex-workspace/ と codex-home/", "src/main/infrastructure/ai/codex-workspace/schemas.ts", '"codex-workspace"', "main/infrastructure/ai"],
+  ["Asana Custom external data", "Asana task external data", "src/main/domain/external-data.ts", "customExternalDataSchemaVersion", "main/domain"],
 ];
 
 const sqliteOwners = new Map([
   ["application_journal", "main/application/proposal-apply"],
   ["legacy_application_history", "main/application/proposal-apply"],
+  ["pending_normalization_baseline", "main/application/task-read"],
   ["task_cache", "main/application/task-read"],
   ["project_metadata_cache", "main/application/task-read"],
   ["ranking_cache", "main/application/task-read"],
@@ -89,126 +96,6 @@ const sqliteOwners = new Map([
   ["diagnostic_log", "main/infrastructure/logging"],
   ["external_tool_definitions", "main/application/settings"],
 ]);
-
-const appStateOwners = new Map([
-  ["renderer/app", ["screen", "appUpdateState", "removeAppUpdateSubscription", "isMounted"]],
-  ["renderer/features/tasks", [
-    "activeSyncMode", "activeSyncReload", "clockTimer", "connectionState",
-    "currentAsOf", "filter", "guiEditGeneration", "guiEditStates", "lastLoadedSuccessfulSyncAt",
-    "normalizationNotificationDisplayState", "overview", "removeSyncSubscription", "selectedTask",
-    "selectedTaskGid", "taskDataGeneration", "taskDetailGeneration", "taskEditMarkerGeneration",
-    "taskEditMarkers", "taskFeedback", "taskSort",
-  ]],
-  ["renderer/features/proposals", [
-    "aiDialogComponent", "aiDialogFeedback", "aiDialogRef", "aiDialogReturnFocus", "aiDialogVisible",
-    "aiSelectedSessionId", "aiSessionCreating", "aiSessions", "codexState", "externalAgentBusy",
-    "externalAgentEditResult", "externalAgentState", "removeAiStatusSubscription", "removeAiSubscription",
-    "removeExternalAgentSubscription",
-  ]],
-  ["renderer/features/settings", [
-    "asanaAuthenticationBusy", "asanaAuthenticationState", "asanaAuthenticationStateGeneration",
-    "asanaAuthenticationStateLoadInProgress", "asanaAuthenticationStateLoaded",
-    "asanaAuthenticationStateNeedsRecheck", "asanaAuthenticationStateRequestBusy",
-    "asanaAuthenticationStateTimer", "asanaAuthorizationCodeInput", "integrationStatus",
-    "integrationStatusError", "integrationStatusLoading", "settingsDialogFeedback",
-    "settingsDialogVisible", "setupBusy", "setupState",
-    "vaultMappingBusy", "vaultMappingFeedback", "vaultMappings", "vaultMappingsLoadGeneration",
-    "vaultMappingsLoading", "vaultSaveGeneration",
-  ]],
-  ["renderer/features/obsidian-integration", [
-    "obsidianStatusGeneration", "obsidianStatuses", "registeredVaultIds",
-  ]],
-  ["renderer/shared/components", ["feedback"]],
-]);
-
-const externalAgentStateOwners = new Map([
-  ["main/application/proposal-generate", [
-    "context", "lifecycle", "preparation", "preparedContexts", "preparedRequests",
-    "requests", "review", "submission",
-  ]],
-  ["main/application/proposal-apply", ["proposals", "reviewTarget"]],
-  ["main/ipc", ["listeners"]],
-  ["main/bootstrap", ["options", "stopped"]],
-  ["main/application/common", ["code"]],
-]);
-
-const applicationStateOwners = new Map([
-  ["main/application/proposal-generate", [
-    "aiApplicationState", "aiDeltaListeners", "aiSessionStarts", "aiSessionWorkspaceParentPath",
-    "aiSessions", "aiSessionsConfigured", "aiStartResult", "aiStatusListeners",
-    "codexAvailability", "configuredCodexLaunchState", "configuredCodexSynchronizationPromise",
-    "externalAgent", "externalAgentBridge", "externalAgentInstanceId", "externalStatusEvidenceCollector",
-    "externalToolLifecycle", "externalToolRegistry",
-  ]],
-  ["main/application/proposal-apply", [
-    "applicationCoordinator", "journalRecoveryPending", "journalRecoveryPromise", "journalRecoveryRunning",
-    "writer",
-  ]],
-  ["main/application/task-read", [
-    "cleanupAggregation", "displayOrder", "lastDisplaySyncAt", "operationQueue", "planApplier",
-    "taskRead", "runtime", "scheduler", "syncCoordinator", "syncDiagnosticState",
-    "syncFailureDiagnosticSuppressionCount", "syncStateListeners",
-  ]],
-  ["main/application/settings", [
-    "asanaReauthenticationOperation", "capability", "checkpoint", "codexAuthenticationRequired",
-    "context", "externalToolConfigurationOperation", "oauth", "resources", "settings",
-    "settingsRepository", "setup", "setupIpc",
-  ]],
-  ["main/application/gui-edit", ["guiEdit"]],
-  ["main/application/obsidian-integration", ["obsidian"]],
-  ["main/infrastructure/persistence", [
-    "externalToolDefinitionRepository", "proposalApplicationHistoryRepository",
-    "taskReadRepository", "vaultMappingRepository",
-  ]],
-  ["main/infrastructure/logging", ["diagnostics"]],
-  ["main/bootstrap", [
-    "aiEvents", "aiInteraction", "aiRuntime", "asanaReauthentication", "codexAdapter",
-    "codexConnectionFactory", "codexSession", "codexWorkspace", "configuredCodexRuntime",
-    "deltaSource", "externalTools", "fullSource", "highPriorityTransport", "interactiveReadClient",
-    "interactiveWriteClient", "journalRecovery", "lifecycleRuntime", "operationalContext",
-    "operationalServices", "options", "readClient", "readyActivated",
-    "removeRuntimeSubscription", "secretStorage", "setupClient", "stopped",
-    "syncStateRuntime", "synchronizationOperations", "taskWriteExecution", "tokenProvider", "transport",
-    "writeClient",
-  ]],
-]);
-
-function stateOwner(path, symbol, defaultOwner) {
-  if (path === "src/main/index.ts" && symbol === "persistentErrorLog") {
-    return "main/infrastructure/logging";
-  }
-  if (path !== "src/renderer/app/App.vue") {
-    return defaultOwner;
-  }
-  for (const [owner, symbols] of appStateOwners) {
-    if (symbols.includes(symbol)) {
-      return owner;
-    }
-  }
-  throw new Error(`App.vueの状態owner候補がありません: ${symbol}`);
-}
-
-function instanceStateOwner(path, symbol, defaultOwner) {
-  if (path === "src/main/external-agent/service.ts") {
-    const member = symbol.slice(symbol.indexOf(".") + 1);
-    for (const [owner, members] of externalAgentStateOwners) {
-      if (members.includes(member)) {
-        return owner;
-      }
-    }
-    throw new Error(`ExternalAgentServiceの状態owner候補がありません: ${symbol}`);
-  }
-  if (path !== "src/main/application/service.ts" || !symbol.startsWith("TaskHubApplication.")) {
-    return defaultOwner;
-  }
-  const member = symbol.slice("TaskHubApplication.".length);
-  for (const [owner, members] of applicationStateOwners) {
-    if (members.includes(member)) {
-      return owner;
-    }
-  }
-  throw new Error(`TaskHubApplicationの状態owner候補がありません: ${member}`);
-}
 
 function version(path, name) {
   const match = readSource(path).match(new RegExp(`(?:export )?const ${name} = (\\d+);`));
@@ -232,7 +119,7 @@ function ownerForChannel(channel) {
   if (channel.startsWith("obsidian-integration:")) return "main/application/obsidian-integration";
   if (channel.startsWith("github-integration:")) return "main/application/github-integration";
   if (channel.startsWith("diagnostics:")) return "main/infrastructure/logging";
-  throw new Error(`IPC channelのowner候補がありません: ${channel}`);
+  throw new Error(`IPC channelのownerがありません: ${channel}`);
 }
 
 function table(head, rows) {
@@ -244,14 +131,14 @@ function table(head, rows) {
   ].join("\n");
 }
 
-function render(revision) {
+function render() {
   const paths = listSourceFiles();
   const source = paths.map((path) => ({ path, owner: ownerForPath(path), analysis: analyzeSource(path, readSource(path)) }));
-  const moduleState = source.flatMap(({ path, owner, analysis }) => analysis.mutable.map((symbol) => [path, symbol, stateOwner(path, symbol, owner)]));
+  const moduleState = source.flatMap(({ path, owner, analysis }) => analysis.mutable.map((symbol) => [path, symbol, owner]));
   const componentState = source.flatMap(({ path, owner, analysis }) => analysis.componentState
-    .map((symbol) => [path, symbol, stateOwner(path, symbol, owner)]));
+    .map((symbol) => [path, symbol, owner]));
   const instanceState = source.flatMap(({ path, owner, analysis }) => analysis.instanceState
-    .map((symbol) => [path, symbol, instanceStateOwner(path, symbol, owner)]));
+    .map((symbol) => [path, symbol, owner]));
   const channels = [
     ["src/shared/ipc-contracts/system.ts", "systemChannels"],
     ["src/shared/ipc-contracts/tasks.ts", "tasksChannels"],
@@ -271,7 +158,7 @@ function render(revision) {
   const databaseSource = readSource("src/main/infrastructure/persistence/sqlite-schema.ts");
   const tables = [...new Set([...databaseSource.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1]))].sort();
   if (tables.length !== sqliteOwners.size || tables.some((name) => !sqliteOwners.has(name))) {
-    throw new Error("SQLite tableのowner候補が不足しています。");
+    throw new Error("SQLite tableのownerが不足しています。");
   }
   for (const [, , path, marker] of fileFormats) {
     if (!readSource(path).includes(marker)) {
@@ -280,10 +167,10 @@ function render(revision) {
   }
   const versions = [
     ["SQLite", "src/main/infrastructure/persistence/sqlite-schema.ts", "storageSchemaVersion"],
-    ["初回設定JSON", "src/main/application/checkpoint.ts", "checkpointVersion"],
+    ["初回設定JSON", "src/main/infrastructure/persistence/setup-checkpoint-store.ts", "checkpointVersion"],
     ["暗号化JSON", "src/main/infrastructure/persistence/secret-storage.ts", "encryptedFileVersion"],
     ["ウィンドウJSON", "src/main/infrastructure/persistence/window-state-store.ts", "windowStateVersion"],
-    ["Asana Custom external data", "src/shared/domain/external-data.ts", "customExternalDataSchemaVersion"],
+    ["Asana Custom external data", "src/main/domain/external-data.ts", "customExternalDataSchemaVersion"],
   ].map(([name, path, symbol]) => [name, version(path, symbol), path, symbol]);
   for (const [, path] of entryPoints) {
     if (!paths.includes(path)) {
@@ -291,64 +178,49 @@ function render(revision) {
     }
   }
   return [
-    "# 現行source map",
+    "# ソース対応表",
     "",
-    "基準commit: `" + revision + "`。対象は`src`以下の手編集source "
-      + paths.length + "件で、各行のownerは移行完了時に責任を持つ候補です。現行の物理配置とは異なります。生成: `node scripts/generate-current-source-map.mjs --revision="
-      + revision + " --write`。",
+    "一覧は現在の作業ツリーにある`src`以下の手編集source "
+      + paths.length + "件から生成しています。各行のownerはsourceの配置に対応します。生成: `node scripts/generate-current-source-map.mjs --write`。",
     "",
     "## 機能と入口",
     "",
-    table(["機能", "最終owner", "現行source"], functions),
-    table(["入口", "現行source", "最終owner"], entryPoints),
-    "## 全sourceのowner候補",
+    table(["機能", "owner", "source"], functions),
+    table(["入口", "source", "owner"], entryPoints),
+    "## 全sourceのowner",
     "",
-    table(["現行source", "最終owner候補"], source.map(({ path, owner }) => [path, owner])),
-    "外部エージェントの現行serviceには複数の責務が同居しています。ファイル単位の候補を提案生成とし、移行時は次のownerへ分離します。",
+    table(["source", "owner"], source.map(({ path, owner }) => [path, owner])),
+    "外部エージェントの責務は次のsourceに配置しています。",
     "",
-    table(["現行source", "責務", "最終owner候補"], externalAgentResponsibilities),
-    "## 可変状態候補",
+    table(["source", "責務", "owner"], externalAgentResponsibilities),
+    "## 可変状態",
     "",
     "TypeScriptのmodule直下にある`let`、`var`、instance生成、変更される`const`、Vue `script setup`直下の状態候補、classのinstance fieldを抽出しています。保存済みの状態とライフサイクルは [state-ownership.md](state-ownership.md) に記します。",
     "",
-    table(["module source", "symbol", "最終owner候補"], moduleState),
-    table(["Vue component", "状態候補", "最終owner候補"], componentState),
-    table(["instance source", "class member", "最終owner候補"], instanceState),
+    table(["module source", "symbol", "owner"], moduleState),
+    table(["Vue component", "状態", "owner"], componentState),
+    table(["instance source", "class member", "owner"], instanceState),
     "## IPC channel",
     "",
     "channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義です。配送ownerは全件`main/ipc`と`preload`、契約ownerは`shared/ipc-contracts`です。",
     "",
-    table(["channel", "機能owner候補"], channels.map((channel) => [channel, ownerForChannel(channel)])),
+    table(["channel", "機能owner"], channels.map((channel) => [channel, ownerForChannel(channel)])),
     "## 変更案の操作",
     "",
-    "識別子は`src/shared/ai/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約の最終ownerは`main/domain`、適用handlerと実行のownerは`main/application/proposal-apply`です。IPC DTOは`shared/ipc-contracts`が所有します。",
+    "識別子は`src/main/domain/proposal.ts`の`proposalOperationSchema`から抽出しています。操作契約は`main/domain`、適用handlerと実行は`main/application/proposal-apply`が所有します。IPC DTOは`shared/ipc-contracts`が所有します。",
     "",
     table(["operation", "適用owner"], operations.map((operation) => [operation, "main/application/proposal-apply"])),
     "## 保存形式",
     "",
-    table(["形式", "保存先または対象", "現行source", "利用上のowner候補"], fileFormats.map(([format, target, path, , owner]) => [format, target, path, owner])),
-    table(["形式", "現行version", "現行source", "version symbol"], versions),
-    "SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaの現行versionは上記の値です。",
+    table(["形式", "保存先または対象", "source", "利用上のowner"], fileFormats.map(([format, target, path, , owner]) => [format, target, path, owner])),
+    table(["形式", "version", "source", "version symbol"], versions),
+    "SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQLite schemaのversionは上記の値です。",
     "",
-    table(["SQLite table", "利用上のowner候補"], tables.map((name) => [name, sqliteOwners.get(name)])),
-    "## T49で削除する移行経路",
-    "",
-    "旧Main機能の移行後は、次の経路と`check-architecture.mjs`の旧service向け例外を削除します。",
-    "",
-    table(["対象", "削除条件"], [
-      ["src/main/application/service.ts", "未移行機能のworkflow移管完了"],
-      ["src/main/bootstrap/legacy-runtime-port.ts", "旧serviceへの唯一の接続が不要"],
-      ["src/main/bootstrap/main-lifecycle-runtime.ts", "旧serviceの起動・停止処理を新runtimeへ移管"],
-    ]),
+    table(["SQLite table", "利用上のowner"], tables.map((name) => [name, sqliteOwners.get(name)])),
   ].join("\n");
 }
 
-const revisionArgument = process.argv.find((argument) => argument.startsWith("--revision="));
-if (revisionArgument == null || revisionArgument.slice("--revision=".length).length === 0) {
-  throw new Error("--revisionに基準commitを指定してください。");
-}
-const revision = revisionArgument.slice("--revision=".length);
-const markdown = render(revision);
+const markdown = render();
 if (process.argv.includes("--write")) {
   const path = join(repositoryRoot, "docs/architecture/current-source-map.md");
   mkdirSync(dirname(path), { recursive: true });

@@ -152,6 +152,7 @@ export function normalizeSnapshot(
   sectionGids: SnapshotNormalizationInput["section_gids"],
   rawTasks: readonly AsanaTaskResponse[],
   previousTasks: readonly SnapshotNormalizationResult["tasks"][number][],
+  statusPreviousTasks: readonly SnapshotNormalizationResult["tasks"][number][],
   activityBaselineTasks: readonly SnapshotNormalizationResult["tasks"][number][],
   inaccessibleGids: readonly string[],
   activityDate: string,
@@ -162,6 +163,7 @@ export function normalizeSnapshot(
     activity_date: activityDate,
     tasks: sortedTasks(rawTasks),
     previous_tasks: [...previousTasks],
+    status_previous_tasks: [...statusPreviousTasks],
     activity_baseline_tasks: [...activityBaselineTasks],
     inaccessible_gids: [...inaccessibleGids],
   });

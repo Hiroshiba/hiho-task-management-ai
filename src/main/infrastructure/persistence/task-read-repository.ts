@@ -3,6 +3,7 @@ import type {
   TaskReadEntry,
   TaskReadMetadata,
   TaskReadRanking,
+  TaskNormalizationBaseline,
   TaskSyncRepository,
   TaskReadSyncState,
 } from "../../application/common/ports/task-read-repository";
@@ -40,6 +41,11 @@ type SyncStateRow = {
 
 type CleanupRow = { readonly cache_key: number; readonly cleanup_items_json: string };
 
+type NormalizationBaselineRow = {
+  readonly project_gid: string;
+  readonly entries_json: string;
+};
+
 type TaskCacheDiff<Entry> = {
   readonly upsert: readonly Entry[];
   readonly missing_gids: readonly string[];
@@ -61,6 +67,7 @@ export type TaskReadPersistenceContracts<
   readonly parseMetadata: (value: unknown) => Metadata;
   readonly parseRanking: (value: unknown) => Ranking;
   readonly parseSyncState: (value: unknown) => SyncState;
+  readonly parseNormalizationBaseline: (value: unknown) => TaskNormalizationBaseline;
   readonly parseCleanupItems: (value: unknown) => CleanupItems;
   readonly parseCleanupKinds: (value: unknown) => readonly string[];
   readonly canonicalize: (value: unknown) => string;
@@ -394,6 +401,41 @@ export class TaskReadPersistenceRepository<
     ).all().map((row) => this.parseSyncStateRow(row));
   }
 
+  /** 未適用の正規化より前のタスクをプロジェクト単位で読み出します。 */
+  public getNormalizationBaseline(projectGid: string): TaskNormalizationBaseline {
+    const validatedGid = this.contracts.parseGid(projectGid);
+    const row = this.runtime.connection.prepare<[string], NormalizationBaselineRow>(
+      "SELECT project_gid, entries_json FROM pending_normalization_baseline WHERE project_gid = ?",
+    ).get(validatedGid);
+    if (row == null) {
+      return { kind: "none" };
+    }
+    if (row.project_gid !== validatedGid) {
+      throw new Error("正規化基準のプロジェクトGIDが一致しません。");
+    }
+    return this.contracts.parseNormalizationBaseline({
+      kind: "pending",
+      entries: parseStoredJson(row.entries_json),
+    });
+  }
+
+  private saveNormalizationBaseline(
+    projectGid: string,
+    baseline: TaskNormalizationBaseline,
+  ): void {
+    if (baseline.kind === "none") {
+      this.runtime.connection.prepare<[string]>(
+        "DELETE FROM pending_normalization_baseline WHERE project_gid = ?",
+      ).run(projectGid);
+      return;
+    }
+    this.runtime.connection.prepare<[string, string]>(
+      `INSERT INTO pending_normalization_baseline (project_gid, entries_json)
+       VALUES (?, ?)
+       ON CONFLICT(project_gid) DO UPDATE SET entries_json = excluded.entries_json`,
+    ).run(projectGid, serializeStoredJson(baseline.entries));
+  }
+
   /** 同期スナップショットを一つのトランザクションで保存します。 */
   public saveSyncSnapshot(
     entries: readonly Entry[],
@@ -401,14 +443,22 @@ export class TaskReadPersistenceRepository<
     ranking: Ranking,
     syncState: SyncState,
     cleanupItems: CleanupItems,
+    normalizationBaseline: TaskNormalizationBaseline,
   ): void {
     const validatedEntries = this.contracts.parseEntries(entries);
     const validatedMetadata = this.contracts.parseMetadata(metadata);
     const validatedRanking = this.contracts.parseRanking(ranking);
     const validatedSyncState = this.contracts.parseSyncState(syncState);
     const validatedCleanup = this.contracts.parseCleanupItems(cleanupItems);
+    const validatedBaseline = this.contracts.parseNormalizationBaseline(normalizationBaseline);
     if (validatedMetadata.project.gid !== validatedSyncState.project_gid) {
       throw new Error("同期スナップショットのプロジェクトGIDが一致しません。");
+    }
+    if (validatedBaseline.kind === "pending") {
+      const baselineGids = new Set(validatedBaseline.entries.map((entry) => entry.gid));
+      if (validatedEntries.some((entry) => !baselineGids.has(entry.gid))) {
+        throw new Error("未適用の正規化基準に表示タスクのGIDがありません。");
+      }
     }
     const save = this.runtime.transaction(() => {
       const existing = this.getCleanupItems() ?? this.contracts.parseCleanupItems([]);
@@ -421,6 +471,7 @@ export class TaskReadPersistenceRepository<
       this.saveRankingCache(validatedRanking);
       this.saveCleanupItems(aggregated);
       this.saveSyncState(validatedSyncState);
+      this.saveNormalizationBaseline(validatedSyncState.project_gid, validatedBaseline);
     });
     save();
   }
@@ -429,7 +480,7 @@ export class TaskReadPersistenceRepository<
   public clearCaches(): void {
     const clear = this.runtime.transaction(() => {
       this.runtime.connection.exec(
-        "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM cleanup_items_cache; DELETE FROM sync_state; DELETE FROM diagnostic_log;",
+        "DELETE FROM task_cache; DELETE FROM project_metadata_cache; DELETE FROM ranking_cache; DELETE FROM cleanup_items_cache; DELETE FROM sync_state; DELETE FROM pending_normalization_baseline; DELETE FROM diagnostic_log;",
       );
     });
     clear();

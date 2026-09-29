@@ -1,10 +1,10 @@
-import { gidSchema } from "../../../shared/domain/primitives";
+import { gidSchema } from "../primitives";
 import {
   cleanupItemSchema,
   taskStatusSchema,
   type CleanupItem,
   type TaskStatus,
-} from "../../../shared/domain/schemas";
+} from "../schemas";
 
 export type ActiveTaskStatus = "not_started" | "in_progress";
 

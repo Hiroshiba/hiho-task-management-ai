@@ -1,16 +1,6 @@
 import { z } from "zod";
-import {
-  areaSchema,
-  dependencyScopeSchema,
-  durationSchema,
-  gidSchema,
-  identifierSchema,
-  importanceSchema,
-  obsidianLinkSchema,
-  obsidianLinksSchema,
-  parentWorkModeSchema,
-  snapshotHashSchema,
-} from "../task-write-values";
+import { gidSchema, identifierSchema } from "../primitives";
+import { areaSchema, dependencyScopeSchema, durationSchema, importanceSchema, obsidianLinkSchema, obsidianLinksSchema, parentWorkModeSchema, snapshotHashSchema } from "../schemas";
 
 const absentSchema = z.object({ kind: z.literal("absent") });
 const targetSchema = z.discriminatedUnion("kind", [

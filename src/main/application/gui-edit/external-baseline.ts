@@ -1,8 +1,6 @@
-import {
-  canonicalizeTaskWriteJson,
-  customExternalDataSchema,
-  externalTaskGidSchema,
-} from "../../domain/task-write-values";
+import { externalTaskGidSchema } from "../../domain/primitives";
+import { customExternalDataSchema } from "../../domain/schemas";
+import { canonicalizeJson } from "../../domain/canonical-json";
 import type { TaskWriteExternalBaseline } from "../common/task-write-step";
 
 type ExternalTask = {
@@ -28,7 +26,7 @@ export function guiExternalBaseline(task: ExternalTask): GuiExternalBaseline {
     return { kind: "conflict", reason_code: "external_unreadable" };
   }
   const data = customExternalDataSchema.safeParse(decoded);
-  if (!data.success || canonicalizeTaskWriteJson(data.data) !== task.external.data) {
+  if (!data.success || canonicalizeJson(data.data) !== task.external.data) {
     return { kind: "conflict", reason_code: "external_unreadable" };
   }
   if (gid.data !== `TaskHub:v1:task:${data.data.id}`) {

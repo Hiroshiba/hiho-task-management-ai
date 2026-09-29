@@ -1,10 +1,32 @@
+import { z } from "zod";
+import { gidSchema } from "./primitives";
+
+/** 端末が使用する四つの状態セクションGIDを検証するスキーマです。 */
+export const setupSectionGidsSchema = z
+  .object({
+    not_started: gidSchema,
+    in_progress: gidSchema,
+    completed: gidSchema,
+    withdrawn: gidSchema,
+  })
+  .strict()
+  .superRefine((sectionGids, context) => {
+    const seen = new Set<string>();
+    Object.entries(sectionGids).forEach(([name, gid]) => {
+      if (seen.has(gid)) {
+        context.addIssue({
+          code: "custom",
+          path: [name],
+          message: "4つの状態セクションGIDはすべて異なる値で指定してください。",
+        });
+        return;
+      }
+      seen.add(gid);
+    });
+  });
+
 /** 端末の状態セクションです。 */
-export type SetupSectionGids = {
-  readonly not_started: string;
-  readonly in_progress: string;
-  readonly completed: string;
-  readonly withdrawn: string;
-};
+export type SetupSectionGids = z.infer<typeof setupSectionGidsSchema>;
 
 /** 初回設定で照合するタグです。 */
 export type SetupTagGids = {

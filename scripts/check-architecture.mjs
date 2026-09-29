@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   analyzeSource,
   contentHash,
@@ -13,17 +10,9 @@ import {
 } from "./architecture-source.mjs";
 
 const cachePath = resolve(repositoryRoot, ".cache/architecture-check.json");
-const baselinePath = resolve(repositoryRoot, "docs/architecture/structure-migration-baseline.json");
-const execFileAsync = promisify(execFile);
-const cacheVersion = 3;
-const originBaselineChecksum = "a05c8ca7f4886829bd723cfcd27752aac0ffce88181be7a796df6dc182faf132";
+const cacheVersion = 5;
 const sourceSuffixes = [".ts", ".tsx", ".vue", ".css", ".html"];
-const allowedTemporaryPaths = new Set([
-  "src/main/bootstrap/legacy-runtime-port.ts",
-]);
-
 function isFinalPath(path) {
-  if (allowedTemporaryPaths.has(path)) return true;
   if (/\/(?:legacy-|compat-|adapter-old-)/.test(path)) return false;
   if (path === "src/main/index.ts" || path === "src/preload/index.ts") return true;
   if (path === "src/renderer/index.html" || path === "src/renderer/env.d.ts") return true;
@@ -176,12 +165,6 @@ function diagnostic(path, rule, symbol) {
   return { path, rule, symbol };
 }
 
-function isAllowedLegacyBridgeViolation(path, rule, symbol) {
-  return path === "src/main/bootstrap/legacy-runtime-port.ts"
-    && rule === "old-import"
-    && symbol === "src/main/application/service.ts";
-}
-
 function collectCycles(graph) {
   const indices = new Map();
   const lowlinks = new Map();
@@ -249,8 +232,7 @@ function collectDiagnostics(paths, files) {
         continue;
       }
       graph.get(path).add(targetPath);
-      if (!isFinalPath(targetPath)
-        && !isAllowedLegacyBridgeViolation(path, "old-import", targetPath)) {
+      if (!isFinalPath(targetPath)) {
         diagnostics.push(diagnostic(path, "old-import", targetPath));
       }
       if (!isAllowedInternalImport(owner, ownerForPath(targetPath), targetPath)) {
@@ -269,121 +251,24 @@ function collectDiagnostics(paths, files) {
     || left.rule.localeCompare(right.rule) || left.symbol.localeCompare(right.symbol));
 }
 
-async function loadBaseline() {
-  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
-  const entries = baseline.entries;
-  const originHashes = baseline.originHashes;
-  if (!Array.isArray(originHashes) || originHashes.some((hash) => typeof hash !== "string")
-    || !Array.isArray(entries)) {
-    throw new Error("構造検査baselineの形式が不正です。");
-  }
-  const entryHashes = baselineEntryHashes(entries);
-  const checksum = createHash("sha256").update(originHashes.join("\n")).digest("hex");
-  if (checksum !== originBaselineChecksum || new Set(originHashes).size !== originHashes.length) {
-    throw new Error("構造検査baselineの初期集合が変更されました。");
-  }
-  const originSet = new Set(originHashes);
-  if (entryHashes.size > originSet.size || [...entryHashes].some((hash) => !originSet.has(hash))) {
-    throw new Error("初期の既存違反以外を構造検査baselineへ追加できません。");
-  }
-  await assertBaselineMonotonic(entryHashes, originSet);
-  return entries;
-}
-
-function key(entry) {
-  return JSON.stringify([entry.path, entry.rule, entry.symbol]);
-}
-
-function entryHash(entry) {
-  return createHash("sha256").update(key(entry)).digest("hex");
-}
-
-function baselineEntryHashes(entries) {
-  if (!Array.isArray(entries) || entries.some((entry) => entry == null
-    || typeof entry.path !== "string" || typeof entry.rule !== "string"
-    || typeof entry.symbol !== "string" || Object.keys(entry).length !== 3)) {
-    throw new Error("構造検査baselineの形式が不正です。");
-  }
-  const hashes = entries.map(entryHash);
-  if (new Set(hashes).size !== hashes.length) {
-    throw new Error("構造検査baselineに重複があります。");
-  }
-  return new Set(hashes);
-}
-
-function assertSubset(current, previous) {
-  if ([...current].some((hash) => !previous.has(hash))) {
-    throw new Error("構造検査baselineへ解消済みの違反が再追加されました。");
-  }
-}
-
-async function assertBaselineMonotonic(current, origin) {
-  const { stdout: shallow } = await execFileAsync("git", ["rev-parse", "--is-shallow-repository"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  if (shallow.trim() !== "false") {
-    throw new Error("構造検査baselineの履歴を確認するにはGitの全履歴が必要です。");
-  }
-  const { stdout: history } = await execFileAsync("git", ["log", "--first-parent", "--format=%H", "--",
-    "docs/architecture/structure-migration-baseline.json"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  const revisions = history.trim().split("\n").filter((revision) => revision.length > 0).reverse();
-  let previous;
-  for (const revision of revisions) {
-    const { stdout: committedSource } = await execFileAsync("git", ["show",
-      `${revision}:docs/architecture/structure-migration-baseline.json`], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-    });
-    const committed = JSON.parse(committedSource);
-    const hashes = baselineEntryHashes(committed.entries);
-    if (previous == null) {
-      if (hashes.size !== origin.size) {
-        throw new Error("構造検査baselineの初期集合が既存違反と一致しません。");
-      }
-      assertSubset(origin, hashes);
-    } else {
-      assertSubset(hashes, previous);
-    }
-    previous = hashes;
-  }
-  if (previous == null) {
-    if (current.size !== origin.size) {
-      throw new Error("構造検査baselineの初期集合が既存違反と一致しません。");
-    }
-    assertSubset(origin, current);
-  } else {
-    assertSubset(current, previous);
-  }
-}
-
-const mode = process.argv.includes("--changed") ? "changed" : process.argv.includes("--all") ? "all" : undefined;
-if (mode == null || process.argv.includes("--changed") && process.argv.includes("--all")) {
+const cliArguments = process.argv.slice(2);
+const modes = cliArguments.filter((argument) => argument === "--changed" || argument === "--all");
+if (modes.length !== 1 || cliArguments.some((argument) =>
+  argument !== "--changed" && argument !== "--all" && argument !== "--report-json")) {
   throw new Error("--changedまたは--allを1つ指定してください。");
 }
-const reportJson = process.argv.includes("--report-json");
+const reportJson = cliArguments.includes("--report-json");
 const paths = listSourceFiles();
 const { files, reparsed } = scanSources(paths);
 const diagnostics = collectDiagnostics(paths, files);
-const baseline = await loadBaseline();
-const baselineKeys = new Set(baseline.map(key));
-const diagnosticKeys = new Set(diagnostics.map(key));
-const newViolations = diagnostics.filter((entry) => !baselineKeys.has(key(entry)));
-const resolvedViolations = baseline.filter((entry) => !diagnosticKeys.has(key(entry)));
 if (reportJson) {
-  process.stdout.write(`${JSON.stringify({ diagnostics, newViolations, resolvedViolations, reparsed })}\n`);
+  process.stdout.write(`${JSON.stringify({ diagnostics, reparsed })}\n`);
 } else {
-  for (const entry of newViolations) {
-    process.stderr.write(`新規違反 ${entry.path} ${entry.rule} ${entry.symbol}\n`);
+  for (const entry of diagnostics) {
+    process.stderr.write(`構造違反 ${entry.path} ${entry.rule} ${entry.symbol}\n`);
   }
-  for (const entry of resolvedViolations) {
-    process.stderr.write(`解消済みbaselineを削除してください ${entry.path} ${entry.rule} ${entry.symbol}\n`);
-  }
-  process.stdout.write(`構造検査: ${paths.length}件、再解析${reparsed}件、既存違反${diagnostics.length - newViolations.length}件、新規違反${newViolations.length}件、解消済みbaseline${resolvedViolations.length}件。\n`);
+  process.stdout.write(`構造検査: ${paths.length}件、再解析${reparsed}件、違反${diagnostics.length}件。\n`);
 }
-if (newViolations.length > 0 || resolvedViolations.length > 0) {
+if (diagnostics.length > 0) {
   process.exitCode = 1;
 }
