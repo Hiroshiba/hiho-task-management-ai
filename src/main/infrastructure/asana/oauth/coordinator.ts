@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { SecretStoragePort } from "../../../application/common/ports/secret-storage";
-import { AsanaOAuthClient } from "./asana-oauth";
+import type { AsanaOAuthClient } from "./asana-oauth";
 import {
   AsanaOAuthAuthorizationUrlOpenError,
   AsanaOAuthCredentialError,
@@ -319,6 +319,7 @@ export class AsanaOAuthCoordinator {
 
   public constructor(
     private readonly secretStorage: SecretStoragePort,
+    private readonly createOAuthClient: (clientId: string) => AsanaOAuthClient,
     private readonly openAuthorizationUrl: (
       authorizationUrl: string,
       signal: AbortSignal,
@@ -526,10 +527,7 @@ export class AsanaOAuthCoordinator {
     const validatedMode: OutOfBandMode = mode.kind === "initial"
       ? { kind: "initial", clientSecret: validatedClientSecret }
       : { kind: "reauthentication", clientSecret: validatedClientSecret };
-    const client = new AsanaOAuthClient(
-      validatedClientId,
-      this.secretStorage,
-    );
+    const client = this.createOAuthClient(validatedClientId);
     const authorizationRequest = client.createOutOfBandAuthorizationRequest();
     const authorizationId = createOutOfBandAuthorizationId();
     const expiresAtMilliseconds = Date.now() + outOfBandPendingTimeoutMilliseconds;

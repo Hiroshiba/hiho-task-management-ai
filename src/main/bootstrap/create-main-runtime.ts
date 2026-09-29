@@ -294,6 +294,8 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       openedPersistence.openTextFile(join(userDataPath, "setup-checkpoint.json"), "初回設定チェックポイント"),
       (value) => setupStateSchema.parse(value),
     );
+    const createOAuthClient = (clientId: string): AsanaOAuthClient =>
+      new AsanaOAuthClient(clientId, secretStorage);
     const tokenProvider = new AsanaMutableTokenProvider();
     const transport = new AsanaTransport(new AsanaRequestScheduler(), tokenProvider);
     const normalTransport = transport.withPriority("normal");
@@ -304,9 +306,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const lowPriorityWriteClient = new AsanaTaskWriteClient(transport.withPriority("low"));
     const operationQueue = new AsanaOperationQueue(controller.signal);
     const asana: AsanaCommunicationRuntime = {
-      setTokenProvider: (clientId) => tokenProvider.setProvider(
-        new AsanaOAuthClient(clientId, secretStorage),
-      ),
+      setTokenProvider: (clientId) => tokenProvider.setProvider(createOAuthClient(clientId)),
       highPriorityTransport,
       readClient,
       interactiveReadClient: new AsanaReadClient(highPriorityTransport),
@@ -315,7 +315,11 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       setupResources: new AsanaSetupResourceCoordinator(setupClient, readClient),
       setupCapability: new AsanaCapabilityCheckService(readClient, writeClient, nowProvider),
       operationQueue,
-      oauth: new AsanaOAuthCoordinator(secretStorage, options.composition.open_authorization_url),
+      oauth: new AsanaOAuthCoordinator(
+        secretStorage,
+        createOAuthClient,
+        options.composition.open_authorization_url,
+      ),
       createDisplayOrder: (notifyUnexpectedError) => new AsanaDisplayOrderService(
         lowPriorityWriteClient,
         notifyUnexpectedError,
