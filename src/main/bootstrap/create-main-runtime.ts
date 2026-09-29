@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
 import { setupStateSchema } from "../../shared/ipc-contracts";
 import { dateSchema, gidSchema, identifierSchema, importanceSchema, isoDateTimeSchema } from "../domain";
 import { DiagnosticFailureDispositionError } from "../application/common/errors/diagnostic-failure";
@@ -610,7 +610,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
           throw new Error("アプリ本体の更新サービスは既に生成されています。");
         }
         const service = new ApplicationUpdateService(
-          autoUpdater,
+          electronUpdater.autoUpdater,
           options.composition.app_version,
           isApplicationUpdateCandidate(
             options.update.packaged,
