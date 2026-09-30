@@ -9,1225 +9,384 @@ import {
   session,
   shell,
 } from "electron";
-import { isAbsolute, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { z } from "zod";
-import electronUpdater from "electron-updater";
-import type { DiagnosticRecord } from "./application/diagnostics";
-import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update";
-import { TaskHubApplication } from "./application/service";
+import type { DiagnosticRecord } from "./infrastructure/persistence";
+import type { ErrorReportContext } from "./application/common/errors/error-reporter";
+import { createMainRuntime, type MainRuntime } from "./bootstrap/create-main-runtime";
+import { registerMainLifecycle } from "./bootstrap/register-main-lifecycle";
+import { MainWindowRuntime } from "./bootstrap/main-window-runtime";
+import { OperationalEventRuntime } from "./bootstrap/operational-event-runtime";
+import { openAuthorizedExternalUrl, openObsidianUrl, openResolvedPath } from "./bootstrap/open-external-resource";
+import { configureContentSecurityPolicy, configurePermissionPolicy, resolveRendererUrl } from "./bootstrap/renderer-environment";
 import {
-  DiagnosticFailureDispositionError,
   diagnosticFailureDispositionFromError,
   type DiagnosticFailureDisposition,
-} from "./diagnostic-failure";
-import {
-  applicationDiagnosticSchema,
-  type ApplicationDiagnostic,
-} from "./ai/proposal-application";
-import { AsanaSyncRuntimeAlreadyReportedError } from "./asana/runtime";
-import { getUniqueAsanaHttpStatus } from "./asana/transport";
-import { resolveCodexExecutable } from "./codex/app-server";
-import { IpcHandlerRegistry } from "./ipc";
-import { ensureSecureUserDataDirectory } from "./local-storage-path";
-import { obsidianOpenUriInputSchema } from "./obsidian/obsidian-uri";
-import { createStartupGate, type StartupGate } from "./startup-gate";
-import {
-  PersistentErrorLog,
-  type PersistentErrorLogContext,
-  type PersistentErrorLogSource,
-  writePersistentErrorLogFailure,
-} from "./persistent-error-log";
+} from "./application/common/errors/diagnostic-failure";
+import { AsanaSyncRuntimeAlreadyReportedError } from "./infrastructure/asana";
+import { getUniqueAsanaHttpStatus } from "./infrastructure/asana";
+import { obsidianOpenUriInputSchema } from "./domain/obsidian-uri";
+import { redactSensitiveText, writeErrorReportFailure } from "./infrastructure/logging";
 import {
   assertAllowedAsanaAuthorizationUrl,
   assertAllowedCodexAuthorizationUrl,
-  assertAllowedExternalUrl,
   assertTrustedIpcSender,
   isApplicationUrl,
-} from "./security";
-import { WindowStateController, WindowStateStore } from "./window-state";
+} from "./bootstrap/security";
 
-const appGetVersionChannel = "app:get-version";
-const onlinePollIntervalMilliseconds = 2_000;
 const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL;
-const resolvedAbsolutePathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine(isAbsolute, "解決済みパスは絶対パスでなければなりません。")
-  .refine((value) => !value.includes("\0"), "解決済みパスにNUL文字を指定できません。");
+const applicationDiagnosticSchema = z.object({
+  kind: z.literal("service"),
+  severity: z.enum(["warning", "error"]),
+}).strict();
+type ApplicationDiagnostic = z.infer<typeof applicationDiagnosticSchema>;
 
-type ShutdownState =
-  | { readonly kind: "running" }
-  | { readonly kind: "stopping" }
-  | { readonly kind: "stopped" };
-
-type OnlineMonitorState =
-  | { readonly kind: "stopped" }
-  | {
-      readonly kind: "running";
-      readonly timer: ReturnType<typeof setInterval>;
-      readonly lastOnline: boolean;
-    };
-
-let mainWindow: BrowserWindow | undefined;
-let mainWindowRegistry: IpcHandlerRegistry | undefined;
-let mainWindowStateController: WindowStateController | undefined;
-let taskHubApplication: TaskHubApplication | undefined;
-let applicationUpdateService: ApplicationUpdateService | undefined;
-let lifecycleController: AbortController | undefined;
-let windowCreationPromise: Promise<void> | undefined;
-let applicationStartPromise: Promise<void> | undefined;
-let backgroundOperations: Promise<void> = Promise.resolve();
-let shutdownState: ShutdownState = { kind: "running" };
-let onlineMonitorState: OnlineMonitorState = { kind: "stopped" };
-let foregroundScheduled = false;
-let onlinePollScheduled = false;
-let powerMonitorRegistered = false;
-let versionIpcRegistered = false;
-let persistentErrorLog: PersistentErrorLog | undefined;
-let uncaughtExceptionMonitorRegistered = false;
-const startupGate = createStartupGate();
-
-registerUncaughtExceptionMonitor();
-const singleInstanceLockAcquired = app.requestSingleInstanceLock();
-
-function createPersistentErrorLog(): PersistentErrorLog | undefined {
-  try {
-    return new PersistentErrorLog(app.getPath("logs"));
-  } catch (error) {
-    writePersistentErrorLogFailure(error);
-    return undefined;
+function registerMain(): void {
+  function recordPersistentError(
+    source: ErrorReportContext["source"],
+    diagnosticCode: DiagnosticRecord["code"],
+    context: ErrorReportContext["context"],
+    severity: ErrorReportContext["level"],
+    error: unknown,
+  ): string {
+    const logger = lifecycle.getRuntime()?.reporter;
+    if (logger == null) {
+      const errorId = randomUUID();
+      writeErrorReportFailure(new Error(`エラーID: ${errorId}`, { cause: error }), lifecycle.getRuntime()?.knownSecrets() ?? [], redactSensitiveText);
+      return errorId;
+    }
+    return logger.reportErrorOnce(error, { source, diagnosticCode, context, level: severity });
   }
-}
 
-function getPersistentErrorLog(): PersistentErrorLog | undefined {
-  const logger = persistentErrorLog;
-  if (logger != null) {
-    return logger;
+  function recordDiagnostic(
+    code: DiagnosticRecord["code"],
+    severity: DiagnosticRecord["severity"],
+    metadata?: Pick<
+      DiagnosticRecord,
+      "asana_gid" | "operation_id" | "proposal_id" | "http_status"
+    >,
+    error?: unknown,
+  ): void {
+    const httpStatus = error == null ? undefined : getUniqueAsanaHttpStatus(error);
+    let resolvedMetadata = metadata;
+    if (resolvedMetadata == null) {
+      if (httpStatus != null) {
+        resolvedMetadata = { http_status: httpStatus };
+      }
+    } else if (resolvedMetadata.http_status == null && httpStatus != null) {
+      resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
+    }
+    const runtime = lifecycle.getRuntime();
+    if (runtime == null) {
+      console.error("診断情報を記録できませんでした。");
+      return;
+    }
+    try {
+      runtime.recordDiagnostic(code, severity, resolvedMetadata);
+    } catch (diagnosticError) {
+      recordPersistentError("main", "storage.error", "diagnostic_storage", "error", diagnosticError);
+      console.error("診断情報を記録できませんでした。");
+    }
   }
-  const createdLogger = createPersistentErrorLog();
-  persistentErrorLog = createdLogger;
-  if (createdLogger != null) {
-    registerUncaughtExceptionMonitor();
-  }
-  return createdLogger;
-}
 
-function recordPersistentError(
-  source: PersistentErrorLogSource,
-  diagnosticCode: DiagnosticRecord["code"],
-  context: PersistentErrorLogContext,
-  severity: DiagnosticRecord["severity"],
-  error: unknown,
-): void {
-  const logger = getPersistentErrorLog();
-  if (logger == null) {
-    writePersistentErrorLogFailure(error);
-    return;
-  }
-  logger.record(source, diagnosticCode, context, severity, error);
-}
-
-function recordPersistentErrorStrict(
-  source: PersistentErrorLogSource,
-  diagnosticCode: DiagnosticRecord["code"],
-  context: PersistentErrorLogContext,
-  severity: DiagnosticRecord["severity"],
-  error: unknown,
-): void {
-  const logger = getPersistentErrorLog();
-  if (logger == null) {
-    throw new Error("永続エラーログを初期化できません。", { cause: error });
-  }
-  logger.recordStrict(source, diagnosticCode, context, severity, error);
-}
-
-function registerUncaughtExceptionMonitor(): void {
-  if (uncaughtExceptionMonitorRegistered) {
-    return;
-  }
-  process.on("uncaughtExceptionMonitor", (error) => {
+  function recordServiceDiagnostic(
+    error: unknown,
+    channel: string,
+    rawDiagnostic: ApplicationDiagnostic,
+  ): void {
+    const diagnostic = applicationDiagnosticSchema.parse(rawDiagnostic);
+    let diagnosticCode: DiagnosticRecord["code"];
+    switch (channel) {
+      case "sync":
+      case "display_order":
+        diagnosticCode = "sync.failed";
+        break;
+      case "codex":
+        diagnosticCode = "codex.status";
+        break;
+      case "external_tools":
+        diagnosticCode = "external_tools.status";
+        break;
+      case "proposal_application":
+        diagnosticCode = "proposal.application";
+        break;
+      case "ipc":
+      case "sync_state_listener":
+      case "ai_status_listener":
+      case "ai_delta_listener":
+        diagnosticCode = "ipc.error";
+        break;
+      default:
+        diagnosticCode = "app.error";
+    }
     recordPersistentError(
-      "uncaught_exception",
-      "app.error",
-      "uncaught_exception",
-      "error",
-      error,
-    );
-  });
-  uncaughtExceptionMonitorRegistered = true;
-}
-
-function recordDiagnostic(
-  code: DiagnosticRecord["code"],
-  severity: DiagnosticRecord["severity"],
-  metadata?: Pick<
-    DiagnosticRecord,
-    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
-  >,
-  error?: unknown,
-): void {
-  const httpStatus = error == null ? undefined : getUniqueAsanaHttpStatus(error);
-  let resolvedMetadata = metadata;
-  if (resolvedMetadata == null) {
-    if (httpStatus != null) {
-      resolvedMetadata = { http_status: httpStatus };
-    }
-  } else if (resolvedMetadata.http_status == null && httpStatus != null) {
-    resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
-  }
-  const application = taskHubApplication;
-  if (application == null) {
-    console.error("診断情報を記録できませんでした。");
-    return;
-  }
-  try {
-    application.recordDiagnostic(code, severity, resolvedMetadata);
-  } catch (error) {
-    recordPersistentError("main", "storage.error", "diagnostic_storage", "error", error);
-    console.error("診断情報を記録できませんでした。");
-  }
-}
-
-function recordDiagnosticStrict(
-  code: DiagnosticRecord["code"],
-  severity: DiagnosticRecord["severity"],
-  metadata: Pick<
-    DiagnosticRecord,
-    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
-  > | undefined,
-  error: unknown,
-): void {
-  const httpStatus = getUniqueAsanaHttpStatus(error);
-  let resolvedMetadata = metadata;
-  if (resolvedMetadata == null) {
-    if (httpStatus != null) {
-      resolvedMetadata = { http_status: httpStatus };
-    }
-  } else if (resolvedMetadata.http_status == null && httpStatus != null) {
-    resolvedMetadata = { ...resolvedMetadata, http_status: httpStatus };
-  }
-  const application = taskHubApplication;
-  if (application == null) {
-    throw new Error("診断情報を記録するアプリケーションがありません。", { cause: error });
-  }
-  application.recordDiagnostic(code, severity, resolvedMetadata);
-}
-
-function aggregateDiagnosticSinkFailures(failures: readonly unknown[]): unknown {
-  if (failures.length === 0) {
-    throw new Error("診断sinkの失敗がありません。");
-  }
-  if (failures.length === 1) {
-    const [failure] = failures;
-    if (failure == null) {
-      throw new Error("診断sinkの失敗を取得できません。");
-    }
-    return failure;
-  }
-  return new AggregateError(failures, "診断sinkの記録に複数の失敗がありました。");
-}
-
-function recordApplicationJournalDiagnostic(
-  error: unknown,
-  diagnosticCode: DiagnosticRecord["code"],
-  diagnostic: Extract<ApplicationDiagnostic, { readonly kind: "application_journal" }>,
-  metadata: Pick<
-    DiagnosticRecord,
-    "asana_gid" | "operation_id" | "proposal_id" | "http_status"
-  >,
-): void {
-  const persistentError = new Error(JSON.stringify(diagnostic), { cause: error });
-  const failures: unknown[] = [];
-  let recordedSinkCount = 0;
-  try {
-    recordPersistentErrorStrict(
       "service",
       diagnosticCode,
       "service_diagnostic",
       diagnostic.severity,
-      persistentError,
+      new Error(JSON.stringify(diagnostic), { cause: error }),
     );
-    recordedSinkCount += 1;
-  } catch (sinkError) {
-    failures.push(sinkError);
+    recordDiagnostic(diagnosticCode, diagnostic.severity, undefined, error);
   }
-  try {
-    recordDiagnosticStrict(diagnosticCode, diagnostic.severity, metadata, error);
-    recordedSinkCount += 1;
-  } catch (sinkError) {
-    failures.push(sinkError);
+
+  function mainDiagnosticFailureDisposition(error: unknown): DiagnosticFailureDisposition {
+    if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
+      return {
+        kind: "recorded_only",
+        recorded_error: error,
+        response_error: error.cause,
+      };
+    }
+    return diagnosticFailureDispositionFromError(error);
   }
-  if (failures.length === 0) {
-    return;
-  }
-  const unrecordedError = aggregateDiagnosticSinkFailures(failures);
-  if (recordedSinkCount > 0) {
-    throw new DiagnosticFailureDispositionError({
-      kind: "recorded_and_unrecorded",
-      recorded_error: error,
-      unrecorded_error: unrecordedError,
-      response_error: error,
+
+  function getRendererUrl(): string {
+    return resolveRendererUrl({
+      packaged: app.isPackaged,
+      rendererIndexPath: join(__dirname, "../renderer/index.html"),
+      developmentUrl: developmentRendererUrl,
+      arguments: process.argv,
     });
   }
-  throw new DiagnosticFailureDispositionError({
-    kind: "unrecorded_only",
-    unrecorded_error: unrecordedError,
-    response_error: error,
-  });
-}
 
-function recordServiceDiagnostic(
-  error: unknown,
-  channel: string,
-  rawDiagnostic: ApplicationDiagnostic,
-): void {
-  const diagnostic = applicationDiagnosticSchema.parse(rawDiagnostic);
-  let diagnosticCode: DiagnosticRecord["code"];
-  switch (channel) {
-    case "sync":
-    case "display_order":
-      diagnosticCode = "sync.failed";
-      break;
-    case "codex":
-      diagnosticCode = "codex.status";
-      break;
-    case "external_tools":
-      diagnosticCode = "external_tools.status";
-      break;
-    case "application_journal":
-      diagnosticCode = "proposal.application";
-      break;
-    case "ipc":
-    case "sync_state_listener":
-    case "ai_status_listener":
-    case "ai_delta_listener":
-      diagnosticCode = "ipc.error";
-      break;
-    default:
-      diagnosticCode = "app.error";
-  }
-  const metadata = diagnostic.kind === "application_journal"
-    ? {
-        ...(diagnostic.proposal_id == null ? {} : { proposal_id: diagnostic.proposal_id }),
-        ...(diagnostic.operation_id == null ? {} : { operation_id: diagnostic.operation_id }),
-        ...(diagnostic.task_gid == null ? {} : { asana_gid: diagnostic.task_gid }),
-      }
-    : undefined;
-  if (diagnostic.kind === "application_journal") {
-    if (metadata == null) {
-      throw new Error("application journal診断のmetadataがありません。");
-    }
-    recordApplicationJournalDiagnostic(error, diagnosticCode, diagnostic, metadata);
-    return;
-  }
-  recordPersistentError(
-    "service",
-    diagnosticCode,
-    "service_diagnostic",
-    diagnostic.severity,
-    new Error(JSON.stringify(diagnostic), { cause: error }),
-  );
-  recordDiagnostic(diagnosticCode, diagnostic.severity, metadata, error);
-}
-
-function mainDiagnosticFailureDisposition(
-  error: unknown,
-): DiagnosticFailureDisposition {
-  if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-    return {
-      kind: "recorded_only",
-      recorded_error: error,
-      response_error: error.cause,
-    };
-  }
-  return diagnosticFailureDispositionFromError(error);
-}
-
-function getRendererUrl(): string {
-  let rendererUrl: string;
-  if (app.isPackaged) {
-    rendererUrl = pathToFileURL(join(__dirname, "../renderer/index.html")).href;
-  } else {
-    if (developmentRendererUrl == null) {
-      throw new Error("開発用Renderer URLが設定されていません。");
-    }
-
-    let parsedUrl: URL;
-
-    try {
-      parsedUrl = new URL(developmentRendererUrl);
-    } catch (error) {
-      throw new Error("開発用Renderer URLが不正です。", { cause: error });
-    }
-    if (
-      parsedUrl.protocol !== "http:" ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(parsedUrl.hostname)
-    ) {
-      throw new Error("開発用Renderer URLはローカルHTTP URLでなければなりません。");
-    }
-    rendererUrl = parsedUrl.href;
-  }
-
-  return appendMockArgumentToRendererUrl(rendererUrl);
-}
-
-function appendMockArgumentToRendererUrl(rendererUrl: string): string {
-  const mockArgumentPrefix = "--mock=";
-  const mockArguments = process.argv
-    .filter((argument) => argument.startsWith(mockArgumentPrefix))
-    .map((argument) => argument.slice(mockArgumentPrefix.length));
-  if (mockArguments.length === 0) {
-    return rendererUrl;
-  }
-
-  const parsedUrl = new URL(rendererUrl);
-  for (const mockArgument of mockArguments) {
-    parsedUrl.searchParams.append("mock", mockArgument);
-  }
-  return parsedUrl.href;
-}
-
-function getContentSecurityPolicy(): string {
-  if (app.isPackaged) {
-    return [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self'",
-      "img-src 'self' data:",
-      "font-src 'self'",
-      "connect-src 'self'",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "frame-ancestors 'none'",
-    ].join("; ");
-  }
-
-  return [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    "font-src 'self'",
-    "connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* http://[::1]:* ws://[::1]:*",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "frame-ancestors 'none'",
-  ].join("; ");
-}
-
-function configureContentSecurityPolicy(): void {
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        "Content-Security-Policy": [getContentSecurityPolicy()],
-      },
-    });
-  });
-}
-
-function configurePermissionPolicy(): void {
-  const applicationSession = session.defaultSession;
-  applicationSession.setPermissionCheckHandler(() => false);
-  applicationSession.setPermissionRequestHandler(
-    (webContents, permission, callback) => {
-      void webContents;
-      void permission;
-      callback(false);
-    },
-  );
-  applicationSession.setDevicePermissionHandler(() => false);
-}
-
-async function openAuthorizedExternalUrl(
-  rawUrl: string,
-  signal: AbortSignal,
-  validate: (value: string) => URL,
-): Promise<void> {
-  signal.throwIfAborted();
-  const validatedUrl = validate(rawUrl);
-  await shell.openExternal(validatedUrl.href);
-  signal.throwIfAborted();
-}
-
-async function openResolvedPath(
-  rawPath: string,
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  const absolutePath = resolvedAbsolutePathSchema.parse(rawPath);
-  const result = await shell.openPath(absolutePath);
-  if (result !== "") {
-    throw new Error("ローカルパスを開けませんでした。");
-  }
-  signal.throwIfAborted();
-}
-
-function validateObsidianOpenUri(rawUri: string): URL {
-  const parsedUrl = new URL(rawUri);
-  if (
-    parsedUrl.protocol !== "obsidian:"
-    || parsedUrl.host !== "open"
-    || parsedUrl.username !== ""
-    || parsedUrl.password !== ""
-    || parsedUrl.port !== ""
-    || parsedUrl.pathname !== ""
-    || parsedUrl.hash !== ""
-  ) {
-    throw new Error("Obsidian URIが不正です。");
-  }
-  const entries = [...parsedUrl.searchParams.entries()];
-  const keys = new Set(entries.map(([key]) => key));
-  if (
-    entries.length !== 2
-    || keys.size !== 2
-    || !keys.has("vault")
-    || !keys.has("file")
-  ) {
-    throw new Error("Obsidian URIのqueryが不正です。");
-  }
-  const vaultValues = parsedUrl.searchParams.getAll("vault");
-  const fileValues = parsedUrl.searchParams.getAll("file");
-  if (vaultValues.length !== 1 || fileValues.length !== 1) {
-    throw new Error("Obsidian URIのqueryが重複しています。");
-  }
-  const vaultId = vaultValues[0];
-  const relativePath = fileValues[0];
-  if (vaultId == null || relativePath == null) {
-    throw new Error("Obsidian URIのquery値が不正です。");
-  }
-  obsidianOpenUriInputSchema.parse({
-    vault_id: vaultId,
-    relative_path: relativePath,
-  });
-  return parsedUrl;
-}
-
-async function openObsidianUrl(
-  rawUrl: string,
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  const validatedUrl = validateObsidianOpenUri(rawUrl);
-  await shell.openExternal(validatedUrl.href);
-  signal.throwIfAborted();
-}
-
-function forwardUnhandledError(error: unknown): void {
-  queueMicrotask(() => {
-    throw error;
-  });
-}
-
-function createTaskHubApplication(controller: AbortController): TaskHubApplication {
-  const userDataPath = ensureSecureUserDataDirectory(app.getPath("userData"));
-  return new TaskHubApplication({
-    user_data_path: userDataPath,
-    database_path: join(userDataPath, "taskhub.sqlite3"),
-    secret_storage_path: join(userDataPath, "secret-storage.json"),
-    checkpoint_path: join(userDataPath, "setup-checkpoint.json"),
-    app_version: app.getVersion(),
-    codex_executable: resolveCodexExecutable(),
-    read_only_vault_paths: [],
-    lifecycle_signal: controller.signal,
-    online_provider: () => net.isOnline(),
-    now_provider: () => new Date(),
-    open_authorization_url: (authorizationUrl, signal) =>
-      openAuthorizedExternalUrl(
-        authorizationUrl,
-        signal,
-        assertAllowedAsanaAuthorizationUrl,
-      ),
-    open_codex_authorization_url: (authorizationUrl, signal) =>
-      openAuthorizedExternalUrl(
-        authorizationUrl,
-        signal,
-        assertAllowedCodexAuthorizationUrl,
-      ),
-    open_obsidian_url: (obsidianUrl, signal) =>
-      openObsidianUrl(obsidianUrl, signal),
-    open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
-    diagnostic: recordServiceDiagnostic,
-    unhandled_error_forwarder: forwardUnhandledError,
-    open_external_agent_review: async () => {
-      const application = taskHubApplication;
-      if (application == null) {
-        throw new Error("TaskHubアプリケーションが初期化されていません。");
-      }
-      const controller = lifecycleController;
-      if (controller == null) {
-        throw new Error("アプリケーションのライフサイクルが初期化されていません。");
-      }
-      await ensureMainWindow(
-        getRendererUrl(),
-        application,
-        startupGate,
-        controller.signal,
-      );
-      if (!showAndFocusMainWindow()) {
-        throw new Error("TaskHubメインウィンドウを表示できません。");
-      }
-    },
-  });
-}
-
-function configureWindowSecurity(window: BrowserWindow, rendererUrl: string): void {
-  window.webContents.on("will-navigate", (event, requestedUrl) => {
-    if (!isApplicationUrl(requestedUrl, rendererUrl)) {
-      event.preventDefault();
-    }
-  });
-  window.webContents.on("will-redirect", (event, requestedUrl) => {
-    if (!isApplicationUrl(requestedUrl, rendererUrl)) {
-      event.preventDefault();
-    }
-  });
-
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const externalUrl = assertAllowedExternalUrl(url);
-      void shell.openExternal(externalUrl.href).catch((error) => {
-        recordPersistentError("main", "app.error", "external_url", "error", error);
-        recordDiagnostic("app.error", "error", undefined, error);
-      });
-    } catch (error) {
-      recordPersistentError("main", "app.error", "external_url", "error", error);
-      recordDiagnostic("app.error", "error", undefined, error);
-    }
-    return { action: "deny" };
-  });
-}
-
-function registerVersionIpcHandler(rendererUrl: string): void {
-  ipcMain.handle(appGetVersionChannel, (event, payload: unknown): string => {
-    try {
-      z.undefined().parse(payload);
-
-      const window = mainWindow;
-      if (window == null) {
-        throw new Error("メインウィンドウが初期化されていません。");
-      }
-
-      assertTrustedIpcSender(event, window.webContents, rendererUrl);
-      return app.getVersion();
-    } catch (error) {
-      recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
+  function forwardUnhandledError(error: unknown): void {
+    queueMicrotask(() => {
       throw error;
-    }
-  });
-  versionIpcRegistered = true;
-}
-
-function disposeMainWindowRegistry(registry: IpcHandlerRegistry): void {
-  try {
-    registry.dispose();
-  } catch (error) {
-    recordPersistentError("main", "ipc.error", "registry_dispose", "error", error);
-    recordDiagnostic("ipc.error", "error", undefined, error);
-  }
-  if (mainWindowRegistry === registry) {
-    mainWindowRegistry = undefined;
-  }
-}
-
-function enqueueBackgroundOperation(
-  operation: () => Promise<void>,
-  failureCode: DiagnosticRecord["code"],
-): void {
-  backgroundOperations = backgroundOperations.then(async () => {
-    const controller = lifecycleController;
-    if (
-      shutdownState.kind !== "running"
-      || controller == null
-      || controller.signal.aborted
-    ) {
-      return;
-    }
-    try {
-      await operation();
-    } catch (error) {
-      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-        return;
-      }
-      const disposition = diagnosticFailureDispositionFromError(error);
-      switch (disposition.kind) {
-        case "recorded_only":
-          return;
-        case "unrecorded_only":
-        case "recorded_and_unrecorded":
-          recordPersistentError(
-            "main",
-            failureCode,
-            "background_operation",
-            "error",
-            disposition.unrecorded_error,
-          );
-          if (!controller.signal.aborted) {
-            recordDiagnostic(failureCode, "error", undefined, disposition.unrecorded_error);
-          }
-          return;
-      }
-    }
-  });
-}
-
-function scheduleForegroundSync(): void {
-  if (
-    foregroundScheduled
-    || shutdownState.kind !== "running"
-    || !startupGate.isReady()
-  ) {
-    return;
-  }
-  foregroundScheduled = true;
-  enqueueBackgroundOperation(async () => {
-    try {
-      const application = taskHubApplication;
-      const controller = lifecycleController;
-      if (application == null || controller == null) {
-        throw new Error("アプリケーションが初期化されていません。");
-      }
-      if (application.getState().kind !== "configured") {
-        return;
-      }
-      await application.onForeground(controller.signal);
-    } finally {
-      foregroundScheduled = false;
-    }
-  }, "sync.failed");
-}
-
-function updateOnlineMonitorState(
-  monitor: Extract<OnlineMonitorState, { readonly kind: "running" }>,
-  lastOnline: boolean,
-): void {
-  const activeMonitor = onlineMonitorState;
-  if (
-    activeMonitor.kind === "running"
-    && activeMonitor.timer === monitor.timer
-  ) {
-    onlineMonitorState = {
-      kind: "running",
-      timer: monitor.timer,
-      lastOnline,
-    };
-  }
-}
-
-function scheduleOnlinePoll(): void {
-  if (
-    onlinePollScheduled
-    || shutdownState.kind !== "running"
-    || !startupGate.isReady()
-  ) {
-    return;
-  }
-  onlinePollScheduled = true;
-  enqueueBackgroundOperation(async () => {
-    try {
-      const monitor = onlineMonitorState;
-      const application = taskHubApplication;
-      if (monitor.kind !== "running" || application == null) {
-        return;
-      }
-      const currentOnline = net.isOnline();
-      if (currentOnline === monitor.lastOnline) {
-        return;
-      }
-      const applicationConfigured = application.getState().kind === "configured";
-      if (!currentOnline) {
-        if (applicationConfigured) {
-          application.setOnline(false);
-        }
-        updateOnlineMonitorState(monitor, false);
-        return;
-      }
-      if (!applicationConfigured) {
-        updateOnlineMonitorState(monitor, true);
-        return;
-      }
-      try {
-        await application.onOnline();
-      } catch (error) {
-        try {
-          application.setOnline(false);
-        } catch (restoreError) {
-          throw new AggregateError(
-            [error, restoreError],
-            "オンライン復帰失敗後の状態復元に失敗しました。",
-          );
-        }
-        throw error;
-      }
-      updateOnlineMonitorState(monitor, true);
-    } finally {
-      onlinePollScheduled = false;
-    }
-  }, "sync.failed");
-}
-
-function startOperationalEventMonitoring(): void {
-  if (onlineMonitorState.kind !== "stopped" || powerMonitorRegistered) {
-    throw new Error("運用イベント監視は重複開始できません。");
-  }
-  const timer = setInterval(scheduleOnlinePoll, onlinePollIntervalMilliseconds);
-  onlineMonitorState = {
-    kind: "running",
-    timer,
-    lastOnline: net.isOnline(),
-  };
-  powerMonitor.on("resume", scheduleForegroundSync);
-  powerMonitorRegistered = true;
-}
-
-function stopOperationalEventMonitoring(): void {
-  const monitor = onlineMonitorState;
-  if (monitor.kind === "running") {
-    clearInterval(monitor.timer);
-    onlineMonitorState = { kind: "stopped" };
-  }
-  if (powerMonitorRegistered) {
-    powerMonitor.removeListener("resume", scheduleForegroundSync);
-    powerMonitorRegistered = false;
-  }
-}
-
-function showAndFocusMainWindow(): boolean {
-  if (shutdownState.kind !== "running") {
-    return false;
-  }
-  const window = mainWindow;
-  if (window == null || window.isDestroyed()) {
-    return false;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  if (!window.isVisible()) {
-    window.show();
-  }
-  window.focus();
-  return true;
-}
-
-type MainWindowReadyWait = {
-  readonly promise: Promise<void>;
-  readonly reject: (error: unknown) => void;
-};
-
-function createMainWindowReadyWait(
-  window: BrowserWindow,
-  signal: AbortSignal,
-): MainWindowReadyWait {
-  let settled = false;
-  let resolvePromise: ((value?: void | PromiseLike<void>) => void) | undefined;
-  let rejectPromise: ((reason?: unknown) => void) | undefined;
-
-  function cleanup(): void {
-    window.removeListener("ready-to-show", onReadyToShow);
-    window.removeListener("closed", onClosed);
-    signal.removeEventListener("abort", onAbort);
+    });
   }
 
-  function rejectReady(error: unknown): void {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    cleanup();
-    if (rejectPromise == null) {
-      throw new Error("メインウィンドウの表示待機を初期化できません。");
-    }
-    rejectPromise(error);
-  }
-
-  function resolveReady(): void {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    cleanup();
-    if (resolvePromise == null) {
-      throw new Error("メインウィンドウの表示待機を初期化できません。");
-    }
-    resolvePromise();
-  }
-
-  function onReadyToShow(): void {
-    try {
-      if (window.isDestroyed()) {
-        rejectReady(new Error("メインウィンドウが破棄されました。"));
-        return;
-      }
-      if (!showAndFocusMainWindow()) {
-        rejectReady(new Error("メインウィンドウを表示できません。"));
-        return;
-      }
-    } catch (error) {
-      rejectReady(error);
-      return;
-    }
-    resolveReady();
-  }
-
-  function onClosed(): void {
-    rejectReady(new Error("メインウィンドウが閉じられました。"));
-  }
-
-  function onAbort(): void {
-    rejectReady(new Error("メインウィンドウの表示待機が中断されました。"));
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
-  }
-
-  const promise = new Promise<void>((resolve, reject) => {
-    resolvePromise = resolve;
-    rejectPromise = reject;
-  });
-  window.once("ready-to-show", onReadyToShow);
-  window.once("closed", onClosed);
-  signal.addEventListener("abort", onAbort, { once: true });
-  if (signal.aborted) {
-    onAbort();
-  }
-  return { promise, reject: rejectReady };
-}
-
-async function createMainWindow(
-  rendererUrl: string,
-  application: TaskHubApplication,
-  gate: StartupGate,
-  signal: AbortSignal,
-): Promise<void> {
-  if (shutdownState.kind !== "running" || signal.aborted) {
-    return;
-  }
-  const windowStateStore = new WindowStateStore(
-    join(app.getPath("userData"), "window-state.json"),
-  );
-  const savedWindowState = windowStateStore.load();
-  const window = new BrowserWindow({
-    show: false,
-    icon: app.isPackaged
-      ? join(process.resourcesPath, "icon.png")
-      : join(__dirname, "../../build/icon.png"),
-    webPreferences: {
-      devTools: !app.isPackaged,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      preload: join(__dirname, "../preload/index.cjs"),
+  const operationalEvents = new OperationalEventRuntime({
+    powerMonitor,
+    isOnline: () => net.isOnline(),
+    isRunning: () => lifecycle.isRunning(),
+    getRuntime: () => lifecycle.getRuntime(),
+    isStartupReady: () => lifecycle.startupGate.isReady(),
+    reportPersistentError: (code, error) => {
+      recordPersistentError("main", code, "background_operation", "error", error);
     },
+    recordDiagnostic: (code, error) => recordDiagnostic(code, "error", undefined, error),
   });
-  const windowStateController = new WindowStateController(
-    window,
-    windowStateStore,
-    () => {
-      const primaryDisplay = screen.getPrimaryDisplay();
-      return [
-        primaryDisplay,
-        ...screen.getAllDisplays().filter((display) => display.id !== primaryDisplay.id),
-      ];
+  const windows = new MainWindowRuntime({
+    app,
+    ipcMain,
+    screen,
+    shell,
+    isRunning: () => lifecycle.isRunning(),
+    scheduleForegroundSync: operationalEvents.scheduleForegroundSync,
+    reportPersistentError: (context, error) => {
+      const code = context === "registry_dispose" ? "ipc.error" : "app.error";
+      recordPersistentError("main", code, context, "error", error);
     },
-    savedWindowState,
-  );
-  const updateService = applicationUpdateService;
-  if (updateService == null) {
-    throw new Error("アプリ本体の更新サービスが初期化されていません。");
-  }
-  const registry = new IpcHandlerRegistry({
-    rendererWebContents: window.webContents,
-    rendererUrl,
-    ports: { ...application.getIpcPorts(), appUpdate: updateService },
-    startupGate: gate,
-    diagnostic: {
-      record: (error) => {
-        recordPersistentError("ipc", "ipc.error", "ipc_diagnostic", "error", error);
-        recordDiagnostic("ipc.error", "error", undefined, error);
+    recordDiagnostic: (code, error) => recordDiagnostic(code, "error", undefined, error),
+  });
+
+  function createApplicationRuntime(): MainRuntime {
+    return createMainRuntime({
+      userDataPath: app.getPath("userData"),
+      logsPath: app.getPath("logs"),
+      update: {
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
       },
-    },
-  });
+      ipcSecurity: {
+        assertTrustedSender: assertTrustedIpcSender,
+        isApplicationUrl,
+      },
+      system: {
+        getVersion: () => app.getVersion(),
+        waitForStartup: (signal) => lifecycle.startupGate.waitForStartup(signal),
+        getUpdateState: () => requireApplicationUpdateService().getState(),
+        onUpdateState: (listener) => requireApplicationUpdateService().onState(listener),
+      },
+      composition: {
+        app_version: app.getVersion(),
+        read_only_vault_paths: [],
+        online_provider: () => net.isOnline(),
+        open_authorization_url: (authorizationUrl, signal) =>
+          openAuthorizedExternalUrl(
+            authorizationUrl,
+            signal,
+            assertAllowedAsanaAuthorizationUrl,
+          ),
+        open_codex_authorization_url: (authorizationUrl, signal) =>
+          openAuthorizedExternalUrl(
+            authorizationUrl,
+            signal,
+            assertAllowedCodexAuthorizationUrl,
+          ),
+        open_obsidian_url: (obsidianUrl, signal) =>
+          openObsidianUrl(obsidianUrl, signal, (vaultId, relativePath) => {
+            obsidianOpenUriInputSchema.parse({ vault_id: vaultId, relative_path: relativePath });
+          }),
+        open_path: (absolutePath, signal) => openResolvedPath(absolutePath, signal),
+        diagnostic: recordServiceDiagnostic,
+        unhandled_error_forwarder: forwardUnhandledError,
+        open_external_agent_review: async () => {
+          const runtime = lifecycle.getRuntime();
+          if (runtime == null) {
+            throw new Error("TaskHubアプリケーションが初期化されていません。");
+          }
+          await windows.ensure(getRendererUrl(), runtime);
+          if (!windows.showAndFocus()) {
+            throw new Error("TaskHubメインウィンドウを表示できません。");
+          }
+        },
+      },
+    });
+  }
 
-  mainWindow = window;
-  mainWindowStateController = windowStateController;
-  mainWindowRegistry = registry;
-  let readyToShow: MainWindowReadyWait | undefined;
-  try {
-    configureWindowSecurity(window, rendererUrl);
-    registry.register(ipcMain);
-    windowStateController.attach();
-    windowStateController.restore(savedWindowState);
-    window.on("focus", scheduleForegroundSync);
-    window.on("close", (event) => {
-      if (process.platform === "darwin" && shutdownState.kind === "running") {
-        event.preventDefault();
-        window.hide();
+  function requireApplicationUpdateService() {
+    const service = lifecycle.getUpdateService();
+    if (service == null) {
+      throw new Error("アプリ本体の更新サービスが初期化されていません。");
+    }
+    return service;
+  }
+
+  function yieldToRenderer(): Promise<void> {
+    return new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+
+  async function startApplication(application: MainRuntime, signal: AbortSignal): Promise<void> {
+    try {
+      await application.start(signal);
+      if (signal.aborted || !lifecycle.isRunning()) {
+        lifecycle.startupGate.markStopped();
         return;
       }
-      disposeMainWindowRegistry(registry);
-    });
-    window.once("closed", () => {
-      if (mainWindowStateController === windowStateController) {
-        mainWindowStateController = undefined;
-      }
-      if (mainWindow === window) {
-        mainWindow = undefined;
-      }
-    });
-    readyToShow = createMainWindowReadyWait(window, signal);
-    const loadPromise = Promise.resolve().then(() => app.isPackaged
-      ? window.loadFile(
-        fileURLToPath(rendererUrl),
-        { search: new URL(rendererUrl).search },
-      )
-      : window.loadURL(rendererUrl));
-    await Promise.all([loadPromise, readyToShow.promise]);
-  } catch (error) {
-    readyToShow?.reject(error);
-    disposeMainWindowRegistry(registry);
-    if (mainWindowStateController === windowStateController) {
-      mainWindowStateController = undefined;
-    }
-    if (mainWindow === window) {
-      mainWindow = undefined;
-    }
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
-    if (signal.aborted || shutdownState.kind !== "running") {
-      return;
-    }
-    throw error;
-  }
-}
-
-function ensureMainWindow(
-  rendererUrl: string,
-  application: TaskHubApplication,
-  gate: StartupGate,
-  signal: AbortSignal,
-): Promise<void> {
-  if (shutdownState.kind !== "running" || signal.aborted) {
-    return Promise.resolve();
-  }
-  if (mainWindow != null && !mainWindow.isDestroyed()) {
-    return Promise.resolve();
-  }
-  if (windowCreationPromise != null) {
-    return windowCreationPromise;
-  }
-  windowCreationPromise = createMainWindow(
-    rendererUrl,
-    application,
-    gate,
-    signal,
-  ).finally(() => {
-    windowCreationPromise = undefined;
-  });
-  return windowCreationPromise;
-}
-
-function yieldToRenderer(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
-async function startApplication(
-  application: TaskHubApplication,
-  signal: AbortSignal,
-): Promise<void> {
-  try {
-    await application.start(signal);
-    if (signal.aborted || shutdownState.kind !== "running") {
-      startupGate.markStopped();
-      return;
-    }
-    startOperationalEventMonitoring();
-    startupGate.markReady();
-  } catch (error) {
-    if (signal.aborted || shutdownState.kind !== "running") {
-      startupGate.markStopped();
-      return;
-    }
-    const disposition = mainDiagnosticFailureDisposition(error);
-    switch (disposition.kind) {
-      case "recorded_only":
-        break;
-      case "unrecorded_only":
-      case "recorded_and_unrecorded":
-        recordPersistentError(
-          "main",
-          "app.error",
-          "bootstrap",
-          "error",
-          disposition.unrecorded_error,
-        );
-        recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
-        break;
-    }
-    console.error("アプリケーションの起動に失敗しました。");
-    startupGate.markFailed(disposition.response_error);
-  }
-}
-
-async function stopApplication(): Promise<void> {
-  lifecycleController?.abort();
-  startupGate.markStopped();
-  stopOperationalEventMonitoring();
-  const registry = mainWindowRegistry;
-  if (registry != null) {
-    disposeMainWindowRegistry(registry);
-  }
-  if (versionIpcRegistered) {
-    try {
-      ipcMain.removeHandler(appGetVersionChannel);
+      operationalEvents.start();
+      lifecycle.startupGate.markReady();
     } catch (error) {
-      recordPersistentError("main", "ipc.error", "application_stop", "error", error);
-      recordDiagnostic("ipc.error", "error", undefined, error);
-    }
-    versionIpcRegistered = false;
-  }
-  const startPromise = applicationStartPromise;
-  if (startPromise != null) {
-    await startPromise;
-  }
-  await backgroundOperations;
-  const application = taskHubApplication;
-  if (application != null) {
-    try {
-      await application.stop();
-    } catch (error) {
-      if (error instanceof AsanaSyncRuntimeAlreadyReportedError) {
-        console.error("アプリケーションの停止に失敗しました。");
+      if (signal.aborted || !lifecycle.isRunning()) {
+        lifecycle.startupGate.markStopped();
         return;
       }
-      const disposition = diagnosticFailureDispositionFromError(error);
+      const disposition = mainDiagnosticFailureDisposition(error);
       switch (disposition.kind) {
         case "recorded_only":
           break;
         case "unrecorded_only":
         case "recorded_and_unrecorded":
-          recordPersistentError(
-            "main",
-            "app.error",
-            "application_stop",
-            "error",
-            disposition.unrecorded_error,
-          );
+          recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
           recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
           break;
       }
-      console.error("アプリケーションの停止に失敗しました。");
+      console.error("アプリケーションの起動に失敗しました。");
+      lifecycle.startupGate.markFailed(disposition.response_error);
     }
   }
-}
 
-async function bootstrap(): Promise<void> {
-  await app.whenReady();
-  Menu.setApplicationMenu(null);
-  configureContentSecurityPolicy();
-  configurePermissionPolicy();
-  const rendererUrl = getRendererUrl();
-  const controller = new AbortController();
-  lifecycleController = controller;
-  const application = createTaskHubApplication(controller);
-  taskHubApplication = application;
-  const updateService = new ApplicationUpdateService(
-    electronUpdater.autoUpdater,
-    app.getVersion(),
-    isApplicationUpdateCandidate(
-      app.isPackaged,
-      process.platform,
-      process.arch,
-      app.getVersion(),
-      process.resourcesPath,
-    ),
-    process.platform,
-    process.resourcesPath,
-    app.getPath("userData"),
-    (error) => {
-      recordPersistentError("main", "app.error", "application_update", "error", error);
-    },
-  );
-  applicationUpdateService = updateService;
-  registerVersionIpcHandler(rendererUrl);
-  app.on("activate", () => {
-    if (!showAndFocusMainWindow() && BrowserWindow.getAllWindows().length === 0) {
-      void ensureMainWindow(
-        rendererUrl,
-        application,
-        startupGate,
-        controller.signal,
-      ).catch((error) => {
-        if (controller.signal.aborted || shutdownState.kind !== "running") {
-          return;
+  async function stopApplication(): Promise<void> {
+    const runtime = lifecycle.getRuntime();
+    runtime?.abort();
+    lifecycle.startupGate.markStopped();
+    const errors: unknown[] = [];
+    try {
+      await windows.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await lifecycle.waitForApplicationStart();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await operationalEvents.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (runtime != null) {
+      try {
+        await runtime.dispose();
+      } catch (error) {
+        if (!(error instanceof AsanaSyncRuntimeAlreadyReportedError)) {
+          const disposition = diagnosticFailureDispositionFromError(error);
+          switch (disposition.kind) {
+            case "recorded_only":
+              break;
+            case "unrecorded_only":
+            case "recorded_and_unrecorded":
+              recordPersistentError("main", "app.error", "application_stop", "error", disposition.unrecorded_error);
+              recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+              break;
+          }
         }
-        recordPersistentError("main", "app.error", "main_window", "error", error);
-        recordDiagnostic("app.error", "error", undefined, error);
+        console.error("アプリケーションの停止に失敗しました。");
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "アプリケーションの終了処理に複数の失敗がありました。", {
+        cause: errors[0],
       });
     }
-  });
-  await ensureMainWindow(
-    rendererUrl,
-    application,
-    startupGate,
-    controller.signal,
-  );
-  await yieldToRenderer();
-  if (controller.signal.aborted || shutdownState.kind !== "running") {
-    return;
   }
-  updateService.start();
-  applicationStartPromise = startApplication(application, controller.signal);
-  await applicationStartPromise;
-}
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
-
-app.on("before-quit", (event) => {
-  if (shutdownState.kind === "stopped") {
-    return;
-  }
-  event.preventDefault();
-  if (shutdownState.kind === "stopping") {
-    return;
-  }
-  mainWindowStateController?.flush();
-  shutdownState = { kind: "stopping" };
-  void stopApplication().then(() => {
-    shutdownState = { kind: "stopped" };
-    const updateService = applicationUpdateService;
-    if (updateService != null && updateService.installOnQuit(() => app.quit())) {
+  async function bootstrap(): Promise<void> {
+    await app.whenReady();
+    if (!lifecycle.isRunning()) {
       return;
     }
-    app.quit();
-  }).catch((error) => {
-    recordPersistentError("main", "app.error", "application_quit", "error", error);
-    recordDiagnostic("app.error", "error", undefined, error);
-    console.error("アプリケーションの停止に失敗しました。");
-    shutdownState = { kind: "stopped" };
-    app.quit();
-  });
-});
+    Menu.setApplicationMenu(null);
+    configureContentSecurityPolicy(session.defaultSession, app.isPackaged);
+    configurePermissionPolicy(session.defaultSession);
+    const rendererUrl = getRendererUrl();
+    const runtime = createApplicationRuntime();
+    lifecycle.setRuntime(runtime);
+    const updateService = runtime.createApplicationUpdateService(
+      (error) => recordPersistentError("main", "app.error", "application_update", "error", error),
+    );
+    lifecycle.setUpdateService(updateService);
+    const onActivate = (): void => {
+      if (!windows.showAndFocus() && BrowserWindow.getAllWindows().length === 0) {
+        void windows.ensure(rendererUrl, runtime).catch((error) => {
+          if (runtime.signal.aborted || !lifecycle.isRunning()) {
+            return;
+          }
+          recordPersistentError("main", "app.error", "main_window", "error", error);
+          recordDiagnostic("app.error", "error", undefined, error);
+        });
+      }
+    };
+    app.on("activate", onActivate);
+    app.once("will-quit", () => app.removeListener("activate", onActivate));
+    await windows.ensure(rendererUrl, runtime);
+    await yieldToRenderer();
+    if (runtime.signal.aborted || !lifecycle.isRunning()) {
+      return;
+    }
+    updateService.start();
+    await lifecycle.startApplication(() => startApplication(runtime, runtime.signal));
+  }
 
-if (!singleInstanceLockAcquired) {
-  shutdownState = { kind: "stopped" };
-  app.quit();
-} else {
-  app.on("second-instance", showAndFocusMainWindow);
-  void bootstrap().catch((error) => {
-    recordPersistentError("main", "app.error", "bootstrap", "error", error);
-    recordDiagnostic("app.error", "error", undefined, error);
-    console.error("アプリケーションの起動に失敗しました。");
-    app.quit();
+  const lifecycle = registerMainLifecycle(app, {
+    bootstrap,
+    stop: stopApplication,
+    flushWindowState: () => windows.flush(),
+    showSecondInstance: () => { windows.showAndFocus(); },
+    reportUncaughtException: (error) => {
+      recordPersistentError("uncaught_exception", "app.error", "uncaught_exception", "error", error);
+    },
+    reportStopFailure: (error) => {
+      recordPersistentError("main", "app.error", "application_quit", "error", error);
+      recordDiagnostic("app.error", "error", undefined, error);
+      console.error("アプリケーションの停止に失敗しました。");
+    },
+    reportBootstrapFailure: (error) => {
+      const disposition = mainDiagnosticFailureDisposition(error);
+      if (disposition.kind !== "recorded_only") {
+        recordPersistentError("main", "app.error", "bootstrap", "error", disposition.unrecorded_error);
+        recordDiagnostic("app.error", "error", undefined, disposition.unrecorded_error);
+      }
+      console.error("アプリケーションの起動に失敗しました。");
+    },
   });
 }
+
+registerMain();

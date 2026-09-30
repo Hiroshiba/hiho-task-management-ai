@@ -1,17 +1,6 @@
-import {
-  canonicalizeJson,
-  cleanupItemSchema,
-  dependenciesSchema,
-  gidSchema,
-  parentWorkModeSchema,
-  taskStatusSchema,
-  type BlockState,
-  type CleanupItem,
-  type Dependency,
-  type DependencyScope,
-  type ParentWorkMode,
-  type TaskStatus,
-} from "../../../shared/domain";
+import { gidSchema } from "../primitives";
+import { cleanupItemSchema, dependenciesSchema, parentWorkModeSchema, taskStatusSchema, type BlockState, type CleanupItem, type Dependency, type DependencyScope, type ParentWorkMode, type TaskStatus } from "../schemas";
+import { canonicalizeJson } from "../canonical-json";
 
 export type NormalizationTask = {
   readonly gid: string;

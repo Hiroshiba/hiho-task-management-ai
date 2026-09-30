@@ -1,16 +1,6 @@
 import { z } from "zod";
-import {
-  asanaTaskResponseSchema,
-  blockStateSchema,
-  cleanupItemSchema,
-  cleanupItemsSchema,
-  dateSchema,
-  dependencyScopeSchema,
-  gidSchema,
-  tagNameSchema,
-  taskSchema,
-  taskStatusSchema,
-} from "../../../shared/domain";
+import { dateSchema, gidSchema, tagNameSchema } from "../primitives";
+import { asanaTaskResponseSchema, blockStateSchema, cleanupItemSchema, cleanupItemsSchema, dependencyScopeSchema, taskSchema, taskStatusSchema } from "../schemas";
 
 const activeTaskStatusSchema = z.enum(["not_started", "in_progress"]);
 
@@ -588,6 +578,7 @@ const inputSchema = z
     activity_date: dateSchema,
     tasks: inputArraySchema,
     previous_tasks: previousTaskArraySchema,
+    status_previous_tasks: previousTaskArraySchema,
     activity_baseline_tasks: previousTaskArraySchema,
     inaccessible_gids: uniqueGidArraySchema,
   })

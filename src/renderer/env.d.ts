@@ -6,5 +6,5 @@ declare module "*.vue" {
 }
 
 interface Window {
-  readonly taskHub?: import("../shared/task-hub-api").TaskHubApi;
+  readonly taskHub?: import("../shared/ipc-contracts").FinalTaskHubApi;
 }

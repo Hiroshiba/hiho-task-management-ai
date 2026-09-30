@@ -43,9 +43,17 @@ export default tseslint.config(
     },
   },
   {
-    files: ["src/renderer/src/main.ts"],
+    files: ["src/renderer/app/main.ts"],
     rules: {
       "@typescript-eslint/no-unsafe-argument": "off",
+    },
+  },
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ...tseslint.configs.disableTypeChecked.languageOptions,
+      globals: globals.node,
     },
   },
 );

@@ -1,14 +1,5 @@
-import {
-  areaTagNameSchema,
-  blockStateSchema,
-  gidSchema,
-  taskTagSchema,
-  type Area,
-  type BlockState,
-  type CleanupItem,
-  type Importance,
-  type TaskTag,
-} from "../../../shared/domain";
+import { gidSchema } from "../primitives";
+import { areaTagNameSchema, blockStateSchema, taskTagSchema, type Area, type BlockState, type CleanupItem, type Importance, type TaskTag } from "../schemas";
 
 const importanceTagDefinitions: readonly {
   readonly value: Importance;

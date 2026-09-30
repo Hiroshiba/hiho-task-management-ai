@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 10.30.2
@@ -22,6 +24,18 @@ jobs:
           node-version: 22.12.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: |
+            node_modules/.cache/eslint/.eslintcache
+            .cache/architecture-check.json
+            .cache/file-size-check.json
+            node_modules/.tmp/tsconfig.*.tsbuildinfo
+          key: ${{ runner.os }}-checks-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-checks-${{ hashFiles('pnpm-lock.yaml') }}-
+      - run: node scripts/check-architecture.mjs --all
+      - run: pnpm run check:file-size
       - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm run build
