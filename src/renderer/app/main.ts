@@ -2,7 +2,7 @@ import { createApp } from "vue";
 import { createFeatureApiRegistry } from "./feature-api-registry";
 import { installErrorBoundary } from "./install-error-boundary";
 import { useSystemTheme } from "./use-system-theme";
-import { diagnosticsApiInjectionKey, githubIntegrationApiInjectionKey, obsidianIntegrationApiInjectionKey, proposalsApiInjectionKey, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
+import { diagnosticsApiInjectionKey, obsidianIntegrationApiInjectionKey, proposalsApiInjectionKey, settingsApiInjectionKey, systemApiInjectionKey, tasksApiInjectionKey } from "../shared/api/feature-apis";
 import { reportRendererError } from "../shared/logging/report-renderer-error";
 import { parseMockSelection } from "../shared/mock/mock-selection";
 import App from "./App.vue";
@@ -18,7 +18,6 @@ function mountApp(): void {
   app.provide(proposalsApiInjectionKey, featureApis.proposals);
   app.provide(settingsApiInjectionKey, featureApis.settings);
   app.provide(obsidianIntegrationApiInjectionKey, featureApis.obsidianIntegration);
-  app.provide(githubIntegrationApiInjectionKey, featureApis.githubIntegration);
   installErrorBoundary(app, featureApis.diagnostics, window);
   app.onUnmount(useSystemTheme(window.matchMedia("(prefers-color-scheme: dark)"), document.documentElement));
   app.mount("#app");

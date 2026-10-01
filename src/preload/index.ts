@@ -317,9 +317,6 @@ const api: FinalTaskHubApi = {
     noteExists: (input) => invokeFinal(finalIpcContracts.obsidianIntegration.noteExists, input),
     openNote: (input) => invokeFinal(finalIpcContracts.obsidianIntegration.openNote, input),
   },
-  githubIntegration: {
-    getStatus: () => invokeFinal(finalIpcContracts.githubIntegration.getStatus, {}),
-  },
   diagnostics: {
     report: (input) => invokeFinal(finalIpcContracts.diagnostics.report, input),
   },

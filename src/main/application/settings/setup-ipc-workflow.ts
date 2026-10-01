@@ -1,5 +1,3 @@
-import { readIntegrationStatus } from "./integration-status";
-
 type SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault> = {
   readonly getState: () => State;
   readonly start: (signal: AbortSignal) => Promise<State>;
@@ -51,7 +49,6 @@ export class SetupIpcWorkflow<
   /** IPCへ公開する初回設定操作を返します。 */
   public createPort(): {
     readonly getState: () => State;
-    readonly getIntegrationStatus: typeof readIntegrationStatus;
     readonly start: (signal: AbortSignal) => Promise<State>;
     readonly completeCodexAuthentication: (signal: AbortSignal) => Promise<State>;
     readonly beginAsanaAuthorization: (input: Begin, signal: AbortSignal) => Promise<State>;
@@ -69,7 +66,6 @@ export class SetupIpcWorkflow<
     const { setup, afterTransition } = this.dependencies;
     return {
       getState: () => this.dependencies.parseState(setup.getState()),
-      getIntegrationStatus: readIntegrationStatus,
       start: async (signal) => afterTransition(await setup.start(signal)),
       completeCodexAuthentication: async (signal) => {
         const state = afterTransition(await setup.completeCodexAuthentication(signal));

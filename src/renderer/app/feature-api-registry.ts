@@ -1,5 +1,4 @@
 import type { FinalTaskHubApi } from "../../shared/ipc-contracts";
-import { createMockGithubIntegrationApi } from "../features/github-integration";
 import { createMockObsidianIntegrationApi } from "../features/obsidian-integration";
 import { createMockProposalsApi } from "../features/proposals";
 import { createMockSettingsApi } from "../features/settings";
@@ -50,7 +49,6 @@ export function createFeatureApiRegistry(
       mockTasksApi?.applyProposalOperations(operations, syncedAt);
     }),
     obsidianIntegration: createMockObsidianIntegrationApi,
-    githubIntegration: createMockGithubIntegrationApi,
     diagnostics: createMockDiagnosticsApi,
   } satisfies MockApiFactories;
 
@@ -60,7 +58,6 @@ export function createFeatureApiRegistry(
     settings: selectFeatureApi("settings", selectedFeatures, nativeApi, mockFactories),
     proposals: selectFeatureApi("proposals", selectedFeatures, nativeApi, mockFactories),
     obsidianIntegration: selectFeatureApi("obsidianIntegration", selectedFeatures, nativeApi, mockFactories),
-    githubIntegration: selectFeatureApi("githubIntegration", selectedFeatures, nativeApi, mockFactories),
     diagnostics: selectFeatureApi("diagnostics", selectedFeatures, nativeApi, mockFactories),
   };
 }

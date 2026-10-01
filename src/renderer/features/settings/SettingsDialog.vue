@@ -211,7 +211,6 @@ function handleCloseAutoFocus(event: Event): void {
           {{ props.state.message }}
         </p>
 
-        <slot name="github" />
         <slot name="vault" />
       </div>
     </DialogContent>

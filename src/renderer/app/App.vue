@@ -2,7 +2,6 @@
 import { proxyRefs } from "vue";
 import { DialogRoot } from "reka-ui";
 import { TaskObsidianLinks, VaultSettings } from "../features/obsidian-integration";
-import { GithubStatus } from "../features/github-integration";
 import { ProposalHeaderActions, ProposalHeaderStatus, ProposalHistoryPanel } from "../features/proposals";
 import {
   TaskFilters,
@@ -84,9 +83,6 @@ const { proposalDialogRef } = composition;
         :vault-busy="shell.vaultMappingBusy"
         @set-enabled="shell.setProposalExternalEnabled"
       >
-        <template #github>
-          <GithubStatus :state="shell.github.state.value" />
-        </template>
         <template #vault>
           <VaultSettings
             :open="shell.settingsDialogVisible"

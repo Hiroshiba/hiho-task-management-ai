@@ -2,7 +2,6 @@ import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent, WebContents } from "ele
 import { z } from "zod";
 import { ipcFailureSchema } from "../../shared/ipc-contracts/common";
 import { diagnosticsContracts } from "../../shared/ipc-contracts/diagnostics";
-import { githubIntegrationContracts } from "../../shared/ipc-contracts/github-integration";
 import { obsidianIntegrationContracts } from "../../shared/ipc-contracts/obsidian-integration";
 import { proposalsContracts } from "../../shared/ipc-contracts/proposals";
 import { settingsContracts } from "../../shared/ipc-contracts/settings";
@@ -12,7 +11,6 @@ import { DiagnosticFailureDispositionError, individualDiagnosticErrors } from ".
 import type { GuiEditExecution } from "../application/gui-edit";
 import type { StoredProposalExecution } from "../application/proposal-apply";
 import type { DiagnosticsHandlers } from "./handlers/diagnostics";
-import type { GithubIntegrationHandlers } from "./handlers/github-integration";
 import type { ObsidianIntegrationHandlers } from "./handlers/obsidian-integration";
 import {
   parseProposalsAiDeltaSubscriptionRequest,
@@ -76,7 +74,6 @@ type FeatureIpcRegistryOptions = {
     readonly tasks: TasksHandlers;
     readonly settings: SettingsHandlers;
     readonly proposals: ProposalsHandlers;
-    readonly githubIntegration: GithubIntegrationHandlers;
     readonly obsidianIntegration: ObsidianIntegrationHandlers;
     readonly diagnostics: DiagnosticsHandlers;
   };
@@ -202,7 +199,7 @@ export class FeatureIpcRegistry {
   }
 
   private registerInvokes(ipcMain: IpcMain): void {
-    const { system, tasks, settings, proposals, githubIntegration, obsidianIntegration, diagnostics } = this.options.handlers;
+    const { system, tasks, settings, proposals, obsidianIntegration, diagnostics } = this.options.handlers;
     const invokes: readonly (readonly [InvokeContract, InvokeHandler])[] = [
       [systemContracts.getVersion, system.getVersion],
       [systemContracts.waitForStartup, system.waitForStartup],
@@ -253,7 +250,6 @@ export class FeatureIpcRegistry {
       [proposalsContracts.getExecution, proposals.getExecution],
       [proposalsContracts.listExecutions, proposals.listExecutions],
       [proposalsContracts.retryExecution, proposals.retryExecution],
-      [githubIntegrationContracts.getStatus, githubIntegration.getStatus],
       [obsidianIntegrationContracts.validateVault, obsidianIntegration.validateVault],
       [obsidianIntegrationContracts.listVaults, obsidianIntegration.listVaults],
       [obsidianIntegrationContracts.listVaultMappings, obsidianIntegration.listVaultMappings],

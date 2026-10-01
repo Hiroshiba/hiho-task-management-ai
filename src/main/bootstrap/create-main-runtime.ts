@@ -11,12 +11,10 @@ import type { SecretStorageData, SecretStoragePort } from "../application/common
 import { DiagnosticLogService } from "../application/common/diagnostic-log-service";
 import { createNowIso } from "../application/common/runtime-clock";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
-import { getGithubIntegrationStatus } from "../application/github-integration";
 import { ObsidianReadService } from "../infrastructure/obsidian";
 import type { ApplicationState } from "../application/settings";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
 import { createDiagnosticsHandlers, type DiagnosticsHandlers } from "../ipc/handlers/diagnostics";
-import { createGithubIntegrationHandlers, type GithubIntegrationHandlers } from "../ipc/handlers/github-integration";
 import { createObsidianIntegrationHandlers, type ObsidianIntegrationHandlers } from "../ipc/handlers/obsidian-integration";
 import { createProposalsHandlers, type ProposalsHandlers } from "../ipc/handlers/proposals";
 import { createSettingsHandlers, type SettingsHandlers } from "../ipc/handlers/settings";
@@ -201,7 +199,6 @@ export interface MainRuntime {
   readonly settingsHandlers: SettingsHandlers;
   readonly tasksHandlers: TasksHandlers;
   readonly proposalsHandlers: ProposalsHandlers;
-  readonly githubIntegrationHandlers: GithubIntegrationHandlers;
   readonly obsidianIntegrationHandlers: ObsidianIntegrationHandlers;
   readonly diagnosticsHandlers: DiagnosticsHandlers;
   readonly signal: AbortSignal;
@@ -501,7 +498,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       },
     });
     const proposalsHandlers = createProposalsHandlers(composition.getProposalsHandlerWorkflows());
-    const githubIntegrationHandlers = createGithubIntegrationHandlers({ getStatus: getGithubIntegrationStatus }, engineReporter);
     const obsidianIntegrationHandlers = createObsidianIntegrationHandlers(
       obsidian.workflow.createIpcPort(),
     );
@@ -515,7 +511,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         tasks: tasksHandlers,
         settings: settingsHandlers,
         proposals: proposalsHandlers,
-        githubIntegration: githubIntegrationHandlers,
         obsidianIntegration: obsidianIntegrationHandlers,
         diagnostics: diagnosticsHandlers,
       },
@@ -549,7 +544,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       settingsHandlers,
       tasksHandlers,
       proposalsHandlers,
-      githubIntegrationHandlers,
       obsidianIntegrationHandlers,
       diagnosticsHandlers,
       signal: controller.signal,

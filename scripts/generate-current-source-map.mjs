@@ -52,7 +52,6 @@ const functions = [
   ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/application/proposal-generate/external-agent-generation.ts"],
   ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/application/proposal-apply/external-agent-application.ts"],
   ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
-  ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
   ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/application/common/ports/secret-storage.ts, src/main/infrastructure/persistence/settings-repository.ts, src/main/infrastructure/persistence/secret-storage.ts"],
   ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc-contracts/, src/main/ipc/, src/preload/"],
   ["タスク画面", "renderer/features/tasks", "src/renderer/features/tasks/"],
@@ -128,7 +127,6 @@ function ownerForChannel(channel) {
       ? "main/application/proposal-apply" : "main/application/proposal-generate";
   }
   if (channel.startsWith("obsidian-integration:")) return "main/application/obsidian-integration";
-  if (channel.startsWith("github-integration:")) return "main/application/github-integration";
   if (channel.startsWith("diagnostics:")) return "main/infrastructure/logging";
   throw new Error(`IPC channelのownerがありません: ${channel}`);
 }
@@ -156,7 +154,6 @@ function render() {
     ["src/shared/ipc-contracts/settings.ts", "settingsChannels"],
     ["src/shared/ipc-contracts/proposals-channels.ts", "proposalsChannels"],
     ["src/shared/ipc-contracts/obsidian-integration.ts", "obsidianIntegrationChannels"],
-    ["src/shared/ipc-contracts/github-integration.ts", "githubIntegrationChannels"],
     ["src/shared/ipc-contracts/diagnostics.ts", "diagnosticsChannels"],
   ].flatMap(([path, name]) => objectStringValues(path, name));
   if (channels.length !== new Set(channels).size) {
