@@ -7,7 +7,7 @@ type SetupContext<TSectionGids, TCodex> = {
   readonly codex: TCodex;
 };
 
-/** Vault選択を保存し外部ツール設定へ進む状態を生成します。 */
+/** Vault選択を保存しフル同期へ進む状態を生成します。 */
 export async function chooseSetupVault<
   TState,
   TMapping,
@@ -35,18 +35,9 @@ export async function chooseSetupVault<
       absolute_path: validatedVault.real_path,
     });
     dependencies.saveMapping(mapping);
-    return dependencies.parseState({
-      kind: "vault_configured",
-      step: "external_tool",
-      context,
-      vault_id: mapping.vault_id,
-    });
+    return dependencies.parseState({ kind: "full_sync_required", step: "full_sync", context });
   }
-  return dependencies.parseState({
-    kind: "vault_skipped",
-    step: "external_tool",
-    context,
-  });
+  return dependencies.parseState({ kind: "full_sync_required", step: "full_sync", context });
 }
 
 /** フル同期の前後の状態を保存してCodex能力検査へ進みます。 */
@@ -59,13 +50,11 @@ export async function runSetupFullSync<
     readonly completed: string;
     readonly withdrawn: string;
   }, { readonly kind: string }>,
-  TExternalTool,
   TFullSyncInput,
 >(
   state: TSelectionState,
   signal: AbortSignal,
   dependencies: {
-    readonly selectExternalTool: (state: TSelectionState) => TExternalTool;
     readonly parseState: (value: unknown) => TState;
     readonly setState: (state: TState) => void;
     readonly saveCheckpoint: (state: TState) => void;
@@ -74,12 +63,10 @@ export async function runSetupFullSync<
     readonly getState: () => TState;
   },
 ): Promise<TState> {
-  const externalTool = dependencies.selectExternalTool(state);
   const runningState = dependencies.parseState({
     kind: "full_sync_required",
     step: "full_sync",
     context: state.context,
-    external_tool: externalTool,
   });
   dependencies.setState(runningState);
   dependencies.saveCheckpoint(runningState);
@@ -95,7 +82,6 @@ export async function runSetupFullSync<
     kind: "codex_capability_required",
     step: "codex_capability",
     context: state.context,
-    external_tool: externalTool,
   }));
   return dependencies.getState();
 }
@@ -110,9 +96,8 @@ export async function completeSetupCodexCapability<
     readonly withdrawn: string;
   }, TCodex>,
   TCodex extends { readonly kind: string },
-  TExternalTool,
 >(
-  state: { readonly context: TContext; readonly external_tool: TExternalTool },
+  state: { readonly context: TContext },
   signal: AbortSignal,
   dependencies: {
     readonly checkCapabilities: (signal: AbortSignal) => Promise<TCodex>;
@@ -141,6 +126,5 @@ export async function completeSetupCodexCapability<
     kind: "ready",
     step: "ready",
     context: { ...state.context, codex: availability },
-    external_tool: state.external_tool,
   });
 }

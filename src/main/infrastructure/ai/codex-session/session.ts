@@ -31,7 +31,6 @@ import {
 import {
   canonicalStringArray,
   validateVerifiedTaskctlLocalIpc,
-  validateAdditionalLocalSocketPaths,
   isValidThreadSettingsNotification,
   type ThreadSettingsNotification,
 } from "./capability-policy";
@@ -269,7 +268,6 @@ export class CodexSessionService {
   private readonly notificationRouter: CodexSessionNotificationRouter;
   private readonly connectionRecovery: CodexConnectionRecovery<CodexSessionTurnResult, CodexSessionConnection>;
   private readOnlyVaultPaths: readonly string[];
-  private additionalLocalSocketPaths: readonly string[];
   private readonly diagnostics: InternalDiagnostic[] = [];
   private state: CodexSessionState = "created";
   private connection: CodexSessionConnection | undefined;
@@ -299,7 +297,6 @@ export class CodexSessionService {
     this.options = codexSessionOptionsSchema.parse(options);
     this.taskctlSchemas = taskctlSchemas;
     this.readOnlyVaultPaths = [...this.options.readOnlyVaultPaths];
-    this.additionalLocalSocketPaths = [...(this.options.additionalUnixSocketPaths ?? [])];
     this.broker = new TaskctlBroker({
       tmpDirectoryPath: this.options.tmpDirectoryPath,
       snapshotProvider: () => {
@@ -486,30 +483,6 @@ export class CodexSessionService {
     this.connectionConfigurationChanged = true;
   }
 
-  /** Codexが接続できる追加ローカルIPCを更新します。 */
-  public setAdditionalLocalSocketPaths(paths: readonly string[]): void {
-    if (
-      this.state !== "created"
-      && this.state !== "authentication_required"
-      && this.state !== "ready"
-    ) {
-      throw new CodexSessionStateError();
-    }
-    const validatedPaths = validateAdditionalLocalSocketPaths(
-      paths,
-      this.options.tmpDirectoryPath,
-    );
-    if (
-      canonicalStringArray(validatedPaths)
-      === canonicalStringArray(this.additionalLocalSocketPaths)
-    ) {
-      return;
-    }
-    this.additionalLocalSocketPaths = validatedPaths;
-    this.threadConfigurationChanged = true;
-    this.connectionConfigurationChanged = true;
-  }
-
   /** 専用ワークスペースのスキル更新後に新規スレッドを必須化します。 */
   public requireThreadConfigurationRefresh(): void {
     if (
@@ -675,7 +648,6 @@ export class CodexSessionService {
           workspacePath: this.options.workspacePath,
           tmpDirectoryPath: this.options.tmpDirectoryPath,
           readOnlyVaultPaths: this.readOnlyVaultPaths,
-          additionalLocalSocketPaths: this.additionalLocalSocketPaths,
           validateTaskctlLocalIpc: (tmpDirectoryPath) => validateTaskctlLocalIpc(taskctlStartResult, tmpDirectoryPath),
         });
       },

@@ -68,10 +68,6 @@ export function validateSetupPorts(options: {
     readonly getVaultMappings: unknown;
   };
   readonly checkpoint: { readonly load: unknown; readonly save: unknown };
-  readonly externalTool: {
-    readonly configureDiscord: unknown;
-    readonly deactivateDiscord: unknown;
-  };
   readonly fullSync: unknown;
 }): void {
   validateFunction(options.codex.detectCli, "Codex CLI検出関数が必要です。");
@@ -106,8 +102,6 @@ export function validateSetupPorts(options: {
   validateFunction(options.database.getVaultMappings, "Vault一覧取得関数が必要です。");
   validateFunction(options.checkpoint.load, "初回設定チェックポイント取得関数が必要です。");
   validateFunction(options.checkpoint.save, "初回設定チェックポイント保存関数が必要です。");
-  validateFunction(options.externalTool.configureDiscord, "Discord外部ツール設定関数が必要です。");
-  validateFunction(options.externalTool.deactivateDiscord, "Discord外部ツール無効化関数が必要です。");
   validateFunction(options.fullSync, "フル同期関数が必要です。");
 }
 
@@ -283,11 +277,6 @@ export function requiresContextRevalidation(state: { readonly kind: string }): b
     "resources_ready",
     "asana_capability_failed",
     "vault_choice_required",
-    "vault_skipped",
-    "vault_configured",
-    "external_tool_skipped",
-    "external_tool_configured",
-    "external_tool_unavailable",
     "full_sync_required",
     "codex_capability_required",
     "ready",

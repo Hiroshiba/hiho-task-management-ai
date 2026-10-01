@@ -55,8 +55,8 @@ const externalCredentialReferencesSchema = z.record(
   credentialReferenceSchema,
 );
 
-/** Electronの保護ストレージへ保存する秘密情報を検証するスキーマです。 */
-export const secretStorageSchema = z
+/** 旧版の秘密情報を検証するスキーマです。 */
+export const legacySecretStorageSchema = z
   .object({
     asana_client_secret: secretValueSchema.optional(),
     access_token: secretValueSchema.optional(),
@@ -64,12 +64,29 @@ export const secretStorageSchema = z
     discord_bot_token: discordBotTokenSchema.optional(),
     external_credential_references: externalCredentialReferencesSchema.optional(),
   })
+  .strict();
+
+/** Electronの保護ストレージへ保存する秘密情報を検証するスキーマです。 */
+export const secretStorageSchema = z
+  .object({
+    asana_client_secret: secretValueSchema.optional(),
+    access_token: secretValueSchema.optional(),
+    refresh_token: secretValueSchema.optional(),
+  })
   .strict() satisfies z.ZodType<SecretStorageData>;
+
+/** 旧版の暗号化済み秘密情報ファイルを検証するスキーマです。 */
+export const legacyEncryptedSecretStorageSchema = z
+  .object({
+    version: z.literal(1),
+    ciphertext: z.base64(),
+  })
+  .strict();
 
 /** 暗号化済み秘密情報ファイルを検証するスキーマです。 */
 export const encryptedSecretStorageSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     ciphertext: z.base64(),
   })
   .strict();

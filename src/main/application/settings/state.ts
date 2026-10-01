@@ -24,11 +24,6 @@ export function contextFromState(state: SetupState): OperationalContext | undefi
     case "resources_ready":
     case "asana_capability_failed":
     case "vault_choice_required":
-    case "vault_skipped":
-    case "vault_configured":
-    case "external_tool_skipped":
-    case "external_tool_configured":
-    case "external_tool_unavailable":
     case "full_sync_required":
     case "codex_capability_required":
     case "ready":

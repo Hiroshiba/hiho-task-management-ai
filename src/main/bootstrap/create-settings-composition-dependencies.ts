@@ -14,21 +14,18 @@ import {
   type AsanaCommunicationRuntime,
   type AsanaSyncCoordinatorResult,
 } from "../infrastructure/asana";
-import { type ExternalToolBroker, type ExternalToolRegistry, type ExternalToolDefinition } from "../infrastructure/ai";
 import { deviceSettingsSchema, type DeviceSettings, type SqliteSettingsRepository, type SqliteVaultMappingRepository, type SetupCheckpointStore } from "../infrastructure/persistence";
 import { identifierSchema } from "../domain";
 import { vaultMappingSchema } from "../domain/obsidian-contracts";
 import { settingsContracts } from "../../shared/ipc-contracts/settings";
 import {
   contextFromState,
-  type SetupExternalToolConfigurationResult,
   type SetupFullSyncInput,
   type SetupOrchestrator,
 } from "../application/settings";
 import { ObsidianIntegrationWorkflow } from "../application/obsidian-integration";
 import { validateAbortSignal, throwIfAborted } from "../application/common/abort-signal";
-import { setupExternalToolSelectionSchema, setupStateSchema, setupSchemas, type SetupDiscordExternalToolConfigurationInput, type SetupState } from "./setup-contracts";
-import { ExternalToolRuntime } from "./external-tool-runtime";
+import { setupStateSchema, setupSchemas, type SetupState } from "./setup-contracts";
 import type { ApplicationOptions } from "./main-runtime-options";
 import type { SettingsCompositionDependencies } from "./create-settings-runtime";
 
@@ -45,7 +42,6 @@ export type SettingsCompositionHost = {
   readonly vaultMappingRepository: SqliteVaultMappingRepository;
   readonly obsidian: ObsidianIntegrationWorkflow;
   readonly codexHealth: SettingsCompositionDependencies["setupPorts"]["codex"];
-  readonly externalTools: ExternalToolRuntime<ExternalToolBroker, ExternalToolRegistry, ExternalToolDefinition>;
   readonly operationQueue: AsanaCommunicationRuntime["operationQueue"];
   readonly operationalContext: {
     readonly requireConfiguredSettings: () => DeviceSettings;
@@ -67,7 +63,6 @@ export type SettingsCompositionHost = {
     readonly runSetupFullSync: (input: SetupFullSyncInput, signal: AbortSignal) => Promise<void>;
     readonly synchronizeReauthentication: (signal: AbortSignal) => Promise<AsanaSyncCoordinatorResult>;
   };
-  readonly configureDiscordExternalTool: (input: SetupDiscordExternalToolConfigurationInput, signal: AbortSignal) => Promise<SetupExternalToolConfigurationResult>;
 };
 
 /** 初回設定とAsana再認証が使用するportを組み立てます。 */
@@ -112,11 +107,6 @@ export function createSettingsCompositionDependencies(
           getVaultMappings: () => host.vaultMappingRepository.getVaultMappings(),
         },
         checkpoint: host.checkpoint,
-        externalTool: {
-          configureDiscord: (input: SetupDiscordExternalToolConfigurationInput, signal: AbortSignal) =>
-            host.configureDiscordExternalTool(input, signal),
-          deactivateDiscord: (signal: AbortSignal) => host.externalTools.deactivate(signal),
-        },
         fullSync: (input: SetupFullSyncInput, signal: AbortSignal) => host.requireTaskReadRuntime().runSetupFullSync(input, signal),
         contracts: {
           validation: setupSchemas.validation,
@@ -192,30 +182,6 @@ export function createSettingsCompositionDependencies(
         }
       },
       afterVaultChoice: (signal: AbortSignal) => host.configuredCodexRuntime.refreshThreadIfReady(signal),
-      runExternalToolConfiguration: (
-        signal: AbortSignal,
-        run: (operationSignal: AbortSignal) => Promise<SetupState>,
-      ) => host.externalTools.runConfigurationOperation(signal, run),
-      afterExternalToolChoice: (state, signal, commit) =>
-        host.externalTools.afterCommittedChoice(state, signal, {
-          selectionFromState: (current) => {
-            if (current.kind !== "external_tool_configured") {
-              return undefined;
-            }
-            const selection = setupExternalToolSelectionSchema.parse({
-              kind: "configured",
-              tool_id: current.tool_id,
-              allowed_channel_ids: current.allowed_channel_ids,
-            });
-            if (selection.kind !== "configured") {
-              throw new Error("確定済み固定Discord選択を取得できません。");
-            }
-            return selection;
-          },
-          commitCurrentState: () => commit(host.setup().getState()),
-          refreshCodexThread: (refreshSignal) =>
-            host.configuredCodexRuntime.refreshThreadIfReady(refreshSignal),
-        }),
       afterCodexCapability: (signal: AbortSignal) => host.startupRuntime.activateReady(signal),
     };
 }

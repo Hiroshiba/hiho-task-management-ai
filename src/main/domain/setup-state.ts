@@ -53,24 +53,6 @@ export type SetupCodexAuthenticationState =
   | { readonly kind: "required" }
   | Extract<SetupCodexAvailability, { kind: "unavailable" }>;
 
-export type SetupExternalToolUnavailableReason =
-  | "unsupported_platform"
-  | "safe_execution_boundary_unavailable"
-  | "credential_storage_unavailable"
-  | "startup_failed";
-
-export type SetupExternalToolSelection =
-  | { readonly kind: "skipped" }
-  | {
-      readonly kind: "configured";
-      readonly tool_id: "discord-context";
-      readonly allowed_channel_ids: string[];
-    }
-  | {
-      readonly kind: "unavailable";
-      readonly reason_code: SetupExternalToolUnavailableReason;
-    };
-
 export type SetupWorkspace = { readonly gid: string; readonly name: string };
 export type SetupProject = { readonly gid: string; readonly name: string };
 export type SetupVaultMapping = { readonly vault_id: string; readonly absolute_path: string };
@@ -111,14 +93,9 @@ export type SetupState =
   | { readonly kind: "resources_ready"; readonly step: "asana_capability"; readonly context: SetupContext }
   | { readonly kind: "asana_capability_failed"; readonly step: "asana_capability"; readonly context: SetupContext; readonly reason_code: "task_create_failed" | "task_update_failed" | "section_move_failed" | "tag_update_failed" | "external_data_failed" | "read_back_failed" | "cleanup_failed" | "unknown"; readonly test_task_gid?: string | undefined }
   | { readonly kind: "vault_choice_required"; readonly step: "vault"; readonly context: SetupContextWithTestTask }
-  | { readonly kind: "vault_skipped"; readonly step: "external_tool"; readonly context: SetupContextWithTestTask }
-  | { readonly kind: "vault_configured"; readonly step: "external_tool"; readonly context: SetupContextWithTestTask; readonly vault_id: string }
-  | { readonly kind: "external_tool_skipped"; readonly step: "full_sync"; readonly context: SetupContextWithTestTask }
-  | { readonly kind: "external_tool_configured"; readonly step: "full_sync"; readonly context: SetupContextWithTestTask; readonly tool_id: "discord-context"; readonly allowed_channel_ids: string[] }
-  | { readonly kind: "external_tool_unavailable"; readonly step: "full_sync"; readonly context: SetupContextWithTestTask; readonly reason_code: SetupExternalToolUnavailableReason }
-  | { readonly kind: "full_sync_required"; readonly step: "full_sync"; readonly context: SetupContextWithTestTask; readonly external_tool: SetupExternalToolSelection }
-  | { readonly kind: "codex_capability_required"; readonly step: "codex_capability"; readonly context: SetupContextWithTestTask; readonly external_tool: SetupExternalToolSelection }
-  | { readonly kind: "ready"; readonly step: "ready"; readonly context: SetupContextWithTestTask; readonly external_tool: SetupExternalToolSelection };
+  | { readonly kind: "full_sync_required"; readonly step: "full_sync"; readonly context: SetupContextWithTestTask }
+  | { readonly kind: "codex_capability_required"; readonly step: "codex_capability"; readonly context: SetupContextWithTestTask }
+  | { readonly kind: "ready"; readonly step: "ready"; readonly context: SetupContextWithTestTask };
 
 export type SetupAsanaAuthorizationBeginInput = { readonly client_id: string; readonly client_secret: string };
 export type SetupAsanaAuthorizationCompleteInput = { readonly authorization_id: string; readonly authorization_code: string };
@@ -130,13 +107,6 @@ export type SetupProjectSelectionInput =
 export type SetupVaultChoiceInput =
   | { readonly kind: "skip" }
   | { readonly kind: "configure"; readonly mapping: SetupVaultMapping };
-export type SetupDiscordExternalToolConfigurationInput = {
-  readonly bot_token: string;
-  readonly allowed_channel_ids: string[];
-};
-export type SetupExternalToolChoiceInput =
-  | { readonly kind: "skip" }
-  | ({ readonly kind: "configure_discord" } & SetupDiscordExternalToolConfigurationInput);
 export type SetupFullSyncInput = {
   readonly device_id: string;
   readonly client_id: string;

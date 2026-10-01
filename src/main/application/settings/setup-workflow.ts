@@ -7,10 +7,6 @@ import {
   validateSetupPorts,
 } from "./setup-validation";
 import {
-  chooseSetupExternalTool,
-  externalToolSelectionFromState,
-} from "./setup-external-tool";
-import {
   stateCodexAvailability,
   updateStateCodexAvailability,
 } from "./setup-codex-state";
@@ -35,9 +31,6 @@ import type {
   SetupAsanaAuthorizationCancelInput,
   SetupAsanaAuthorizationCompleteInput,
   SetupCodexAvailability,
-  SetupExternalToolChoiceInput,
-  SetupExternalToolSelection,
-  SetupExternalToolUnavailableReason,
   SetupProject,
   SetupProjectSelectionInput,
   SetupState,
@@ -54,7 +47,6 @@ import type {
   SetupCheckpointPort,
   SetupCodexPort,
   SetupDatabasePort,
-  SetupExternalToolPort,
   SetupFullSyncPort,
   SetupOrchestratorOptions,
   SetupResourcePort,
@@ -71,7 +63,6 @@ const setupOrchestratorOptionsSchema = z.object({
   reportCapabilityFailure: z.unknown(),
   database: z.unknown(),
   checkpoint: z.unknown(),
-  externalTool: z.unknown(),
   fullSync: z.unknown(),
   contracts: z.unknown(),
 }).strict();
@@ -97,7 +88,6 @@ export class SetupOrchestrator {
   private readonly reportCapabilityFailure: SetupCapabilityFailureReporter;
   private readonly database: SetupDatabasePort;
   private readonly checkpoint: SetupCheckpointPort;
-  private readonly externalTool: SetupExternalToolPort;
   private readonly fullSync: SetupFullSyncPort;
   private state: SetupState;
   private resumeRequired: boolean;
@@ -135,7 +125,6 @@ export class SetupOrchestrator {
     this.reportCapabilityFailure = options.reportCapabilityFailure;
     this.database = options.database;
     this.checkpoint = options.checkpoint;
-    this.externalTool = options.externalTool;
     this.fullSync = options.fullSync;
     const initialState = this.stateTools.parseState({
       kind: "created",
@@ -556,12 +545,11 @@ export class SetupOrchestrator {
     const taskVaultMapping = taskVaultMappings[0];
     if (taskVaultMapping != null) {
       this.state = this.stateTools.parseState({
-        kind: "vault_configured",
-        step: "external_tool",
+        kind: "full_sync_required",
+        step: "full_sync",
         context,
-        vault_id: taskVaultMapping.vault_id,
       });
-      return this.chooseExternalTool({ kind: "skip" }, signal);
+      return this.getState();
     }
     this.state = this.stateTools.parseState({
       kind: "vault_choice_required",
@@ -587,100 +575,15 @@ export class SetupOrchestrator {
       saveMapping: (mapping) => this.database.saveVaultMapping(mapping),
       parseState: (value) => this.contracts.validation.parseState(value),
     });
-    return this.chooseExternalTool({ kind: "skip" }, signal);
-  }
-
-  /** 固定Discord読取連携を設定するか明示的にスキップします。 */
-  public async chooseExternalTool(
-    input: SetupExternalToolChoiceInput,
-    signal: AbortSignal,
-  ): Promise<SetupState> {
-    validateAbortSignal(signal);
-    signal.throwIfAborted();
-    this.assertResumeCompleted();
-    const validatedInput = this.contracts.validation.parseExternalToolChoiceInput(input);
-    assertStateKindTyped(this.state, ["vault_skipped", "vault_configured"]);
-    this.state = await chooseSetupExternalTool(this.state, validatedInput, signal, {
-      parseConfiguration: (value) => this.contracts.validation.parseDiscordConfigurationInput(value),
-      configureDiscord: (configuration, operationSignal) =>
-        this.externalTool.configureDiscord(configuration, operationSignal),
-      parseConfigurationResult: (value) => this.contracts.validation.parseExternalToolConfigurationResult(value),
-      deactivateDiscord: (operationSignal) => this.externalTool.deactivateDiscord(operationSignal),
-      parseDeactivationResult: (value) => this.contracts.validation.parseExternalToolDeactivationResult(value),
-      parseState: (value) => this.contracts.validation.parseState(value),
-      saveCheckpoint: (state) => this.checkpoint.save(state),
-    });
-    return this.stateTools.parseState(this.state);
-  }
-
-  /** 保存済み外部ツール選択を取得します。 */
-  public getExternalToolSelection(): SetupExternalToolSelection | undefined {
-    switch (this.state.kind) {
-      case "external_tool_skipped":
-      case "external_tool_configured":
-      case "external_tool_unavailable":
-      case "full_sync_required":
-      case "codex_capability_required":
-      case "ready":
-        return externalToolSelectionFromState(
-          this.state, (value) => this.contracts.validation.parseExternalToolSelection(value),
-        );
-      default:
-        return undefined;
-    }
-  }
-
-  /** 外部ツール選択を安全停止状態へ更新します。 */
-  public markExternalToolUnavailable(
-    reasonCode: SetupExternalToolUnavailableReason,
-  ): SetupState {
-    const reason = this.contracts.validation.parseExternalToolUnavailableReason(reasonCode);
-    const state = this.state;
-    let nextState: SetupState;
-    switch (state.kind) {
-      case "external_tool_configured":
-      case "external_tool_skipped":
-      case "external_tool_unavailable":
-        nextState = this.stateTools.parseState({
-          kind: "external_tool_unavailable",
-          step: "full_sync",
-          context: state.context,
-          reason_code: reason,
-        });
-        break;
-      case "full_sync_required":
-      case "codex_capability_required":
-      case "ready":
-        nextState = this.stateTools.parseState({
-          ...state,
-          external_tool: {
-            kind: "unavailable",
-            reason_code: reason,
-          },
-        });
-        break;
-      default:
-        throw new Error("現在の初回設定状態には外部ツール選択がありません。");
-    }
-    this.checkpoint.save(nextState);
-    this.state = nextState;
-    return this.stateTools.parseState(nextState);
+    return this.getState();
   }
 
   /** 初回設定用のフル同期を完了します。 */
   public async runFullSync(signal: AbortSignal): Promise<SetupState> {
     validateAbortSignal(signal);
     this.assertResumeCompleted();
-    assertStateKindTyped(this.state, [
-      "external_tool_skipped",
-      "external_tool_configured",
-      "external_tool_unavailable",
-      "full_sync_required",
-    ]);
+    assertStateKindTyped(this.state, ["full_sync_required"]);
     return runSetupFullSync(this.state, signal, {
-      selectExternalTool: (state) => externalToolSelectionFromState(
-        state, (value) => this.contracts.validation.parseExternalToolSelection(value),
-      ),
       parseState: (value) => this.contracts.validation.parseState(value),
       setState: (state) => { this.state = state; },
       saveCheckpoint: (state) => this.checkpoint.save(state),

@@ -1,8 +1,13 @@
 import { z } from "zod";
 import type { SetupState } from "../../domain/setup-state";
 import type { PersistentTextFile } from "./persistent-text-file";
+import {
+  checkpointV2Schema,
+  checkpointV2StateSchema,
+  type CheckpointV2State,
+} from "./setup-checkpoint-v2-schema";
 
-const checkpointVersion = 2;
+const checkpointVersion = 3;
 const legacyCheckpointVersion = 1;
 const checkpointSchema = z
   .object({
@@ -130,8 +135,7 @@ function hasControlCharacter(value: string): boolean {
 
 function migrateLegacyState(
   state: LegacySetupState,
-  parseState: (value: unknown) => SetupState,
-): SetupState {
+): unknown {
   if (state.kind === "asana_authorization_pending") {
     throw new Error("OAuth認可待機中の旧初回設定状態は移行できません。");
   }
@@ -142,7 +146,30 @@ function migrateLegacyState(
     delete contextWithoutRedirectUri.redirect_uri;
     stateWithoutRedirectUri.context = contextWithoutRedirectUri;
   }
-  return parseState(stateWithoutRedirectUri);
+  return stateWithoutRedirectUri;
+}
+
+function projectV2State(
+  state: CheckpointV2State,
+  parseState: (value: unknown) => SetupState,
+): SetupState {
+  switch (state.kind) {
+    case "asana_authorization_pending":
+      throw new Error("OAuth認可待機中の旧初回設定状態は移行できません。");
+    case "vault_skipped":
+    case "vault_configured":
+    case "external_tool_skipped":
+    case "external_tool_configured":
+    case "external_tool_unavailable":
+    case "full_sync_required":
+      return parseState({ kind: "full_sync_required", step: "full_sync", context: state.context });
+    case "codex_capability_required":
+      return parseState({ kind: "codex_capability_required", step: "codex_capability", context: state.context });
+    case "ready":
+      return parseState({ kind: "ready", step: "ready", context: state.context });
+    default:
+      return parseState(state);
+  }
 }
 
 /** 初回設定状態を秘密なしのJSONとして原子的に保存します。 */
@@ -192,18 +219,21 @@ export class SetupCheckpointStore {
         throw new Error("初回設定チェックポイントの内容が不正です。", { cause: error });
       }
     }
-    if (versionEnvelope.version !== legacyCheckpointVersion) {
+    if (versionEnvelope.version !== legacyCheckpointVersion && versionEnvelope.version !== 2) {
       throw new Error("初回設定チェックポイントのバージョンが不明です。");
     }
-    let legacyState: LegacySetupState;
+    let legacyState: CheckpointV2State;
     try {
-      legacyState = legacyCheckpointSchema.parse(parsed).state;
+      const v2Source = versionEnvelope.version === legacyCheckpointVersion
+        ? migrateLegacyState(legacyCheckpointSchema.parse(parsed).state)
+        : checkpointV2Schema.parse(parsed).state;
+      legacyState = checkpointV2StateSchema.parse(v2Source);
     } catch (error: unknown) {
       throw new Error("旧初回設定チェックポイントの内容が不正です。", { cause: error });
     }
     let migratedState: SetupState;
     try {
-      migratedState = this.parsePersistableState(migrateLegacyState(legacyState, this.parseState));
+      migratedState = this.parsePersistableState(projectV2State(legacyState, this.parseState));
     } catch (error: unknown) {
       throw new Error("旧初回設定チェックポイントを移行できません。", { cause: error });
     }

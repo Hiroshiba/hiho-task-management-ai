@@ -235,10 +235,9 @@ function compareGids(left: CompletionTask, right: CompletionTask): number {
   return 0;
 }
 
-/** 子タスク完了と外部確認に基づく信頼済み状態根拠を作ります。 */
+/** 子タスク完了に基づく信頼済み状態根拠を作ります。 */
 export function createTrustedStatusEvidence<TReference>(
   snapshot: { readonly tasks: readonly CompletionTask[] },
-  externalEvidence: readonly TReference[],
   dependencies: {
     readonly createChildrenOnlyEvidenceLocator: (gid: string) => string;
     readonly parseReferences: (value: unknown) => readonly TReference[];
@@ -259,10 +258,7 @@ export function createTrustedStatusEvidence<TReference>(
       });
     }
   }
-  const references = [
-    ...promptReferences.slice(0, dependencies.maximumPromptReferences),
-    ...externalEvidence,
-  ];
+  const references = promptReferences.slice(0, dependencies.maximumPromptReferences);
   return dependencies.parseReferences(references);
 }
 

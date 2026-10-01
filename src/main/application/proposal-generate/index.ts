@@ -1,7 +1,6 @@
 export { createBaselineTaskSnapshots } from "./baseline-snapshot";
 export { ExternalAgentGeneration } from "./external-agent-generation";
 export { ProposalBaselineWorkflow } from "./proposal-baseline-workflow";
-export { createExternalToolStatusEvidenceParser } from "./external-tool-status-evidence";
 
 export {
   AiWorkflowService,
@@ -14,9 +13,7 @@ export {
   type AiWorkflowOptions,
   type AiWorkflowSessionPort,
   type AiWorkflowSnapshotProvider,
-  type AiWorkflowExternalStatusEvidenceCollector,
   type AiWorkflowTaskctlSnapshotProvider,
-  type TrustedExternalStatusEvidence,
   type WorkflowProposalViewInput,
 } from "./workflow-service";
 export {

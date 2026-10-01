@@ -2,8 +2,6 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { settingsContracts } from "../../../shared/ipc-contracts/settings";
 import type {
-  SetupExternalToolChoiceInput,
-  SetupExternalToolUnavailableReason,
   SetupState,
 } from "../../../shared/ipc-contracts/setup-schemas";
 import { jstDateTimeLabel } from "../../shared/format/date-time";
@@ -97,11 +95,6 @@ function stateTitle(state: SetupState | undefined): string {
       return "Asanaの接続と操作を確認します";
     case "vault_choice_required":
       return "Vaultを設定します";
-    case "vault_skipped":
-    case "vault_configured":
-    case "external_tool_skipped":
-    case "external_tool_configured":
-    case "external_tool_unavailable":
     case "full_sync_required":
       return "初回同期を実行します";
     case "codex_capability_required":
@@ -126,7 +119,6 @@ function setupProgressStageNumber(state: SetupState | undefined): SetupProgressS
     case "asana_capability":
       return 2;
     case "vault":
-    case "external_tool":
       return 3;
     case "full_sync":
     case "codex_capability":
@@ -202,9 +194,6 @@ function stateDescription(state: SetupState | undefined): string {
   if (state.kind === "resources_requires_action") {
     return "必須セクションやタグの不足、重複、名前変更を確認してから再照合します。";
   }
-  if (state.kind === "external_tool_unavailable") {
-    return `${externalToolUnavailableReasonLabel(state.reason_code)} 外部情報取得を無効にしたまま初回設定を続けられます。`;
-  }
   return "現在の手順を完了して次へ進んでください。";
 }
 
@@ -248,21 +237,6 @@ function capabilityReasonLabel(reason: "task_create_failed" | "task_update_faile
       return "検査後の整理を確認できませんでした。";
     case "unknown":
       return "接続と操作の確認を完了できませんでした。";
-  }
-}
-
-function externalToolUnavailableReasonLabel(
-  reason: SetupExternalToolUnavailableReason,
-): string {
-  switch (reason) {
-    case "unsupported_platform":
-      return "このOSではDiscord読取連携を安全に利用できません。";
-    case "safe_execution_boundary_unavailable":
-      return "Discord読取連携の安全な実行境界を用意できません。";
-    case "credential_storage_unavailable":
-      return "Discord Bot Tokenを安全に保存できません。";
-    case "startup_failed":
-      return "Discord読取連携を開始できませんでした。";
   }
 }
 
@@ -367,16 +341,6 @@ function selectProject(value: string): void {
     return;
   }
   emit("action", { kind: "select_project", input: parsed.data });
-}
-
-function beginExternalToolChoice(input: SetupExternalToolChoiceInput): void {
-  emit("action", { kind: "choose_external_tool", input });
-}
-
-function skipExternalTool(): void {
-  localError.value = "";
-  const input = settingsContracts.chooseExternalTool.request.parse({ kind: "skip" });
-  beginExternalToolChoice(input);
 }
 
 function workspaceOptions(state: SetupState | undefined): readonly { gid: string; name: string }[] {
@@ -735,33 +699,9 @@ function isState(state: SetupState | undefined, ...kinds: SetupState["kind"][]):
       </div>
 
       <div
-        v-else-if="isState(props.state, 'vault_skipped', 'vault_configured')"
-        class="space-y-4"
-      >
-        <p class="text-sm text-slate-600 dark:text-slate-300">
-          Discord連携は使用しません。
-        </p>
-        <button
-          type="button"
-          class="primary-button"
-          :disabled="props.busy"
-          @click="skipExternalTool"
-        >
-          初回同期へ進む
-        </button>
-      </div>
-
-      <div
-        v-else-if="isState(props.state, 'external_tool_skipped', 'external_tool_configured', 'external_tool_unavailable', 'full_sync_required')"
+        v-else-if="isState(props.state, 'full_sync_required')"
         class="space-y-3"
       >
-        <p
-          v-if="props.state.kind === 'external_tool_unavailable'"
-          class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
-          role="status"
-        >
-          {{ externalToolUnavailableReasonLabel(props.state.reason_code) }}
-        </p>
         <p class="text-sm text-slate-600 dark:text-slate-300">
           専用プロジェクトから初回の完全同期を実行します。
         </p>

@@ -22,7 +22,6 @@ type ObsidianWorkflowDependencies = {
   readonly discoverTasksVault: (signal: AbortSignal) => Promise<ObsidianTasksVaultDiscovery>;
   readonly assertOperationalReady: () => void;
   readonly isStopped: () => boolean;
-  readonly isExternalToolConfigurationRunning: () => boolean;
   readonly hasActiveAiSessions: () => boolean;
   readonly codexSessionState: () => string;
   readonly configuredReadOnlyVaultPaths: readonly string[];
@@ -89,7 +88,6 @@ export class ObsidianIntegrationWorkflow {
   private assertVaultMappingSaveAllowed(): void {
     if (
       this.dependencies.isStopped()
-      || this.dependencies.isExternalToolConfigurationRunning()
       || this.dependencies.hasActiveAiSessions()
     ) {
       throw new ObsidianVaultMappingConflictError();

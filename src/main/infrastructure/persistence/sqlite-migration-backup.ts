@@ -83,7 +83,7 @@ export function backupSqliteBeforeMigration(
     throw new Error("移行前のSQLite schema versionを読み取れません。");
   }
   if (version === 0) return {};
-  if (version < 3 || version > 10) {
+  if (version < 3 || version > 11) {
     throw new Error(`未対応のSQLite schema versionです: ${version}`);
   }
   const preV9Path = `${dbPath}.pre-v9.backup.sqlite3`;

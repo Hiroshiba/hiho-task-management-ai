@@ -6,7 +6,6 @@ import {
   resolveVerifiedReadOnlyDirectory,
   resolveCodexHomeCandidate,
   resolveVerifiedConfigurationDirectory,
-  validateAdditionalLocalSocketPaths,
 } from "./capability-policy";
 
 type ConnectionConfigurationOptions = {
@@ -14,7 +13,6 @@ type ConnectionConfigurationOptions = {
   readonly workspacePath: string;
   readonly tmpDirectoryPath: string;
   readonly readOnlyVaultPaths: readonly string[];
-  readonly additionalLocalSocketPaths: readonly string[];
   readonly validateTaskctlLocalIpc: (tmpDirectoryPath: string) => string;
 };
 
@@ -40,21 +38,10 @@ export function createCodexSessionConnectionOverrides(
   }
   if (process.platform === "win32") {
     options.validateTaskctlLocalIpc(realTmpDirectoryPath);
-    validateAdditionalLocalSocketPaths(
-      options.additionalLocalSocketPaths,
-      realTmpDirectoryPath,
-    );
     return createTaskHubConnectionFeatureOverrides();
   }
   const socketPath = options.validateTaskctlLocalIpc(realTmpDirectoryPath);
-  const additionalSocketPaths = validateAdditionalLocalSocketPaths(
-    options.additionalLocalSocketPaths,
-    realTmpDirectoryPath,
-  );
-  const unixSocketPaths = [socketPath, ...additionalSocketPaths];
-  if (new Set(unixSocketPaths).size !== unixSocketPaths.length) {
-    throw new CodexSessionCapabilityError("同じローカルIPCを重複して指定できません。");
-  }
+  const unixSocketPaths = [socketPath];
   const verifiedVaultPaths = options.readOnlyVaultPaths.map(resolveVerifiedReadOnlyDirectory);
   if (new Set(verifiedVaultPaths).size !== verifiedVaultPaths.length) {
     throw new CodexSessionCapabilityError("同じVaultの実体パスを重複して指定できません。");

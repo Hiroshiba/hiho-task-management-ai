@@ -29,10 +29,6 @@ export const {
   setupCodexAvailabilitySchema,
   setupCodexAuthenticationStateSchema,
   codexUnavailableReasonSchema,
-  setupDiscordExternalToolConfigurationInputSchema,
-  setupExternalToolChoiceInputSchema,
-  setupExternalToolSelectionSchema,
-  setupExternalToolUnavailableReasonSchema,
   setupFullSyncInputSchema,
   setupProjectSchema,
   setupProjectSelectionInputSchema,
@@ -52,10 +48,6 @@ export type SetupCodexUnavailableReason = z.infer<typeof codexUnavailableReasonS
 export type SetupAsanaAuthorizationBeginInput = z.infer<typeof setupAsanaAuthorizationBeginInputSchema>;
 export type SetupAsanaAuthorizationCompleteInput = z.infer<typeof setupAsanaAuthorizationCompleteInputSchema>;
 export type SetupAsanaAuthorizationCancelInput = z.infer<typeof setupAsanaAuthorizationCancelInputSchema>;
-export type SetupDiscordExternalToolConfigurationInput = z.infer<typeof setupDiscordExternalToolConfigurationInputSchema>;
-export type SetupExternalToolChoiceInput = z.infer<typeof setupExternalToolChoiceInputSchema>;
-export type SetupExternalToolSelection = z.infer<typeof setupExternalToolSelectionSchema>;
-export type SetupExternalToolUnavailableReason = z.infer<typeof setupExternalToolUnavailableReasonSchema>;
 export type SetupProject = z.infer<typeof setupProjectSchema>;
 export type SetupProjectSelectionInput = z.infer<typeof setupProjectSelectionInputSchema>;
 export type SetupResourceIssue = z.infer<typeof setupResourceIssueSchema>;

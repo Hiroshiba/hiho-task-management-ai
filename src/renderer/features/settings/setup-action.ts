@@ -2,7 +2,6 @@ import type {
   SetupAsanaAuthorizationBeginInput,
   SetupAsanaAuthorizationCancelInput,
   SetupAsanaAuthorizationCompleteInput,
-  SetupExternalToolChoiceInput,
   SetupProjectSelectionInput,
   SetupVaultChoiceInput,
 } from "../../../shared/ipc-contracts/setup-schemas";
@@ -19,6 +18,5 @@ export type SetupAction =
   | { readonly kind: "retry_resources" }
   | { readonly kind: "run_capability" }
   | { readonly kind: "choose_vault"; readonly input: SetupVaultChoiceInput }
-  | { readonly kind: "choose_external_tool"; readonly input: SetupExternalToolChoiceInput }
   | { readonly kind: "run_full_sync" }
   | { readonly kind: "run_codex_capability" };

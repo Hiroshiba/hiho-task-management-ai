@@ -26,7 +26,6 @@ const ownerRules = [
   [/^src\/main\/domain\//, "main/domain"],
   [/^src\/main\/external-agent\/service\.ts$/, "main/application/proposal-generate"],
   [/^src\/main\/external-agent\//, "main/infrastructure/ai"],
-  [/^src\/main\/external-tools\//, "main/infrastructure/ai"],
   [/^src\/main\/gui-edit\//, "main/application/gui-edit"],
   [/^src\/main\/ipc\//, "main/ipc"],
   [/^src\/main\/obsidian\//, "main/infrastructure/obsidian"],

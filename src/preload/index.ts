@@ -217,7 +217,6 @@ const api: FinalTaskHubApi = {
     retryResources: () => invokeFinal(finalIpcContracts.settings.retryResources, {}),
     runCapability: () => invokeFinal(finalIpcContracts.settings.runCapability, {}),
     chooseVault: (input) => invokeFinal(finalIpcContracts.settings.chooseVault, input),
-    chooseExternalTool: (input) => invokeFinal(finalIpcContracts.settings.chooseExternalTool, input),
     runFullSync: () => invokeFinal(finalIpcContracts.settings.runFullSync, {}),
     runCodexCapability: () => invokeFinal(finalIpcContracts.settings.runCodexCapability, {}),
     getAsanaAuthenticationState: () => invokeFinal(

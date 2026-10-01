@@ -226,7 +226,6 @@ export class FeatureIpcRegistry {
       [settingsContracts.retryResources, settings.retryResources],
       [settingsContracts.runCapability, settings.runCapability],
       [settingsContracts.chooseVault, settings.chooseVault],
-      [settingsContracts.chooseExternalTool, settings.chooseExternalTool],
       [settingsContracts.runFullSync, settings.runFullSync],
       [settingsContracts.runCodexCapability, settings.runCodexCapability],
       [settingsContracts.getAsanaAuthenticationState, settings.getAsanaAuthenticationState],

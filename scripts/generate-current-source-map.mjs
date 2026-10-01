@@ -81,7 +81,6 @@ const fileFormats = [
   ["外部Codex設定JSON", "external-agent/config.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"config.json"', "main/application/settings"],
   ["外部Codex接続JSON", "external-agent/connection.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
   ["taskctl接続JSON", "taskctl-connection.json", "src/main/infrastructure/ai/taskctl/broker.ts", '"taskctl-connection.json"', "main/infrastructure/ai"],
-  ["contextctl接続JSON", "contextctl-connection.json", "src/main/infrastructure/ai/external-tools/broker.ts", '"contextctl-connection.json"', "main/infrastructure/ai"],
   ["Codex作業資源", "codex-workspace/ と codex-home/", "src/main/infrastructure/ai/codex-workspace/schemas.ts", '"codex-workspace"', "main/infrastructure/ai"],
   ["Asana Custom external data", "Asana task external data", "src/main/domain/external-data.ts", "customExternalDataSchemaVersion", "main/domain"],
 ];
@@ -98,7 +97,6 @@ const sqliteOwners = new Map([
   ["device_settings", "main/application/settings"],
   ["vault_mappings", "main/application/obsidian-integration"],
   ["diagnostic_log", "main/infrastructure/logging"],
-  ["external_tool_definitions", "main/application/settings"],
   ["proposal_executions", "main/application/task-write"],
   ["proposal_execution_steps", "main/application/task-write"],
 ]);

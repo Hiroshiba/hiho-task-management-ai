@@ -12,7 +12,6 @@ import { DiagnosticLogService } from "../application/common/diagnostic-log-servi
 import { createNowIso } from "../application/common/runtime-clock";
 import { parseTaskWritePlan, taskWriteReceiptSchema } from "../application/common/task-write-plan";
 import { getGithubIntegrationStatus } from "../application/github-integration";
-import { createExternalToolStatusEvidenceParser } from "../application/proposal-generate";
 import { ObsidianReadService } from "../infrastructure/obsidian";
 import type { ApplicationState } from "../application/settings";
 import { ProposalExecutionEngine, taskWriteExecutionResultSchema, type TaskWriteExecutionResult } from "../application/task-write";
@@ -55,20 +54,12 @@ import {
   ExternalAgentBridge,
   CodexSessionService,
   CodexSetupAdapter,
-  ExternalToolBroker,
-  ExternalToolRegistry,
-  ExternalToolStatusEvidenceCollector,
-  SecretStorageDiscordCredentialProvider,
   createCodexAppServerConnectionFactory,
   createCodexDiagnosticDetailAdapter,
   createTaskctlRankingSchemas,
   createSnapshotHasher,
-  externalToolDefinitionSchema,
-  externalToolStatusEvidenceSchema,
   initializeCodexSessionWorkspaceParent,
   initializeCodexWorkspace,
-  installContextctlClientScript,
-  installDisabledExternalToolsSkill,
   removeCodexSessionWorkspace,
   resolveCodexExecutable,
   type ExternalAgentBridgeOptions,
@@ -81,7 +72,6 @@ import {
   readSecurePersistentTextFile,
   removeSecurePersistentFile,
   SqliteDiagnosticLogRepository,
-  SqliteExternalToolDefinitionRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteProposalExecutionRepository,
   SqliteSettingsRepository,
@@ -89,7 +79,6 @@ import {
   TaskReadPersistenceRepository,
   createRankingCacheSchema,
   deviceSettingsSchema,
-  externalToolCredentialReferenceNamesSchema,
   SecretStorage,
   SetupCheckpointStore,
   WindowStateStore,
@@ -105,7 +94,6 @@ import { createTaskReadRuntime } from "./create-task-read-runtime";
 import type { AsanaSyncRuntimeFactory } from "./create-task-read-composition-dependencies";
 import { createSynchronizationRuntime } from "./create-synchronization-runtime";
 import { createTaskReadPersistenceContracts } from "./task-read-storage-contracts";
-import { createExternalToolDefinitionRecordSchema } from "./external-tool-storage-contracts";
 import { CodexSessionResources } from "./codex-session-resources";
 import { createCodexProcessEnvironment } from "./codex-runtime-utilities";
 import { ApplicationUpdateService, isApplicationUpdateCandidate } from "./application-update-service";
@@ -255,6 +243,9 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
     const openedPersistence = persistence;
     const storedSecrets = new SecretStorage(
       openedPersistence.openTextFile(join(userDataPath, "secret-storage.json"), "秘密情報ファイル"),
+      (values) => {
+        currentKnownSecrets = [...new Set([...currentKnownSecrets, ...values])];
+      },
     );
     const secretStorage: SecretStoragePort = {
       load: () => {
@@ -270,6 +261,7 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         storedSecrets.clear();
       },
     };
+    secretStorage.load();
     const files = {
       createExternalAgentBridge: ({
         userDataPath,
@@ -368,16 +360,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       taskReadPersistenceContracts.parseSyncState,
     );
     const taskctlSchemas = createTaskctlRankingSchemas(rankingCacheSchema);
-    const externalToolDefinitionRecordSchema = createExternalToolDefinitionRecordSchema();
-    const externalToolDefinitionRepository = new SqliteExternalToolDefinitionRepository(
-      openedPersistence.connection,
-      {
-        parseDefinition: (value) => externalToolDefinitionSchema.parse(value),
-        parseRecord: (value) => externalToolDefinitionRecordSchema.parse(value),
-        parseCredentialReferenceNames: (value) =>
-          externalToolCredentialReferenceNamesSchema.parse(value),
-      },
-    );
     const settingsRepository = new SqliteSettingsRepository(
       openedPersistence.connection,
       (value) => deviceSettingsSchema.parse(value),
@@ -391,10 +373,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       readOnlyVaultPaths: options.composition.read_only_vault_paths,
       diagnostic: options.composition.diagnostic,
     });
-    const createEvidenceCollector = (): ExternalToolStatusEvidenceCollector =>
-      new ExternalToolStatusEvidenceCollector(
-        createExternalToolStatusEvidenceParser(externalToolStatusEvidenceSchema),
-      );
     const composition = new MainWorkflowComposition({
       ...options.composition,
       codex_executable: codexExecutable,
@@ -423,12 +401,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
       taskReadPersistenceContracts,
       taskReadRepository,
       taskctlSchemas,
-      externalToolDefinitionRepository,
-      createExternalToolRegistry: (definition) => {
-        const registry = new ExternalToolRegistry();
-        registry.register(definition);
-        return registry;
-      },
       initializeCodexWorkspace: (path) => initializeCodexWorkspace({ userDataPath: path }),
       initializeCodexSessionWorkspaceParent,
       createCodexEnvironment: (codexHomePath) =>
@@ -449,14 +421,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         ...input,
         createWorkspace: (path) => initializeCodexWorkspace({ userDataPath: path }),
         createSession: (sessionOptions, schemas) => new CodexSessionService(sessionOptions, schemas),
-        createEvidenceCollector,
-        createBroker: (registry, tmpDirectoryPath, collector) => new ExternalToolBroker({
-          tmp_directory_path: tmpDirectoryPath,
-          registry,
-          discord_credential_provider: new SecretStorageDiscordCredentialProvider(secretStorage),
-          status_evidence_collector: collector,
-        }),
-        installClient: installContextctlClientScript,
       }),
       createCodexSetupAdapter: (session, environment) => new CodexSetupAdapter({
         session,
@@ -464,11 +428,6 @@ export function createMainRuntime(options: MainRuntimeOptions): MainRuntime {
         environment,
         openAuthorizationUrl: options.composition.open_codex_authorization_url,
       }),
-      createEvidenceCollector,
-      hasDiscordBotToken: () =>
-        new SecretStorageDiscordCredentialProvider(secretStorage).hasBotToken(),
-      installDisabledSkill: installDisabledExternalToolsSkill,
-      installClient: installContextctlClientScript,
       removeSessionWorkspace: removeCodexSessionWorkspace,
       settingsRepository,
     });

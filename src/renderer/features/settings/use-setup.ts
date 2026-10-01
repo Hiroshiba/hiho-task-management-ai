@@ -81,8 +81,6 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
         return api.runCapability();
       case "choose_vault":
         return api.chooseVault(settingsContracts.chooseVault.request.parse(action.input));
-      case "choose_external_tool":
-        return api.chooseExternalTool(settingsContracts.chooseExternalTool.request.parse(action.input));
       case "run_full_sync":
         return api.runFullSync();
       case "run_codex_capability":
@@ -119,9 +117,6 @@ export function useSetup(api: SettingsApi, options: SetupOptions) {
         throw new Error("設定済み状態のCodex認証結果が不正です。");
       }
       applyState(result.value);
-      if (result.value.kind === "external_tool_configured") {
-        options.onToast("success", "Discord読取連携を登録しました。");
-      }
       if (result.value.kind === "ready" && previousKind !== "ready") {
         await options.onReady();
       }

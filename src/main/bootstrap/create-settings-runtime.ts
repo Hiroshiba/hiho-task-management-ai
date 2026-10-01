@@ -32,8 +32,7 @@ type SetupIpcCompositionOptions = ConstructorParameters<typeof SetupIpcWorkflow<
   Parameters<SetupOrchestrator["cancelAsanaAuthorization"]>[0],
   Parameters<SetupOrchestrator["selectWorkspace"]>[0],
   Parameters<SetupOrchestrator["selectProject"]>[0],
-  Parameters<SetupOrchestrator["chooseVault"]>[0],
-  Parameters<SetupOrchestrator["chooseExternalTool"]>[0]
+  Parameters<SetupOrchestrator["chooseVault"]>[0]
 >>[0];
 
 export type SettingsCompositionDependencies = {
@@ -97,8 +96,6 @@ export function createSettingsRuntime(
     afterTransition: host.afterTransition,
     afterCodexAuthentication: host.afterCodexAuthentication,
     afterVaultChoice: host.afterVaultChoice,
-    runExternalToolConfiguration: host.runExternalToolConfiguration,
-    afterExternalToolChoice: host.afterExternalToolChoice,
     afterCodexCapability: host.afterCodexCapability,
   });
   return {

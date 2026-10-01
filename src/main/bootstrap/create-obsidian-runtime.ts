@@ -6,7 +6,6 @@ import type { CodexSessionService } from "../infrastructure/ai";
 export type ObsidianCompositionDependencies = {
   readonly assertOperationalReady: () => void;
   readonly isStopped: () => boolean;
-  readonly isExternalToolConfigurationRunning: () => boolean;
   readonly hasActiveAiSessions: () => boolean;
   readonly codexSessionState: () => ReturnType<CodexSessionService["getState"]>;
   readonly setCodexReadOnlyVaultPaths: (paths: readonly string[]) => void;
@@ -44,7 +43,6 @@ export function createObsidianRuntime(
     discoverTasksVault,
     assertOperationalReady: () => requireHost().assertOperationalReady(),
     isStopped: () => requireHost().isStopped(),
-    isExternalToolConfigurationRunning: () => requireHost().isExternalToolConfigurationRunning(),
     hasActiveAiSessions: () => requireHost().hasActiveAiSessions(),
     codexSessionState: () => requireHost().codexSessionState(),
     configuredReadOnlyVaultPaths: options.readOnlyVaultPaths,
