@@ -7,7 +7,6 @@ const codexHomeDirectoryName = "codex-home";
 const skillNamesSchema = z.tuple([
   z.literal("taskctl"),
   z.literal("obsidian"),
-  z.literal("external-tools"),
 ]);
 
 const absolutePathSchema = z

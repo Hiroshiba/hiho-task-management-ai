@@ -1,6 +1,5 @@
 import { inject, type InjectionKey } from "vue";
 import type { DiagnosticsApi } from "../../../shared/ipc-contracts/diagnostics";
-import type { GithubIntegrationApi } from "../../../shared/ipc-contracts/github-integration";
 import type { ObsidianIntegrationApi } from "../../../shared/ipc-contracts/obsidian-integration";
 import type { ProposalsApi } from "../../../shared/ipc-contracts/proposals";
 import type { SettingsApi } from "../../../shared/ipc-contracts/settings";
@@ -13,7 +12,6 @@ export const tasksApiInjectionKey: InjectionKey<TasksApi> = Symbol("tasksApi");
 export const proposalsApiInjectionKey: InjectionKey<ProposalsApi> = Symbol("proposalsApi");
 export const settingsApiInjectionKey: InjectionKey<SettingsApi> = Symbol("settingsApi");
 export const obsidianIntegrationApiInjectionKey: InjectionKey<ObsidianIntegrationApi> = Symbol("obsidianIntegrationApi");
-export const githubIntegrationApiInjectionKey: InjectionKey<GithubIntegrationApi> = Symbol("githubIntegrationApi");
 
 /** Vueからsystem APIを取得します。 */
 export function useSystemApi(): SystemApi {
@@ -65,15 +63,6 @@ export function useObsidianIntegrationApi(): ObsidianIntegrationApi {
   const api = inject(obsidianIntegrationApiInjectionKey);
   if (api == null) {
     throw new Error("Obsidian連携APIが提供されていません。");
-  }
-  return api;
-}
-
-/** VueからGitHub連携APIを取得します。 */
-export function useGithubIntegrationApi(): GithubIntegrationApi {
-  const api = inject(githubIntegrationApiInjectionKey);
-  if (api == null) {
-    throw new Error("GitHub連携APIが提供されていません。");
   }
   return api;
 }

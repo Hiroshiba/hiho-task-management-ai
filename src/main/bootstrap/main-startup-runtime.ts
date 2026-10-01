@@ -17,7 +17,6 @@ type MainStartupDependencies<ApplicationState, Result extends RuntimeResult> = {
   readonly initializeExternalAgentBridge: () => Promise<void>;
   readonly ensureTasksVaultMapping: (signal: AbortSignal) => Promise<void>;
   readonly recordDiagnostic: () => void;
-  readonly reconcileExternalTools: (signal: AbortSignal) => Promise<void>;
   readonly restoreSetup: (signal: AbortSignal) => Promise<{ readonly ready: boolean }>;
   readonly getApplicationState: () => ApplicationState;
   readonly configureOperationalServices: () => void;
@@ -56,7 +55,6 @@ export class MainStartupRuntime<ApplicationState, Result extends RuntimeResult> 
     await this.dependencies.initializeExternalAgentBridge();
     await this.dependencies.ensureTasksVaultMapping(signal);
     this.dependencies.recordDiagnostic();
-    await this.dependencies.reconcileExternalTools(signal);
     const restored = await this.dependencies.restoreSetup(signal);
     if (restored.ready) {
       await this.activateReady(signal);

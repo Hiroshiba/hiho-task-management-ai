@@ -1,6 +1,7 @@
 import { proposalExecutionTablesSql } from "./proposal-execution-schema";
 
-export const storageSchemaVersion = 10;
+export const storageSchemaVersion = 11;
+export const storageV10SchemaVersion = 10;
 
 export const storageLegacyTableNames = [
   "task_cache",
@@ -26,10 +27,14 @@ export const storageV9TableNames = [
   "legacy_application_history",
 ] as const;
 
-export const storageTableNames = [
+export const storageV10TableNames = [
   ...storageV9TableNames,
   "pending_normalization_baseline",
 ] as const;
+
+export const storageTableNames = storageV10TableNames.filter(
+  (tableName) => tableName !== "external_tool_definitions",
+);
 
 export const pendingNormalizationBaselineTableSql = `
 CREATE TABLE pending_normalization_baseline (
@@ -307,11 +312,6 @@ CREATE TABLE diagnostic_log (
   operation_id TEXT,
   app_version TEXT,
   codex_version TEXT
-);
-CREATE TABLE external_tool_definitions (
-  tool_id TEXT PRIMARY KEY NOT NULL,
-  definition_json TEXT NOT NULL,
-  credential_reference_names_json TEXT NOT NULL
 );
 ${proposalExecutionTablesSql}
 ${legacyApplicationHistoryTableSql}

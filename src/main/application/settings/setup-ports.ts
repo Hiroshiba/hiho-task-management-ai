@@ -4,10 +4,6 @@ import type {
   SetupAsanaAuthorizationCompleteInput,
   SetupCodexAvailability,
   SetupCodexAuthenticationState,
-  SetupDiscordExternalToolConfigurationInput,
-  SetupExternalToolUnavailableReason,
-  SetupExternalToolChoiceInput,
-  SetupExternalToolSelection,
   SetupFullSyncInput,
   SetupProject,
   SetupProjectSelectionInput,
@@ -100,22 +96,6 @@ export type SetupCheckpointPort = {
   readonly save: (state: SetupState) => void;
 };
 
-export type SetupExternalToolConfigurationResult =
-  | { readonly kind: "configured"; readonly tool_id: "discord-context"; readonly allowed_channel_ids: readonly string[] }
-  | { readonly kind: "unavailable"; readonly reason_code: SetupExternalToolUnavailableReason };
-
-export type SetupExternalToolDeactivationResult =
-  | { readonly kind: "deactivated" }
-  | { readonly kind: "unavailable"; readonly reason_code: SetupExternalToolUnavailableReason };
-
-export type SetupExternalToolPort = {
-  readonly configureDiscord: (
-    input: SetupDiscordExternalToolConfigurationInput,
-    signal: AbortSignal,
-  ) => Promise<SetupExternalToolConfigurationResult>;
-  readonly deactivateDiscord: (signal: AbortSignal) => Promise<SetupExternalToolDeactivationResult>;
-};
-
 export type SetupFullSyncPort = (input: SetupFullSyncInput, signal: AbortSignal) => Promise<void>;
 
 export type SetupValidationPort = {
@@ -132,12 +112,6 @@ export type SetupValidationPort = {
   readonly parseProjectReference: (value: unknown) => SetupProject;
   readonly parseProjectSelectionInput: (value: unknown) => SetupProjectSelectionInput;
   readonly parseVaultChoiceInput: (value: unknown) => SetupVaultChoiceInput;
-  readonly parseExternalToolChoiceInput: (value: unknown) => SetupExternalToolChoiceInput;
-  readonly parseDiscordConfigurationInput: (value: unknown) => SetupDiscordExternalToolConfigurationInput;
-  readonly parseExternalToolConfigurationResult: (value: unknown) => SetupExternalToolConfigurationResult;
-  readonly parseExternalToolDeactivationResult: (value: unknown) => SetupExternalToolDeactivationResult;
-  readonly parseExternalToolSelection: (value: unknown) => SetupExternalToolSelection;
-  readonly parseExternalToolUnavailableReason: (value: unknown) => SetupExternalToolUnavailableReason;
   readonly parseFullSyncInput: (value: unknown) => SetupFullSyncInput;
   readonly parseTagGids: (value: unknown) => SetupTagGids;
 };
@@ -179,7 +153,6 @@ export type SetupOrchestratorOptions = {
   readonly reportCapabilityFailure: SetupCapabilityFailureReporter;
   readonly database: SetupDatabasePort;
   readonly checkpoint: SetupCheckpointPort;
-  readonly externalTool: SetupExternalToolPort;
   readonly fullSync: SetupFullSyncPort;
   readonly contracts: SetupRuntimeContracts;
 };

@@ -29,8 +29,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
   } = dependencies;
   const maximumAsanaClientSecretBytes = 1024;
   const maximumAsanaAuthorizationCodeBytes = 8 * 1024;
-  const maximumDiscordBotTokenBytes = 4_096;
-  const maximumDiscordChannels = 16;
 
   const asanaClientSecretSchema = createUtf8ByteLimitedStringSchema(
     maximumAsanaClientSecretBytes,
@@ -117,13 +115,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
 
   const setupCodexAvailableSchema = z.object({ kind: z.literal("available") }).strict();
 
-  const setupExternalToolUnavailableReasonSchema = z.enum([
-    "unsupported_platform",
-    "safe_execution_boundary_unavailable",
-    "credential_storage_unavailable",
-    "startup_failed",
-  ]);
-
   const setupResourceIssueSchema = z
     .object({
       resource: z.enum(["section", "tag"]),
@@ -152,46 +143,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
       test_task_gid: gidSchema,
     })
     .strict();
-
-  const discordChannelIdSchema = z
-    .string()
-    .regex(/^[1-9][0-9]{16,19}$/u, "DiscordチャンネルIDが不正です。");
-
-  const configuredDiscordChannelIdsSchema = z
-    .array(discordChannelIdSchema)
-    .min(1)
-    .max(maximumDiscordChannels)
-    .superRefine((channelIds, context) => {
-      const seen = new Set<string>();
-      channelIds.forEach((channelId, index) => {
-        if (seen.has(channelId)) {
-          context.addIssue({
-            code: "custom",
-            path: [index],
-            message: "同じDiscordチャンネルIDを重複指定できません。",
-          });
-          return;
-        }
-        seen.add(channelId);
-      });
-    });
-
-  const setupExternalToolSelectionSchema = z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("skipped") }).strict(),
-    z
-      .object({
-        kind: z.literal("configured"),
-        tool_id: z.literal("discord-context"),
-        allowed_channel_ids: configuredDiscordChannelIdsSchema,
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("unavailable"),
-        reason_code: setupExternalToolUnavailableReasonSchema,
-      })
-      .strict(),
-  ]);
 
   const setupStateSchema = z.discriminatedUnion("kind", [
     z
@@ -314,49 +265,9 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
       .strict(),
     z
       .object({
-        kind: z.literal("vault_skipped"),
-        step: z.literal("external_tool"),
-        context: setupContextWithTestTaskSchema,
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("vault_configured"),
-        step: z.literal("external_tool"),
-        context: setupContextWithTestTaskSchema,
-        vault_id: z.string().min(1),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("external_tool_skipped"),
-        step: z.literal("full_sync"),
-        context: setupContextWithTestTaskSchema,
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("external_tool_configured"),
-        step: z.literal("full_sync"),
-        context: setupContextWithTestTaskSchema,
-        tool_id: z.literal("discord-context"),
-        allowed_channel_ids: configuredDiscordChannelIdsSchema,
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("external_tool_unavailable"),
-        step: z.literal("full_sync"),
-        context: setupContextWithTestTaskSchema,
-        reason_code: setupExternalToolUnavailableReasonSchema,
-      })
-      .strict(),
-    z
-      .object({
         kind: z.literal("full_sync_required"),
         step: z.literal("full_sync"),
         context: setupContextWithTestTaskSchema,
-        external_tool: setupExternalToolSelectionSchema,
       })
       .strict(),
     z
@@ -364,7 +275,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
         kind: z.literal("codex_capability_required"),
         step: z.literal("codex_capability"),
         context: setupContextWithTestTaskSchema,
-        external_tool: setupExternalToolSelectionSchema,
       })
       .strict(),
     z
@@ -372,7 +282,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
         kind: z.literal("ready"),
         step: z.literal("ready"),
         context: setupContextWithTestTaskSchema,
-        external_tool: setupExternalToolSelectionSchema,
       })
       .strict(),
   ]);
@@ -446,51 +355,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
       .strict(),
   ]);
 
-  const discordBotTokenSchema = createUtf8ByteLimitedStringSchema(
-    maximumDiscordBotTokenBytes,
-  )
-    .min(1)
-    .regex(/^[A-Za-z0-9._-]+$/u, "Discord Bot Tokenに使用できない文字が含まれています。")
-    .refine((value) => value === value.trim(), "Discord Bot Tokenの前後に空白を含めることはできません。")
-    .refine((value) => !/\s/u.test(value), "Discord Bot Tokenに空白を含めることはできません。")
-    .refine((value) => !hasControlCharacter(value), "Discord Bot Tokenに制御文字を含めることはできません。");
-
-  const setupDiscordExternalToolConfigurationInputSchema = z
-    .object({
-      bot_token: discordBotTokenSchema,
-      allowed_channel_ids: configuredDiscordChannelIdsSchema,
-    })
-    .strict();
-
-  const setupExternalToolConfigurationResultSchema = z.discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("configured"),
-      tool_id: z.literal("discord-context"),
-      allowed_channel_ids: configuredDiscordChannelIdsSchema,
-    }).strict(),
-    z.object({
-      kind: z.literal("unavailable"),
-      reason_code: setupExternalToolUnavailableReasonSchema,
-    }).strict(),
-  ]);
-
-  const setupExternalToolDeactivationResultSchema = z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("deactivated") }).strict(),
-    z.object({
-      kind: z.literal("unavailable"),
-      reason_code: setupExternalToolUnavailableReasonSchema,
-    }).strict(),
-  ]);
-
-  const setupExternalToolChoiceInputSchema = z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("skip") }).strict(),
-    setupDiscordExternalToolConfigurationInputSchema
-      .safeExtend({
-        kind: z.literal("configure_discord"),
-      })
-      .strict(),
-  ]);
-
   function hasControlCharacter(value: string): boolean {
     for (const character of value) {
       const codePoint = character.codePointAt(0);
@@ -521,12 +385,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
     }).strip().parse(value)),
     parseProjectSelectionInput: (value: unknown) => setupProjectSelectionInputSchema.parse(value),
     parseVaultChoiceInput: (value: unknown) => setupVaultChoiceInputSchema.parse(value),
-    parseExternalToolChoiceInput: (value: unknown) => setupExternalToolChoiceInputSchema.parse(value),
-    parseDiscordConfigurationInput: (value: unknown) => setupDiscordExternalToolConfigurationInputSchema.parse(value),
-    parseExternalToolConfigurationResult: (value: unknown) => setupExternalToolConfigurationResultSchema.parse(value),
-    parseExternalToolDeactivationResult: (value: unknown) => setupExternalToolDeactivationResultSchema.parse(value),
-    parseExternalToolSelection: (value: unknown) => setupExternalToolSelectionSchema.parse(value),
-    parseExternalToolUnavailableReason: (value: unknown) => setupExternalToolUnavailableReasonSchema.parse(value),
     parseFullSyncInput: (value: unknown) => setupFullSyncInputSchema.parse(value),
     parseTagGids: (value: unknown) => configuredTagGidsSchema.parse(value),
   };
@@ -541,12 +399,6 @@ export function createSetupSchemas(dependencies: SetupSchemaDependencies) {
     setupCodexAvailabilitySchema,
     setupCodexAuthenticationStateSchema,
     codexUnavailableReasonSchema,
-    setupDiscordExternalToolConfigurationInputSchema,
-    setupExternalToolChoiceInputSchema,
-    setupExternalToolConfigurationResultSchema,
-    setupExternalToolDeactivationResultSchema,
-    setupExternalToolSelectionSchema,
-    setupExternalToolUnavailableReasonSchema,
     setupFullSyncInputSchema,
     setupProjectSchema,
     setupProjectSelectionInputSchema,
@@ -568,10 +420,6 @@ export type SetupCodexUnavailableReason = z.infer<SetupSchemas["codexUnavailable
 export type SetupAsanaAuthorizationBeginInput = z.infer<SetupSchemas["setupAsanaAuthorizationBeginInputSchema"]>;
 export type SetupAsanaAuthorizationCompleteInput = z.infer<SetupSchemas["setupAsanaAuthorizationCompleteInputSchema"]>;
 export type SetupAsanaAuthorizationCancelInput = z.infer<SetupSchemas["setupAsanaAuthorizationCancelInputSchema"]>;
-export type SetupDiscordExternalToolConfigurationInput = z.infer<SetupSchemas["setupDiscordExternalToolConfigurationInputSchema"]>;
-export type SetupExternalToolChoiceInput = z.infer<SetupSchemas["setupExternalToolChoiceInputSchema"]>;
-export type SetupExternalToolSelection = z.infer<SetupSchemas["setupExternalToolSelectionSchema"]>;
-export type SetupExternalToolUnavailableReason = z.infer<SetupSchemas["setupExternalToolUnavailableReasonSchema"]>;
 export type SetupProject = z.infer<SetupSchemas["setupProjectSchema"]>;
 export type SetupProjectSelectionInput = z.infer<SetupSchemas["setupProjectSelectionInputSchema"]>;
 export type SetupResourceIssue = z.infer<SetupSchemas["setupResourceIssueSchema"]>;

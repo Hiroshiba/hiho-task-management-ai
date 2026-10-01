@@ -18,41 +18,6 @@ export const deviceSettingsSchema = z
   })
   .strict();
 
-/** 外部ツールが参照する資格情報名の配列を検証するスキーマです。 */
-export const externalToolCredentialReferenceNamesSchema = z
-  .array(
-    z
-      .string()
-      .min(1)
-      .max(128)
-      .refine((value) => value.trim().length > 0, {
-        message: "資格情報参照名を空白だけにできません。",
-      })
-      .refine(
-        (value) => ![...value].some((character) => {
-          const codePoint = character.codePointAt(0);
-          return codePoint != null && (codePoint <= 31 || (codePoint >= 127 && codePoint <= 159));
-        }),
-        {
-          message: "資格情報参照名に制御文字を指定できません。",
-        },
-      ),
-  )
-  .max(64)
-  .superRefine((names, context) => {
-    const seen = new Set<string>();
-    names.forEach((name, index) => {
-      if (seen.has(name)) {
-        context.addIssue({
-          code: "custom",
-          path: [index],
-          message: "同じ資格情報参照名を重複して保存できません。",
-        });
-      }
-      seen.add(name);
-    });
-  });
-
 /** Vaultマッピングの配列を重複なく検証するスキーマです。 */
 export const vaultMappingsSchema = z
   .array(vaultMappingSchema)
@@ -120,8 +85,5 @@ export const diagnosticRecordSchema = diagnosticLogEntrySchema.omit({
 }).strict();
 
 export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
-export type ExternalToolCredentialReferenceNames = z.infer<
-  typeof externalToolCredentialReferenceNamesSchema
->;
 export type DiagnosticLogEntry = z.infer<typeof diagnosticLogEntrySchema>;
 export type DiagnosticRecord = Readonly<z.infer<typeof diagnosticRecordSchema>>;

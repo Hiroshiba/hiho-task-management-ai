@@ -24,7 +24,6 @@ export const settingsChannels = {
   retryResources: "settings:retry-resources",
   runCapability: "settings:run-capability",
   chooseVault: "settings:choose-vault",
-  chooseExternalTool: "settings:choose-external-tool",
   runFullSync: "settings:run-full-sync",
   runCodexCapability: "settings:run-codex-capability",
   getAsanaAuthenticationState: "settings:get-asana-authentication-state",
@@ -51,7 +50,6 @@ const {
   setupWorkspaceSelectionInputSchema: workspaceSelectionSchema,
   setupProjectSelectionInputSchema: projectChoiceSchema,
   setupVaultChoiceInputSchema: vaultChoiceSchema,
-  setupExternalToolChoiceInputSchema: externalToolChoiceSchema,
 } = createSetupSchemas({
   createUtf8ByteLimitedStringSchema: (maxBytes: number) => z.string().refine(
     (value) => new TextEncoder().encode(value).byteLength <= maxBytes,
@@ -165,11 +163,6 @@ export const settingsContracts = {
     request: vaultChoiceSchema,
     response: setupResponseSchema,
   },
-  chooseExternalTool: {
-    channel: settingsChannels.chooseExternalTool,
-    request: externalToolChoiceSchema,
-    response: setupResponseSchema,
-  },
   runFullSync: {
     channel: settingsChannels.runFullSync,
     request: emptyRequestSchema,
@@ -217,7 +210,6 @@ export type SettingsApi = {
   readonly retryResources: () => SetupResult;
   readonly runCapability: () => SetupResult;
   readonly chooseVault: (input: z.infer<typeof vaultChoiceSchema>) => SetupResult;
-  readonly chooseExternalTool: (input: z.infer<typeof externalToolChoiceSchema>) => SetupResult;
   readonly runFullSync: () => SetupResult;
   readonly runCodexCapability: () => SetupResult;
   readonly getAsanaAuthenticationState: () => Promise<IpcResult<z.infer<typeof asanaAuthenticationStateSchema>>>;

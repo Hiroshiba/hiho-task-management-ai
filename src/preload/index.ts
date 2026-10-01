@@ -217,7 +217,6 @@ const api: FinalTaskHubApi = {
     retryResources: () => invokeFinal(finalIpcContracts.settings.retryResources, {}),
     runCapability: () => invokeFinal(finalIpcContracts.settings.runCapability, {}),
     chooseVault: (input) => invokeFinal(finalIpcContracts.settings.chooseVault, input),
-    chooseExternalTool: (input) => invokeFinal(finalIpcContracts.settings.chooseExternalTool, input),
     runFullSync: () => invokeFinal(finalIpcContracts.settings.runFullSync, {}),
     runCodexCapability: () => invokeFinal(finalIpcContracts.settings.runCodexCapability, {}),
     getAsanaAuthenticationState: () => invokeFinal(
@@ -317,9 +316,6 @@ const api: FinalTaskHubApi = {
     resolvePath: (input) => invokeFinal(finalIpcContracts.obsidianIntegration.resolvePath, input),
     noteExists: (input) => invokeFinal(finalIpcContracts.obsidianIntegration.noteExists, input),
     openNote: (input) => invokeFinal(finalIpcContracts.obsidianIntegration.openNote, input),
-  },
-  githubIntegration: {
-    getStatus: () => invokeFinal(finalIpcContracts.githubIntegration.getStatus, {}),
   },
   diagnostics: {
     report: (input) => invokeFinal(finalIpcContracts.diagnostics.report, input),

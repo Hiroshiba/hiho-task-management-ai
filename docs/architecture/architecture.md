@@ -17,11 +17,10 @@
 | `src/main/application/gui-edit` | GUI直接編集を共通の書き込み計画へ変換 |
 | `src/main/application/settings` | 初回設定、Asana認証、端末設定 |
 | `src/main/application/system` | アプリの起動完了、版、更新状態を提供する公開契約 |
-| `src/main/application/github-integration` | GitHub連携のuse case。現行アプリにGitHub App実装はない |
 | `src/main/application/obsidian-integration` | Vault設定とObsidian参照 |
 | `src/main/infrastructure/asana` | Asana認証、transport、同期、書き込みadapter |
 | `src/main/infrastructure/obsidian` | 読み取り専用Vault adapter |
-| `src/main/infrastructure/ai` | Codex、外部エージェント、ツール接続 |
+| `src/main/infrastructure/ai` | Codex、外部エージェント、taskctl接続 |
 | `src/main/infrastructure/persistence` | SQLite、JSON、transaction、移行 |
 | `src/main/infrastructure/logging` | errorとwarningの一元記録 |
 | `src/main/ipc/handlers` | 1 use caseにつき1 handlerの入力検証とDTO変換 |
@@ -32,7 +31,6 @@
 | `src/renderer/features/proposals` | 変更案生成、確認、適用、復旧のUI状態 |
 | `src/renderer/features/settings` | 設定画面のUI状態 |
 | `src/renderer/features/system` | 自動更新の表示状態と購読 |
-| `src/renderer/features/github-integration` | GitHub連携画面のUI状態 |
 | `src/renderer/features/obsidian-integration` | Vaultとノート参照のUI状態 |
 | `src/renderer/shared/api` | feature APIの注入キーと取得関数 |
 | `src/renderer/shared/components`, `src/renderer/shared/format`, `src/renderer/shared/logging`, `src/renderer/shared/mock` | featureに依存しない部品、日時変換、診断、mock選択 |
@@ -75,7 +73,9 @@ IPCのinvokeは送信元、要求、応答を検証し、検証やhandlerが例�
 
 初回設定のIPC要求・応答を検証するZod契約は`shared/ipc-contracts`に一元化し、`main/domain`には内部状態の型と検証スキーマを置きます。settings workflowの検証は起動側からparser portとして注入し、workflowからIPC契約を直接参照しません。IPCの基本schemaの組立ても`shared/ipc-contracts`内で完結し、Mainのdomainへ依存しません。
 
-ObsidianのVault設定と読取は`application/obsidian-integration`が操作順と競合を管理し、`infrastructure/obsidian`がfilesystemを参照します。Vaultの実体パス検証後だけマッピングを保存し、保存後にCodexへ読取専用パスを反映します。ノートの本文をAsana external dataへ書き込まず、Obsidianリンクの更新はAsana側の責務とします。GitHub App clientがない現行構成は`github-integration`の連携状態で利用不可と表し、起動の成否へ混ぜません。
+ObsidianのVault設定と読取は`application/obsidian-integration`が操作順と競合を管理し、`infrastructure/obsidian`がfilesystemを参照します。Vaultの実体パス検証後だけマッピングを保存し、保存後にCodexへ読取専用パスを反映します。ノートの本文をAsana external dataへ書き込まず、Obsidianリンクの更新はAsana側の責務とします。
+
+AIのタスク参照には同期済みキャッシュを読む`taskctl`、外部情報の参照には登録済みVaultを読む`obsidian` dynamic toolを使います。外部Codexからの提案は`external_review`として既存の検証・承認経路へ渡します。アプリ本体の更新はGitHub Releasesから取得し、bootstrapと`renderer/features/system`が更新状態を管理します。署名・公開用のGitHub Appは中央の公開workflowで使います。
 
 ## 構造と状態の不変条件
 
@@ -89,4 +89,4 @@ Mainの公開入口は`src/main/bootstrap/create-main-runtime.ts`から生成し
 
 全sourceが上記の唯一のownerに属し、workflow間の直接import、循環依存、module直下の可変状態候補、旧pathと互換exportがありません。`const`で宣言したmodule直下のオブジェクトも、memberへの代入や更新があれば可変状態候補です。MainとRendererの状態は [state-ownership.md](state-ownership.md)、外部書き込みと復旧は [proposal-execution.md](proposal-execution.md) の契約に従います。構造検査と行数検査をCIで実行し、1000行超をerror、401行から1000行をreview対象として扱います。
 
-Electron、Vite、TypeScript、pnpm、Tailwind CSS、Vue、Reka UIを維持します。mock選択はURLの`mock`を1回だけ解析し、`mock=all`と機能名のカンマ区切りを扱います。feature APIの実transportとmock transportは`renderer/app`の単一registryで選び、指定のない機能は実transportを使います。OSの配色変更は再起動なしで反映します。GitHub Appの環境変数がない端末でも起動、lint、型検査、構造検査、build、mock表示を実行できます。
+Electron、Vite、TypeScript、pnpm、Tailwind CSS、Vue、Reka UIを維持します。mock選択はURLの`mock`を1回だけ解析し、`mock=all`と機能名のカンマ区切りを扱います。feature APIの実transportとmock transportは`renderer/app`の単一registryで選び、指定のない機能は実transportを使います。OSの配色変更は再起動なしで反映します。

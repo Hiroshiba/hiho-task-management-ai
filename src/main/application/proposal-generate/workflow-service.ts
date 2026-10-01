@@ -94,7 +94,7 @@ import {
   createBaselineSnapshot as buildBaselineSnapshot,
   assertTaskctlSnapshotMatchesBaseline as verifyTaskctlBaseline,
 } from "./baseline-snapshot";
-import { createTrustedExternalStatusEvidenceSchema, parseWorkflowOptions } from "./workflow-options";
+import { parseWorkflowOptions } from "./workflow-options";
 import {
   rebindInitialOperation as rebindOperationValues,
   rebindInitialProposal as rebindProposalValues,
@@ -124,7 +124,6 @@ type BoundProposalEvidence = {
   readonly explicit_split_request_references: readonly ExplicitSplitRequestReference[];
   readonly trusted_status_evidence: readonly TrustedStatusEvidenceReference[];
 };
-
 type PendingWithdrawConfirmation = WorkflowPendingWithdrawConfirmation<TaskSnapshot["status"]>;
 
 type NoProposalResponse = Extract<CodexResponse, { readonly kind: "no_proposal" }>;
@@ -204,11 +203,6 @@ type StoredProposal = {
   readonly source_map: EvidenceSourceMap;
 };
 
-export type TrustedExternalStatusEvidence = Extract<
-  TrustedStatusEvidenceReference,
-  { readonly kind: "external_tool" }
->;
-
 /** Asana適用前に再取得状態を準備する入力です。 */
 export type ApprovalPreparationInput = {
   readonly proposal_id: string;
@@ -236,15 +230,6 @@ export type AiWorkflowTaskctlSnapshotProvider = (signal: AbortSignal) =>
 export type AiWorkflowBaselineExternalDataProvider = (baseline: BaselineSnapshot, signal: AbortSignal) =>
   AsanaProposalApplicationInput["baseline_external_data"]
   | PromiseLike<AsanaProposalApplicationInput["baseline_external_data"]>;
-
-/** ターン単位で外部ツールの構造化状態記録を収集する境界です。 */
-export interface AiWorkflowExternalStatusEvidenceCollector {
-  beginTurn(turnId: string, signal: AbortSignal): void | PromiseLike<void>;
-  snapshotTurn(turnId: string, signal: AbortSignal): readonly TrustedExternalStatusEvidence[];
-  finishTurn(turnId: string, signal: AbortSignal): readonly TrustedExternalStatusEvidence[]
-    | PromiseLike<readonly TrustedExternalStatusEvidence[]>;
-  cancelTurn(turnId: string): void | PromiseLike<void>;
-}
 
 /** AIセッションのターン開始と差分購読を利用する境界です。 */
 export type AiWorkflowSessionPort = ProposalGenerationSessionPort<
@@ -277,7 +262,6 @@ export interface AiWorkflowOptions {
   readonly isSessionOutputValidationError: (error: unknown) => error is Error;
   readonly isSessionSyncError: (error: unknown) => boolean;
   readonly baselineExternalDataProvider: AiWorkflowBaselineExternalDataProvider;
-  readonly externalStatusEvidenceCollector: AiWorkflowExternalStatusEvidenceCollector;
   readonly executeApproval: (
     input: AiWorkflowApprovalRequest,
     signal: AbortSignal,
@@ -287,7 +271,6 @@ export interface AiWorkflowOptions {
   readonly reportListenerError: (error: unknown) => void;
 }
 
-const trustedExternalStatusEvidenceSchema = createTrustedExternalStatusEvidenceSchema(gidSchema);
 
 const throwIfAborted = createAbortGuard(AiWorkflowError);
 
@@ -312,9 +295,8 @@ const {
 
 function createTrustedStatusEvidence(
   snapshot: AiWorkflowSnapshot,
-  externalEvidence: readonly TrustedExternalStatusEvidence[],
 ): readonly TrustedStatusEvidenceReference[] {
-  return collectTrustedStatusEvidence(snapshot, externalEvidence, {
+  return collectTrustedStatusEvidence(snapshot, {
     createChildrenOnlyEvidenceLocator,
     parseReferences: (value) => trustedStatusEvidenceReferencesSchema.parse(value),
     maximumPromptReferences: maximumPromptStatusEvidenceReferences,
@@ -688,7 +670,6 @@ export class AiWorkflowService {
   private async executeTurnAttempt(input: TurnAttemptInput): Promise<TurnCommit> {
     return runTurnAttemptWithResources(input, {
       performTurnAttempt: (attempt, updateResources) => this.performTurnAttempt(attempt, updateResources),
-      cancelTurn: (attemptId) => this.options.externalStatusEvidenceCollector.cancelTurn(attemptId),
       releaseTaskctlSnapshot: () => this.options.session.releaseTaskctlSnapshot(),
       WorkflowError: AiWorkflowError,
     });
@@ -710,18 +691,12 @@ export class AiWorkflowService {
       retryPromptContext,
       workspaceState,
     } = input;
-    const attemptId = identifierSchema.parse(this.options.createId());
     const { prepared: turnPrepared, turnId, response: generatedResponse, workspace } = await runSessionTurn<
-      AiWorkflowSnapshot,
-      TrustedStatusEvidenceReference,
       PreparedTurn,
       ProposalWorkspace,
       CodexSessionTurnInput,
-      CodexSessionTurnResult["response"],
-      TrustedExternalStatusEvidence
-    >({ attemptId, signal, workspaceState }, {
-      beginTurn: (id, currentSignal) =>
-        this.options.externalStatusEvidenceCollector.beginTurn(id, currentSignal),
+      CodexSessionTurnResult["response"]
+    >({ signal, workspaceState }, {
       startTurn: (factory, currentSignal) =>
         this.options.session.startTurnWithPreparation(factory, currentSignal),
       createTurnInput: async (turnSignal, markPrepared) => {
@@ -765,15 +740,13 @@ export class AiWorkflowService {
               verifiedSourceExcerpt,
               WorkflowError: AiWorkflowError,
             }),
-          createTrustedStatusEvidence: (snapshot) => createTrustedStatusEvidence(snapshot, []),
+          createTrustedStatusEvidence,
         });
         return connectTurnInput({
           prepared,
           proposal: retryProposal ?? baseProposal?.proposal,
           request,
           retryPromptContext,
-          attemptId,
-          signal,
           markPrepared,
           updateResources,
         }, {
@@ -788,10 +761,6 @@ export class AiWorkflowService {
             this.options.session.freezeTaskctlSnapshot(snapshot),
           activateProposalWorkspace: (workspace, validate) =>
             this.options.session.activateProposalWorkspace(workspace, validate),
-          snapshotExternalEvidence: (id, currentSignal) =>
-            this.options.externalStatusEvidenceCollector.snapshotTurn(id, currentSignal),
-          parseExternalEvidence: (value) => trustedExternalStatusEvidenceSchema.parse(value),
-          createTrustedStatusEvidence,
           validateWorkspaceProposal: (proposal: Proposal, prepared: PreparedTurn) => validateWorkspaceProposal(
             proposal, prepared, this.options.hashCanonicalJson),
           createTurnPrompt: (currentRequest, currentPrepared, workspace, context) =>
@@ -803,11 +772,6 @@ export class AiWorkflowService {
             }),
         });
       },
-      finishTurn: (id, currentSignal) =>
-        this.options.externalStatusEvidenceCollector.finishTurn(id, currentSignal),
-      parseExternalEvidence: (value) => trustedExternalStatusEvidenceSchema.parse(value),
-      createTrustedStatusEvidence,
-      updateResources,
       SyncError: AiWorkflowSyncError,
       StateError: AiWorkflowStateError,
     });

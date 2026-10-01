@@ -2,7 +2,6 @@ import { z } from "zod";
 import { AsanaRequestAbortedError } from "../infrastructure/asana";
 import {
   CodexSessionAbortedError,
-  ExternalToolError,
   TaskctlAbortError,
   createSafeCodexEnvironment,
   taskHubExecutablePathEnvironmentVariable,
@@ -18,7 +17,6 @@ export function isAiSessionAbortError(error: unknown): boolean {
       current instanceof AsanaRequestAbortedError
       || current instanceof CodexSessionAbortedError
       || current instanceof TaskctlAbortError
-      || (current instanceof ExternalToolError && current.code === "aborted")
     ) {
       return true;
     }

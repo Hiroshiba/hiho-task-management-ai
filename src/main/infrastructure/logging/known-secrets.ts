@@ -7,7 +7,5 @@ export function knownSecretsFromStorage(data: SecretStorageData | undefined): re
     data.asana_client_secret,
     data.access_token,
     data.refresh_token,
-    data.discord_bot_token,
-    ...Object.values(data.external_credential_references ?? {}),
   ].filter((value): value is string => typeof value === "string" && value.length > 0);
 }

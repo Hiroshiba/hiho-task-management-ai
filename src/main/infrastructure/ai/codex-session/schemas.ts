@@ -1,4 +1,4 @@
-import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
   type AccountReadParams,
@@ -48,7 +48,6 @@ const maximumInputItems = 100;
 const maximumSkillNameLength = 200;
 const maximumDiagnostics = 256;
 const maximumVaultPaths = 32;
-const maximumAdditionalUnixSocketPaths = 32;
 
 const absolutePathSchema = z
   .string()
@@ -198,25 +197,6 @@ export const codexSessionOptionsSchema = z
           seen.add(normalizedPath);
         });
       }),
-    additionalUnixSocketPaths: z
-      .array(absolutePathSchema)
-      .max(maximumAdditionalUnixSocketPaths)
-      .superRefine((paths, context) => {
-        const seen = new Set<string>();
-        paths.forEach((path, index) => {
-          const normalizedPath = resolve(path);
-          if (seen.has(normalizedPath)) {
-            context.addIssue({
-              code: "custom",
-              path: [index],
-              message: "同じUnixソケットのパスを重複して指定できません。",
-            });
-            return;
-          }
-          seen.add(normalizedPath);
-        });
-      })
-      .optional(),
     connectionFactory: connectionFactorySchema,
     onError: errorHandlerSchema,
     snapshotProvider: snapshotProviderSchema,
@@ -257,18 +237,6 @@ export const codexSessionOptionsSchema = z
           path: ["readOnlyVaultPaths", index],
           message: "VaultのパスをCodex専用ワークスペースと重ねられません。",
         });
-      }
-    }
-    if (options.additionalUnixSocketPaths != null) {
-      const normalizedTmpPath = resolve(options.tmpDirectoryPath);
-      for (const [index, socketPath] of options.additionalUnixSocketPaths.entries()) {
-        if (parse(resolve(socketPath)).dir !== normalizedTmpPath) {
-          context.addIssue({
-            code: "custom",
-            path: ["additionalUnixSocketPaths", index],
-            message: "追加Unixソケットは専用ワークスペースのtmp直下に指定してください。",
-          });
-        }
       }
     }
   });

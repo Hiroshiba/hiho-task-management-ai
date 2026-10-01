@@ -76,18 +76,11 @@ import {
   CodexSessionAbortedError,
   CodexSessionService,
   CodexSetupAdapter,
-  ExternalToolBroker,
-  ExternalToolRegistry,
-  ExternalToolStatusEvidenceCollector,
   createCodexAppServerConnectionFactory,
-  createDiscordExternalToolDefinition,
   externalAgentProtocol,
-  installContextctlClientScript,
-  installDisabledExternalToolsSkill,
   removeCodexSessionWorkspace,
   type CodexSessionStartResult,
   type CodexWorkspaceInitializationResult,
-  type ExternalToolDefinition,
   type TaskctlRankingSchemas,
   type TaskctlSnapshot,
 } from "../infrastructure/ai";
@@ -106,7 +99,6 @@ import {
 import { ObsidianReadError } from "../infrastructure/obsidian";
 import {
   SetupCheckpointStore,
-  SqliteExternalToolDefinitionRepository,
   SqliteProposalApplicationHistoryRepository,
   SqliteSettingsRepository,
   SqliteVaultMappingRepository,
@@ -136,12 +128,6 @@ import {
   type ExternalAgentBridgeFactory,
   type ExternalAgentBridgePort,
 } from "./create-external-agent-runtime";
-import { ExternalToolRuntime } from "./external-tool-runtime";
-import {
-  assertPersistedExternalToolDefinition,
-  persistDiscordExternalToolConfiguration,
-  type ExternalToolDefinitionRecord,
-} from "./external-tool-storage-contracts";
 import { JournalRecoveryRuntime } from "./journal-recovery-runtime";
 import { applicationOptionsSchemaExport, type ApplicationOptions } from "./main-runtime-options";
 import { MainShutdownRuntime } from "./main-shutdown-runtime";
@@ -178,7 +164,6 @@ type AiSessionRecord = RuntimeAiSessionRecord<
   CodexWorkspaceInitializationResult,
   CodexSessionService,
   AiWorkflowService,
-  ExternalToolBroker,
   BaselineExternalData,
   TaskctlSnapshot
 >;
@@ -246,10 +231,6 @@ export abstract class MainWorkflowConstruction {
     TaskCacheDiff
   >;
   protected readonly vaultMappingRepository: SqliteVaultMappingRepository;
-  protected readonly externalToolDefinitionRepository: SqliteExternalToolDefinitionRepository<
-    ExternalToolDefinition,
-    ExternalToolDefinitionRecord
-  >;
   protected readonly proposalApplicationHistoryRepository: SqliteProposalApplicationHistoryRepository;
   protected readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
   protected attachedDiagnostics: DiagnosticLogService<DiagnosticRecord, DiagnosticLogEntry> | undefined;
@@ -279,16 +260,10 @@ export abstract class MainWorkflowConstruction {
   protected readonly guiEditRequest: GuiEditRequestWorkflow<OperationalContext>;
   protected readonly proposalHistory: ProposalHistoryWorkflow<OperationalContext>;
   protected readonly proposalExecutionRequest: ProposalExecutionRequestWorkflow<OperationalContext>;
-  protected readonly externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector;
   protected readonly externalAgentInstanceId: string;
   protected readonly externalAgent: ExternalAgentGeneration<externalAgentProtocol.ExternalAgentGuiState, TaskctlSnapshot>;
   protected readonly externalAgentApply: ExternalAgentApplication<externalAgentProtocol.ExternalAgentGuiState>;
   protected readonly externalAgentBridge: ExternalAgentBridgePort;
-  protected readonly externalTools: ExternalToolRuntime<
-    ExternalToolBroker,
-    ExternalToolRegistry,
-    ExternalToolDefinition
-  >;
   protected attachedAsanaReauthentication: AsanaReauthenticationRuntime<
     DeviceSettings,
     AsanaReauthenticationCompleteInput,
@@ -312,8 +287,6 @@ export abstract class MainWorkflowConstruction {
     CodexWorkspaceInitializationResult,
     CodexSessionService,
     AiWorkflowService,
-    ExternalToolBroker,
-    ExternalToolStatusEvidenceCollector,
     BaselineExternalData,
     TaskctlSnapshot,
     CodexSessionStartResult
@@ -370,11 +343,6 @@ export abstract class MainWorkflowConstruction {
         TaskCacheDiff
       >;
       readonly taskctlSchemas: TaskctlRankingSchemas;
-      readonly externalToolDefinitionRepository: SqliteExternalToolDefinitionRepository<
-        ExternalToolDefinition,
-        ExternalToolDefinitionRecord
-      >;
-      readonly createExternalToolRegistry: (definition: ExternalToolDefinition) => ExternalToolRegistry;
       readonly initializeCodexWorkspace: (userDataPath: string) => CodexWorkspaceInitializationResult;
       readonly initializeCodexSessionWorkspaceParent: (parentPath: string) => string;
       readonly createCodexEnvironment: (codexHomePath: string) => Record<string, string>;
@@ -384,10 +352,6 @@ export abstract class MainWorkflowConstruction {
       ) => ReturnType<typeof createCodexAppServerConnectionFactory>;
       readonly createCodexSessionResources: (input: CodexSessionResourceInputs) => CodexSessionResources;
       readonly createCodexSetupAdapter: (session: CodexSessionService, environment: Record<string, string>) => CodexSetupAdapter;
-      readonly createEvidenceCollector: () => ExternalToolStatusEvidenceCollector;
-      readonly hasDiscordBotToken: () => boolean;
-      readonly installDisabledSkill: typeof installDisabledExternalToolsSkill;
-      readonly installClient: typeof installContextctlClientScript;
       readonly removeSessionWorkspace: typeof removeCodexSessionWorkspace;
       readonly settingsRepository: SqliteSettingsRepository<DeviceSettings>;
     },
@@ -406,7 +370,6 @@ export abstract class MainWorkflowConstruction {
     this.taskctlSchemas = bindings.taskctlSchemas;
     this.taskReadRepository = bindings.taskReadRepository;
     this.vaultMappingRepository = bindings.vaultMappingRepository;
-    this.externalToolDefinitionRepository = bindings.externalToolDefinitionRepository;
     this.proposalApplicationHistoryRepository = historyRepository;
     this.settingsRepository = bindings.settingsRepository;
     this.secretStorage = bindings.secretStorage;
@@ -455,12 +418,11 @@ export abstract class MainWorkflowConstruction {
       snapshotProvider: () => this.proposalBaseline.createTaskctlSnapshot(),
       syncBeforeTurn: (signal) => this.synchronizationOperations.requireSynchronizedBeforeAi(signal),
       taskctlSchemas: this.taskctlSchemas,
-      readyRegistry: () => this.externalTools.readyRegistry(),
     });
-    this.codexSession = this.codexSessionResources.createSession(this.codexWorkspace, undefined);
+    this.codexSession = this.codexSessionResources.createSession(this.codexWorkspace);
     this.codexAdapter = bindings.createCodexSetupAdapter(this.codexSession, codexEnvironment);
     this.codexHealth = new CodexHealthWorkflow({
-      isDisabled: () => this.externalTools.codexDisabledBySafety(),
+      isDisabled: () => this.codexSession.getState() === "disabled",
       detectCli: (signal, capture) => this.codexAdapter.detectCli(signal, capture),
       getAuthenticationState: (signal, capture) => this.codexAdapter.getAuthenticationState(signal, capture),
       completeAuthentication: (signal, capture) => this.codexAdapter.completeAuthentication(signal, capture),
@@ -492,53 +454,6 @@ export abstract class MainWorkflowConstruction {
         error instanceof AsanaRequestAbortedError || error instanceof AsanaOperationInvalidatedError,
       recordUnexpectedError: (error) => this.recordUnexpectedError(error, "display_order"),
     });
-    this.externalStatusEvidenceCollector = bindings.createEvidenceCollector();
-    this.externalTools = new ExternalToolRuntime({
-      lifecycleSignal: this.options.lifecycle_signal,
-      isStopped: () => this.shutdownRuntime.isStopped(),
-      platform: process.platform,
-      validateAbortSignal,
-      throwIfAborted,
-      installDisabledSkill: (reason) => bindings.installDisabledSkill(
-        this.codexWorkspace.workspacePath,
-        reason,
-      ),
-      installClient: (registry, connectionInfoPath) => bindings.installClient({
-        workspacePath: this.codexWorkspace.workspacePath,
-        connectionInfoPath,
-        toolDefinitions: [...registry.list()],
-      }),
-      setCodexSocketPaths: (paths) => this.configuredCodexRuntime.setExternalSocketPaths(paths),
-      recordStatus: () => this.recordDiagnostic("external_tools.status", "info"),
-      recordFeatureFailure: (error, message) =>
-        this.recordFeatureFailure(error, "external_tools", message),
-      recordRecoveryDiagnostic: (message, cause) => this.options.diagnostic(
-        new Error(message, { cause }),
-        "external_tools",
-        serviceErrorDiagnostic,
-      ),
-      combineFailures: (errors) => combineDiagnosticFailures(errors),
-      disableCodexForSafety: (errors) => this.configuredCodexRuntime.disableForExternalToolSafety(errors),
-      createDefinition: createDiscordExternalToolDefinition,
-      createRegistry: bindings.createExternalToolRegistry,
-      assertPersistedDefinition: (expectedDefinition) =>
-        assertPersistedExternalToolDefinition(this.externalToolDefinitionRepository, expectedDefinition),
-      hasBotToken: bindings.hasDiscordBotToken,
-      createBroker: (registry) => this.codexSessionResources.createBroker(
-        registry,
-        this.codexWorkspace.tmpDirectoryPath,
-        this.externalStatusEvidenceCollector,
-      ),
-      persistConfiguration: (definition, botToken) => persistDiscordExternalToolConfiguration(
-        this.secretStorage,
-        this.externalToolDefinitionRepository,
-        definition,
-        botToken,
-      ),
-      getSelection: () => this.setup.getExternalToolSelection(),
-      markUnavailable: (reason) => this.setup.markExternalToolUnavailable(reason),
-      rethrowFeatureAbort: (error, signal) => this.rethrowFeatureAbort(error, signal),
-    });
     this.aiRuntime = new AiSessionRuntime({
       lifecycleSignal: this.options.lifecycle_signal,
       isStopped: () => this.shutdownRuntime.isStopped(),
@@ -552,12 +467,10 @@ export abstract class MainWorkflowConstruction {
         `ai-session-${sessionId}`,
       ),
       createWorkspace: (sessionId) => this.codexSessionResources.createWorkspace(sessionId),
-      prepareExternalTools: (workspace, signal) =>
-        this.codexSessionResources.prepareExternalTools(workspace, signal),
-      createSession: (workspace, endpoint) => this.codexSessionResources.createSession(workspace, endpoint),
+      createSession: (workspace) => this.codexSessionResources.createSession(workspace),
       startSession: (session, signal) => session.start(signal),
-      createWorkflow: (session, collector, baselineStore, sessionId) =>
-        this.createAiWorkflow(session, collector, baselineStore, sessionId),
+      createWorkflow: (session, baselineStore, sessionId) =>
+        this.createAiWorkflow(session, baselineStore, sessionId),
       subscribeDelta: (workflow, sessionId) => workflow.onDelta((delta) => {
         this.aiEvents.publishDelta(proposalsContracts.aiDelta.event.shape.value.parse({
           session_id: sessionId,
@@ -817,8 +730,6 @@ export abstract class MainWorkflowConstruction {
       parseStatus: (value) => proposalsContracts.aiStatus.event.shape.value.parse(value),
       startNewSession: (signal) => this.codexSession.startNewSession(signal),
       resetWithdrawConfirmations: () => this.aiRuntime.resetPendingWithdrawConfirmations(),
-      setExternalSocketPaths: (paths) => this.codexSession.setAdditionalLocalSocketPaths(paths),
-      stopSession: () => this.codexSession.stop({ kind: "record" }),
     });
     this.operationalServices = new OperationalServicesRuntime<
       OperationalContext,
@@ -839,7 +750,6 @@ export abstract class MainWorkflowConstruction {
     });
     this.shutdownRuntime = new MainShutdownRuntime({
       stopOAuthAuthorization: () => this.oauth.stopOutOfBandAuthorization(),
-      stopExternalConfiguration: (errors) => this.externalTools.stopConfiguration(errors),
       externalAgent: this.externalAgent,
       externalAgentBridge: this.externalAgentBridge,
       stopSyncSubscriptions: () => this.requireTaskReadRuntime().stop(),
@@ -851,8 +761,6 @@ export abstract class MainWorkflowConstruction {
       runtime: () => this.operationalServices.getRuntime(),
       operationQueue: this.operationQueue,
       stopCodexSession: () => this.codexSession.stop({ kind: "record" }),
-      externalBroker: () => this.externalTools.brokerForStop(),
-      markExternalStopped: () => this.externalTools.markStopped(),
       recordDiagnostic: () => this.recordDiagnostic("app.stop", "info"),
       combineFailures: (errors) => combineDiagnosticFailures(errors),
     });
@@ -863,7 +771,6 @@ export abstract class MainWorkflowConstruction {
       initializeExternalAgentBridge: () => this.initializeExternalAgentBridge(),
       ensureTasksVaultMapping: (signal) => this.obsidian.ensureTasksVaultMapping(signal),
       recordDiagnostic: () => this.recordDiagnostic("app.start", "info"),
-      reconcileExternalTools: (signal) => this.externalTools.reconcileAtStartup(signal),
       restoreSetup: (signal) => restoreSetupAtStartup({
         getSetupState: () => this.setup.getState(),
         isOnline: () => this.isOnline(),
@@ -935,5 +842,5 @@ export abstract class MainWorkflowConstruction {
   protected abstract prepareApprovalInput(input: ApprovalPreparationInput, signal: AbortSignal): Promise<AsanaProposalApplicationInput>;
   protected abstract applyExternalProposal(input: AsanaProposalApplicationInput, signal: AbortSignal): Promise<AsanaProposalApplicationResult>;
   protected abstract getSavedProposalOperationStatus(proposalId: string, operationId: string): SavedOperationStatusResult | undefined;
-  protected abstract createAiWorkflow(session: CodexSessionService, externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector, baselineStore: AiSessionBaselineStore, sessionId: string): AiWorkflowService;
+  protected abstract createAiWorkflow(session: CodexSessionService, baselineStore: AiSessionBaselineStore, sessionId: string): AiWorkflowService;
 }

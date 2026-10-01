@@ -52,7 +52,6 @@ const functions = [
   ["外部提案の準備・生成", "main/application/proposal-generate", "src/main/application/proposal-generate/external-agent-generation.ts"],
   ["外部提案の承認・適用", "main/application/proposal-apply", "src/main/application/proposal-apply/external-agent-application.ts"],
   ["Obsidian参照・Vault設定", "main/application/obsidian-integration", "src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts"],
-  ["GitHub App連携", "main/application/github-integration", "現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す"],
   ["設定と秘密情報", "main/application/settings", "src/main/application/settings/, src/main/application/common/ports/secret-storage.ts, src/main/infrastructure/persistence/settings-repository.ts, src/main/infrastructure/persistence/secret-storage.ts"],
   ["IPC契約と配送", "shared/ipc-contracts と main/ipc と preload", "src/shared/ipc-contracts/, src/main/ipc/, src/preload/"],
   ["タスク画面", "renderer/features/tasks", "src/renderer/features/tasks/"],
@@ -81,7 +80,6 @@ const fileFormats = [
   ["外部Codex設定JSON", "external-agent/config.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"config.json"', "main/application/settings"],
   ["外部Codex接続JSON", "external-agent/connection.json", "src/main/infrastructure/ai/external-agent/resources.ts", '"connection.json"', "main/infrastructure/ai"],
   ["taskctl接続JSON", "taskctl-connection.json", "src/main/infrastructure/ai/taskctl/broker.ts", '"taskctl-connection.json"', "main/infrastructure/ai"],
-  ["contextctl接続JSON", "contextctl-connection.json", "src/main/infrastructure/ai/external-tools/broker.ts", '"contextctl-connection.json"', "main/infrastructure/ai"],
   ["Codex作業資源", "codex-workspace/ と codex-home/", "src/main/infrastructure/ai/codex-workspace/schemas.ts", '"codex-workspace"', "main/infrastructure/ai"],
   ["Asana Custom external data", "Asana task external data", "src/main/domain/external-data.ts", "customExternalDataSchemaVersion", "main/domain"],
 ];
@@ -98,7 +96,6 @@ const sqliteOwners = new Map([
   ["device_settings", "main/application/settings"],
   ["vault_mappings", "main/application/obsidian-integration"],
   ["diagnostic_log", "main/infrastructure/logging"],
-  ["external_tool_definitions", "main/application/settings"],
   ["proposal_executions", "main/application/task-write"],
   ["proposal_execution_steps", "main/application/task-write"],
 ]);
@@ -130,7 +127,6 @@ function ownerForChannel(channel) {
       ? "main/application/proposal-apply" : "main/application/proposal-generate";
   }
   if (channel.startsWith("obsidian-integration:")) return "main/application/obsidian-integration";
-  if (channel.startsWith("github-integration:")) return "main/application/github-integration";
   if (channel.startsWith("diagnostics:")) return "main/infrastructure/logging";
   throw new Error(`IPC channelのownerがありません: ${channel}`);
 }
@@ -158,7 +154,6 @@ function render() {
     ["src/shared/ipc-contracts/settings.ts", "settingsChannels"],
     ["src/shared/ipc-contracts/proposals-channels.ts", "proposalsChannels"],
     ["src/shared/ipc-contracts/obsidian-integration.ts", "obsidianIntegrationChannels"],
-    ["src/shared/ipc-contracts/github-integration.ts", "githubIntegrationChannels"],
     ["src/shared/ipc-contracts/diagnostics.ts", "diagnosticsChannels"],
   ].flatMap(([path, name]) => objectStringValues(path, name));
   if (channels.length !== new Set(channels).size) {

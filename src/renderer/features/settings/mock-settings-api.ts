@@ -2,7 +2,6 @@ import { ipcFailureSchema } from "../../../shared/ipc-contracts/common";
 import { settingsContracts, type SettingsApi } from "../../../shared/ipc-contracts/settings";
 import type {
   SetupCodexAvailability,
-  SetupExternalToolSelection,
   SetupState,
 } from "../../../shared/ipc-contracts/setup-schemas";
 
@@ -43,7 +42,6 @@ const context = {
   codex,
 };
 const contextWithTestTask = { ...context, test_task_gid: "mock-test-task" };
-const externalTool = { kind: "skipped" } satisfies SetupExternalToolSelection;
 
 function setupFixture(kind: SetupKind): SetupState {
   switch (kind) {
@@ -66,16 +64,9 @@ function setupFixture(kind: SetupKind): SetupState {
     case "asana_capability_failed": return { kind, step: "asana_capability", context,
       reason_code: "read_back_failed" };
     case "vault_choice_required": return { kind, step: "vault", context: contextWithTestTask };
-    case "vault_skipped": return { kind, step: "external_tool", context: contextWithTestTask };
-    case "vault_configured": return { kind, step: "external_tool", context: contextWithTestTask, vault_id: "tasks" };
-    case "external_tool_skipped": return { kind, step: "full_sync", context: contextWithTestTask };
-    case "external_tool_configured": return { kind, step: "full_sync", context: contextWithTestTask,
-      tool_id: "discord-context", allowed_channel_ids: ["12345678901234567"] };
-    case "external_tool_unavailable": return { kind, step: "full_sync", context: contextWithTestTask,
-      reason_code: "startup_failed" };
-    case "full_sync_required": return { kind, step: "full_sync", context: contextWithTestTask, external_tool: externalTool };
-    case "codex_capability_required": return { kind, step: "codex_capability", context: contextWithTestTask, external_tool: externalTool };
-    case "ready": return { kind, step: "ready", context: contextWithTestTask, external_tool: externalTool };
+    case "full_sync_required": return { kind, step: "full_sync", context: contextWithTestTask };
+    case "codex_capability_required": return { kind, step: "codex_capability", context: contextWithTestTask };
+    case "ready": return { kind, step: "ready", context: contextWithTestTask };
   }
 }
 
@@ -173,15 +164,9 @@ export function createMockSettingsApi(
     chooseVault: (input) => {
       settingsContracts.chooseVault.request.parse(input);
       return setup.kind === "vault_choice_required"
-        ? setSetup(input.kind === "skip" ? "vault_skipped" : "vault_configured") : setupConflict();
+        ? setSetup("full_sync_required") : setupConflict();
     },
-    chooseExternalTool: (input) => {
-      settingsContracts.chooseExternalTool.request.parse(input);
-      return setup.kind === "vault_skipped" || setup.kind === "vault_configured"
-        ? setSetup(input.kind === "skip" ? "external_tool_skipped" : "external_tool_configured") : setupConflict();
-    },
-    runFullSync: () => ["external_tool_skipped", "external_tool_configured", "external_tool_unavailable", "full_sync_required"]
-      .includes(setup.kind) ? setSetup("codex_capability_required") : setupConflict(),
+    runFullSync: () => setup.kind === "full_sync_required" ? setSetup("codex_capability_required") : setupConflict(),
     runCodexCapability: () => requireSetup("codex_capability_required", "ready"),
     getAsanaAuthenticationState: () => {
       if (authenticationFailure !== "none") {

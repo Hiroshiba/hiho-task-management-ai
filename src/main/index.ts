@@ -105,9 +105,6 @@ function registerMain(): void {
       case "codex":
         diagnosticCode = "codex.status";
         break;
-      case "external_tools":
-        diagnosticCode = "external_tools.status";
-        break;
       case "proposal_application":
         diagnosticCode = "proposal.application";
         break;

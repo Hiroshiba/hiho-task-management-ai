@@ -3,8 +3,6 @@ export type SecretStorageData = {
   readonly asana_client_secret?: string | undefined;
   readonly access_token?: string | undefined;
   readonly refresh_token?: string | undefined;
-  readonly discord_bot_token?: string | undefined;
-  readonly external_credential_references?: Readonly<Record<string, string>> | undefined;
 };
 
 /** 秘密情報の保存と取得に使うportです。 */

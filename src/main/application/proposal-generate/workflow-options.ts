@@ -1,37 +1,5 @@
 import { z } from "zod";
 
-/** ターン中に収集した外部状態根拠を検証するschemaを作成します。 */
-export function createTrustedExternalStatusEvidenceSchema(gidSchema: z.ZodType<string>) {
-  return z
-  .array(
-    z
-      .object({
-        kind: z.literal("external_tool"),
-        locator: z.string().refine((value) => value.trim().length > 0, {
-          message: "外部状態根拠locatorを空にできません。",
-        }),
-        target_task_gid: gidSchema,
-        status: z.enum(["closed", "completed", "cancelled"]),
-      })
-      .strict(),
-  )
-  .max(256)
-  .superRefine((references, context) => {
-    const seen = new Set<string>();
-    references.forEach((reference, index) => {
-      if (seen.has(reference.locator)) {
-        context.addIssue({
-          code: "custom",
-          path: [index, "locator"],
-          message: "外部状態根拠locatorを重複指定できません。",
-        });
-        return;
-      }
-      seen.add(reference.locator);
-    });
-  });
-}
-
 type WorkflowOptionsShape = {
   readonly sessionId: string;
   readonly session: unknown;
@@ -45,7 +13,6 @@ type WorkflowOptionsShape = {
   readonly isSessionOutputValidationError: unknown;
   readonly isSessionSyncError: unknown;
   readonly baselineExternalDataProvider: unknown;
-  readonly externalStatusEvidenceCollector: unknown;
   readonly executeApproval: unknown;
   readonly logRetryEvent: unknown;
   readonly reportListenerError: unknown;
@@ -68,7 +35,6 @@ export function parseWorkflowOptions<TOptions extends WorkflowOptionsShape>(
   readonly isSessionOutputValidationError: TOptions["isSessionOutputValidationError"];
   readonly isSessionSyncError: TOptions["isSessionSyncError"];
   readonly baselineExternalDataProvider: TOptions["baselineExternalDataProvider"];
-  readonly externalStatusEvidenceCollector: TOptions["externalStatusEvidenceCollector"];
   readonly executeApproval: TOptions["executeApproval"];
   readonly logRetryEvent: TOptions["logRetryEvent"];
   readonly reportListenerError: TOptions["reportListenerError"];
@@ -138,17 +104,6 @@ const baselineExternalDataProviderSchema = z.custom<TOptions["baselineExternalDa
   "基準Custom external data供給関数が必要です。",
 );
 
-const externalStatusEvidenceCollectorSchema = z.custom<
-  TOptions["externalStatusEvidenceCollector"]
->(
-  (value) => typeof value === "object"
-    && value != null
-    && ["beginTurn", "snapshotTurn", "finishTurn", "cancelTurn"].every(
-      (name) => typeof Reflect.get(value, name) === "function",
-    ),
-  "外部状態根拠収集境界が必要です。",
-);
-
 const approvalExecutorSchema = z.custom<TOptions["executeApproval"]>(
   (value) => typeof value === "function",
   "承認実行関数が必要です。",
@@ -178,7 +133,6 @@ return z
     isSessionOutputValidationError: sessionOutputValidationErrorGuardSchema,
     isSessionSyncError: sessionSyncErrorGuardSchema,
     baselineExternalDataProvider: baselineExternalDataProviderSchema,
-    externalStatusEvidenceCollector: externalStatusEvidenceCollectorSchema,
     executeApproval: approvalExecutorSchema,
     logRetryEvent: retryEventLoggerSchema,
     reportListenerError: listenerErrorReporterSchema,

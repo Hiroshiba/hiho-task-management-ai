@@ -45,7 +45,6 @@ import {
   readSettingsState,
   type ApplicationState,
   type OperationalContext,
-  type SetupExternalToolConfigurationResult,
   type SetupFullSyncInput,
 } from "../application/settings";
 import {
@@ -57,7 +56,6 @@ import {
 import {
   CodexSessionAbortedError,
   CodexSessionService,
-  ExternalToolStatusEvidenceCollector,
   externalAgentProtocol,
   type TaskctlSnapshot,
 } from "../infrastructure/ai";
@@ -88,9 +86,7 @@ import { createTaskReadCompositionDependencies } from "./create-task-read-compos
 import type { TaskReadCompositionPort } from "./create-task-read-runtime";
 import { MainWorkflowConstruction } from "./main-workflow-construction";
 import {
-  setupDiscordExternalToolConfigurationInputSchema,
   setupStateSchema,
-  type SetupDiscordExternalToolConfigurationInput,
   type SetupState,
 } from "./setup-contracts";
 import { SynchronizationOperations } from "./synchronization-operations";
@@ -154,8 +150,7 @@ type SetupIpcCompositionOptions = ConstructorParameters<typeof SetupIpcWorkflow<
   Parameters<SetupOrchestrator["cancelAsanaAuthorization"]>[0],
   Parameters<SetupOrchestrator["selectWorkspace"]>[0],
   Parameters<SetupOrchestrator["selectProject"]>[0],
-  Parameters<SetupOrchestrator["chooseVault"]>[0],
-  Parameters<SetupOrchestrator["chooseExternalTool"]>[0]
+  Parameters<SetupOrchestrator["chooseVault"]>[0]
 >>[0];
 
 type SettingsCompositionDependencies = {
@@ -361,7 +356,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
   public getObsidianCompositionDependencies(): {
     readonly assertOperationalReady: () => void;
     readonly isStopped: () => boolean;
-    readonly isExternalToolConfigurationRunning: () => boolean;
     readonly hasActiveAiSessions: () => boolean;
     readonly codexSessionState: () => ReturnType<CodexSessionService["getState"]>;
     readonly setCodexReadOnlyVaultPaths: (paths: readonly string[]) => void;
@@ -369,7 +363,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
     return {
       assertOperationalReady: () => this.assertOperationalReady(),
       isStopped: () => this.shutdownRuntime.isStopped(),
-      isExternalToolConfigurationRunning: () => this.externalTools.isConfigurationRunning(),
       hasActiveAiSessions: () => this.aiRuntime.hasActiveSessions(),
       codexSessionState: () => this.codexSession.getState(),
       setCodexReadOnlyVaultPaths: (paths) => this.codexSession.setReadOnlyVaultPaths(paths),
@@ -387,7 +380,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
       vaultMappingRepository: this.vaultMappingRepository,
       obsidian: this.obsidian,
       codexHealth: this.codexHealth,
-      externalTools: this.externalTools,
       operationQueue: this.operationQueue,
       operationalContext: this.operationalContext,
       externalAgent: this.externalAgent,
@@ -395,7 +387,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
       startupRuntime: this.startupRuntime,
       setup: () => this.setup,
       requireTaskReadRuntime: () => this.requireTaskReadRuntime(),
-      configureDiscordExternalTool: (input, signal) => this.configureDiscordExternalTool(input, signal),
     });
   }
 
@@ -603,15 +594,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
     }
   }
 
-  private async configureDiscordExternalTool(
-    input: SetupDiscordExternalToolConfigurationInput,
-    signal: AbortSignal,
-  ): Promise<SetupExternalToolConfigurationResult> {
-    const configuration =
-      setupDiscordExternalToolConfigurationInputSchema.parse(input);
-    return this.externalTools.configureDiscord(configuration, signal);
-  }
-
   protected isOnline(): boolean {
     const online = this.options.online_provider();
     if (typeof online !== "boolean") {
@@ -731,7 +713,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
 
   protected createAiWorkflow(
     session: CodexSessionService,
-    externalStatusEvidenceCollector: ExternalToolStatusEvidenceCollector,
     baselineStore: AiSessionBaselineStore,
     sessionId: string,
   ): AiWorkflowService {
@@ -750,7 +731,6 @@ export class MainWorkflowComposition extends MainWorkflowConstruction {
         }
         return value;
       },
-      externalStatusEvidenceCollector,
       proposalPort: this.requireTaskWriteExecution().proposal,
       isOnline: () => this.isOnline(),
       prepareApprovalInput: (input, signal) => this.prepareApprovalInput(input, signal),

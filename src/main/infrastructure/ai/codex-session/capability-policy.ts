@@ -1,6 +1,5 @@
 import { lstatSync, realpathSync, type Stats } from "node:fs";
-import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { z } from "zod";
+import { join, parse, relative, resolve, sep } from "node:path";
 import { type ThreadStartResult } from "../codex-app-server";
 import {
   CodexSessionCapabilityError,
@@ -332,41 +331,6 @@ export function validateVerifiedTaskctlLocalIpc(
   return result.socketPath;
 }
 
-/** 追加ローカルソケットのパスを検証します。 */
-export function validateAdditionalLocalSocketPaths(
-  paths: readonly string[],
-  tmpDirectoryPath: string,
-): readonly string[] {
-  const values = z.array(z.string().min(1).max(4_096)).max(32).parse(paths);
-  const seen = new Set<string>();
-  const validated: string[] = [];
-  for (const value of values) {
-    if (value.includes("\0") || value.includes("\n") || value.includes("\r")) {
-      throw new CodexSessionCapabilityError("追加ローカルIPCの接続先が不正です。");
-    }
-    if (process.platform === "win32") {
-      if (!/^\\\\\.\\pipe\\taskhub-contextctl-[0-9a-f]{24}$/u.test(value)) {
-        throw new CodexSessionCapabilityError("contextctl名前付きパイプの接続先を限定できません。");
-      }
-    } else {
-      if (!isAbsolute(value) || parse(resolve(value)).dir !== resolve(tmpDirectoryPath)) {
-        throw new CodexSessionCapabilityError("contextctlソケットを専用ワークスペースのtmp直下に限定できません。");
-      }
-      if (!/^contextctl-[0-9a-f]{24}\.sock$/u.test(parse(value).base)) {
-        throw new CodexSessionCapabilityError("contextctlソケットの接続先が不正です。");
-      }
-      validateOwnedUnixSocket(value, "contextctlソケット");
-    }
-    const key = process.platform === "win32" ? value : resolve(value);
-    if (seen.has(key)) {
-      throw new CodexSessionCapabilityError("同じ追加ローカルIPCを重複して指定できません。");
-    }
-    seen.add(key);
-    validated.push(value);
-  }
-  return validated;
-}
-
 /** ターン入力のスキルが専用ワークスペースに属するか検証します。 */
 export function validateTurnSkills(
   input: readonly ({ readonly type: "text"; readonly text: string } | { readonly type: "skill"; readonly name: string; readonly path: string })[],
@@ -405,12 +369,12 @@ export function canonicalStringArray(values: readonly string[]): string {
 
 /** TaskHubのCodexスキル名を判定します。 */
 export function isRequiredSkillName(name: string): boolean {
-  return name === "taskctl" || name === "obsidian" || name === "external-tools";
+  return name === "taskctl" || name === "obsidian";
 }
 
 /** TaskHubで必須のCodexスキル名を返します。 */
 export function requiredSkillNames(): readonly string[] {
-  return ["taskctl", "obsidian", "external-tools"];
+  return ["taskctl", "obsidian"];
 }
 
 /** Codexスレッドのサンドボックス権限を検証します。 */

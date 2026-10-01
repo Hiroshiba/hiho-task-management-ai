@@ -1,6 +1,5 @@
 type MainShutdownDependencies = {
   readonly stopOAuthAuthorization: () => void;
-  readonly stopExternalConfiguration: (errors: unknown[]) => Promise<void>;
   readonly externalAgent: { stop(): Promise<void> };
   readonly externalAgentBridge: { stop(): Promise<void> };
   readonly stopSyncSubscriptions: () => void;
@@ -10,8 +9,6 @@ type MainShutdownDependencies = {
   readonly runtime: () => { stop(): Promise<void> } | undefined;
   readonly operationQueue: { stop(): Promise<void> };
   readonly stopCodexSession: () => Promise<void>;
-  readonly externalBroker: () => { stop(): Promise<void> } | undefined;
-  readonly markExternalStopped: () => void;
   readonly recordDiagnostic: () => void;
   readonly combineFailures: (errors: unknown[]) => Error;
 };
@@ -53,7 +50,6 @@ export class MainShutdownRuntime {
     } catch (error: unknown) {
       errors.push(error);
     }
-    await this.dependencies.stopExternalConfiguration(errors);
     await this.stopAsyncService(this.dependencies.externalAgent, errors);
     await this.stopAsyncService(this.dependencies.externalAgentBridge, errors);
     this.dependencies.stopSyncSubscriptions();
@@ -67,8 +63,6 @@ export class MainShutdownRuntime {
     } catch (error: unknown) {
       errors.push(error);
     }
-    await this.stopAsyncService(this.dependencies.externalBroker(), errors);
-    this.dependencies.markExternalStopped();
     try {
       this.dependencies.recordDiagnostic();
     } catch (error: unknown) {

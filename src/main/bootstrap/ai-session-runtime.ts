@@ -21,14 +21,12 @@ export type AiSessionRecord<
   Workspace,
   Session,
   Workflow,
-  Broker,
   ExternalData,
   Snapshot,
 > = {
   readonly sessionId: string;
   readonly workspace: Workspace;
   readonly session: Session;
-  readonly externalToolBroker: Broker | undefined;
   readonly workflow: Workflow;
   readonly baselineStore: AiSessionBaselineStore<ExternalData, Snapshot>;
   readonly lifecycleController: AbortController;
@@ -46,14 +44,13 @@ type AiSessionStartRequestStopState =
   | { readonly kind: "not_claimed" }
   | { readonly kind: "claimed"; readonly result: Promise<AiSessionPromiseResult> };
 
-type AiSessionStartRecord<Workspace, Session, Broker> = {
+type AiSessionStartRecord<Workspace, Session> = {
   readonly sessionId: string;
   readonly workspaceUserDataPath: string;
   readonly lifecycleController: AbortController;
   readonly removeLifecycleListener: () => void;
   workspace: Workspace | undefined;
   session: Session | undefined;
-  externalToolBroker: Broker | undefined;
   requestStopState: AiSessionStartRequestStopState;
   readonly completion: Promise<AiSessionStartResult>;
 };
@@ -62,7 +59,6 @@ type AiSessionServicePort = {
   stop(disposition: AiSessionCleanupDisposition): Promise<void>;
 };
 
-type AiSessionBrokerPort = { stop(): Promise<void> };
 type AiSessionWorkflowPort = {
   dispose(): void;
   resetPendingWithdrawConfirmation(): void;
@@ -73,8 +69,6 @@ type AiSessionRuntimeDependencies<
   Workspace,
   Session,
   Workflow,
-  Broker,
-  Collector,
   ExternalData,
   Snapshot,
   StartResult extends { readonly state: string },
@@ -88,15 +82,10 @@ type AiSessionRuntimeDependencies<
   readonly parseSessionId: (sessionId: string) => string;
   readonly workspaceUserDataPath: (sessionId: string) => string;
   readonly createWorkspace: (sessionId: string) => Workspace;
-  readonly prepareExternalTools: (
-    workspace: Workspace,
-    signal: AbortSignal,
-  ) => Promise<{ readonly broker: Broker | undefined; readonly collector: Collector; readonly endpoint: string | undefined }>;
-  readonly createSession: (workspace: Workspace, endpoint: string | undefined) => Session;
+  readonly createSession: (workspace: Workspace) => Session;
   readonly startSession: (session: Session, signal: AbortSignal) => Promise<StartResult>;
   readonly createWorkflow: (
     session: Session,
-    collector: Collector,
     baselineStore: AiSessionBaselineStore<ExternalData, Snapshot>,
     sessionId: string,
   ) => Workflow;
@@ -123,22 +112,18 @@ export class AiSessionRuntime<
   Workspace extends AiSessionWorkspacePort,
   Session extends AiSessionServicePort,
   Workflow extends AiSessionWorkflowPort,
-  Broker extends AiSessionBrokerPort,
-  Collector,
   ExternalData,
   Snapshot,
   StartResult extends { readonly state: string },
 > {
-  private readonly sessions = new Map<string, AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>>();
-  private readonly starts = new Map<string, AiSessionStartRecord<Workspace, Session, Broker>>();
+  private readonly sessions = new Map<string, AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>>();
+  private readonly starts = new Map<string, AiSessionStartRecord<Workspace, Session>>();
 
   public constructor(
     private readonly dependencies: AiSessionRuntimeDependencies<
       Workspace,
       Session,
       Workflow,
-      Broker,
-      Collector,
       ExternalData,
       Snapshot,
       StartResult
@@ -146,7 +131,7 @@ export class AiSessionRuntime<
   ) {}
 
   /** 実行中のAIセッションを列挙します。 */
-  public activeSessions(): Iterable<AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>> {
+  public activeSessions(): Iterable<AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>> {
     return this.sessions.values();
   }
 
@@ -179,7 +164,7 @@ export class AiSessionRuntime<
   /** 指定されたAIセッションを取得します。 */
   public requireSession(
     sessionId: string,
-  ): AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot> {
+  ): AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot> {
     const parsedSessionId = this.dependencies.parseSessionId(sessionId);
     const record = this.sessions.get(parsedSessionId);
     if (record == null || record.closing) {
@@ -190,7 +175,7 @@ export class AiSessionRuntime<
 
   /** AI変更案の基準データとセッションとの対応を記録します。 */
   public rememberProposal(
-    record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>,
+    record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>,
     proposalId: string,
   ): void {
     record.proposalIds.add(proposalId);
@@ -198,7 +183,7 @@ export class AiSessionRuntime<
 
   /** AI変更案の基準データを参照がなくなった時点で解放します。 */
   public forgetProposal(
-    record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>,
+    record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>,
     proposalId: string,
   ): void {
     record.proposalIds.delete(proposalId);
@@ -214,7 +199,7 @@ export class AiSessionRuntime<
 
   /** 現在ターンの基準データを解放します。 */
   public releaseCurrentTurnBaselines(
-    record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>,
+    record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>,
   ): void {
     for (const baselineKey of record.baselineStore.currentTurnKeys) {
       if (![...record.baselineStore.proposalKeys.values()].includes(baselineKey)) {
@@ -257,7 +242,7 @@ export class AiSessionRuntime<
 
   /** セッションに紐付く操作の中断と完了待機を管理します。 */
   public runOperation<Result>(
-    record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>,
+    record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>,
     signal: AbortSignal,
     operation: (operationSignal: AbortSignal) => Result | PromiseLike<Result>,
   ): Promise<Result> {
@@ -283,7 +268,7 @@ export class AiSessionRuntime<
 
   /** AIセッションを終了し、その操作と外部資源の結果を集約します。 */
   public async closeRecord(
-    record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot>,
+    record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot>,
     reason: "explicit" | "application_stop",
   ): Promise<void> {
     if (record.closePromise != null) {
@@ -302,13 +287,7 @@ export class AiSessionRuntime<
       controller.abort();
     }
     const closePromise = (async (): Promise<void> => {
-      const stopPromises: Promise<void>[] = [sessionStopPromise];
-      if (record.externalToolBroker != null) {
-        stopPromises.push(record.externalToolBroker.stop());
-      }
-      const stopResultsPromise = Promise.all(
-        stopPromises.map((promise) => settleAiSessionPromise(promise)),
-      );
+      const stopResultsPromise = Promise.all([settleAiSessionPromise(sessionStopPromise)]);
       const operationResultsPromise = Promise.all(
         [...record.operations.entries()].map(async ([controller, promise]) => ({
           controller,
@@ -364,7 +343,7 @@ export class AiSessionRuntime<
   }
 
   private async closeStart(
-    start: AiSessionStartRecord<Workspace, Session, Broker>,
+    start: AiSessionStartRecord<Workspace, Session>,
     disposition: AiSessionCleanupDisposition,
   ): Promise<void> {
     const stopResultPromises: Promise<AiSessionPromiseResult>[] = [];
@@ -377,9 +356,6 @@ export class AiSessionRuntime<
           stopResultPromises.push(start.requestStopState.result);
           break;
       }
-    }
-    if (start.externalToolBroker != null) {
-      stopResultPromises.push(settleAiSessionPromise(start.externalToolBroker.stop()));
     }
     const stopResults = await Promise.all(stopResultPromises);
     const errors = stopResults
@@ -427,7 +403,7 @@ export class AiSessionRuntime<
   }
 
   private async runStart(
-    start: AiSessionStartRecord<Workspace, Session, Broker>,
+    start: AiSessionStartRecord<Workspace, Session>,
     signal: AbortSignal,
   ): Promise<AiSessionStartResult> {
     const abortForRequest = (): void => {
@@ -451,15 +427,7 @@ export class AiSessionRuntime<
     let lifecycleTransferred = false;
     try {
       start.workspace = this.dependencies.createWorkspace(start.sessionId);
-      const externalToolResources = await this.dependencies.prepareExternalTools(
-        start.workspace,
-        start.lifecycleController.signal,
-      );
-      start.externalToolBroker = externalToolResources.broker;
-      start.session = this.dependencies.createSession(
-        start.workspace,
-        externalToolResources.endpoint,
-      );
+      start.session = this.dependencies.createSession(start.workspace);
       const startResult = await this.dependencies.startSession(
         start.session,
         start.lifecycleController.signal,
@@ -481,16 +449,14 @@ export class AiSessionRuntime<
       };
       const workflow = this.dependencies.createWorkflow(
         start.session,
-        externalToolResources.collector,
         baselineStore,
         start.sessionId,
       );
       const removeDeltaListener = this.dependencies.subscribeDelta(workflow, start.sessionId);
-      const record: AiSessionRecord<Workspace, Session, Workflow, Broker, ExternalData, Snapshot> = {
+      const record: AiSessionRecord<Workspace, Session, Workflow, ExternalData, Snapshot> = {
         sessionId: start.sessionId,
         workspace: start.workspace,
         session: start.session,
-        externalToolBroker: start.externalToolBroker,
         workflow,
         baselineStore,
         lifecycleController: start.lifecycleController,
@@ -539,14 +505,13 @@ export class AiSessionRuntime<
     this.dependencies.throwIfAborted(signal);
     const sessionId = this.dependencies.createSessionId();
     const lifecycle = this.createLifecycle();
-    const start: AiSessionStartRecord<Workspace, Session, Broker> = {
+    const start: AiSessionStartRecord<Workspace, Session> = {
       sessionId,
       workspaceUserDataPath: this.dependencies.workspaceUserDataPath(sessionId),
       lifecycleController: lifecycle.controller,
       removeLifecycleListener: lifecycle.remove,
       workspace: undefined,
       session: undefined,
-      externalToolBroker: undefined,
       requestStopState: { kind: "not_claimed" },
       completion: Promise.resolve().then<AiSessionStartResult>(() => this.runStart(start, signal)),
     };

@@ -56,10 +56,6 @@ export interface SettingsHandlerWorkflows {
       input: Request<typeof settingsContracts.chooseVault>,
       signal: AbortSignal,
     ): MaybePromise<SetupState>;
-    chooseExternalTool(
-      input: Request<typeof settingsContracts.chooseExternalTool>,
-      signal: AbortSignal,
-    ): MaybePromise<SetupState>;
     runFullSync(signal: AbortSignal): MaybePromise<SetupState>;
     runCodexCapability(signal: AbortSignal): MaybePromise<SetupState>;
   };
@@ -122,10 +118,6 @@ export function createSettingsHandlers(workflows: SettingsHandlerWorkflows): Set
     chooseVault: createContractHandler(
       settingsContracts.chooseVault,
       (request, signal) => setup.chooseVault(request, signal),
-    ),
-    chooseExternalTool: createContractHandler(
-      settingsContracts.chooseExternalTool,
-      (request, signal) => setup.chooseExternalTool(request, signal),
     ),
     runFullSync: createContractHandler(
       settingsContracts.runFullSync,

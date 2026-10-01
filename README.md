@@ -60,7 +60,7 @@ http://localhost:5173/?mock=all
 
 `mock=all`は全機能をmockにし、機能名をカンマ区切りで指定すると列挙した機能だけをmockにします。指定していない機能は通常のAPIを使います。Webフロントには通常のAPIがないため、部分指定では起動時にエラーになります。画面全体の確認には`mock=all`を使います。
 
-機能名は`system`、`tasks`、`settings`、`proposals`、`obsidianIntegration`、`githubIntegration`、`diagnostics`です。
+機能名は`system`、`tasks`、`settings`、`proposals`、`obsidianIntegration`、`diagnostics`です。
 
 mockはセットアップ完了状態で始まり、サンプルタスクとAIの固定提案を使えます。mock上の変更はメモリ内に保持され、ページの再読み込みで初期状態に戻ります。mockの指定を変えるときも、URLを変更してページを再読み込みします。
 
@@ -89,7 +89,7 @@ pnpm run package
 
 TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/source-requirements.md)に沿ってアプリ内更新に対応した通常版を公開します。
 
-公開時は中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と、その時点で適用される公開条件を満たしてください。GitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。
+公開時は中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と、その時点で適用される公開条件を満たしてください。中央の署名・公開処理で使うGitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。TaskHubの自動更新は公開済みのGitHub Releasesから取得し、利用者によるGitHub Appの設定は不要です。
 
 中央のworkflowを実行する前に、新しいReleaseへの更新方法と実機で確認する範囲を決めてください。
 
@@ -154,6 +154,8 @@ Windowsの自動更新には、署名済み成果物の`app-update.yml`に実際
 7. 再認証も同じ方式で行います。
 
 認証待ち時間やローカルコールバックURLの入力は不要です。Client Secretは会話、Issue、ログへ貼らないでください。
+
+初回設定では、認証後にワークスペースと専用プロジェクトを選び、必要なセクション・タグとAsanaの読書き能力を確認します。Obsidian Vaultを登録するかスキップすると完全同期へ進み、Codex能力検査を終えて設定を完了します。
 
 ## Obsidian連携
 

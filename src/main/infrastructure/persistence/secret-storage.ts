@@ -4,6 +4,8 @@ import type { SecretStorageData, SecretStoragePort } from "../../application/com
 import type { PersistentTextFile } from "./persistent-text-file";
 import {
   encryptedSecretStorageSchema,
+  legacyEncryptedSecretStorageSchema,
+  legacySecretStorageSchema,
   secretStorageSchema,
 } from "./secret-storage-schemas";
 import {
@@ -11,7 +13,8 @@ import {
   SecretStorageFormatError,
 } from "./secret-storage-errors";
 
-const encryptedFileVersion = 1;
+const encryptedFileVersion = 2;
+const encryptedVersionEnvelopeSchema = z.object({ version: z.unknown() }).passthrough();
 
 function assertLinuxStorageBackend(): void {
   let backend: string;
@@ -67,7 +70,10 @@ function parseJson<T>(raw: string, schema: z.ZodType<T>): T {
 
 /** ElectronのOS保護ストレージを使って秘密情報を保存します。 */
 export class SecretStorage implements SecretStoragePort {
-  public constructor(private readonly file: PersistentTextFile) {}
+  public constructor(
+    private readonly file: PersistentTextFile,
+    private readonly rememberLegacySecrets: (values: readonly string[]) => void,
+  ) {}
 
   /** 秘密情報を暗号化して原子的に保存します。 */
   public save(data: SecretStorageData): void {
@@ -92,7 +98,14 @@ export class SecretStorage implements SecretStoragePort {
       return undefined;
     }
     assertEncryptionAvailable();
-    const fileData = parseJson(serializedFileData, encryptedSecretStorageSchema);
+    const envelope = parseJson(serializedFileData, encryptedVersionEnvelopeSchema);
+    if (envelope.version !== 1 && envelope.version !== encryptedFileVersion) {
+      throw new SecretStorageFormatError();
+    }
+    const fileData =
+      envelope.version === 1
+        ? parseJson(serializedFileData, legacyEncryptedSecretStorageSchema)
+        : parseJson(serializedFileData, encryptedSecretStorageSchema);
 
     let plainText: string;
     try {
@@ -100,7 +113,23 @@ export class SecretStorage implements SecretStoragePort {
     } catch (error) {
       throw new SecretStorageFormatError({ cause: error });
     }
-    return parseJson(plainText, secretStorageSchema);
+    if (fileData.version === encryptedFileVersion) {
+      return parseJson(plainText, secretStorageSchema);
+    }
+    const legacy = parseJson(plainText, legacySecretStorageSchema);
+    this.rememberLegacySecrets(
+      [
+        legacy.discord_bot_token,
+        ...Object.values(legacy.external_credential_references ?? {}),
+      ].filter((value): value is string => typeof value === "string" && value.length > 0),
+    );
+    const migrated = secretStorageSchema.parse({
+      asana_client_secret: legacy.asana_client_secret,
+      access_token: legacy.access_token,
+      refresh_token: legacy.refresh_token,
+    });
+    this.save(migrated);
+    return migrated;
   }
 
   /** 保存済み秘密情報ファイルを削除します。 */

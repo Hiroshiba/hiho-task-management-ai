@@ -30,13 +30,10 @@ export {
   deviceSettingsSchema,
   diagnosticLogEntrySchema,
   diagnosticRecordSchema,
-  externalToolCredentialReferenceNamesSchema,
   type DeviceSettings,
   type DiagnosticLogEntry,
   type DiagnosticRecord,
-  type ExternalToolCredentialReferenceNames,
 } from "./storage-schemas";
-export { SqliteExternalToolDefinitionRepository } from "./external-tool-definition-repository";
 export { SqliteSettingsRepository } from "./settings-repository";
 export { SqliteProposalExecutionRepository } from "./proposal-execution-repository";
 export { SqliteProposalApplicationHistoryRepository } from "./proposal-application-history-repository";

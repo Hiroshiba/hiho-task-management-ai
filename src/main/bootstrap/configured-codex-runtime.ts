@@ -30,8 +30,6 @@ type ConfiguredCodexDependencies<Status> = {
   readonly parseStatus: (value: unknown) => Status;
   readonly startNewSession: (signal: AbortSignal) => Promise<CodexSessionStartResult>;
   readonly resetWithdrawConfirmations: () => void;
-  readonly setExternalSocketPaths: (paths: readonly string[]) => void;
-  readonly stopSession: () => Promise<void>;
 };
 
 /** 設定済みCodexの起動試行とAsana同期後の再確認を管理します。 */
@@ -121,45 +119,6 @@ export class ConfiguredCodexRuntime<Status> {
     return this.startResult != null;
   }
 
-  /** 外部ツールがCodexに許可するIPCパスを変更します。 */
-  public setExternalSocketPaths(paths: readonly string[]): void {
-    switch (this.dependencies.getSessionState()) {
-      case "created":
-      case "authentication_required":
-      case "ready":
-        this.dependencies.setExternalSocketPaths(paths);
-        return;
-      case "disabled":
-      case "failed":
-      case "stopped":
-        return;
-      case "starting":
-      case "turning":
-      case "restarting":
-      case "stopping":
-        throw new Error("Codex処理中は外部ツールIPC許可を変更できません。");
-    }
-  }
-
-  /** 外部ツールの安全措置に合わせてCodexを停止します。 */
-  public async disableForExternalToolSafety(errors: unknown[]): Promise<void> {
-    this.disable("disabled");
-    this.settleLaunch();
-    const sessionState = this.dependencies.getSessionState();
-    if (sessionState !== "disabled" && sessionState !== "stopped") {
-      try {
-        await this.dependencies.stopSession();
-      } catch (error: unknown) {
-        errors.push(error);
-      }
-    }
-    try {
-      this.dependencies.publishStatus();
-    } catch (error: unknown) {
-      errors.push(error);
-    }
-  }
-
   /** 準備済みのCodexスレッドを作り直します。 */
   public async refreshThreadIfReady(signal: AbortSignal): Promise<void> {
     if (this.dependencies.getSessionState() !== "ready") {
@@ -206,11 +165,6 @@ export class ConfiguredCodexRuntime<Status> {
     }
     this.availability = await this.dependencies.checkCapabilities(signal);
     this.dependencies.publishStatus();
-  }
-
-  /** 外部ツール安全措置後の起動試行を終了済みにします。 */
-  public settleLaunch(): void {
-    this.launchState = { kind: "settled" };
   }
 
   private async startUnstartedSafely(signal: AbortSignal): Promise<void> {

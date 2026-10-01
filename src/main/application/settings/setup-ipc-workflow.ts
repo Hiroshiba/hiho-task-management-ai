@@ -1,6 +1,4 @@
-import { readIntegrationStatus } from "./integration-status";
-
-type SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault, Tool> = {
+type SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault> = {
   readonly getState: () => State;
   readonly start: (signal: AbortSignal) => Promise<State>;
   readonly completeCodexAuthentication: (signal: AbortSignal) => Promise<State>;
@@ -13,7 +11,6 @@ type SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault, 
   readonly retryResourceReconciliation: (signal: AbortSignal) => Promise<State>;
   readonly runCapabilityCheck: (signal: AbortSignal) => Promise<State>;
   readonly chooseVault: (input: Vault, signal: AbortSignal) => Promise<State>;
-  readonly chooseExternalTool: (input: Tool, signal: AbortSignal) => Promise<State>;
   readonly runFullSync: (signal: AbortSignal) => Promise<State>;
   readonly runCodexCapabilityCheck: (signal: AbortSignal) => Promise<State>;
 };
@@ -26,22 +23,12 @@ type SetupIpcDependencies<
   Workspace,
   Project,
   Vault,
-  Tool,
 > = {
-  readonly setup: SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault, Tool>;
+  readonly setup: SetupOperations<State, Begin, Complete, Cancel, Workspace, Project, Vault>;
   readonly parseState: (value: unknown) => State;
   readonly afterTransition: (state: State) => State;
   readonly afterCodexAuthentication: (signal: AbortSignal) => Promise<void>;
   readonly afterVaultChoice: (signal: AbortSignal) => Promise<void>;
-  readonly runExternalToolConfiguration: (
-    signal: AbortSignal,
-    run: (operationSignal: AbortSignal) => Promise<State>,
-  ) => Promise<State>;
-  readonly afterExternalToolChoice: (
-    state: State,
-    signal: AbortSignal,
-    commit: (state: State) => State,
-  ) => Promise<State>;
   readonly afterCodexCapability: (signal: AbortSignal) => Promise<void>;
 };
 
@@ -54,16 +41,14 @@ export class SetupIpcWorkflow<
   Workspace,
   Project,
   Vault,
-  Tool,
 > {
   public constructor(private readonly dependencies: SetupIpcDependencies<
-    State, Begin, Complete, Cancel, Workspace, Project, Vault, Tool
+    State, Begin, Complete, Cancel, Workspace, Project, Vault
   >) {}
 
   /** IPCへ公開する初回設定操作を返します。 */
   public createPort(): {
     readonly getState: () => State;
-    readonly getIntegrationStatus: typeof readIntegrationStatus;
     readonly start: (signal: AbortSignal) => Promise<State>;
     readonly completeCodexAuthentication: (signal: AbortSignal) => Promise<State>;
     readonly beginAsanaAuthorization: (input: Begin, signal: AbortSignal) => Promise<State>;
@@ -75,14 +60,12 @@ export class SetupIpcWorkflow<
     readonly retryResources: (signal: AbortSignal) => Promise<State>;
     readonly runCapability: (signal: AbortSignal) => Promise<State>;
     readonly chooseVault: (input: Vault, signal: AbortSignal) => Promise<State>;
-    readonly chooseExternalTool: (input: Tool, signal: AbortSignal) => Promise<State>;
     readonly runFullSync: (signal: AbortSignal) => Promise<State>;
     readonly runCodexCapability: (signal: AbortSignal) => Promise<State>;
   } {
     const { setup, afterTransition } = this.dependencies;
     return {
       getState: () => this.dependencies.parseState(setup.getState()),
-      getIntegrationStatus: readIntegrationStatus,
       start: async (signal) => afterTransition(await setup.start(signal)),
       completeCodexAuthentication: async (signal) => {
         const state = afterTransition(await setup.completeCodexAuthentication(signal));
@@ -111,15 +94,6 @@ export class SetupIpcWorkflow<
         await this.dependencies.afterVaultChoice(signal);
         return state;
       },
-      chooseExternalTool: (input, signal) =>
-        this.dependencies.runExternalToolConfiguration(signal, async (operationSignal) => {
-          const state = afterTransition(await setup.chooseExternalTool(input, operationSignal));
-          return this.dependencies.afterExternalToolChoice(
-            state,
-            operationSignal,
-            afterTransition,
-          );
-        }),
       runFullSync: async (signal) => afterTransition(await setup.runFullSync(signal)),
       runCodexCapability: async (signal) => {
         const state = afterTransition(await setup.runCodexCapabilityCheck(signal));

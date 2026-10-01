@@ -109,18 +109,13 @@ export async function prepareTurn<
 
 /** 固定基準値をワークスペースへ接続してCodexへ渡す入力を作ります。 */
 export function createTurnInput<
-  TSnapshot,
   TTaskctl,
-  TTrusted,
   TPrepared extends {
-    readonly snapshot: TSnapshot;
     readonly taskctl_snapshot: TTaskctl;
     readonly baseline_snapshot_hash: string;
-    readonly trusted_status_evidence: readonly TTrusted[];
   },
   TProposal,
   TWorkspace,
-  TExternal,
   TValidation,
   TRequest,
   TRetryContext,
@@ -130,22 +125,14 @@ export function createTurnInput<
     readonly proposal: TProposal | undefined;
     readonly request: TRequest;
     readonly retryPromptContext: TRetryContext;
-    readonly attemptId: string;
-    readonly signal: AbortSignal;
     readonly markPrepared: (prepared: TPrepared, workspace: TWorkspace) => void;
-    readonly updateResources: (state: {
-      readonly kind: "collector_active_snapshot_frozen";
-      readonly attemptId: string;
-    }) => void;
+    readonly updateResources: (state: { readonly kind: "snapshot_frozen" }) => void;
   },
   dependencies: {
     readonly rebindInitialProposal: (proposal: TProposal | undefined, prepared: TPrepared) => TProposal | undefined;
     readonly createWorkspace: (baselineHash: string, initialProposal: TProposal | undefined) => TWorkspace;
     readonly freezeTaskctlSnapshot: (snapshot: TTaskctl) => void;
     readonly activateProposalWorkspace: (workspace: TWorkspace, validate: (proposal: TProposal) => TValidation) => void;
-    readonly snapshotExternalEvidence: (attemptId: string, signal: AbortSignal) => readonly TExternal[];
-    readonly parseExternalEvidence: (value: readonly TExternal[]) => readonly TExternal[];
-    readonly createTrustedStatusEvidence: (snapshot: TSnapshot, external: readonly TExternal[]) => readonly TTrusted[];
     readonly validateWorkspaceProposal: (proposal: TProposal, prepared: TPrepared) => TValidation;
     readonly createTurnPrompt: (request: TRequest, prepared: TPrepared, workspace: TWorkspace, context: TRetryContext) => string;
   },
@@ -156,22 +143,11 @@ export function createTurnInput<
     prepared.baseline_snapshot_hash, initialProposal,
   );
   dependencies.freezeTaskctlSnapshot(prepared.taskctl_snapshot);
-  input.updateResources({
-    kind: "collector_active_snapshot_frozen",
-    attemptId: input.attemptId,
-  });
+  input.updateResources({ kind: "snapshot_frozen" });
   input.markPrepared(prepared, workspace);
-  dependencies.activateProposalWorkspace(workspace, (proposal) => {
-    const externalEvidence = dependencies.parseExternalEvidence(
-      dependencies.snapshotExternalEvidence(input.attemptId, input.signal),
-    );
-    return dependencies.validateWorkspaceProposal(proposal, {
-      ...prepared,
-      trusted_status_evidence: dependencies.createTrustedStatusEvidence(
-        prepared.snapshot, externalEvidence,
-      ),
-    });
-  });
+  dependencies.activateProposalWorkspace(workspace, (proposal) =>
+    dependencies.validateWorkspaceProposal(proposal, prepared),
+  );
   return [{
     type: "text",
     text: dependencies.createTurnPrompt(

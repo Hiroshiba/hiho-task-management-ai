@@ -2,7 +2,6 @@ import { onBeforeUnmount, provide, ref } from "vue";
 import { useAppBootstrap } from "./use-app-bootstrap";
 import { useSystemUpdate } from "../features/system";
 import { useObsidianIntegration } from "../features/obsidian-integration";
-import { useGithubIntegration } from "../features/github-integration";
 import { useProposals, useProposalWorkspace } from "../features/proposals";
 import { useTasks } from "../features/tasks";
 import { useSettings } from "../features/settings";
@@ -26,7 +25,6 @@ export function useAppComposition() {
     onSetupReady: () => { void startInitialTaskDataRefresh(); },
   });
   const appUpdateState = useSystemUpdate();
-  const github = useGithubIntegration();
   const toastStore = createToastStore();
   provide(toastStoreInjectionKey, toastStore);
   onBeforeUnmount(toastStore.clearToasts);
@@ -85,7 +83,6 @@ export function useAppComposition() {
     onDialogOpen: () => {
       closeProposalAssistant();
       void obsidian.loadVaultMappings();
-      void github.loadStatus();
     },
     authenticationRequired: () => authenticationRequired.value,
     onAuthenticationRequired: () => markAuthenticationRequired(),
@@ -229,7 +226,6 @@ export function useAppComposition() {
   return {
     screen,
     appUpdateState,
-    github,
     feedback,
     feedbackClass,
     feedbackRole,

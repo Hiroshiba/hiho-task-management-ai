@@ -28,6 +28,8 @@ import {
   storageSchemaSql,
   storageSchemaVersion,
   storageTableNames,
+  storageV10SchemaVersion,
+  storageV10TableNames,
   storageV7TableNames,
   storageV9TableNames,
   type ExpectedTableColumn,
@@ -241,7 +243,7 @@ function createExecutionTables(database: SqliteDatabase): void {
   database.exec(proposalExecutionTablesSql);
   createHistoryTable(database);
   createNormalizationBaselineTable(database);
-  assertStorageTableNames(readTableNames(database), storageTableNames);
+  assertStorageTableNames(readTableNames(database), storageV10TableNames);
   assertExecutionTableColumns(database);
 }
 
@@ -473,7 +475,7 @@ function migrateSchemaFromV3(
     );
     assertTableRowCount(database, "application_journal", sourceRowCount);
     createExecutionTables(database);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -582,7 +584,7 @@ function migrateSchemaFromV4(
     );
     assertTableRowCount(database, "application_journal", sourceRowCount);
     createExecutionTables(database);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -597,7 +599,7 @@ function migrateSchemaFromV5(
     const sourceRowCount = readTableRowCount(database, "application_journal");
     createExecutionTables(database);
     assertTableRowCount(database, "application_journal", sourceRowCount);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -615,8 +617,8 @@ function migrateSchemaFromV6(
     assertExecutionTableColumns(database);
     createHistoryTable(database);
     createNormalizationBaselineTable(database);
-    assertStorageTableNames(readTableNames(database), storageTableNames);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    assertStorageTableNames(readTableNames(database), storageV10TableNames);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -631,8 +633,8 @@ function migrateSchemaFromV7(
     assertExecutionTableColumns(database);
     createHistoryTable(database);
     createNormalizationBaselineTable(database);
-    assertStorageTableNames(readTableNames(database), storageTableNames);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    assertStorageTableNames(readTableNames(database), storageV10TableNames);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -648,8 +650,8 @@ function migrateSchemaFromV8(
     assertHistoryTableColumns(database);
     rebuildHistoryTable(database);
     createNormalizationBaselineTable(database);
-    assertStorageTableNames(readTableNames(database), storageTableNames);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    assertStorageTableNames(readTableNames(database), storageV10TableNames);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -675,8 +677,8 @@ function migrateSchemaFromV9(
     assertHistoryTableColumns(database);
     rebuildLegacyHistoryTableIfRequired(database);
     createNormalizationBaselineTable(database);
-    assertStorageTableNames(readTableNames(database), storageTableNames);
-    database.pragma(`user_version = ${storageSchemaVersion}`);
+    assertStorageTableNames(readTableNames(database), storageV10TableNames);
+    database.pragma(`user_version = ${storageV10SchemaVersion}`);
   });
   migrate();
 }
@@ -694,6 +696,23 @@ function rebuildLegacyHistoryTableIfRequired(database: SqliteDatabase): void {
     }
     rebuildHistoryTable(database);
   }
+}
+
+function migrateSchemaFromV10(
+  database: SqliteDatabase,
+  transaction: SqliteTransaction,
+): void {
+  const migrate = transaction(() => {
+    assertStorageTableNames(readTableNames(database), storageV10TableNames);
+    assertTableColumns(database, "application_journal", applicationJournalV5Columns);
+    assertExecutionTableColumns(database);
+    assertHistoryTableColumns(database);
+    assertTableColumns(database, "pending_normalization_baseline", pendingNormalizationBaselineColumns);
+    database.exec("DROP TABLE external_tool_definitions");
+    assertStorageTableNames(readTableNames(database), storageTableNames);
+    database.pragma(`user_version = ${storageSchemaVersion}`);
+  });
+  migrate();
 }
 
 /** SQLiteの保存形式を初期化し、既存データを現行形式へ移行します。 */
@@ -731,36 +750,43 @@ export function initializeSqliteSchema(
 
   if (userVersion === 3) {
     migrateSchemaFromV3(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 4) {
     migrateSchemaFromV4(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 5) {
     migrateSchemaFromV5(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 6) {
     migrateSchemaFromV6(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 7) {
     migrateSchemaFromV7(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 8) {
     migrateSchemaFromV8(database, transaction);
-    return;
+    return initializeSqliteSchema(database, transaction);
   }
 
   if (userVersion === 9) {
     migrateSchemaFromV9(database, transaction);
+    return initializeSqliteSchema(database, transaction);
+  }
+
+  if (userVersion === storageV10SchemaVersion) {
+    assertStorageTableNames(tableNames, storageV10TableNames);
+    transaction(() => rebuildLegacyHistoryTableIfRequired(database))();
+    migrateSchemaFromV10(database, transaction);
     return;
   }
 
