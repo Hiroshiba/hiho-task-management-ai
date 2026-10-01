@@ -1,6 +1,6 @@
 # ソース対応表
 
-一覧は現在の作業ツリーにある`src`以下の手編集source 513件から生成しています。各行のownerはsourceの配置に対応します。生成: `node scripts/generate-current-source-map.mjs --write`。
+一覧は現在の作業ツリーにある`src`以下の手編集source 486件から生成しています。各行のownerはsourceの配置に対応します。生成: `node scripts/generate-current-source-map.mjs --write`。
 
 ## 機能と入口
 
@@ -20,7 +20,6 @@
 | 外部提案の準備・生成 | main/application/proposal-generate | src/main/application/proposal-generate/external-agent-generation.ts |
 | 外部提案の承認・適用 | main/application/proposal-apply | src/main/application/proposal-apply/external-agent-application.ts |
 | Obsidian参照・Vault設定 | main/application/obsidian-integration | src/main/application/obsidian-integration/, src/main/infrastructure/obsidian/, src/main/domain/obsidian-contracts.ts, src/main/infrastructure/persistence/vault-mapping-repository.ts |
-| GitHub App連携 | main/application/github-integration | 現行アプリにclientはなく、src/main/application/settings/integration-status.tsが利用不可状態を返す |
 | 設定と秘密情報 | main/application/settings | src/main/application/settings/, src/main/application/common/ports/secret-storage.ts, src/main/infrastructure/persistence/settings-repository.ts, src/main/infrastructure/persistence/secret-storage.ts |
 | IPC契約と配送 | shared/ipc-contracts と main/ipc と preload | src/shared/ipc-contracts/, src/main/ipc/, src/preload/ |
 | タスク画面 | renderer/features/tasks | src/renderer/features/tasks/ |
@@ -91,7 +90,6 @@
 | src/main/application/common/task-write-plan.ts | main/application/common |
 | src/main/application/common/task-write-step.ts | main/application/common |
 | src/main/application/common/task-write-synchronization-error.ts | main/application/common |
-| src/main/application/github-integration/index.ts | main/application/github-integration |
 | src/main/application/gui-edit/apply.ts | main/application/gui-edit |
 | src/main/application/gui-edit/build-proposal-operation.ts | main/application/gui-edit |
 | src/main/application/gui-edit/execution-workflow.ts | main/application/gui-edit |
@@ -152,7 +150,6 @@
 | src/main/application/proposal-generate/external-agent-task-query.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/external-agent-validation-response.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/external-agent-validation.ts | main/application/proposal-generate |
-| src/main/application/proposal-generate/external-tool-status-evidence.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/impact-ranking.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/index.ts | main/application/proposal-generate |
 | src/main/application/proposal-generate/proposal-baseline-workflow.ts | main/application/proposal-generate |
@@ -181,14 +178,12 @@
 | src/main/application/settings/asana-reauthentication.ts | main/application/settings |
 | src/main/application/settings/codex-health.ts | main/application/settings |
 | src/main/application/settings/index.ts | main/application/settings |
-| src/main/application/settings/integration-status.ts | main/application/settings |
 | src/main/application/settings/restore-setup-at-startup.ts | main/application/settings |
 | src/main/application/settings/setup-asana-authorization.ts | main/application/settings |
 | src/main/application/settings/setup-asana-resources.ts | main/application/settings |
 | src/main/application/settings/setup-capability.ts | main/application/settings |
 | src/main/application/settings/setup-codex-state.ts | main/application/settings |
 | src/main/application/settings/setup-completion.ts | main/application/settings |
-| src/main/application/settings/setup-external-tool.ts | main/application/settings |
 | src/main/application/settings/setup-ipc-workflow.ts | main/application/settings |
 | src/main/application/settings/setup-ports.ts | main/application/settings |
 | src/main/application/settings/setup-state-tools.ts | main/application/settings |
@@ -228,8 +223,6 @@
 | src/main/bootstrap/create-task-read-composition-dependencies.ts | main/bootstrap |
 | src/main/bootstrap/create-task-read-runtime.ts | main/bootstrap |
 | src/main/bootstrap/create-task-write-runtime.ts | main/bootstrap |
-| src/main/bootstrap/external-tool-runtime.ts | main/bootstrap |
-| src/main/bootstrap/external-tool-storage-contracts.ts | main/bootstrap |
 | src/main/bootstrap/journal-recovery-runtime.ts | main/bootstrap |
 | src/main/bootstrap/main-runtime-options.ts | main/bootstrap |
 | src/main/bootstrap/main-shutdown-runtime.ts | main/bootstrap |
@@ -325,7 +318,6 @@
 | src/main/infrastructure/ai/codex-workspace/errors.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-workspace/index.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-workspace/initializer.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/codex-workspace/integrations.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-workspace/schemas.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/client-script.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/index.ts | main/infrastructure/ai |
@@ -333,19 +325,6 @@
 | src/main/infrastructure/ai/external-agent/resources.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/transport-schemas.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/transport.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/client-script.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/connection-files.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/discord.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/errors.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/index.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/invocation-policy.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/json-depth.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/registry.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/run-with-retries.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/schemas.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/server-listener.ts | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/status-evidence-collector.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/index.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/snapshot-hasher.ts | main/infrastructure/ai |
 | src/main/infrastructure/ai/taskctl/broker.ts | main/infrastructure/ai |
@@ -425,7 +404,6 @@
 | src/main/infrastructure/obsidian/vault-path-security.ts | main/infrastructure/obsidian |
 | src/main/infrastructure/persistence/application-update-attempt-store.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/diagnostic-log-repository.ts | main/infrastructure/persistence |
-| src/main/infrastructure/persistence/external-tool-definition-repository.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/index.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistent-text-file.ts | main/infrastructure/persistence |
@@ -442,6 +420,7 @@
 | src/main/infrastructure/persistence/secure-path-guard.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/settings-repository.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/setup-checkpoint-store.ts | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/setup-checkpoint-v2-schema.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-connection.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-migration-backup.ts | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/sqlite-migration.ts | main/infrastructure/persistence |
@@ -457,7 +436,6 @@
 | src/main/ipc/handlers/contract-handler.ts | main/ipc |
 | src/main/ipc/handlers/diagnostics.ts | main/ipc |
 | src/main/ipc/handlers/execution-dto.ts | main/ipc |
-| src/main/ipc/handlers/github-integration.ts | main/ipc |
 | src/main/ipc/handlers/obsidian-integration.ts | main/ipc |
 | src/main/ipc/handlers/proposal-dto.ts | main/ipc |
 | src/main/ipc/handlers/proposals.ts | main/ipc |
@@ -478,10 +456,6 @@
 | src/renderer/app/use-app-startup.ts | renderer/app |
 | src/renderer/app/use-system-theme.ts | renderer/app |
 | src/renderer/env.d.ts | renderer/app |
-| src/renderer/features/github-integration/GithubStatus.vue | renderer/features/github-integration |
-| src/renderer/features/github-integration/index.ts | renderer/features/github-integration |
-| src/renderer/features/github-integration/mock-github-integration-api.ts | renderer/features/github-integration |
-| src/renderer/features/github-integration/use-github-integration.ts | renderer/features/github-integration |
 | src/renderer/features/obsidian-integration/TaskObsidianLinks.vue | renderer/features/obsidian-integration |
 | src/renderer/features/obsidian-integration/VaultSettings.vue | renderer/features/obsidian-integration |
 | src/renderer/features/obsidian-integration/index.ts | renderer/features/obsidian-integration |
@@ -559,9 +533,7 @@
 | src/shared/ipc-contracts/diagnostics.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/execution.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/external-proposal-state.ts | shared/ipc-contracts |
-| src/shared/ipc-contracts/github-integration.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/index.ts | shared/ipc-contracts |
-| src/shared/ipc-contracts/integration-status.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/obsidian-integration.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/proposal-values.ts | shared/ipc-contracts |
 | src/shared/ipc-contracts/proposals-channels.ts | shared/ipc-contracts |
@@ -730,7 +702,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.contracts | main/application/settings |
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.database | main/application/settings |
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.deviceId | main/application/settings |
-| src/main/application/settings/setup-workflow.ts | SetupOrchestrator.externalTool | main/application/settings |
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.fullSync | main/application/settings |
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.reportCapabilityFailure | main/application/settings |
 | src/main/application/settings/setup-workflow.ts | SetupOrchestrator.resources | main/application/settings |
@@ -790,10 +761,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.launchState | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.startResult | main/bootstrap |
 | src/main/bootstrap/configured-codex-runtime.ts | ConfiguredCodexRuntime.synchronizationPromise | main/bootstrap |
-| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.configurationOperation | main/bootstrap |
-| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.currentRegistry | main/bootstrap |
-| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.dependencies | main/bootstrap |
-| src/main/bootstrap/external-tool-runtime.ts | ExternalToolRuntime.lifecycle | main/bootstrap |
 | src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.dependencies | main/bootstrap |
 | src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.pending | main/bootstrap |
 | src/main/bootstrap/journal-recovery-runtime.ts | JournalRecoveryRuntime.recoveryPromise | main/bootstrap |
@@ -830,9 +797,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalAgentApply | main/bootstrap |
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalAgentBridge | main/bootstrap |
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalAgentInstanceId | main/bootstrap |
-| src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalStatusEvidenceCollector | main/bootstrap |
-| src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalToolDefinitionRepository | main/bootstrap |
-| src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.externalTools | main/bootstrap |
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.guiEditRequest | main/bootstrap |
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.highPriorityTransport | main/bootstrap |
 | src/main/bootstrap/main-workflow-construction.ts | MainWorkflowConstruction.interactiveReadClient | main/bootstrap |
@@ -946,7 +910,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/ai/codex-session/errors.ts | CodexThreadStartCapabilityError.failureCode | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/notification-router.ts | CodexSessionNotificationRouter.options | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/session.ts | CodexSessionService.activeProposalWorkspace | main/infrastructure/ai |
-| src/main/infrastructure/ai/codex-session/session.ts | CodexSessionService.additionalLocalSocketPaths | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/session.ts | CodexSessionService.broker | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/session.ts | CodexSessionService.connection | main/infrastructure/ai |
 | src/main/infrastructure/ai/codex-session/session.ts | CodexSessionService.connectionConfigurationChanged | main/infrastructure/ai |
@@ -1014,34 +977,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/ai/external-agent/transport.ts | ExternalAgentBridge.stopPromise | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/transport.ts | ExternalAgentBridge.unixEndpointDirectoryPath | main/infrastructure/ai |
 | src/main/infrastructure/ai/external-agent/transport.ts | ExternalAgentBridge.userDataPath | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.activeRuns | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.connectionFiles | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.connectionInfo | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.connectionInfoPath | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.connections | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.diagnostics | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.discordCredentialProvider | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.endpoint | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.invocationPolicy | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.registry | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.runWithRetries | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.server | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.startAbortListener | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.startAbortSignal | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.startAbortStopPromise | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.startController | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.startListenPromise | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.state | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.statusEvidenceCollector | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.stopPromise | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.stopRequested | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/broker.ts | ExternalToolBroker.tmpDirectoryPath | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/discord.ts | SecretStorageDiscordCredentialProvider.secretStorage | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/errors.ts | ExternalToolError.code | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/errors.ts | ExternalToolError.retryable | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/registry.ts | ExternalToolRegistry.definitions | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/status-evidence-collector.ts | ExternalToolStatusEvidenceCollector.parseEvidence | main/infrastructure/ai |
-| src/main/infrastructure/ai/external-tools/status-evidence-collector.ts | ExternalToolStatusEvidenceCollector.state | main/infrastructure/ai |
 | src/main/infrastructure/ai/taskctl/broker.ts | TaskctlBroker.abortListener | main/infrastructure/ai |
 | src/main/infrastructure/ai/taskctl/broker.ts | TaskctlBroker.abortSignal | main/infrastructure/ai |
 | src/main/infrastructure/ai/taskctl/broker.ts | TaskctlBroker.connectionInfo | main/infrastructure/ai |
@@ -1181,9 +1116,6 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/persistence/diagnostic-log-repository.ts | SqliteDiagnosticLogRepository.parseEntry | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/diagnostic-log-repository.ts | SqliteDiagnosticLogRepository.runtime | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/diagnostic-log-repository.ts | SqliteDiagnosticLogRepository.selectAllStatement | main/infrastructure/persistence |
-| src/main/infrastructure/persistence/external-tool-definition-repository.ts | SqliteExternalToolDefinitionRepository.contracts | main/infrastructure/persistence |
-| src/main/infrastructure/persistence/external-tool-definition-repository.ts | SqliteExternalToolDefinitionRepository.saveStatement | main/infrastructure/persistence |
-| src/main/infrastructure/persistence/external-tool-definition-repository.ts | SqliteExternalToolDefinitionRepository.selectAllStatement | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.database | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.lateTextFiles | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/persistence-runtime.ts | PersistenceRuntime.migrationBackupPaths | main/infrastructure/persistence |
@@ -1201,6 +1133,7 @@ TypeScriptのmodule直下にある`let`、`var`、instance生成、変更され�
 | src/main/infrastructure/persistence/proposal-execution-repository.ts | SqliteProposalExecutionRepository.resultSchema | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/proposal-execution-repository.ts | SqliteProposalExecutionRepository.runtime | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/secret-storage.ts | SecretStorage.file | main/infrastructure/persistence |
+| src/main/infrastructure/persistence/secret-storage.ts | SecretStorage.rememberLegacySecrets | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.clearStatement | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.parseSettings | main/infrastructure/persistence |
 | src/main/infrastructure/persistence/settings-repository.ts | SqliteSettingsRepository.saveStatement | main/infrastructure/persistence |
@@ -1257,7 +1190,6 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 | settings:retry-resources | main/application/settings |
 | settings:run-capability | main/application/settings |
 | settings:choose-vault | main/application/settings |
-| settings:choose-external-tool | main/application/settings |
 | settings:run-full-sync | main/application/settings |
 | settings:run-codex-capability | main/application/settings |
 | settings:get-asana-authentication-state | main/application/settings |
@@ -1304,7 +1236,6 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 | obsidian-integration:resolve-path | main/application/obsidian-integration |
 | obsidian-integration:note-exists | main/application/obsidian-integration |
 | obsidian-integration:open-note | main/application/obsidian-integration |
-| github-integration:get-status | main/application/github-integration |
 | diagnostics:report | main/infrastructure/logging |
 
 ## 変更案の操作
@@ -1344,15 +1275,14 @@ channel文字列の正本は`src/shared/ipc-contracts`の機能別channel定義�
 | 外部Codex設定JSON | external-agent/config.json | src/main/infrastructure/ai/external-agent/resources.ts | main/application/settings |
 | 外部Codex接続JSON | external-agent/connection.json | src/main/infrastructure/ai/external-agent/resources.ts | main/infrastructure/ai |
 | taskctl接続JSON | taskctl-connection.json | src/main/infrastructure/ai/taskctl/broker.ts | main/infrastructure/ai |
-| contextctl接続JSON | contextctl-connection.json | src/main/infrastructure/ai/external-tools/broker.ts | main/infrastructure/ai |
 | Codex作業資源 | codex-workspace/ と codex-home/ | src/main/infrastructure/ai/codex-workspace/schemas.ts | main/infrastructure/ai |
 | Asana Custom external data | Asana task external data | src/main/domain/external-data.ts | main/domain |
 
 | 形式 | version | source | version symbol |
 | --- | --- | --- | --- |
-| SQLite | 10 | src/main/infrastructure/persistence/sqlite-schema.ts | storageSchemaVersion |
-| 初回設定JSON | 2 | src/main/infrastructure/persistence/setup-checkpoint-store.ts | checkpointVersion |
-| 暗号化JSON | 1 | src/main/infrastructure/persistence/secret-storage.ts | encryptedFileVersion |
+| SQLite | 11 | src/main/infrastructure/persistence/sqlite-schema.ts | storageSchemaVersion |
+| 初回設定JSON | 3 | src/main/infrastructure/persistence/setup-checkpoint-store.ts | checkpointVersion |
+| 暗号化JSON | 2 | src/main/infrastructure/persistence/secret-storage.ts | encryptedFileVersion |
 | ウィンドウJSON | 1 | src/main/infrastructure/persistence/window-state-store.ts | windowStateVersion |
 | Asana Custom external data | 1 | src/main/domain/external-data.ts | customExternalDataSchemaVersion |
 
@@ -1364,7 +1294,6 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | cleanup_items_cache | main/application/task-read |
 | device_settings | main/application/settings |
 | diagnostic_log | main/infrastructure/logging |
-| external_tool_definitions | main/application/settings |
 | legacy_application_history | main/application/proposal-apply |
 | pending_normalization_baseline | main/application/task-read |
 | project_metadata_cache | main/application/task-read |
@@ -1381,7 +1310,6 @@ SQLite接続とtransactionは`main/infrastructure/persistence`が所有し、SQL
 | cleanup_items_cache | src/main/infrastructure/persistence/sqlite-schema.ts |
 | device_settings | src/main/infrastructure/persistence/sqlite-schema.ts |
 | diagnostic_log | src/main/infrastructure/persistence/sqlite-schema.ts |
-| external_tool_definitions | src/main/infrastructure/persistence/sqlite-schema.ts |
 | legacy_application_history | src/main/infrastructure/persistence/sqlite-schema.ts |
 | pending_normalization_baseline | src/main/infrastructure/persistence/sqlite-schema.ts |
 | project_metadata_cache | src/main/infrastructure/persistence/sqlite-schema.ts |

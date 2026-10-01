@@ -10,4 +10,4 @@
 
 採用時に見込んだ費用はsourceの再配置、保存済み値の移行、IPC channelと17操作の整理、Rendererの状態移動、mockとCIの更新でした。外部書き込みと復旧を同じexecutorに統合し、保存形式の移行を各adapterの責務にしました。
 
-検証はcache付きlint、incremental typecheck、全sourceの構造検査、行数検査、build、mock表示で行います。実サービスとGitHub Appのsecretはローカル検証に使いません。source一覧は現在の作業ツリーから生成します。
+検証はcache付きlint、incremental typecheck、全sourceの構造検査、行数検査、build、mock表示で行います。実サービスとそのsecretはローカル検証に使いません。source一覧は現在の作業ツリーから生成します。
