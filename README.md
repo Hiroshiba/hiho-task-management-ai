@@ -91,19 +91,19 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
 
 公開時は中央の[GitHubの初期設定](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/github-setup.md)と、その時点で適用される公開条件を満たしてください。中央の署名・公開処理で使うGitHub AppのSelected repositoriesに`Hiroshiba/hiho-task-management-ai`を含め、署名用Secretsを中央へ設定してください。TaskHubの自動更新は公開済みのGitHub Releasesから取得し、利用者によるGitHub Appの設定は不要です。
 
-中央のworkflowを実行する前に、新しいReleaseへの更新方法と実機で確認する範囲を決めてください。
+中央のworkflowを実行する前に、新しいReleaseへの更新方法を決めてください。
 
 配布版の正本は、公開するタグが指すコミットのルートの`package.json`の`version`です。担当者が版を更新してコミットし、中央のworkflowを手動実行します。
 
-1. main上の公開対象コミットの検証を済ませ、中央のビルド要件を満たすことを確認します。そのコミットを基点に、通常版の公開専用ブランチを作成します。TaskHubの作業ディレクトリで`RELEASE_BRANCH`を作成するブランチ名、`MAIN_COMMIT_SHA`を検証済みのコミットSHAに置き換えて実行します。
+1. main上の公開対象コミットを基点に、通常版の公開専用ブランチを作成します。TaskHubの作業ディレクトリで`RELEASE_BRANCH`を作成するブランチ名、`MAIN_COMMIT_SHA`を公開対象のコミットSHAに置き換えて実行します。
 
    ```sh
    git switch -c RELEASE_BRANCH MAIN_COMMIT_SHA
    ```
 
-2. ルートの`package.json`の`version`を、先頭に`v`を付けず、prerelease識別子を含まないSemVerへ更新します。既に配布した版より大きい値を選びます。中央は既存版との大小を検証しません。`pnpm install --lockfile-only`でロックファイルを同期し、`pnpm run lint`、`pnpm run typecheck`、`pnpm run build`を実行します。`package.json`をコミットし、`pnpm-lock.yaml`に差分が出た場合は併せてコミットします。
-3. 版更新のPRをmainへsquash mergeします。マージ後のmain先端の`package.json`とロックファイルが版更新後の内容であること、mainへのpushで起動するCIが成功したことを確認します。mainへのpushで実行するworkflowはCIのみで、Releaseは自動公開しません。
-4. マージ後のmain先端のコミットに`v<version>`のタグを付け、対象リポジトリへpushします。対象リポジトリのmainを取得してから、`RELEASE_COMMIT_SHA`をGitHub上のmain先端のコミットSHAに置き換えて実行します。そのコミットの`package.json`から`jq`で版を読み、タグ名を決めます。最後に表示されるタグ先SHAと`release_commit`が一致することを確認してください。以降のコマンドも、ここで変数を設定したシェルで実行します。
+2. ルートの`package.json`の`version`を、先頭に`v`を付けず、prerelease識別子を含まないSemVerへ更新します。既に配布した版より大きい値を選びます。中央は既存版との大小を検証しません。`pnpm install --lockfile-only`でロックファイルを同期します。`package.json`をコミットし、`pnpm-lock.yaml`に差分が出た場合は併せてコミットします。
+3. 版更新のPRをmainへsquash mergeします。mainへのpushで実行するworkflowはCIのみで、Releaseは自動公開しません。
+4. マージ後のmain先端のコミットに`v<version>`のタグを付け、対象リポジトリへpushします。対象リポジトリのmainを取得してから、`RELEASE_COMMIT_SHA`をGitHub上のmain先端のコミットSHAに置き換えて実行します。そのコミットの`package.json`から`jq`で版を読み、タグ名を決めます。以降のコマンドも、ここで変数を設定したシェルで実行します。
 
    ```sh
    git fetch https://github.com/Hiroshiba/hiho-task-management-ai.git main
@@ -113,7 +113,6 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
    release_tag="v${release_version}"
    git tag "$release_tag" "$release_commit"
    git push https://github.com/Hiroshiba/hiho-task-management-ai.git "refs/tags/${release_tag}"
-   gh api "repos/Hiroshiba/hiho-task-management-ai/commits/${release_tag}" --jq '.sha'
    ```
 
 5. TaskHubのGitHub Releasesで、そのタグを選びdraft Releaseを作成します。prereleaseは指定せず、assetを追加・置換できる状態にします。Immutable Releaseは使えません。中央は既存Releaseに成果物を追加し、draftとprereleaseの状態は変更しません。
@@ -123,19 +122,14 @@ TaskHubは、中央の[ソースの要件](https://github.com/Hiroshiba/oreore-c
    gh workflow run sign-release.yml --repo Hiroshiba/oreore-codesigner --ref main -f repository=Hiroshiba/hiho-task-management-ai -f "tag=${release_tag}"
    ```
 
-7. 両OSの署名とアップロードが成功したら、両OSが手順4のタグ先コミットSHAを使ったことを確認します。draft Releaseに、macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の合計8件が揃っていることを確認します。更新メタデータの`version`がタグ先の`package.json`の`version`とタグの版に一致し、`path`と`files.url`が実ファイル名と大文字小文字を含めて一致し、サイズ・Base64のSHA-512・blockmapが実ファイルと一致することを確認します。
-8. draft ReleaseでNSIS Webのinstallerと`.nsis.7z` packageの存在と名前、installerの署名、最終タグのRelease URLから取得する設計を確認します。draft ReleaseからmacOSのZIPとWindowsの通常NSISを取得し、両OSの実機で[インストールと更新](#インストールと更新)に沿って配布元と署名を人手で確認し、導入・起動・主要機能を検証します。更新方法ごとの確認結果と未確認の範囲も記録します。
-9. 成果物の整合と中央の公開前の確認項目を満たしたら、更新方式と公開前の確認結果、OSの警告・許可操作を中央の[記録する内容](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/verification.md#記録する内容)に沿って残します。`gh release edit "$release_tag" --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
-10. GitHub認証なしで、最終タグのReleaseから手順7の全8件の配布ファイル・更新メタデータ・blockmapを取得できることを確認します。GitHub認証なしのWindows実機で、取得したNSIS Webのinstallerを実行し、同じReleaseの追加packageの取得・導入・起動・主要機能を確認します。すべての結果を記録し、いずれかに失敗した場合はLatest指定と利用案内を止め、原因の解消と修復、再確認を済ませるまで再開しないでください。
-11. 全8件の匿名取得とNSIS Webの確認が成功したら、`gh release edit "$release_tag" --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定します。[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)が今回のReleaseを指し、配布ファイルを取得できることを確認してから、利用者へ案内します。
-
-Latest指定後、自動更新に対応した旧版を両OSで起動し、自動確認、全量取得、通常終了時の適用、版・設定・利用者データの保持を検証して記録します。差分取得の成功は前回の更新ファイルがキャッシュにある端末で次版への更新を行い、差分取得に失敗した場合の全量取得も別途確認します。自動更新できる版がない場合は未確認と記録し、次版の公開時に確認します。
+7. 両OSの署名とアップロードが成功したら、`gh release edit "$release_tag" --repo Hiroshiba/hiho-task-management-ai --draft=false --latest=false`でdraftを解除し、LatestにせずReleaseを公開します。公開直後からURLを知る利用者は取得できます。
+8. `gh release edit "$release_tag" --repo Hiroshiba/hiho-task-management-ai --latest`でLatest Releaseに指定し、[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)を利用者へ案内します。
 
 中央はタグ先の`package.json`の`version`を配布版として採用し、更新メタデータのchannelもその値から決めます。prerelease識別子を含まない通常版のchannelは`latest`です。タグ名やReleaseのprerelease設定ではchannelは変わりません。アプリはLatest Releaseの更新メタデータと配布ファイルを参照し、旧版のblockmapは現在版のタグから取得します。
 
-Windowsの自動更新には、署名済み成果物の`app-update.yml`に実際の証明書の署名者名と一致する`publisherName`が必要です。欠落するとアプリは更新を開始せず、ヘッダーに設定不備を表示します。公開前に署名済み成果物で署名者名を確かめ、同梱された`app-update.yml`と更新版の署名が一致することを確認してください。署名者名が未確認の間はWindowsの自動更新を検証済みとして扱わないでください。
+Windowsの自動更新には、署名済み成果物の`app-update.yml`に実際の証明書の署名者名と一致する`publisherName`が必要です。欠落するとアプリは更新を開始せず、ヘッダーに設定不備を表示します。
 
-公開途中で失敗すると、新旧のファイルが混在する場合があります。中央の[公開と再実行](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/operations.md)に従い、タグと公開先を維持して原因を解消し、同じActions実行の`Re-run failed jobs`で再実行してください。成功後にReleaseのファイルと更新メタデータの整合を再確認します。
+公開途中で失敗すると、新旧のファイルが混在する場合があります。中央の[公開と再実行](https://github.com/Hiroshiba/oreore-codesigner/blob/main/docs/operations.md)に従い、タグと公開先を維持して原因を解消し、同じActions実行の`Re-run failed jobs`で再実行してください。
 
 ## エラーログ
 
