@@ -50,13 +50,20 @@ type DynamicAiWorkflowOptions = Omit<AiWorkflowOptions,
 /** AI変更案の承認と診断を結線したworkflowを生成します。 */
 export function createAiWorkflow(options: DynamicAiWorkflowOptions): AiWorkflowService {
   return new AiWorkflowService({
-    ...options,
+    sessionId: options.sessionId,
+    session: options.session,
+    snapshotProvider: options.snapshotProvider,
+    taskctlSnapshotProvider: options.taskctlSnapshotProvider,
+    parseTaskctlSnapshot: options.parseTaskctlSnapshot,
+    createId: options.createId,
     hashCanonicalJson: (value) => createHash("sha256")
       .update(canonicalizeJson(value)).digest("hex"),
+    hashBaselineSnapshot: options.hashBaselineSnapshot,
     redactSensitiveText,
     isSessionOutputValidationError: (error): error is CodexSessionOutputValidationError =>
       error instanceof CodexSessionOutputValidationError,
     isSessionSyncError: (error) => error instanceof CodexSessionSyncError,
+    baselineExternalDataProvider: options.baselineExternalDataProvider,
     executeApproval: (input, signal, store) => approveStoredProposal(input, signal, {
       parseRequest: (value) => aiWorkflowApprovalRequestSchema.parse(value),
       throwIfAborted,
@@ -103,5 +110,6 @@ export function createAiWorkflow(options: DynamicAiWorkflowOptions): AiWorkflowS
         validatedEvent.severity === "warning" ? "warning" : "error",
       );
     },
+    reportListenerError: options.reportListenerError,
   });
 }
