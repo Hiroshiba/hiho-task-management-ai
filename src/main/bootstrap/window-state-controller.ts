@@ -184,28 +184,6 @@ export class WindowStateController {
     this.window.webContents.on("before-input-event", this.handleBeforeInputEvent);
   }
 
-  /** 状態保存の監視と保留中のタイマーを解除します。 */
-  public dispose(): void {
-    if (this.disposed) {
-      return;
-    }
-    this.disposed = true;
-    this.clearSaveTimer();
-    if (!this.attached) {
-      return;
-    }
-    this.attached = false;
-    this.window.removeListener("move", this.handleBoundsChanged);
-    this.window.removeListener("resize", this.handleBoundsChanged);
-    this.window.removeListener("maximize", this.handleMaximize);
-    this.window.removeListener("unmaximize", this.handleUnmaximize);
-    this.window.removeListener("enter-full-screen", this.handleEnterFullScreen);
-    this.window.removeListener("leave-full-screen", this.handleLeaveFullScreen);
-    this.window.removeListener("close", this.handleClose);
-    this.window.removeListener("closed", this.handleClosed);
-    this.window.webContents.removeListener("before-input-event", this.handleBeforeInputEvent);
-  }
-
   /** 保留中のウィンドウ状態を直ちに保存します。 */
   public flush(): void {
     this.clearSaveTimer();
@@ -292,7 +270,8 @@ export class WindowStateController {
   };
 
   private readonly handleClosed = (): void => {
-    this.dispose();
+    this.disposed = true;
+    this.clearSaveTimer();
   };
 
   private readonly handleBeforeInputEvent = (
