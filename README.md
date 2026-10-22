@@ -4,7 +4,7 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 ## インストールと更新
 
-署名済みの最新版は、[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)から取得します。導入対象は中央の公開条件を満たしたReleaseに限ります。macOSのZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の8件が揃い、両方の更新メタデータの`version`がタグの版と一致し、`path`と`files.url`が配布ファイルを指すことを確認してください。条件を満たさない場合は導入を進めないでください。
+署名済みの最新版は、[最新の通常版Release](https://github.com/Hiroshiba/hiho-task-management-ai/releases/latest)から取得します。導入対象は中央の公開条件を満たしたReleaseに限ります。macOSのDMG・ZIP・blockmap・`latest-mac.yml`、Windowsの通常NSIS・blockmap・`latest.yml`・NSIS Web・`.nsis.7z`の9件が揃い、両方の更新メタデータの`version`がタグの版と一致し、`path`と`files.url`が配布ファイルを指すことを確認してください。条件を満たさない場合は導入を進めないでください。
 
 通常版は中央リポジトリの[oreore-codesigner](https://github.com/Hiroshiba/oreore-codesigner)で自己署名します。
 
@@ -16,11 +16,11 @@ AIが僕のタスクを管理してくれたりする仕組みやGUI
 
 | OS          | 配布ファイルの選び方                                               | 導入方法                                                                                        |
 | ----------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| macOS x64   | `latest-mac.yml`の`path`と`files.url`が参照するZIP                 | 隔離属性を保持したまま展開し、TaskHub.appをアプリケーションフォルダーへ移す                     |
+| macOS x64   | 初回導入用のDMG                                                   | 隔離属性を保持したままDMGを開き、TaskHub.appをアプリケーションフォルダーへコピーする             |
 | Windows x64 | `latest.yml`が参照する通常NSISの`TaskHub-Setup-<version>-full.exe` | ダウンロード元の情報を保持し、デジタル署名を確認して実行する                                    |
 | Windows x64 | NSIS Webの`TaskHub-Setup-<version>.exe`                            | 初回導入用。署名を確認して実行すると、同じReleaseの`.nsis.7z`パッケージを追加でダウンロードする |
 
-導入する版と、`latest-mac.yml`または`latest.yml`の`version`が一致することを確認してください。通常版はmacOS arm64ネイティブ版、DMG、Windows ZIPを生成しません。`.blockmap`と更新メタデータは導入時に開くファイルではありません。
+導入する版と、`latest-mac.yml`または`latest.yml`の`version`が一致することを確認してください。通常版はmacOS arm64ネイティブ版、Windows ZIPを生成しません。`.blockmap`と更新メタデータは導入時に開くファイルではありません。
 
 自己署名のため、証明書の登録後もmacOSのGatekeeperやWindowsのSmartScreenの警告が残る場合があります。macOSでは配布元と署名を確認して個別アプリの許可操作を行います。詳しい操作は端末の初期設定を参照し、隔離属性の削除やOSの保護設定全体の無効化は行わないでください。Smart App Controlが強制されているWindows端末は対象外です。
 
